@@ -1,0 +1,36 @@
+[08-Apr-2026 10:52:58 UTC] PHP Fatal error:  Uncaught TypeError: mysqli_num_rows(): Argument #1 ($result) must be of type mysqli_result, array given in /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php:375
+Stack trace:
+#0 /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php(375): mysqli_num_rows()
+#1 /home/u334978718/domains/capstone001.com/public_html/eyecore/pages/view-receipt.php(140): include('/home/u33497871...')
+#2 {main}
+  thrown in /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php on line 375
+[08-Apr-2026 10:52:59 UTC] PHP Fatal error:  Uncaught TypeError: mysqli_num_rows(): Argument #1 ($result) must be of type mysqli_result, array given in /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php:375
+Stack trace:
+#0 /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php(375): mysqli_num_rows()
+#1 /home/u334978718/domains/capstone001.com/public_html/eyecore/pages/view-receipt.php(140): include('/home/u33497871...')
+#2 {main}
+  thrown in /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php on line 375
+[08-Apr-2026 10:52:59 UTC] PHP Fatal error:  Uncaught TypeError: mysqli_num_rows(): Argument #1 ($result) must be of type mysqli_result, array given in /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php:375
+Stack trace:
+#0 /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php(375): mysqli_num_rows()
+#1 /home/u334978718/domains/capstone001.com/public_html/eyecore/pages/view-receipt.php(140): include('/home/u33497871...')
+#2 {main}
+  thrown in /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php on line 375
+[08-Apr-2026 10:52:59 UTC] PHP Fatal error:  Uncaught TypeError: mysqli_num_rows(): Argument #1 ($result) must be of type mysqli_result, array given in /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php:375
+Stack trace:
+#0 /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php(375): mysqli_num_rows()
+#1 /home/u334978718/domains/capstone001.com/public_html/eyecore/pages/view-receipt.php(140): include('/home/u33497871...')
+#2 {main}
+  thrown in /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php on line 375
+[08-Apr-2026 10:53:03 UTC] PHP Fatal error:  Uncaught TypeError: mysqli_num_rows(): Argument #1 ($result) must be of type mysqli_result, array given in /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php:375
+Stack trace:
+#0 /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php(375): mysqli_num_rows()
+#1 /home/u334978718/domains/capstone001.com/public_html/eyecore/pages/view-receipt.php(140): include('/home/u33497871...')
+#2 {main}
+  thrown in /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php on line 375
+[08-Apr-2026 10:53:34 UTC] PHP Fatal error:  Uncaught TypeError: mysqli_num_rows(): Argument #1 ($result) must be of type mysqli_result, array given in /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php:375
+Stack trace:
+#0 /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php(375): mysqli_num_rows()
+#1 /home/u334978718/domains/capstone001.com/public_html/eyecore/pages/view-receipt.php(140): include('/home/u33497871...')
+#2 {main}
+  thrown in /home/u334978718/domains/capstone001.com/public_html/eyecore/includes/navbar.php on line 375

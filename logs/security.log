@@ -1,0 +1,484 @@
+{"timestamp":"2026-01-08 02:44:08","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-08 02:47:21","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-07 20:08:29","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-07 20:08:29","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-08 03:08:44","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-08 03:09:00","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-09 22:08:31","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-09 22:08:45","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-09 15:30:53","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: clinics","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-09 16:23:23","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: clinics","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-09 16:26:58","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: clinics","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-09 16:27:02","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: clinics","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-09 16:27:03","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: clinics","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-09 16:27:04","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: clinics","user_id":20,"ip":"::1"}
+[2026-01-09 16:49:08] [HIGH] Invalid API key attempt 
+[2026-01-09 16:49:08] [HIGH] Invalid API key attempt 
+{"timestamp":"2026-01-09 18:22:29","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: patients","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-09 18:24:34","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: patients","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-09 18:35:13","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: patients","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-09 18:37:25","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: patients","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-09 18:40:22","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-09 18:40:22","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-10 01:40:41","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-09 18:42:12","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-09 18:42:12","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-10 16:21:14","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-10 10:26:57","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: patients","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-10 12:28:10","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-10 12:28:10","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-10 19:28:47","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-10 19:29:09","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-10 21:17:28","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-10 16:04:43","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-10 16:04:43","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-10 23:04:59","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-10 23:44:46","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-12 22:48:57","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-12 17:04:53","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-12 17:04:53","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-13 00:05:26","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-13 00:05:33","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-13 14:36:14","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-13 09:10:12","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-13 09:10:12","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-13 16:55:18","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-13 16:20:00","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-13 16:20:00","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-14 00:10:34","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-14 23:56:59","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 19:29:57","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 21:09:04","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 22:28:10","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 22:28:10","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 23:08:42","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-15 23:13:43","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-15 23:33:46","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-15 23:34:41","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-15 17:08:48","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-15 17:12:17","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-ClinicAdmin attempted access","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-15 17:12:30","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-15 17:14:02","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-15 17:14:32","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-15 17:19:48","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-15 17:21:32","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-15 17:25:48","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-15 17:30:18","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-15 17:38:25","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-15 17:42:06","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":36,"ip":"::1"}
+{"timestamp":"2026-01-15 17:42:06","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":36,"ip":"::1"}
+{"timestamp":"2026-01-15 17:42:32","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":36,"ip":"::1"}
+{"timestamp":"2026-01-15 17:42:32","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":36,"ip":"::1"}
+{"timestamp":"2026-01-15 17:42:56","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":36,"ip":"::1"}
+{"timestamp":"2026-01-15 17:42:56","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":36,"ip":"::1"}
+{"timestamp":"2026-01-15 17:48:05","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":36,"ip":"::1"}
+{"timestamp":"2026-01-15 17:48:05","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":36,"ip":"::1"}
+{"timestamp":"2026-01-15 18:00:13","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":36,"ip":"::1"}
+{"timestamp":"2026-01-15 18:00:13","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":36,"ip":"::1"}
+{"timestamp":"2026-01-16 01:00:31","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 18:01:55","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 18:01:55","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 18:02:14","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":36,"ip":"::1"}
+{"timestamp":"2026-01-15 18:02:14","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":36,"ip":"::1"}
+{"timestamp":"2026-01-15 18:02:14","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":36,"ip":"::1"}
+{"timestamp":"2026-01-15 18:08:41","action":"UNAUTHORIZED_ACCESS","module":"Topbar","details":"Non-SuperAdmin tried to access topbar","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-16 01:08:51","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 18:47:28","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 18:47:28","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 19:12:30","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-16 02:12:40","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 19:21:29","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 19:21:29","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-16 02:21:42","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 19:30:18","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 19:30:18","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-16 02:30:31","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 19:41:26","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 19:41:26","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-16 02:41:41","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 19:48:14","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-15 19:48:14","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-16 02:48:34","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-17 01:22:47","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-17 02:54:57","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-17 03:03:45","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-17 03:09:23","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-17 13:31:17","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-17 10:01:27","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-17 10:01:27","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-17 17:01:37","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-17 17:05:41","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-17 11:47:26","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-17 11:47:26","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-17 19:31:31","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-18 01:41:17","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-18 13:15:53","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-19 13:12:50","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 14:15:34","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-23 14:15:42","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-23 14:15:53","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-23 14:16:14","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 17:04:55","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 10:33:17","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 10:33:17","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 18:52:59","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 11:55:20","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 11:55:20","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 18:55:29","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 12:07:10","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 12:07:10","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 19:07:21","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 12:14:35","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 12:14:35","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 19:14:44","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 12:22:30","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 12:22:30","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 19:22:38","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 12:34:00","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 12:34:00","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 19:34:10","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 12:39:59","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 12:39:59","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 19:40:09","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 13:00:12","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 13:00:12","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 20:00:21","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 15:43:00","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 15:43:00","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 22:43:11","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 15:45:24","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 15:45:24","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 22:45:32","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-23 22:45:38","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 15:46:52","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 15:46:52","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 22:47:00","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 23:09:16","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 16:11:12","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 16:11:12","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 23:11:21","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 23:28:50","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 17:56:09","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 17:56:09","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 00:56:18","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 01:00:11","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-23 18:00:36","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 18:00:36","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 01:00:54","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 18:25:32","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-23 18:25:32","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 01:25:43","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 14:53:06","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 15:02:29","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 08:10:56","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 08:10:56","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 15:11:05","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 15:28:01","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 15:37:11","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 19:56:41","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 13:49:38","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 13:49:38","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 20:49:48","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 21:23:58","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 21:43:46","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-24 22:04:48","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-25 14:31:14","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-25 14:35:14","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-25 15:21:43","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-25 15:21:52","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-25 09:30:46","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-25 09:30:46","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-25 16:40:54","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-25 19:26:57","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-25 12:30:20","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-25 12:30:20","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-25 19:31:00","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-25 12:40:08","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-25 12:40:08","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-25 19:40:19","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-26 22:50:00","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-26 23:33:10","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-26 19:56:32","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-26 19:56:32","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-27 15:27:52","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-27 15:34:47","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-27 15:34:54","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-27 15:40:32","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-27 16:38:14","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-27 16:53:53","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-27 10:00:22","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-27 10:00:22","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-27 17:00:36","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-27 17:00:47","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-27 10:06:09","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-01-27 17:06:28","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-30 14:58:11","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-30 16:04:57","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-30 19:06:32","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-30 12:12:52","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-30 12:12:52","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-30 19:17:14","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-30 12:21:00","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-01-30 12:21:00","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-02-03 15:11:20","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-02-15 20:22:02","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-02-15 20:22:09","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-02-17 14:56:24","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-02-17 15:01:58","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-02-17 15:20:15","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-09 00:27:02","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:30:01","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:30:02","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:30:03","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:30:03","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:30:03","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:30:03","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:30:03","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:30:04","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:30:46","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:30:46","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-09 00:31:14","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-09 00:31:23","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:31:30","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:31:41","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:31:42","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:31:42","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:31:43","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:31:43","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-09 00:32:14","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-09 00:32:20","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-08 17:32:30","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-10 19:18:34","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-13 14:29:27","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 07:30:49","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 07:38:01","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 07:38:25","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 07:38:30","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 07:38:48","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 07:39:48","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 07:39:51","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 07:45:09","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 14:46:49","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 07:47:10","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 07:56:00","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 07:56:00","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 14:56:08","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 08:34:03","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 08:34:03","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 16:23:13","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-13 16:23:19","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 10:03:44","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 10:03:44","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 18:24:46","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 11:47:10","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 11:47:10","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 18:47:31","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 11:53:44","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 11:53:44","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 19:09:30","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-13 19:09:37","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 12:11:25","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 12:11:25","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 19:11:33","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-13 19:11:39","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 12:20:53","action":"UNAUTHORIZED_ACCESS","module":"Authorization","details":"Non-SuperAdmin attempted access","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 12:20:53","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-13 19:21:02","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-14 06:56:51","action":"SUPPLIER_LOGOUT","module":"Supplier Authentication","details":"Supplier logged out","user_id":"14","ip":"::1"}
+{"timestamp":"2026-03-14 07:11:58","action":"SUPPLIER_LOGOUT","module":"Supplier Authentication","details":"Supplier logged out","user_id":"14","ip":"::1"}
+{"timestamp":"2026-03-14 09:03:09","action":"SUPPLIER_LOGOUT","module":"Supplier Authentication","details":"Supplier logged out","user_id":"13","ip":"::1"}
+{"timestamp":"2026-03-14 16:11:02","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-14 16:11:37","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-14 16:11:44","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-15 21:21:37","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-16 10:40:44","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-17 06:27:13","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-17 09:26:43","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-17 09:49:10","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-17 10:09:31","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-18 17:27:21","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-20 14:04:50","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-21 01:59:42","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-20 19:01:16","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-20 19:01:30","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-20 19:02:04","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-20 19:08:02","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-20 19:08:43","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-20 19:08:43","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-21 21:46:38","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-21 15:45:28","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-21 15:45:28","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-23 19:00:51","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-23 19:00:57","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-23 12:40:37","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-23 13:42:55","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-23 13:42:55","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 11:34:48","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 11:38:28","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-24 11:38:34","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 04:40:03","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 04:40:03","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 11:43:36","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 05:12:14","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 05:12:14","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 13:04:11","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 06:04:27","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 06:04:27","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 13:04:34","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: mendoza@gmail.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-24 13:04:47","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: mendoza@gmail.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-24 13:05:03","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: mendoza@gmail.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-24 13:06:51","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 06:13:27","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 06:13:27","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 15:41:30","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 08:41:50","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 08:41:50","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-25 00:29:12","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-25 00:29:19","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 17:29:43","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 17:29:43","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-25 00:30:30","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 17:30:56","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-24 17:30:56","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-26 17:09:46","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-26 17:09:52","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-26 10:43:35","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-26 10:43:35","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 06:45:25","action":"SUPPLIER_LOGOUT","module":"Supplier Authentication","details":"Supplier logged out","user_id":"13","ip":"::1"}
+{"timestamp":"2026-03-29 15:36:15","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 15:54:13","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-29 15:54:18","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 09:56:32","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 10:00:18","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 10:05:16","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 10:05:24","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 10:05:25","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 10:05:40","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 10:06:06","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 10:06:07","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 10:06:08","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 10:06:19","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 10:07:50","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 10:08:50","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 10:08:59","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 15:01:36","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 15:01:39","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-29 15:01:39","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-30 16:37:32","action":"SUPPLIER_LOGOUT","module":"Supplier Authentication","details":"Supplier logged out","user_id":"14","ip":"::1"}
+{"timestamp":"2026-03-31 00:46:06","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-31 05:45:33","action":"SUPPLIER_LOGOUT","module":"Supplier Authentication","details":"Supplier logged out","user_id":"29","ip":"::1"}
+{"timestamp":"2026-03-31 05:50:29","action":"SUPPLIER_LOGOUT","module":"Supplier Authentication","details":"Supplier logged out","user_id":"29","ip":"::1"}
+{"timestamp":"2026-03-31 05:56:48","action":"SUPPLIER_LOGOUT","module":"Supplier Authentication","details":"Supplier logged out","user_id":"29","ip":"::1"}
+{"timestamp":"2026-03-31 12:17:46","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-03-31 13:34:08","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-03-31 13:34:14","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-04-01 15:29:03","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-04-01 15:49:42","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-04-01 10:03:05","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-04-01 16:26:31","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-04-01 10:30:24","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-04-01 16:46:45","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-04-01 10:48:45","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-04-01 10:48:45","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-04-01 16:48:52","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-04-01 16:48:58","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-04-01 17:10:50","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-04-01 17:10:58","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-04-01 11:12:35","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-04-01 11:12:48","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"::1"}
+{"timestamp":"2026-04-01 11:16:19","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-04-01 11:16:19","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"::1"}
+{"timestamp":"2026-04-01 17:40:09","action":"LOGIN_FAILED","module":"Authentication","details":"Failed attempt: superadmin@eyecore.com","user_id":"unknown","ip":"::1"}
+{"timestamp":"2026-04-01 17:40:15","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"::1"}
+{"timestamp":"2026-04-04 08:08:33","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"103.91.141.178"}
+{"timestamp":"2026-04-04 08:08:33","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"103.91.141.178"}
+{"timestamp":"2026-04-04 16:08:47","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"103.91.141.178"}
+{"timestamp":"2026-04-04 08:44:14","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"103.91.141.178"}
+{"timestamp":"2026-04-04 08:44:14","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"103.91.141.178"}
+{"timestamp":"2026-04-04 16:44:17","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"103.91.141.178"}
+{"timestamp":"2026-04-04 16:44:36","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"103.91.141.178"}
+{"timestamp":"2026-04-04 08:58:39","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"103.91.141.178"}
+{"timestamp":"2026-04-04 08:58:39","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"103.91.141.178"}
+{"timestamp":"2026-04-06 01:40:44","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"103.91.141.178"}
+{"timestamp":"2026-04-06 01:44:02","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"103.91.141.178"}
+{"timestamp":"2026-04-10 19:35:37","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"103.91.141.178"}
+{"timestamp":"2026-04-10 11:35:51","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"103.91.141.178"}
+{"timestamp":"2026-04-10 11:35:51","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"103.91.141.178"}
+{"timestamp":"2026-04-14 10:40:42","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-14 02:47:59","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-14 02:48:27","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-14 02:48:36","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-14 04:08:34","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-14 04:12:15","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-14 04:26:33","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-14 04:30:55","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-14 04:38:27","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-14 04:38:32","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-14 04:38:32","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-14 12:38:35","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-14 04:41:08","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-14 08:29:34","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-14 08:29:34","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-15 15:20:05","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"49.144.138.183"}
+{"timestamp":"2026-04-17 22:53:39","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"222.127.156.73"}
+{"timestamp":"2026-04-18 01:32:13","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.100.95"}
+{"timestamp":"2026-04-18 07:45:01","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"112.201.100.95"}
+{"timestamp":"2026-04-18 07:45:11","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"112.201.100.95"}
+{"timestamp":"2026-04-18 07:45:11","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"112.201.100.95"}
+{"timestamp":"2026-04-19 15:36:19","action":"SUPPLIER_LOGOUT","module":"Supplier Authentication","details":"Supplier logged out","user_id":"29","ip":"103.91.141.182"}
+{"timestamp":"2026-04-20 01:54:53","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-20 02:11:07","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-20 02:15:57","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"103.91.141.182"}
+{"timestamp":"2026-04-20 11:28:25","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"175.176.43.83"}
+{"timestamp":"2026-04-20 11:37:36","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"175.176.43.83"}
+{"timestamp":"2026-04-20 03:40:55","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":"unknown","ip":"175.176.43.83"}
+{"timestamp":"2026-04-20 13:58:35","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"103.91.141.146"}
+{"timestamp":"2026-07-10 16:22:35","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.96.95"}
+{"timestamp":"2026-07-10 22:45:09","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.96.95"}
+{"timestamp":"2026-07-11 00:01:19","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.96.95"}
+{"timestamp":"2026-07-11 00:04:11","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.96.95"}
+{"timestamp":"2026-07-11 00:06:19","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.96.95"}
+{"timestamp":"2026-07-11 00:19:56","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.96.95"}
+{"timestamp":"2026-07-11 00:22:01","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.96.95"}
+{"timestamp":"2026-07-11 00:50:34","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.96.95"}
+{"timestamp":"2026-07-11 01:11:58","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.96.95"}
+{"timestamp":"2026-07-11 13:24:23","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.96.95"}
+{"timestamp":"2026-07-11 13:27:35","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.96.95"}
+{"timestamp":"2026-07-11 14:50:06","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 07:01:32","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":"unknown","ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 15:01:34","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 15:27:32","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 15:33:55","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 07:48:52","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 07:48:52","action":"LOGOUT","module":"Authentication","details":"User logged out","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 15:48:55","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 16:00:18","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 16:11:55","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 16:20:18","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 17:22:59","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 17:24:14","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 17:42:13","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:42:17","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income.php","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:42:19","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income.php","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:42:21","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income.php","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:43:09","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income.php","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:43:10","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income.php","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:43:12","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income.php","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:43:13","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income.php","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:43:14","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income.php","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:43:16","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income.php","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:51:21","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income.php","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:51:23","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:51:25","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:51:27","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:51:43","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:51:46","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:51:50","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:51:54","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:51:57","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: subscription_income","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 09:55:27","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 10:10:48","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 10:12:34","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-11 10:12:53","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"112.201.108.95"}
+{"timestamp":"2026-07-14 15:20:57","action":"LOGIN_SUCCESS","module":"Authentication","details":"SuperAdmin logged in","user_id":20,"ip":"175.176.43.32"}
+{"timestamp":"2026-07-14 07:40:49","action":"PAGE_ACCESS_DENIED","module":"Authorization","details":"Attempted to access: dashboard","user_id":20,"ip":"175.176.43.79"}

@@ -1,0 +1,214 @@
+/* Additional styles to add sa auth.css mo */
+
+/* Better checkbox styling (palitan yung existing) */
+.checkbox-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+    color: var(--text-secondary);
+    font-size: 14px;
+    position: relative;
+    padding-left: 28px;
+}
+
+.checkbox-container input {
+    position: absolute;
+    opacity: 0;
+    cursor: pointer;
+    height: 0;
+    width: 0;
+}
+
+.checkmark {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 20px;
+    width: 20px;
+    background-color: var(--bg-primary);
+    border: 2px solid var(--border-color);
+    border-radius: 6px;
+    transition: all 0.2s;
+}
+
+.checkbox-container:hover input ~ .checkmark {
+    border-color: var(--primary);
+}
+
+.checkbox-container input:checked ~ .checkmark {
+    background-color: var(--primary);
+    border-color: var(--primary);
+}
+
+.checkmark:after {
+    content: "";
+    position: absolute;
+    display: none;
+}
+
+.checkbox-container input:checked ~ .checkmark:after {
+    display: block;
+}
+
+.checkbox-container .checkmark:after {
+    left: 6px;
+    top: 2px;
+    width: 5px;
+    height: 10px;
+    border: solid white;
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+}
+
+/* Input focus state */
+.input-wrapper.focused input {
+    border-color: var(--primary);
+    background: var(--bg-primary);
+}
+
+/* Better animations */
+@keyframes slideIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.alert-message {
+    animation: slideIn 0.3s ease;
+}
+
+/* Loading spinner animation */
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.fa-spinner {
+    animation: spin 1s linear infinite;
+}
+
+/* Better hover effects */
+.btn-social {
+    position: relative;
+    overflow: hidden;
+}
+
+.btn-social::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.2);
+    transform: translate(-50%, -50%);
+    transition: width 0.6s, height 0.6s;
+}
+
+.btn-social:hover::before {
+    width: 300px;
+    height: 300px;
+}
+
+/* Demo credentials styling */
+.demo-credentials {
+    margin-top: 20px;
+    padding: 16px;
+    background: var(--primary-light);
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-light);
+    text-align: left;
+}
+
+.demo-credentials p {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.demo-credentials p i {
+    color: var(--primary);
+}
+
+.demo-credentials .cred-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border-radius: var(--radius-sm);
+    margin-bottom: 6px;
+    font-size: 13px;
+    border: 1px solid var(--border-light);
+}
+
+.demo-credentials .cred-item i {
+    color: var(--primary);
+    width: 16px;
+}
+
+.demo-credentials .cred-item .label {
+    color: var(--text-secondary);
+    min-width: 40px;
+}
+
+.demo-credentials .cred-item .value {
+    color: var(--text-primary);
+    font-weight: 600;
+    font-family: monospace;
+}
+
+.copy-btn {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--primary);
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: var(--radius-full);
+    transition: all 0.2s;
+}
+
+.copy-btn:hover {
+    background: var(--primary-light);
+}
+
+/* Very small devices */
+@media (max-width: 360px) {
+    .auth-card {
+        padding: 24px 16px;
+    }
+    
+    .auth-logo {
+        font-size: 24px;
+    }
+    
+    .auth-logo i {
+        font-size: 28px;
+    }
+    
+    .auth-header h1 {
+        font-size: 22px;
+    }
+    
+    .form-options {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+    
+    .demo-credentials .cred-item {
+        flex-wrap: wrap;
+    }
+}

@@ -1,4 +1,5 @@
 <?php
+// TEST SFTP
 // Check if config file exists
 if (file_exists('includes/config.php')) {
     include 'includes/config.php';

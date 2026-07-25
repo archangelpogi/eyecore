@@ -72,7 +72,7 @@ i.fas,i.far,i.fab,i.fal{-webkit-text-fill-color:currentColor !important;backgrou
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 body,input,button,textarea,select{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
 html,body{height:100%;overflow:hidden}
-body{background:var(--bg-primary);color:var(--text-primary);display:flex;flex-direction:column}
+body{background:var(--bg-primary);color:var(--text-primary);display:flex;flex-direction:column;font-size:15px}
 
 /* PAGE LAYOUT */
 .msg-page{display:flex;flex:1;overflow:hidden;height:calc(100vh - 64px)}
@@ -85,11 +85,11 @@ body{background:var(--bg-primary);color:var(--text-primary);display:flex;flex-di
     .msg-sidebar.mob-show{display:flex}
 }
 .sidebar-head{padding:16px 20px;border-bottom:1px solid var(--border-light);flex-shrink:0}
-.sidebar-head h2{font-size:18px;font-weight:800;margin-bottom:12px;display:flex;align-items:center;gap:8px;color:var(--text-primary)}
+.sidebar-head h2{font-size:20px;font-weight:800;margin-bottom:12px;display:flex;align-items:center;gap:8px;color:var(--text-primary)}
 .sidebar-head h2 i{color:var(--primary)}
 .search-wrap{position:relative}
-.search-wrap i{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-muted);font-size:14px}
-.search-wrap input{width:100%;padding:9px 12px 9px 36px;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:var(--radius-full);font-size:13px;color:var(--text-primary);outline:none;transition:border-color .2s}
+.search-wrap i{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-muted);font-size:15px}
+.search-wrap input{width:100%;padding:10px 12px 10px 36px;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:var(--radius-full);font-size:14px;color:var(--text-primary);outline:none;transition:border-color .2s}
 .search-wrap input:focus{border-color:var(--primary)}
 
 .clinic-list{flex:1;overflow-y:auto}
@@ -99,13 +99,13 @@ body{background:var(--bg-primary);color:var(--text-primary);display:flex;flex-di
 .clinic-avatar{width:46px;height:46px;border-radius:50%;flex-shrink:0;overflow:hidden;background:var(--primary-light);display:flex;align-items:center;justify-content:center;color:var(--primary);font-size:18px}
 .clinic-avatar img{width:100%;height:100%;object-fit:cover}
 .clinic-info{flex:1;min-width:0}
-.clinic-name{font-size:14px;font-weight:600;color:var(--text-primary);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.clinic-city{font-size:11px;color:var(--text-muted);margin-bottom:2px}
-.clinic-preview{font-size:12px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.clinic-name{font-size:15px;font-weight:600;color:var(--text-primary);margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.clinic-city{font-size:12px;color:var(--text-muted);margin-bottom:2px}
+.clinic-preview{font-size:13px;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .clinic-meta{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0}
-.clinic-time{font-size:10px;color:var(--text-muted)}
-.unread-badge{background:var(--primary);color:#fff;font-size:9px;padding:2px 6px;border-radius:999px;font-weight:700}
-.sidebar-empty{text-align:center;padding:40px 20px;color:var(--text-muted);font-size:13px}
+.clinic-time{font-size:11px;color:var(--text-muted)}
+.unread-badge{background:var(--primary);color:#fff;font-size:10px;padding:2px 6px;border-radius:999px;font-weight:700}
+.sidebar-empty{text-align:center;padding:40px 20px;color:var(--text-muted);font-size:14px}
 
 /* ── CHAT PANEL ── */
 .msg-panel{flex:1;display:flex;flex-direction:column;overflow:hidden;background:var(--bg-primary)}
@@ -118,10 +118,10 @@ body{background:var(--bg-primary);color:var(--text-primary);display:flex;flex-di
 .empty-icon-wrap{width:76px;height:76px;background:#E3FCE9;border-radius:50%;display:flex;align-items:center;justify-content:center;margin-bottom:20px;position:relative;flex-shrink:0}
 .empty-icon-wrap svg{width:34px;height:34px}
 .empty-ping{position:absolute;top:-2px;right:-2px;width:20px;height:20px;background:#00B761;border-radius:50%;border:2px solid var(--bg-primary)}
-.empty-title{font-size:17px;font-weight:700;color:var(--text-primary);margin-bottom:8px}
-.empty-sub{font-size:13px;color:var(--text-secondary);line-height:1.6;margin-bottom:20px;max-width:280px}
+.empty-title{font-size:19px;font-weight:700;color:var(--text-primary);margin-bottom:8px}
+.empty-sub{font-size:14px;color:var(--text-secondary);line-height:1.6;margin-bottom:20px;max-width:280px}
 .empty-tips{display:flex;flex-direction:column;gap:8px;width:100%;max-width:300px;text-align:left}
-.empty-tip{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg-secondary);border-radius:var(--radius-md);border:1px solid var(--border-light);font-size:12px;color:var(--text-secondary)}
+.empty-tip{display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg-secondary);border-radius:var(--radius-md);border:1px solid var(--border-light);font-size:13px;color:var(--text-secondary)}
 .empty-tip-icon{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
 
 .chat-header-bar{display:flex;align-items:center;gap:12px;padding:14px 20px;background:var(--bg-secondary);border-bottom:1px solid var(--border-light);flex-shrink:0}
@@ -130,27 +130,50 @@ body{background:var(--bg-primary);color:var(--text-primary);display:flex;flex-di
 .chat-clinic-ava{width:40px;height:40px;border-radius:50%;overflow:hidden;background:var(--primary-light);display:flex;align-items:center;justify-content:center;color:var(--primary);font-size:16px;flex-shrink:0}
 .chat-clinic-ava img{width:100%;height:100%;object-fit:cover}
 .chat-clinic-info-bar{flex:1}
-.chat-clinic-info-bar .name{font-size:15px;font-weight:700;color:var(--text-primary)}
-.chat-clinic-info-bar .city{font-size:12px;color:var(--text-muted)}
+.chat-clinic-info-bar .name{font-size:16px;font-weight:700;color:var(--text-primary)}
+.chat-clinic-info-bar .city{font-size:13px;color:var(--text-muted)}
 .online-dot{width:8px;height:8px;background:#22C55E;border-radius:50%;flex-shrink:0}
 
 .chat-messages{flex:1;overflow-y:auto;padding:20px;display:flex;flex-direction:column;gap:10px}
 .msg-wrap{display:flex;flex-direction:column}
 .msg-wrap.user{align-items:flex-end}
 .msg-wrap.clinic{align-items:flex-start}
-.msg-bubble{max-width:70%;padding:10px 14px;border-radius:18px;font-size:14px;line-height:1.5;word-break:break-word}
+.msg-bubble{max-width:70%;padding:11px 15px;border-radius:18px;font-size:15px;line-height:1.55;word-break:break-word}
 .msg-wrap.user .msg-bubble{background:var(--primary-gradient);color:#fff;border-radius:18px 18px 4px 18px}
 .msg-wrap.clinic .msg-bubble{background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border-light);border-radius:18px 18px 18px 4px}
-.msg-time{font-size:11px;color:var(--text-muted);margin-top:4px;padding:0 4px}
-.msg-date-divider{text-align:center;font-size:11px;color:var(--text-muted);padding:8px 0;display:flex;align-items:center;gap:10px}
+.msg-time{font-size:12px;color:var(--text-muted);margin-top:4px;padding:0 4px}
+.msg-date-divider{text-align:center;font-size:12px;color:var(--text-muted);padding:8px 0;display:flex;align-items:center;gap:10px}
 .msg-date-divider::before,.msg-date-divider::after{content:'';flex:1;height:1px;background:var(--border-light)}
 
+/* IMAGE MESSAGE */
+.msg-bubble.has-image{padding:6px;background:transparent !important;border:none !important}
+.msg-bubble .chat-img{max-width:240px;max-height:240px;border-radius:14px;display:block;cursor:pointer;object-fit:cover}
+.msg-bubble .chat-img-caption{padding:8px 6px 2px;font-size:14px}
+.msg-wrap.user .msg-bubble.has-image .chat-img{border:2px solid var(--primary-light)}
+.msg-wrap.clinic .msg-bubble.has-image .chat-img{border:1px solid var(--border-light)}
+
+/* IMAGE PREVIEW BEFORE SENDING */
+.image-preview-bar{display:none;align-items:center;gap:10px;padding:10px 20px;background:var(--bg-secondary);border-top:1px solid var(--border-light)}
+.image-preview-bar.show{display:flex}
+.image-preview-thumb{position:relative;width:56px;height:56px;border-radius:10px;overflow:hidden;flex-shrink:0}
+.image-preview-thumb img{width:100%;height:100%;object-fit:cover}
+.image-preview-remove{position:absolute;top:-6px;right:-6px;width:20px;height:20px;background:var(--danger);color:#fff;border:2px solid var(--bg-secondary);border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;cursor:pointer}
+.image-preview-label{font-size:13px;color:var(--text-secondary)}
+
 .chat-input-bar{display:flex;align-items:center;gap:10px;padding:14px 20px;background:var(--bg-secondary);border-top:1px solid var(--border-light);flex-shrink:0}
-.chat-input-bar input{flex:1;padding:11px 18px;background:var(--bg-primary);border:1.5px solid var(--border-color);border-radius:var(--radius-full);font-size:14px;color:var(--text-primary);outline:none;transition:border-color .2s;font-family:inherit}
-.chat-input-bar input:focus{border-color:var(--primary)}
-.send-btn{width:42px;height:42px;background:var(--primary-gradient);border:none;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#fff;font-size:16px;flex-shrink:0;transition:all .2s}
+.chat-input-bar input[type=text]{flex:1;padding:12px 18px;background:var(--bg-primary);border:1.5px solid var(--border-color);border-radius:var(--radius-full);font-size:15px;color:var(--text-primary);outline:none;transition:border-color .2s;font-family:inherit}
+.chat-input-bar input[type=text]:focus{border-color:var(--primary)}
+.attach-btn{width:42px;height:42px;background:var(--bg-primary);border:1.5px solid var(--border-color);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text-secondary);font-size:17px;flex-shrink:0;transition:all .2s}
+.attach-btn:hover{background:var(--primary-light);color:var(--primary);border-color:var(--primary)}
+.send-btn{width:42px;height:42px;background:var(--primary-gradient);border:none;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;color:#fff;font-size:17px;flex-shrink:0;transition:all .2s}
 .send-btn:hover{transform:scale(1.08)}
 .send-btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+
+/* LIGHTBOX */
+.img-lightbox{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:5000;align-items:center;justify-content:center;padding:30px}
+.img-lightbox.show{display:flex}
+.img-lightbox img{max-width:90%;max-height:90%;border-radius:8px}
+.img-lightbox-close{position:absolute;top:20px;right:24px;width:40px;height:40px;background:rgba(255,255,255,.15);border:none;border-radius:50%;color:#fff;font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center}
 
 </style>
 </head>
@@ -243,7 +266,21 @@ body{background:var(--bg-primary);color:var(--text-primary);display:flex;flex-di
                 </div>
             </div>
             <div class="chat-messages" id="chatMsgs"></div>
+
+            <!-- Image preview before sending -->
+            <div class="image-preview-bar" id="imagePreviewBar">
+                <div class="image-preview-thumb">
+                    <img id="imagePreviewThumb" src="" alt="">
+                    <div class="image-preview-remove" onclick="removeSelectedImage()"><i class="fas fa-times"></i></div>
+                </div>
+                <div class="image-preview-label">Image ready to send</div>
+            </div>
+
             <div class="chat-input-bar">
+                <input type="file" id="imageInput" accept="image/*" style="display:none" onchange="handleImageSelect(event)">
+                <button class="attach-btn" onclick="document.getElementById('imageInput').click()" title="Send an image">
+                    <i class="fas fa-image"></i>
+                </button>
                 <input type="text" id="msgInput" placeholder="Type a message…" maxlength="500"
                        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendMessage()}">
                 <button class="send-btn" id="sendBtn" onclick="sendMessage()"><i class="fas fa-paper-plane"></i></button>
@@ -252,10 +289,17 @@ body{background:var(--bg-primary);color:var(--text-primary);display:flex;flex-di
     </div>
 </div>
 
+<!-- Fullscreen image viewer -->
+<div class="img-lightbox" id="imgLightbox" onclick="closeLightbox(event)">
+    <button class="img-lightbox-close" onclick="closeLightbox(event)"><i class="fas fa-times"></i></button>
+    <img id="imgLightboxImg" src="" alt="">
+</div>
+
 <script>
 let activeClinicId = null;
 let lastMsgId = 0;
 let pollTimer = null;
+let selectedImageFile = null;
 
 // ── FILTER ──
 function filterClinics(q) {
@@ -273,6 +317,7 @@ function openChat(el) {
 
     activeClinicId = parseInt(el.dataset.id);
     lastMsgId = 0;
+    removeSelectedImage();
 
     // Update header
     const name = el.dataset.name;
@@ -301,7 +346,7 @@ function openChat(el) {
 
     // Reset messages and fetch
     document.getElementById('chatMsgs').innerHTML =
-        '<div style="text-align:center;padding:30px;color:var(--text-muted);font-size:13px"><i class="fas fa-spinner fa-spin"></i></div>';
+        '<div style="text-align:center;padding:30px;color:var(--text-muted);font-size:14px"><i class="fas fa-spinner fa-spin"></i></div>';
     document.getElementById('msgInput').focus();
 
     stopPolling();
@@ -316,9 +361,54 @@ function openChat(el) {
 function backToSidebar() {
     stopPolling();
     activeClinicId = null;
+    removeSelectedImage();
     document.getElementById('msgPanel').classList.remove('mob-show');
     document.getElementById('msgSidebar').classList.add('mob-show');
     history.replaceState({}, '', 'messages.php');
+}
+
+// ── IMAGE SELECT / PREVIEW ──
+function handleImageSelect(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+        alert('Please choose an image file.');
+        event.target.value = '';
+        return;
+    }
+    // 5MB limit
+    if (file.size > 5 * 1024 * 1024) {
+        alert('Image is too large. Max size is 5MB.');
+        event.target.value = '';
+        return;
+    }
+
+    selectedImageFile = file;
+    const reader = new FileReader();
+    reader.onload = e => {
+        document.getElementById('imagePreviewThumb').src = e.target.result;
+        document.getElementById('imagePreviewBar').classList.add('show');
+    };
+    reader.readAsDataURL(file);
+}
+
+function removeSelectedImage() {
+    selectedImageFile = null;
+    document.getElementById('imageInput').value = '';
+    document.getElementById('imagePreviewThumb').src = '';
+    document.getElementById('imagePreviewBar').classList.remove('show');
+}
+
+// ── LIGHTBOX ──
+function openLightbox(src) {
+    document.getElementById('imgLightboxImg').src = src;
+    document.getElementById('imgLightbox').classList.add('show');
+}
+function closeLightbox(event) {
+    if (event) event.stopPropagation();
+    document.getElementById('imgLightbox').classList.remove('show');
+    document.getElementById('imgLightboxImg').src = '';
 }
 
 // ── FETCH MESSAGES ──
@@ -330,14 +420,14 @@ function fetchMessages(initial = false) {
             let d;
             try { d = JSON.parse(text); } catch(e) {
                 if (initial) document.getElementById('chatMsgs').innerHTML =
-                    '<div style="text-align:center;padding:20px;color:#EF4444;font-size:12px">⚠ ' + text.substring(0,200) + '</div>';
+                    '<div style="text-align:center;padding:20px;color:#EF4444;font-size:13px">⚠ ' + text.substring(0,200) + '</div>';
                 return;
             }
             if (!d.success) return;
             const box = document.getElementById('chatMsgs');
             if (initial) box.innerHTML = '';
             if (d.messages.length === 0 && initial) {
-                box.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--text-muted);font-size:13px">No messages yet.<br>Say hello! 👋</div>';
+                box.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--text-muted);font-size:14px">No messages yet.<br>Say hello! 👋</div>';
                 return;
             }
             const atBottom = box.scrollHeight - box.scrollTop <= box.clientHeight + 50;
@@ -347,7 +437,18 @@ function fetchMessages(initial = false) {
                 lastMsgId = Math.max(lastMsgId, m.id);
                 const wrap = document.createElement('div');
                 wrap.className = 'msg-wrap ' + m.sender_type;
-                wrap.innerHTML = `<div class="msg-bubble">${m.message}</div><div class="msg-time">${m.time}</div>`;
+
+                if (m.image) {
+                    // Image message (with optional caption text)
+                    const captionHtml = m.message ? `<div class="chat-img-caption">${m.message}</div>` : '';
+                    wrap.innerHTML = `<div class="msg-bubble has-image">
+                        <img class="chat-img" src="${m.image}" alt="Sent image" onclick="openLightbox('${m.image}')">
+                        ${captionHtml}
+                    </div><div class="msg-time">${m.time}</div>`;
+                } else {
+                    wrap.innerHTML = `<div class="msg-bubble">${m.message}</div><div class="msg-time">${m.time}</div>`;
+                }
+
                 box.appendChild(wrap);
                 // Mark this clinic's unread badge in sidebar
                 const sideItem = document.querySelector(`.clinic-item[data-id="${activeClinicId}"]`);
@@ -364,21 +465,39 @@ function fetchMessages(initial = false) {
 function sendMessage() {
     const input = document.getElementById('msgInput');
     const msg   = input.value.trim();
-    if (!msg || !activeClinicId) return;
+
+    if (!activeClinicId) return;
+    if (!msg && !selectedImageFile) return;
+
     const btn = document.getElementById('sendBtn');
     btn.disabled = true;
-    input.value = '';
+
     const fd = new FormData();
     fd.append('clinic_id', activeClinicId);
     fd.append('message',   msg);
+    if (selectedImageFile) {
+        fd.append('image', selectedImageFile);
+    }
+
+    input.value = '';
+    const imageWasSelected = !!selectedImageFile;
+    removeSelectedImage();
+
     fetch('chat_send.php', { method:'POST', body:fd })
         .then(r => r.json())
         .then(d => {
             btn.disabled = false;
-            if (d.success) fetchMessages();
-            else { input.value = msg; }
+            if (d.success) {
+                fetchMessages();
+            } else {
+                input.value = msg;
+                if (imageWasSelected) alert(d.message || 'Failed to send image.');
+            }
         })
-        .catch(() => { btn.disabled = false; input.value = msg; });
+        .catch(() => {
+            btn.disabled = false;
+            input.value = msg;
+        });
 }
 
 function startPolling() { stopPolling(); pollTimer = setInterval(() => fetchMessages(), 2500); }

@@ -162,6 +162,21 @@ if (mysqli_query($conn, $update_query)) {
 
     // Handle profile picture upload
     if (isset($_FILES['profile_picture']) && $_FILES['profile_picture']['error'] == 0) {
+
+        // ============================================
+        // DAILY LIMIT CHECK - 24 hours mula sa huling upload
+        // ============================================
+        $lock_check_query = mysqli_query($conn, "SELECT avatar_updated_at FROM users WHERE id = $user_id");
+        $lock_check_row = mysqli_fetch_assoc($lock_check_query);
+        $last_change = $lock_check_row['avatar_updated_at'] ?? null;
+
+        if ($last_change && strtotime($last_change) > strtotime('-24 hours')) {
+            $next_allowed = date('g:i A, M j', strtotime($last_change . ' +24 hours'));
+            $_SESSION['error_message'] = "You can only change your profile picture once every 24 hours. You'll be able to upload again at $next_allowed.";
+            header('Location: profile.php');
+            exit();
+        }
+
         $allowed  = ['jpg', 'jpeg', 'png', 'gif'];
         $filename = $_FILES['profile_picture']['name'];
         $ext      = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
@@ -178,7 +193,7 @@ if (mysqli_query($conn, $update_query)) {
                 if (!empty($user['avatar']) && file_exists('../assets/images/profiles/' . $user['avatar'])) {
                     unlink('../assets/images/profiles/' . $user['avatar']);
                 }
-                mysqli_query($conn, "UPDATE users SET avatar = '$new_filename' WHERE id = $user_id");
+                mysqli_query($conn, "UPDATE users SET avatar = '$new_filename', avatar_updated_at = NOW() WHERE id = $user_id");
                 $_SESSION['user_avatar']     = $new_filename;
                 $_SESSION['success_message'] = 'Profile picture updated!';
             } else {
@@ -193,6 +208,16 @@ if (mysqli_query($conn, $update_query)) {
 }
 $avatar_path = '../assets/images/profiles/' . ($user['avatar'] ?? '');
 $avatar_exists = !empty($user['avatar']) && file_exists($avatar_path);
+
+// ============================================
+// AVATAR CHANGE DAILY LIMIT CHECK (24-hour rolling window)
+// ============================================
+$avatar_locked = false;
+$avatar_unlock_time = null;
+if (!empty($user['avatar_updated_at']) && strtotime($user['avatar_updated_at']) > strtotime('-24 hours')) {
+    $avatar_locked = true;
+    $avatar_unlock_time = date('g:i A, M j', strtotime($user['avatar_updated_at'] . ' +24 hours'));
+}
 
 // Get current page name for sidebar active state
 $current_page = basename($_SERVER['PHP_SELF']);
@@ -1172,6 +1197,18 @@ $is_home_active = in_array($current_page, $home_active_pages);
             transform: scale(1.1);
             background: var(--primary-light);
             color: var(--primary-dark);
+        }
+
+        .avatar-upload-disabled {
+            cursor: not-allowed;
+            opacity: 0.6;
+            color: var(--text-muted);
+        }
+
+        .avatar-upload-disabled:hover {
+            transform: none;
+            background: white;
+            color: var(--text-muted);
         }
 
         #fileInput {
@@ -2475,12 +2512,18 @@ $is_home_active = in_array($current_page, $home_active_pages);
                         </div>
                     <?php endif; ?>
                     
-                    <label for="fileInput" class="avatar-upload">
-                        <i class="fas fa-camera"></i>
-                    </label>
-                    <form method="POST" enctype="multipart/form-data" id="avatarForm">
-                        <input type="file" id="fileInput" name="profile_picture" accept="image/*" onchange="document.getElementById('avatarForm').submit()">
-                    </form>
+                    <?php if ($avatar_locked): ?>
+                        <span class="avatar-upload avatar-upload-disabled" data-tooltip="You'll be able to upload again at <?php echo $avatar_unlock_time; ?>">
+                            <i class="fas fa-lock"></i>
+                        </span>
+                    <?php else: ?>
+                        <label for="fileInput" class="avatar-upload">
+                            <i class="fas fa-camera"></i>
+                        </label>
+                        <form method="POST" enctype="multipart/form-data" id="avatarForm">
+                            <input type="file" id="fileInput" name="profile_picture" accept="image/*" onchange="document.getElementById('avatarForm').submit()">
+                        </form>
+                    <?php endif; ?>
                 </div>
                 
                 <div class="profile-title">

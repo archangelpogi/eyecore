@@ -21,7 +21,7 @@ if (!$clinic_id) {
 // Fetch new messages after last_id
 $messages = [];
 $q = mysqli_query($conn,
-    "SELECT id, sender_type, message, created_at
+    "SELECT id, sender_type, message, image, created_at
      FROM chats
      WHERE clinic_id = $clinic_id
        AND user_id   = $user_id
@@ -34,6 +34,7 @@ while ($row = mysqli_fetch_assoc($q)) {
         'id'          => (int)$row['id'],
         'sender_type' => $row['sender_type'],
         'message'     => htmlspecialchars($row['message']),
+        'image'       => !empty($row['image']) ? '../assets/images/chat-images/' . $row['image'] : null,
         'time'        => date('g:i A', strtotime($row['created_at'])),
     ];
 }

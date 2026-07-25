@@ -224,6 +224,48 @@ if (!function_exists('timeAgo')) {
     }
 }
 
+if (!function_exists('interpretRx')) {
+    /**
+     * Converts raw prescription values into a short, plain-language
+     * explanation a non-medical patient can understand.
+     * Returns an array of sentence strings.
+     */
+    function interpretRx($sph, $cyl, $axis, $add, $eyeLabel = 'this eye') {
+        $notes = [];
+
+        // --- SPH: Sphere (nearsighted / farsighted / none) ---
+        if ($sph !== null && $sph !== '' && is_numeric($sph)) {
+            $sphVal = floatval($sph);
+            if ($sphVal < 0) {
+                $severity = abs($sphVal) >= 6 ? 'high' : (abs($sphVal) >= 3 ? 'moderate' : 'mild');
+                $notes[] = "SPH $sph means $eyeLabel has $severity nearsightedness (myopia) &mdash; objects far away look blurry.";
+            } elseif ($sphVal > 0) {
+                $severity = $sphVal >= 6 ? 'high' : ($sphVal >= 3 ? 'moderate' : 'mild');
+                $notes[] = "SPH +$sph means $eyeLabel has $severity farsightedness (hyperopia) &mdash; nearby objects look blurry.";
+            } else {
+                $notes[] = "SPH 0.00 means no nearsightedness or farsightedness detected in $eyeLabel.";
+            }
+        }
+
+        // --- CYL / AXIS: Astigmatism ---
+        if ($cyl !== null && $cyl !== '' && is_numeric($cyl) && floatval($cyl) != 0) {
+            $axisText = ($axis !== null && $axis !== '') ? " at an axis (angle) of {$axis}&deg;" : "";
+            $notes[] = "CYL $cyl$axisText means $eyeLabel also has astigmatism &mdash; the cornea is slightly irregular in shape, causing mild blurring or streaking at certain angles.";
+        }
+
+        // --- ADD: Reading power ---
+        if ($add !== null && $add !== '' && is_numeric($add) && floatval($add) > 0) {
+            $notes[] = "ADD +$add is extra reading power added for close-up tasks (like reading or phone use) &mdash; common after age 40 (presbyopia).";
+        }
+
+        if (empty($notes)) {
+            $notes[] = "No significant vision correction needed for $eyeLabel based on this exam.";
+        }
+
+        return $notes;
+    }
+}
+
 // ============================================
 // HANDLE ACTIONS - COMPLETELY FIXED
 // ============================================
@@ -804,6 +846,20 @@ if (isset($_POST['action'])) {
     color: var(--text-secondary);
     font-size: 11px;
 }
+
+/* === NEW: info icon + interpretation box (added for patient-friendly term explanations) === */
+.rx-key{display:inline-flex;align-items:center;gap:4px;cursor:help;}
+.rx-info-icon{font-size:10px;opacity:.55;transition:opacity .2s;}
+.rx-key:hover .rx-info-icon{opacity:1;color:var(--primary);}
+.interpret-box{background:var(--bg-primary);border-left:3px solid var(--info);border-radius:0 var(--radius-sm) var(--radius-sm) 0;padding:12px 14px;margin-bottom:14px;}
+.interpret-box .notes-label{color:var(--info);}
+.interpret-box p{font-size:13px;color:var(--text-secondary);line-height:1.6;margin-bottom:6px;}
+.interpret-box p:last-child{margin-bottom:0;}
+.glossary-btn{padding:6px 14px !important;font-size:12px !important;}
+.rx-info-icon{cursor:pointer;padding:2px;}
+.info-tip-bubble{position:absolute;z-index:5000;background:var(--text-primary);color:var(--bg-secondary);font-size:12px;font-weight:500;line-height:1.5;padding:10px 14px;border-radius:var(--radius-sm);box-shadow:var(--shadow-lg);max-width:260px;width:max-content;animation:tipIn 0.15s ease;}
+.info-tip-bubble::after{content:'';position:absolute;top:-5px;left:16px;width:10px;height:10px;background:var(--text-primary);transform:rotate(45deg);}
+@keyframes tipIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
     </style>
 </head>
 <body>
@@ -868,6 +924,58 @@ if (isset($_POST['action'])) {
         <div class="modal-foot">
             <button class="btn-act btn-outline-act" onclick="closeDeleteModal()"><i class="fas fa-times"></i> Cancel</button>
             <button class="btn-act btn-red-act" onclick="submitDeletionRequest()"><i class="fas fa-paper-plane"></i> Submit Request</button>
+        </div>
+    </div>
+</div>
+
+<!-- GLOSSARY MODAL (NEW: patient-friendly explanation of exam terms) -->
+<div class="modal-overlay" id="glossaryModal">
+    <div class="modal-box" style="max-width:600px;">
+        <div class="modal-head">
+            <div>
+                <div class="modal-tag-pill green"><i class="fas fa-book-medical"></i> Patient Guide</div>
+                <h2>Understanding Your Exam Terms</h2>
+            </div>
+            <div class="modal-close" onclick="closeGlossaryModal()"><i class="fas fa-times"></i></div>
+        </div>
+        <div class="modal-body">
+            <p>These terms describe your eyeglass or contact lens prescription. Here's what each one means in simple terms:</p>
+
+            <div class="consent-detail">
+                <strong>SPH (Sphere)</strong> — the main lens power needed to correct your vision.
+                <ul>
+                    <li><strong>Negative (−)</strong> number = nearsighted (myopia). Far objects look blurry.</li>
+                    <li><strong>Positive (+)</strong> number = farsighted (hyperopia). Near objects look blurry.</li>
+                    <li>The bigger the number, the stronger the correction needed.</li>
+                </ul>
+            </div>
+
+            <div class="consent-detail">
+                <strong>CYL (Cylinder)</strong> — measures astigmatism, meaning your eye's surface (cornea) isn't perfectly round, which causes slightly blurry or streaky vision at certain angles. Only present if you have astigmatism.
+            </div>
+
+            <div class="consent-detail">
+                <strong>AXIS</strong> — works together with CYL. It's the angle (0°–180°) that describes exactly where the astigmatism correction is oriented on your eye.
+            </div>
+
+            <div class="consent-detail">
+                <strong>ADD (Addition)</strong> — extra reading power added on top of your SPH, used for close-up tasks like reading or using your phone. Usually appears once a patient reaches around 40 years old (presbyopia).
+            </div>
+
+            <div class="consent-detail">
+                <strong>VA (Visual Acuity)</strong> — how clearly you can see, usually written like 20/20. The bottom number tells you how far a person with normal vision could stand and still see what you see at 20 feet. 20/40 means you'd need to be at 20 feet to see what a normal-sighted person sees at 40 feet.
+            </div>
+
+            <div class="consent-detail">
+                <strong>PD (Pupillary Distance)</strong> — the distance in millimeters between the centers of your two pupils. Used to make sure your lenses are positioned correctly in your glasses frame.
+            </div>
+
+            <div class="consent-detail">
+                <strong>OD / OS</strong> — OD (oculus dexter) means right eye, OS (oculus sinister) means left eye.
+            </div>
+        </div>
+        <div class="modal-foot">
+            <button class="btn-act btn-green-act" onclick="closeGlossaryModal()"><i class="fas fa-check"></i> Got it</button>
         </div>
     </div>
 </div>
@@ -1012,7 +1120,10 @@ if (isset($_POST['action'])) {
     <?php if ($total_exams > 0): ?>
     <div class="section-head">
         <div class="section-title"><i class="fas fa-file-medical"></i> Examination Records</div>
-        <span class="rec-count"><?=$total_exams?> record<?=$total_exams!=1?'s':''?></span>
+        <div style="display:flex;align-items:center;gap:10px;">
+            <button class="btn-act btn-outline-act glossary-btn" onclick="openGlossaryModal()"><i class="fas fa-question-circle"></i> What do these terms mean?</button>
+            <span class="rec-count"><?=$total_exams?> record<?=$total_exams!=1?'s':''?></span>
+        </div>
     </div>
 
     <div class="exams-grid">
@@ -1029,25 +1140,38 @@ if (isset($_POST['action'])) {
                 <div class="rx-cols">
                     <div class="eye-box">
                         <div class="eye-box-title"><i class="fas fa-eye"></i> Right Eye (OD)</div>
-                        <div class="rx-row"><span class="rx-key">SPH</span><span class="rx-val"><?=$exam['od_sph']??'—'?></span></div>
-                        <div class="rx-row"><span class="rx-key">CYL</span><span class="rx-val"><?=$exam['od_cyl']??'—'?></span></div>
-                        <div class="rx-row"><span class="rx-key">AXIS</span><span class="rx-val"><?=!empty($exam['od_axis'])?$exam['od_axis'].'°':'—'?></span></div>
-                        <div class="rx-row"><span class="rx-key">ADD</span><span class="rx-val"><?=$exam['od_add']??'—'?></span></div>
-                        <?php if(!empty($exam['od_va'])):?><div class="rx-row"><span class="rx-key">VA</span><span class="rx-val"><?=$exam['od_va']?></span></div><?php endif;?>
+                        <div class="rx-row"><span class="rx-key">SPH <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Sphere — main lens power. Negative = nearsighted, positive = farsighted.')"></i></span><span class="rx-val"><?=$exam['od_sph']??'—'?></span></div>
+                        <div class="rx-row"><span class="rx-key">CYL <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Cylinder — measures astigmatism (uneven cornea shape).')"></i></span><span class="rx-val"><?=$exam['od_cyl']??'—'?></span></div>
+                        <div class="rx-row"><span class="rx-key">AXIS <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Axis — the angle (0-180°) describing the orientation of astigmatism correction.')"></i></span><span class="rx-val"><?=!empty($exam['od_axis'])?$exam['od_axis'].'°':'—'?></span></div>
+                        <div class="rx-row"><span class="rx-key">ADD <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Addition — extra reading power for close-up tasks, common after age 40.')"></i></span><span class="rx-val"><?=$exam['od_add']??'—'?></span></div>
+                        <?php if(!empty($exam['od_va'])):?><div class="rx-row"><span class="rx-key">VA <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Visual Acuity — how clearly you see compared to normal vision (e.g. 20/20).')"></i></span><span class="rx-val"><?=$exam['od_va']?></span></div><?php endif;?>
                     </div>
                     <div class="eye-box">
                         <div class="eye-box-title"><i class="fas fa-eye"></i> Left Eye (OS)</div>
-                        <div class="rx-row"><span class="rx-key">SPH</span><span class="rx-val"><?=$exam['os_sph']??'—'?></span></div>
-                        <div class="rx-row"><span class="rx-key">CYL</span><span class="rx-val"><?=$exam['os_cyl']??'—'?></span></div>
-                        <div class="rx-row"><span class="rx-key">AXIS</span><span class="rx-val"><?=!empty($exam['os_axis'])?$exam['os_axis'].'°':'—'?></span></div>
-                        <div class="rx-row"><span class="rx-key">ADD</span><span class="rx-val"><?=$exam['os_add']??'—'?></span></div>
-                        <?php if(!empty($exam['os_va'])):?><div class="rx-row"><span class="rx-key">VA</span><span class="rx-val"><?=$exam['os_va']?></span></div><?php endif;?>
+                        <div class="rx-row"><span class="rx-key">SPH <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Sphere — main lens power. Negative = nearsighted, positive = farsighted.')"></i></span><span class="rx-val"><?=$exam['os_sph']??'—'?></span></div>
+                        <div class="rx-row"><span class="rx-key">CYL <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Cylinder — measures astigmatism (uneven cornea shape).')"></i></span><span class="rx-val"><?=$exam['os_cyl']??'—'?></span></div>
+                        <div class="rx-row"><span class="rx-key">AXIS <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Axis — the angle (0-180°) describing the orientation of astigmatism correction.')"></i></span><span class="rx-val"><?=!empty($exam['os_axis'])?$exam['os_axis'].'°':'—'?></span></div>
+                        <div class="rx-row"><span class="rx-key">ADD <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Addition — extra reading power for close-up tasks, common after age 40.')"></i></span><span class="rx-val"><?=$exam['os_add']??'—'?></span></div>
+                        <?php if(!empty($exam['os_va'])):?><div class="rx-row"><span class="rx-key">VA <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Visual Acuity — how clearly you see compared to normal vision (e.g. 20/20).')"></i></span><span class="rx-val"><?=$exam['os_va']?></span></div><?php endif;?>
                     </div>
                 </div>
                 <div class="pd-row">
-                    <div class="pd-row-left"><div class="pd-icon"><i class="fas fa-ruler"></i></div><div class="pd-label">Pupillary Distance (PD)</div></div>
+                    <div class="pd-row-left"><div class="pd-icon"><i class="fas fa-ruler"></i></div><div class="pd-label">Pupillary Distance (PD) <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'The distance in millimeters between the centers of your two pupils — used to position your lenses correctly.')"></i></div></div>
                     <div><span class="pd-val"><?=$exam['pd']??'—'?></span><span class="pd-unit"> mm</span></div>
                 </div>
+
+                <!-- NEW: plain-language interpretation of this exam's numbers -->
+                <div class="interpret-box">
+                    <div class="notes-label"><i class="fas fa-lightbulb"></i> In Simple Terms</div>
+                    <?php
+                        $odNotes = interpretRx($exam['od_sph'] ?? null, $exam['od_cyl'] ?? null, $exam['od_axis'] ?? null, $exam['od_add'] ?? null, 'your right eye');
+                        $osNotes = interpretRx($exam['os_sph'] ?? null, $exam['os_cyl'] ?? null, $exam['os_axis'] ?? null, $exam['os_add'] ?? null, 'your left eye');
+                        foreach (array_merge($odNotes, $osNotes) as $note) {
+                            echo '<p>' . $note . '</p>';
+                        }
+                    ?>
+                </div>
+
                 <?php if(!empty($exam['notes'])):?>
                 <div class="notes-box"><div class="notes-label"><i class="fas fa-sticky-note"></i> Clinical Notes</div><div class="notes-text"><?=nl2br(htmlspecialchars($exam['notes']))?></div></div>
                 <?php endif;?>
@@ -1141,6 +1265,52 @@ function declineConsent(){if(confirm('Without consent you cannot view your recor
 // Delete modal
 function openDeleteModal(){document.getElementById('deleteModal').classList.add('show');}
 function closeDeleteModal(){document.getElementById('deleteModal').classList.remove('show');document.getElementById('deletionReason').value='';}
+
+// Glossary modal (NEW)
+function openGlossaryModal(){document.getElementById('glossaryModal').classList.add('show');}
+function closeGlossaryModal(){document.getElementById('glossaryModal').classList.remove('show');}
+
+// Click-triggered info tooltip for SPH/CYL/AXIS/ADD/VA/PD icons (NEW)
+// Uses click instead of the browser's native title-hover tooltip so it works on mobile taps too.
+let activeTip = null;
+function toggleTip(event, iconEl, text){
+    event.stopPropagation();
+    // If this icon's tooltip is already open, close it
+    if(activeTip && activeTip._owner === iconEl){
+        activeTip.remove();
+        activeTip = null;
+        return;
+    }
+    // Close any other open tooltip
+    if(activeTip){ activeTip.remove(); activeTip = null; }
+
+    const bubble = document.createElement('div');
+    bubble.className = 'info-tip-bubble';
+    bubble.textContent = text;
+    document.body.appendChild(bubble);
+
+    const rect = iconEl.getBoundingClientRect();
+    const bubbleRect = bubble.getBoundingClientRect();
+    let left = rect.left + window.scrollX;
+    let top = rect.bottom + window.scrollY + 10;
+    // Keep bubble on-screen horizontally
+    const maxLeft = window.scrollX + document.documentElement.clientWidth - bubbleRect.width - 10;
+    if(left > maxLeft) left = Math.max(10, maxLeft);
+    bubble.style.left = left + 'px';
+    bubble.style.top = top + 'px';
+
+    bubble._owner = iconEl;
+    activeTip = bubble;
+}
+document.addEventListener('click', function(e){
+    if(activeTip && !activeTip.contains(e.target)){
+        activeTip.remove();
+        activeTip = null;
+    }
+});
+document.addEventListener('scroll', function(){
+    if(activeTip){ activeTip.remove(); activeTip = null; }
+}, true);
 
 function submitDeletionRequest() {
     const reason = document.getElementById('deletionReason').value.trim();

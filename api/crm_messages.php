@@ -50,6 +50,15 @@ $user_id = (int)$_SESSION['user_id'];
 $user_role = $_SESSION['role'] ?? '';
 $action = $_GET['action'] ?? '';
 
+// ============================================
+// CHAT IMAGE UPLOAD CONFIG
+// PAKI-VERIFY: dapat itong '/assets/images/chat-images/' ay
+// yung EXACT SAME folder na ginagamit ng user-side chat_send.php.
+// Kung mismatch ang folder structure niyo, i-adjust nalang itong dalawang variable.
+// ============================================
+$CHAT_IMG_URL_BASE = '/assets/images/chat-images/'; // absolute path mula sa domain root, ginagamit sa <img src>
+$CHAT_IMG_PHYSICAL_DIR = rtrim($_SERVER['DOCUMENT_ROOT'], '/\\') . $CHAT_IMG_URL_BASE; // actual disk location kung saan isesave
+
 // Helper function to get patient ID from user ID
 function getPatientIdFromUserId($pdo, $user_id, $clinic_id) {
     // First, try to find patient record linked to this user
@@ -75,6 +84,44 @@ function getPatientIdFromUserId($pdo, $user_id, $clinic_id) {
     }
     
     return $user_id; // Fallback: use user_id as patient_id
+}
+
+// ============================================
+// IMAGE UPLOAD HELPER — ginagamit ng 'send' at 'new_conversation'
+// Returns: [success(bool), filename(string|null), error_message(string|null)]
+// ============================================
+function handleChatImageUpload($physical_dir, $url_base) {
+    if (!isset($_FILES['image']) || $_FILES['image']['error'] != 0) {
+        return [true, null, null]; // walang image, ok lang, hindi error
+    }
+
+    $allowed  = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+    $max_size = 5 * 1024 * 1024; // 5MB
+
+    $filename = $_FILES['image']['name'];
+    $ext      = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+    $filesize = $_FILES['image']['size'];
+
+    if (!in_array($ext, $allowed)) {
+        return [false, null, 'Invalid image type. Only JPG, PNG, GIF, WEBP allowed.'];
+    }
+
+    if ($filesize > $max_size) {
+        return [false, null, 'Image is too large. Max size is 5MB.'];
+    }
+
+    if (!file_exists($physical_dir)) {
+        mkdir($physical_dir, 0777, true);
+    }
+
+    $new_filename = 'chat_clinic_' . time() . '_' . mt_rand(1000, 9999) . '.' . $ext;
+    $upload_path  = $physical_dir . $new_filename;
+
+    if (!move_uploaded_file($_FILES['image']['tmp_name'], $upload_path)) {
+        return [false, null, 'Failed to upload image.'];
+    }
+
+    return [true, $new_filename, null];
 }
 
 // ============================================
@@ -177,6 +224,12 @@ if ($action === 'get_conversations') {
                     ORDER BY c2.created_at DESC LIMIT 1
                 ) as last_message,
                 (
+                    SELECT image FROM chats c4
+                    WHERE c4.clinic_id = c.clinic_id
+                      AND c4.user_id = c.user_id
+                    ORDER BY c4.created_at DESC LIMIT 1
+                ) as last_image,
+                (
                     SELECT COUNT(*) FROM chats c3 
                     WHERE c3.clinic_id = c.clinic_id 
                       AND c3.user_id = c.user_id 
@@ -206,7 +259,9 @@ if ($action === 'get_conversations') {
             
             if ($user) {
                 $preview = $conv['last_message'] ?? '';
-                if (mb_strlen($preview) > 40) {
+                if ($preview === '' && !empty($conv['last_image'])) {
+                    $preview = '📷 Photo';
+                } elseif (mb_strlen($preview) > 40) {
                     $preview = mb_substr($preview, 0, 40) . '…';
                 }
                 
@@ -291,6 +346,7 @@ if ($action === 'get_messages') {
                 'sender_type' => $display_sender_type,
                 'sender_name' => $sender_name,
                 'message' => htmlspecialchars($msg['message']),
+                'image' => !empty($msg['image']) ? $GLOBALS['CHAT_IMG_URL_BASE'] . $msg['image'] : null,
                 'time' => date('g:i A', strtotime($msg['created_at'])),
                 'is_read' => (bool)$msg['is_read']
             ];
@@ -307,6 +363,9 @@ if ($action === 'get_messages') {
 
 // ============================================
 // POST: Send a message (reply to user) - MATCHING USER SIDE STRUCTURE
+// NOTE: FormData na ang ginagamit dito (hindi na JSON), para pwede
+// magsama ng image file. Nasa $_POST na ang mga fields, at $_FILES['image']
+// ang optional na larawan.
 // ============================================
 if ($action === 'send') {
     if (!canCreateMessages()) {
@@ -314,11 +373,16 @@ if ($action === 'send') {
         exit;
     }
     
-    $data = json_decode(file_get_contents('php://input'), true);
-    $other_user_id = (int)($data['conversation_id'] ?? 0);
-    $message = trim($data['message'] ?? '');
-    
-    if (!$other_user_id || !$message) {
+    $other_user_id = (int)($_POST['conversation_id'] ?? 0);
+    $message = trim($_POST['message'] ?? '');
+
+    [$img_ok, $img_filename, $img_error] = handleChatImageUpload($CHAT_IMG_PHYSICAL_DIR, $CHAT_IMG_URL_BASE);
+    if (!$img_ok) {
+        echo json_encode(['success' => false, 'message' => $img_error]);
+        exit;
+    }
+
+    if (!$other_user_id || (!$message && !$img_filename)) {
         echo json_encode(['success' => false, 'message' => 'Missing fields']);
         exit;
     }
@@ -340,18 +404,22 @@ if ($action === 'send') {
             INSERT INTO chats (
                 clinic_id, 
                 user_id, 
-                sender_type, 
+                sender_type,
+                sender_id,
                 message, 
+                image,
                 is_read, 
                 created_at
             ) VALUES (
-                ?, ?, 'clinic', ?, 0, NOW()
+                ?, ?, 'clinic', ?, ?, ?, 0, NOW()
             )
         ");
         $stmt->execute([
             $clinic_id,
             $other_user_id,   // user_id = user ID from users table (matches user side)
-            $message
+            $user_id,         // sender_id = ang clinic staff na nag-send
+            $message,
+            $img_filename
         ]);
         
         if ($stmt->rowCount() > 0) {
@@ -373,6 +441,8 @@ if ($action === 'send') {
 
 // ============================================
 // POST: Start a new conversation with user
+// (FormData rin dito ngayon para pwede rin sumama ng image sa first message,
+//  pero optional lang — text pa rin ang required dito tulad ng dati.)
 // ============================================
 if ($action === 'new_conversation') {
     if (!canCreateMessages()) {
@@ -380,11 +450,16 @@ if ($action === 'new_conversation') {
         exit;
     }
     
-    $data = json_decode(file_get_contents('php://input'), true);
-    $receiver_id = (int)($data['receiver_id'] ?? 0);
-    $message = trim($data['message'] ?? '');
+    $receiver_id = (int)($_POST['receiver_id'] ?? 0);
+    $message = trim($_POST['message'] ?? '');
+
+    [$img_ok, $img_filename, $img_error] = handleChatImageUpload($CHAT_IMG_PHYSICAL_DIR, $CHAT_IMG_URL_BASE);
+    if (!$img_ok) {
+        echo json_encode(['success' => false, 'message' => $img_error]);
+        exit;
+    }
     
-    if (!$receiver_id || !$message) {
+    if (!$receiver_id || (!$message && !$img_filename)) {
         echo json_encode(['success' => false, 'message' => 'Missing fields']);
         exit;
     }
@@ -405,18 +480,22 @@ if ($action === 'new_conversation') {
             INSERT INTO chats (
                 clinic_id, 
                 user_id, 
-                sender_type, 
-                message, 
+                sender_type,
+                sender_id,
+                message,
+                image,
                 is_read, 
                 created_at
             ) VALUES (
-                ?, ?, 'clinic', ?, 0, NOW()
+                ?, ?, 'clinic', ?, ?, ?, 0, NOW()
             )
         ");
         $stmt->execute([
             $clinic_id,
             $receiver_id,
-            $message
+            $user_id,
+            $message,
+            $img_filename
         ]);
         
         if ($stmt->rowCount() > 0) {
@@ -494,4 +573,3 @@ if ($action === 'get_unread_count') {
 }
 
 echo json_encode(['success' => false, 'message' => 'Invalid action']);
-?>

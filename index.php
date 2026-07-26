@@ -1073,7 +1073,7 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
                     <a href="#clinics" class="nav-link">Clinics</a>
                     <a href="#contact" class="nav-link">Contact</a>
                     <a href="auth/register.php" class="nav-link nav-link-highlight">Partner With Us</a>
-                    <a href="suppliers/supplier_login.php?register=1" class="nav-link">Suppliersss</a>
+                    <a href="suppliers/supplier_login.php?register=1" class="nav-link">Supplier</a>
                 </div>
             </div>
             <div class="nav-right">

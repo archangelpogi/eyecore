@@ -58,18 +58,54 @@ $canDelete = RBACHelper::hasPermission('crm_messages_delete');
             border-radius: 16px;
             box-shadow: 0 4px 20px rgba(0,0,0,0.05);
             overflow: hidden;
+            height: calc(100vh - 140px);
+            min-height: 560px;
+            display: flex;
+            flex-direction: column;
         }
         
         .card-messages .card-header {
             background: white;
             border-bottom: 1px solid #e2e8f0;
             padding: 1rem 1.5rem;
+            flex-shrink: 0;
         }
-        
+
+        .card-messages .card-body {
+            flex: 1;
+            overflow: hidden;
+            min-height: 0;
+        }
+
+        .card-messages .card-body .row.g-0 {
+            height: 100%;
+        }
+
+        /* Left column (conversations) — fixed height, only the list scrolls */
+        .conversations-col {
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+
+        .conversations-col .p-3.border-bottom {
+            flex-shrink: 0;
+        }
+
         .conversations-list {
-            height: calc(100vh - 200px);
-            min-height: 500px;
+            flex: 1;
             overflow-y: auto;
+            min-height: 0;
+        }
+
+        /* Right column (chat) — fixed height, only the messages scroll */
+        .chat-col {
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            overflow: hidden;
         }
         
         .conversation-item {
@@ -111,6 +147,7 @@ $canDelete = RBACHelper::hasPermission('crm_messages_delete');
             flex: 1;
             overflow-y: auto;
             padding: 1.5rem;
+            min-height: 0;
         }
         
         .message-bubble {
@@ -150,6 +187,7 @@ $canDelete = RBACHelper::hasPermission('crm_messages_delete');
             background: white;
             border-top: 1px solid #e2e8f0;
             padding: 1rem 1.5rem;
+            flex-shrink: 0;
         }
         
         .btn-teal {
@@ -192,6 +230,7 @@ $canDelete = RBACHelper::hasPermission('crm_messages_delete');
             background: white;
             border-bottom: 1px solid #e2e8f0;
             padding: 1rem 1.5rem;
+            flex-shrink: 0;
         }
         
         .search-input {
@@ -260,6 +299,109 @@ $canDelete = RBACHelper::hasPermission('crm_messages_delete');
 .text-teal {
     color: var(--teal) !important;
 }
+
+/* ===== IMAGE MESSAGE ===== */
+.message-bubble.has-image {
+    padding: 6px;
+    background: transparent !important;
+    border: none !important;
+}
+.message-bubble.has-image.message-outgoing .message-sender,
+.message-bubble.has-image.message-incoming .message-sender {
+    padding: 0 6px;
+}
+.chat-img {
+    max-width: 220px;
+    max-height: 220px;
+    border-radius: 14px;
+    display: block;
+    cursor: pointer;
+    object-fit: cover;
+}
+.message-outgoing .chat-img { border: 2px solid var(--teal-light); }
+.message-incoming .chat-img { border: 1px solid #e2e8f0; }
+.chat-img-caption {
+    padding: 8px 6px 2px;
+    font-size: 0.85rem;
+}
+
+/* ===== IMAGE PREVIEW BEFORE SENDING ===== */
+.image-preview-bar {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    padding: 0.6rem 0;
+}
+.image-preview-bar.show { display: flex; }
+.image-preview-thumb {
+    position: relative;
+    width: 52px;
+    height: 52px;
+    border-radius: 10px;
+    overflow: hidden;
+    flex-shrink: 0;
+    border: 1px solid #e2e8f0;
+}
+.image-preview-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.image-preview-remove {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 20px;
+    height: 20px;
+    background: #ef4444;
+    color: #fff;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    cursor: pointer;
+}
+.image-preview-label { font-size: 0.8rem; color: #64748b; }
+
+.attach-img-btn {
+    background: #f1f5f9;
+    color: #64748b;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+}
+.attach-img-btn:hover {
+    background: var(--teal-soft);
+    color: var(--teal-dark);
+    border-color: var(--teal);
+}
+
+/* ===== LIGHTBOX ===== */
+.img-lightbox {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.85);
+    z-index: 5000;
+    align-items: center;
+    justify-content: center;
+    padding: 30px;
+}
+.img-lightbox.show { display: flex; }
+.img-lightbox img { max-width: 90%; max-height: 90%; border-radius: 8px; }
+.img-lightbox-close {
+    position: absolute;
+    top: 20px;
+    right: 24px;
+    width: 40px;
+    height: 40px;
+    background: rgba(255,255,255,.15);
+    border: none;
+    border-radius: 50%;
+    color: #fff;
+    font-size: 18px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
     </style>
 </head>
 <body class="bg-light">
@@ -285,7 +427,7 @@ $canDelete = RBACHelper::hasPermission('crm_messages_delete');
                 <div class="card-body p-0">
                     <div class="row g-0">
                         <!-- Left Side - Conversations -->
-                        <div class="col-md-4 border-end" style="background: white;">
+                        <div class="col-md-4 border-end conversations-col" style="background: white;">
                             <div class="p-3 border-bottom">
                                 <div class="input-group">
                                     <span class="input-group-text bg-transparent border-end-0" style="border-radius: 12px 0 0 12px;">
@@ -304,7 +446,7 @@ $canDelete = RBACHelper::hasPermission('crm_messages_delete');
                         </div>
 
                         <!-- Right Side - Chat -->
-                        <div class="col-md-8" style="background: #f8fafc;">
+                        <div class="col-md-8 chat-col" style="background: #f8fafc;">
                             <div id="chatHeader" class="chat-header d-none">
                                 <div class="d-flex align-items-center">
                                     <div class="conversation-avatar me-3" id="chatAvatar">
@@ -326,10 +468,22 @@ $canDelete = RBACHelper::hasPermission('crm_messages_delete');
 
                             <?php if ($canSend): ?>
                             <div id="messageInputArea" class="chat-input-area d-none">
+                                <!-- Image preview before sending -->
+                                <div class="image-preview-bar" id="imagePreviewBar">
+                                    <div class="image-preview-thumb">
+                                        <img id="imagePreviewThumb" src="" alt="">
+                                        <div class="image-preview-remove" onclick="removeSelectedImage()"><i class="bi bi-x"></i></div>
+                                    </div>
+                                    <div class="image-preview-label">Image ready to send</div>
+                                </div>
                                 <form id="sendMessageForm" onsubmit="sendMessage(event)">
                                     <div class="input-group">
+                                        <input type="file" id="chatImageInput" accept="image/*" style="display:none" onchange="handleImageSelect(event)">
+                                        <button class="btn attach-img-btn" type="button" onclick="document.getElementById('chatImageInput').click()" title="Attach an image">
+                                            <i class="bi bi-image"></i>
+                                        </button>
                                         <input type="text" id="messageText" class="form-control search-input" 
-                                               placeholder="Type your message..." required>
+                                               placeholder="Type your message...">
                                         <button class="btn btn-teal" type="submit" style="border-radius: 12px;">
                                             <i class="bi bi-send"></i> Send
                                         </button>
@@ -376,7 +530,18 @@ $canDelete = RBACHelper::hasPermission('crm_messages_delete');
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Message</label>
                         <textarea id="new_message" class="form-control" rows="4" 
-                                  style="border-radius: 12px;" placeholder="Type your message here..." required></textarea>
+                                  style="border-radius: 12px;" placeholder="Type your message here..."></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Image (optional)</label>
+                        <input type="file" id="new_message_image" accept="image/*" class="form-control" style="border-radius: 12px;" onchange="handleNewMsgImageSelect(event)">
+                        <div class="image-preview-bar mt-2" id="newMsgImagePreviewBar">
+                            <div class="image-preview-thumb">
+                                <img id="newMsgImagePreviewThumb" src="" alt="">
+                                <div class="image-preview-remove" onclick="removeNewMsgImage()"><i class="bi bi-x"></i></div>
+                            </div>
+                            <div class="image-preview-label">Image ready to send</div>
+                        </div>
                     </div>
                 </form>
             </div>
@@ -390,6 +555,12 @@ $canDelete = RBACHelper::hasPermission('crm_messages_delete');
     </div>
 </div>
 
+<!-- Fullscreen image viewer -->
+<div class="img-lightbox" id="imgLightbox" onclick="closeLightbox(event)">
+    <button class="img-lightbox-close" onclick="closeLightbox(event)"><i class="bi bi-x-lg"></i></button>
+    <img id="imgLightboxImg" src="" alt="">
+</div>
+
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
@@ -399,6 +570,8 @@ const userRole = '<?= $userRole ?>';
 const canSend = <?= $canSend ? 'true' : 'false' ?>;
 let currentConversation = null;
 let currentUser = null;
+let selectedChatImage = null;
+let selectedNewMsgImage = null;
 
 $(document).ready(function() {
     loadConversations();
@@ -418,6 +591,7 @@ $(document).ready(function() {
 
 function resetNewMessageModal() {
     $('#newMessageForm')[0].reset();
+    removeNewMsgImage();
     loadRecipients();
     // Remove any existing backdrops
     const backdrops = document.querySelectorAll('.modal-backdrop');
@@ -560,6 +734,7 @@ function openConversation(convId, otherName, otherType, avatar) {
         $('#messageInputArea').removeClass('d-none').show();
     }
     
+    removeSelectedImage();
     loadMessages(convId);
 }
 
@@ -576,8 +751,25 @@ function loadMessages(convId) {
                     // m.sender_type = 'clinic' means clinic staff sent it (OUTGOING)
                     // m.sender_type = 'user' means patient sent it (INCOMING)
                     const isOutgoing = (m.sender_type === 'clinic');
-                    
-                    if (isOutgoing) {
+                    const side = isOutgoing ? 'justify-content-end' : 'justify-content-start';
+                    const bubbleClass = isOutgoing ? 'message-outgoing' : 'message-incoming';
+                    const senderClass = isOutgoing ? 'text-white-50' : 'text-teal';
+                    const timeClass = isOutgoing ? 'text-white-50 text-end' : 'text-muted';
+
+                    if (m.image) {
+                        // IMAGE MESSAGE (may caption man o wala)
+                        const captionHtml = m.message ? `<div class="chat-img-caption">${escapeHtml(m.message)}</div>` : '';
+                        html += `
+                            <div class="d-flex ${side} mb-2">
+                                <div class="message-bubble has-image ${bubbleClass}">
+                                    <div class="message-sender ${senderClass}" style="padding:6px 6px 0">${escapeHtml(m.sender_name)}</div>
+                                    <img class="chat-img" src="${m.image}" alt="Sent image" onclick="openLightbox('${m.image}')">
+                                    ${captionHtml}
+                                    <div class="message-time ${timeClass}" style="padding:0 6px 4px">${m.time}</div>
+                                </div>
+                            </div>
+                        `;
+                    } else if (isOutgoing) {
                         // OUTGOING MESSAGE - CLINIC STAFF (RIGHT SIDE)
                         html += `
                             <div class="d-flex justify-content-end mb-2">
@@ -624,32 +816,112 @@ function loadMessages(convId) {
         }
     });
 }
+
+// ── IMAGE SELECT (reply box) ──
+function handleImageSelect(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+        alert('Please choose an image file.');
+        event.target.value = '';
+        return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+        alert('Image is too large. Max size is 5MB.');
+        event.target.value = '';
+        return;
+    }
+
+    selectedChatImage = file;
+    const reader = new FileReader();
+    reader.onload = e => {
+        document.getElementById('imagePreviewThumb').src = e.target.result;
+        document.getElementById('imagePreviewBar').classList.add('show');
+    };
+    reader.readAsDataURL(file);
+}
+
+function removeSelectedImage() {
+    selectedChatImage = null;
+    document.getElementById('chatImageInput').value = '';
+    document.getElementById('imagePreviewThumb').src = '';
+    document.getElementById('imagePreviewBar').classList.remove('show');
+}
+
+// ── IMAGE SELECT (new conversation modal) ──
+function handleNewMsgImageSelect(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    if (!file.type.startsWith('image/')) {
+        alert('Please choose an image file.');
+        event.target.value = '';
+        return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+        alert('Image is too large. Max size is 5MB.');
+        event.target.value = '';
+        return;
+    }
+
+    selectedNewMsgImage = file;
+    const reader = new FileReader();
+    reader.onload = e => {
+        document.getElementById('newMsgImagePreviewThumb').src = e.target.result;
+        document.getElementById('newMsgImagePreviewBar').classList.add('show');
+    };
+    reader.readAsDataURL(file);
+}
+
+function removeNewMsgImage() {
+    selectedNewMsgImage = null;
+    document.getElementById('new_message_image').value = '';
+    document.getElementById('newMsgImagePreviewThumb').src = '';
+    document.getElementById('newMsgImagePreviewBar').classList.remove('show');
+}
+
+// ── LIGHTBOX ──
+function openLightbox(src) {
+    document.getElementById('imgLightboxImg').src = src;
+    document.getElementById('imgLightbox').classList.add('show');
+}
+function closeLightbox(event) {
+    if (event) event.stopPropagation();
+    document.getElementById('imgLightbox').classList.remove('show');
+    document.getElementById('imgLightboxImg').src = '';
+}
+
 function sendMessage(e) {
     e.preventDefault();
     if (!currentConversation) return;
     
-    const message = $('#messageText').val();
-    if (!message.trim()) return;
+    const message = $('#messageText').val().trim();
+    if (!message && !selectedChatImage) return;
     
     const sendBtn = document.querySelector('#sendMessageForm .btn-teal');
     const originalText = sendBtn.innerHTML;
     sendBtn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i>';
     sendBtn.disabled = true;
+
+    const fd = new FormData();
+    fd.append('conversation_id', currentConversation);
+    fd.append('message', message);
+    if (selectedChatImage) fd.append('image', selectedChatImage);
     
     $.ajax({
         url: 'api/crm_messages.php?action=send',
         method: 'POST',
-        data: JSON.stringify({
-            conversation_id: currentConversation,
-            message: message
-        }),
-        contentType: 'application/json',
+        data: fd,
+        processData: false,
+        contentType: false,
         success: function(r) {
             sendBtn.innerHTML = originalText;
             sendBtn.disabled = false;
             
             if (r.success) {
                 $('#messageText').val('');
+                removeSelectedImage();
                 loadMessages(currentConversation);
                 loadConversations();
             } else {
@@ -665,14 +937,12 @@ function sendMessage(e) {
 }
 
 function sendNewMessage() {
-    const data = {
-        receiver_type: $('#receiver_type').val(),
-        receiver_id: $('#receiver_id').val(),
-        message: $('#new_message').val()
-    };
+    const receiver_type = $('#receiver_type').val();
+    const receiver_id = $('#receiver_id').val();
+    const message = $('#new_message').val().trim();
     
-    if (!data.receiver_id || !data.message) {
-        alert('Please fill all fields');
+    if (!receiver_id || (!message && !selectedNewMsgImage)) {
+        alert('Please select a recipient and enter a message or attach an image.');
         return;
     }
     
@@ -680,12 +950,19 @@ function sendNewMessage() {
     const originalText = sendBtn.innerHTML;
     sendBtn.innerHTML = '<i class="bi bi-hourglass-split me-1"></i> Sending...';
     sendBtn.disabled = true;
+
+    const fd = new FormData();
+    fd.append('receiver_type', receiver_type);
+    fd.append('receiver_id', receiver_id);
+    fd.append('message', message);
+    if (selectedNewMsgImage) fd.append('image', selectedNewMsgImage);
     
     $.ajax({
         url: 'api/crm_messages.php?action=new_conversation',
         method: 'POST',
-        data: JSON.stringify(data),
-        contentType: 'application/json',
+        data: fd,
+        processData: false,
+        contentType: false,
         success: function(r) {
             sendBtn.innerHTML = originalText;
             sendBtn.disabled = false;
@@ -694,8 +971,9 @@ function sendNewMessage() {
                 closeNewMessageModal();
                 
                 $('#newMessageForm')[0].reset();
+                removeNewMsgImage();
                 loadRecipients();
-                openConversation(r.conversation_id, r.receiver_name, data.receiver_type);
+                openConversation(r.conversation_id, r.receiver_name, receiver_type);
                 loadConversations();
                 showToast('Message sent successfully', 'success');
             } else {

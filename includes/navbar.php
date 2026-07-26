@@ -24,6 +24,15 @@ if (!isset($active_nav)) {
     };
 }
 
+// ============================================
+// Detect current page — ginagamit para itago yung floating chat bubble
+// kapag nasa messages.php na (dahil andun na yung buong chat UI mismo).
+// ============================================
+if (!isset($current_file)) {
+    $current_file = basename($_SERVER['PHP_SELF']);
+}
+$is_messages_page = ($current_file === 'messages.php');
+
 // FIXED sale count — same logic as dashboard.php
 // Always recompute — never trust $sale_count from calling page
 // (calling pages may use wrong query without sale_start or clinic status check)
@@ -487,7 +496,9 @@ i.fas,i.far,i.fab,i.fal {
     </div>
 </div>
 
+<?php if (!$is_messages_page): ?>
 <!-- ===== FLOATING CHAT BUBBLE ===== -->
+<!-- Itinatago kapag nasa messages.php na, dahil andun na yung buong chat UI mismo -->
 <button class="chat-bubble-btn" onclick="navToggleChat()" id="chatBubbleBtn">
     <i class="fas fa-comment-dots"></i>
     <?php if($chat_unread>0):?><span class="badge" id="chatBubbleBadge"><?php echo $chat_unread;?></span><?php endif;?>
@@ -532,6 +543,7 @@ i.fas,i.far,i.fab,i.fal {
         </div>
     </div>
 </div>
+<?php endif; ?>
 
 
 
@@ -601,6 +613,7 @@ let chatPollTimer = null;
 function navToggleChat() {
     chatOpen = !chatOpen;
     const win = document.getElementById('chatWindow');
+    if (!win) return;
     win.classList.toggle('open', chatOpen);
     if (chatOpen) {
         navLoadClinicList();
@@ -612,7 +625,7 @@ function navToggleChat() {
 }
 function navCloseChat() {
     chatOpen = false;
-    document.getElementById('chatWindow').classList.remove('open');
+    document.getElementById('chatWindow')?.classList.remove('open');
     navStopPolling();
 }
 function navBackToList() {
@@ -621,15 +634,19 @@ function navBackToList() {
     chatLastId = 0;
     const msgs = document.getElementById('chatMsgScreen');
     const list = document.getElementById('chatListScreen');
-    msgs.style.display = 'none';
-    list.style.cssText = 'display:flex!important;flex-direction:column!important;height:100%!important;flex:1!important';
+    if (msgs) msgs.style.display = 'none';
+    if (list) list.style.cssText = 'display:flex!important;flex-direction:column!important;height:100%!important;flex:1!important';
     navLoadClinicList();
 }
 
 function navLoadClinicList() {
-    document.getElementById('chatListScreen').style.cssText = 'display:flex!important;flex-direction:column!important;height:100%!important;flex:1!important';
-    document.getElementById('chatMsgScreen').style.display = 'none';
-    document.getElementById('chatClinicList').innerHTML = '<div class="chat-load-msg"><i class="fas fa-spinner fa-spin"></i></div>';
+    const listScreen = document.getElementById('chatListScreen');
+    const msgScreen = document.getElementById('chatMsgScreen');
+    const clinicListEl = document.getElementById('chatClinicList');
+    if (!listScreen || !msgScreen || !clinicListEl) return; // walang floating chat sa page na ito (hal. messages.php)
+    listScreen.style.cssText = 'display:flex!important;flex-direction:column!important;height:100%!important;flex:1!important';
+    msgScreen.style.display = 'none';
+    clinicListEl.innerHTML = '<div class="chat-load-msg"><i class="fas fa-spinner fa-spin"></i></div>';
     const base = window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/') + 1);
     fetch(base + 'chat_clinics.php')
         .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
@@ -761,13 +778,15 @@ document.addEventListener('click', e => {
         navCloseChat();
 });
 
-// Badge poll every 30s
-setInterval(() => {
-    if (!chatOpen) {
-        const base = window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/')+1);
-        fetch(base + 'chat_clinics.php').then(r=>r.json()).then(d=>{
-            if (d.success) navUpdateChatBadge(d.total_unread);
-        }).catch(()=>{});
-    }
-}, 30000);
+// Badge poll every 30s — kapag wala nang floating bubble sa page (messages.php), hindi kailangan tumakbo
+if (document.getElementById('chatBubbleBtn')) {
+    setInterval(() => {
+        if (!chatOpen) {
+            const base = window.location.pathname.substring(0, window.location.pathname.lastIndexOf('/')+1);
+            fetch(base + 'chat_clinics.php').then(r=>r.json()).then(d=>{
+                if (d.success) navUpdateChatBadge(d.total_unread);
+            }).catch(()=>{});
+        }
+    }, 30000);
+}
 </script>

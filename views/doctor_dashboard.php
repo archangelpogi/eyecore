@@ -35,16 +35,14 @@ $clinicId  = $_SESSION['clinic_id'];
 $userId    = $_SESSION['user_id'];
 $userRole  = $_SESSION['role'] ?? '';
 
-// ✅ Get user permissions for UI
 $canView = RBACHelper::hasPermission('doctor_dashboard_view');
 $canCreateAppointments = RBACHelper::hasPermission('appointments_create');
 $canEditAppointments = RBACHelper::hasPermission('appointments_edit');
-$canCreateClinicalNotes = RBACHelper::hasPermission('clinical_notes_create');
-$canEditClinicalNotes = RBACHelper::hasPermission('clinical_notes_edit');
-$canCreatePrescriptions = RBACHelper::hasPermission('prescriptions_create');
-$canEditPrescriptions = RBACHelper::hasPermission('prescriptions_edit');
+$canCreateClinicalNotes = RBACHelper::hasPermission('doctor_dashboard_create');
+$canEditClinicalNotes = RBACHelper::hasPermission('doctor_dashboard_edit');
+$canCreatePrescriptions = RBACHelper::hasPermission('doctor_dashboard_create');
+$canEditPrescriptions = RBACHelper::hasPermission('doctor_dashboard_edit');
 $canViewHistory = RBACHelper::hasPermission('patient_history_view');
-
 // Get doctor_id from session or fetch
 $doctorId = $_SESSION['doctor_id'] ?? null;
 

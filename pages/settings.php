@@ -45,6 +45,18 @@ try {
 }
 
 // ─────────────────────────────────────────────
+// 2b. NEW: Convert stored decimal rates (0.12) to
+//     percent form (12) for display in the number inputs.
+//     Saved back as decimal in api/save_settings.php.
+// ─────────────────────────────────────────────
+$percent_fields = ['vat_rate', 'pwd_senior_discount'];
+foreach ($percent_fields as $pf) {
+    if (isset($settings[$pf]) && $settings[$pf] !== '') {
+        $settings[$pf] = round(((float)$settings[$pf]) * 100, 2);
+    }
+}
+
+// ─────────────────────────────────────────────
 // 3. Field definitions — only rendered if the
 //    column actually exists in the DB table.
 // ─────────────────────────────────────────────
@@ -110,16 +122,29 @@ $field_def = [
     'bank_name'           => ['label' => 'Bank Name',                'type' => 'text',   'section' => 'Payment'],
     'bank_account_name'   => ['label' => 'Bank Account Name',        'type' => 'text',   'section' => 'Payment'],
     'bank_account_number' => ['label' => 'Bank Account Number',      'type' => 'text',   'section' => 'Payment'],
+
+    // ============================================
+    // NEW: Tax & Discounts (legally mandated, SuperAdmin-only, system-wide)
+    // ============================================
+    'vat_rate'              => ['label' => 'VAT Rate (%)', 'type' => 'number', 'section' => 'Tax & Discounts',
+                                 'min' => 0, 'max' => 100, 'step' => '0.01',
+                                 'hint' => 'Philippine VAT per the NIRC / TRAIN Law. Currently 12%. Change only if the law itself changes — this is not a per-clinic setting.'],
+    'pwd_senior_discount'   => ['label' => 'PWD / Senior Citizen Discount (%)', 'type' => 'number', 'section' => 'Tax & Discounts',
+                                 'min' => 0, 'max' => 100, 'step' => '0.01',
+                                 'hint' => 'Mandated 20% discount per RA 9994 (Expanded Senior Citizens Act) and RA 10754 (Magna Carta for Persons with Disability).'],
+    'pwd_senior_vat_exempt' => ['label' => 'PWD / Senior Citizen VAT Exemption', 'type' => 'toggle', 'section' => 'Tax & Discounts',
+                                 'hint' => 'Legally required to stay ON. PWD and Senior Citizens are VAT-exempt by law — this should not be turned off.'],
 ];
 
 // Section display meta
 $section_meta = [
-    'General'       => ['icon' => 'bi-globe',       'bg' => '#d1fae5', 'color' => '#065f46', 'desc' => 'Basic platform configuration'],
-    'Notifications' => ['icon' => 'bi-bell',         'bg' => '#dbeafe', 'color' => '#1e40af', 'desc' => 'Configure alert and notification preferences'],
-    'Backup'        => ['icon' => 'bi-database',     'bg' => '#dcfce7', 'color' => '#166534', 'desc' => 'Automatic database backup configuration'],
-    'Security'      => ['icon' => 'bi-shield-lock',  'bg' => '#ede9fe', 'color' => '#5b21b6', 'desc' => 'Platform security and access control'],
-    'Theme'         => ['icon' => 'bi-palette',      'bg' => '#fce7f3', 'color' => '#9d174d', 'desc' => 'Customize platform appearance'],
-    'Payment'       => ['icon' => 'bi-credit-card',  'bg' => '#fef9c3', 'color' => '#854d0e', 'desc' => 'Payment method details'],
+    'General'          => ['icon' => 'bi-globe',       'bg' => '#d1fae5', 'color' => '#065f46', 'desc' => 'Basic platform configuration'],
+    'Notifications'    => ['icon' => 'bi-bell',         'bg' => '#dbeafe', 'color' => '#1e40af', 'desc' => 'Configure alert and notification preferences'],
+    'Backup'           => ['icon' => 'bi-database',     'bg' => '#dcfce7', 'color' => '#166534', 'desc' => 'Automatic database backup configuration'],
+    'Security'         => ['icon' => 'bi-shield-lock',  'bg' => '#ede9fe', 'color' => '#5b21b6', 'desc' => 'Platform security and access control'],
+    'Theme'            => ['icon' => 'bi-palette',      'bg' => '#fce7f3', 'color' => '#9d174d', 'desc' => 'Customize platform appearance'],
+    'Payment'          => ['icon' => 'bi-credit-card',  'bg' => '#fef9c3', 'color' => '#854d0e', 'desc' => 'Payment method details'],
+    'Tax & Discounts'  => ['icon' => 'bi-receipt',      'bg' => '#fee2e2', 'color' => '#991b1b', 'desc' => 'Legally-mandated tax and discount rates. These apply platform-wide and are not configurable per clinic — do not change without a legal basis.'],
 ];
 
 // ─────────────────────────────────────────────
@@ -176,6 +201,7 @@ try {
     .theme-card.active { border-color:#0d9488; background:#f0fdfa; }
     .preview-box    { width:100%; height:80px; border-radius:6px; margin-bottom:10px; }
     .backup-file:hover { background:#f8fafc; }
+    .legal-badge    { display:inline-block; background:#fee2e2; color:#991b1b; font-size:.7rem; font-weight:600; padding:2px 8px; border-radius:10px; margin-left:8px; vertical-align:middle; }
     </style>
 </head>
 <body>
@@ -211,6 +237,8 @@ try {
         $toggle_cols  = array_values(array_filter($cols, fn($c) => ($field_def[$c]['type'] ?? '') === 'toggle'));
         $theme_cols   = array_values(array_filter($cols, fn($c) => ($field_def[$c]['type'] ?? '') === 'theme'));
         $regular_cols = array_values(array_filter($cols, fn($c) => !in_array($field_def[$c]['type'] ?? '', ['toggle', 'theme'])));
+
+        $is_legal_section = ($section_name === 'Tax & Discounts');
     ?>
 
     <div class="card-soft p-4 mb-4">
@@ -220,7 +248,12 @@ try {
                 <i class="<?= $meta['icon'] ?>"></i>
             </div>
             <div>
-                <h5 class="fw-semibold mb-0"><?= htmlspecialchars($section_name) ?> Settings</h5>
+                <h5 class="fw-semibold mb-0">
+                    <?= htmlspecialchars($section_name) ?> Settings
+                    <?php if ($is_legal_section): ?>
+                        <span class="legal-badge"><i class="bi bi-exclamation-triangle"></i> Legally mandated</span>
+                    <?php endif; ?>
+                </h5>
                 <?php if ($meta['desc']): ?>
                 <small class="text-muted"><?= htmlspecialchars($meta['desc']) ?></small>
                 <?php endif; ?>
@@ -247,10 +280,19 @@ try {
                     </select>
 
                 <?php elseif ($def['type'] === 'number'): ?>
-                    <input type="number" name="<?= $col ?>" class="form-control"
-                           value="<?= htmlspecialchars($value) ?>"
-                           <?= isset($def['min']) ? 'min="'.(int)$def['min'].'"' : '' ?>
-                           <?= isset($def['max']) ? 'max="'.(int)$def['max'].'"' : '' ?>>
+                    <div class="input-group">
+                        <input type="number" name="<?= $col ?>" class="form-control"
+                               value="<?= htmlspecialchars($value) ?>"
+                               <?= isset($def['min']) ? 'min="'.(float)$def['min'].'"' : '' ?>
+                               <?= isset($def['max']) ? 'max="'.(float)$def['max'].'"' : '' ?>
+                               <?= isset($def['step']) ? 'step="'.htmlspecialchars($def['step']).'"' : '' ?>>
+                        <?php if (in_array($col, ['vat_rate', 'pwd_senior_discount'])): ?>
+                            <span class="input-group-text">%</span>
+                        <?php endif; ?>
+                    </div>
+                    <?php if (!empty($def['hint'])): ?>
+                    <div class="form-text"><?= htmlspecialchars($def['hint']) ?></div>
+                    <?php endif; ?>
 
                 <?php elseif ($def['type'] === 'email'): ?>
                     <input type="email" name="<?= $col ?>" class="form-control"
@@ -325,6 +367,16 @@ try {
             <?php endforeach; ?>
         </div>
         <?php endforeach; ?>
+
+        <?php if ($is_legal_section): ?>
+        <div class="alert alert-danger mt-3 mb-0 d-flex align-items-start gap-2">
+            <i class="bi bi-exclamation-triangle-fill mt-1"></i>
+            <div>
+                <strong>Note:</strong> These values are set by Philippine law (BIR/TRAIN Law for VAT; RA 9994 and RA 10754 for PWD/Senior discount), not by business preference.
+                Changing them here changes the rate for <em>every</em> clinic on the platform. Only update these if the underlying law changes.
+            </div>
+        </div>
+        <?php endif; ?>
 
     </div><!-- /card-soft -->
     <?php endforeach; ?>

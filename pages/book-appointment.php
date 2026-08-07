@@ -61,7 +61,7 @@ if ($item_id > 0 && $item_type == 'service') {
     $item_price = $selected_item['price'] ?? 0;
 }
 
-// Get all services from this clinic
+// Get all services from this clinic (now includes booking_group + max_per_booking)
 $services_query = mysqli_query($conn, "SELECT s.*, 
                                         GROUP_CONCAT(d.name SEPARATOR ', ') as available_doctors
                                         FROM services s
@@ -117,40 +117,114 @@ $success_message = '';
 $error_message = '';
 
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
-    $selected_item_id = (int)$_POST['item_id'];
-    $selected_item_type_db = mysqli_real_escape_string($conn, $_POST['item_type']);
+    $item_type_db = mysqli_real_escape_string($conn, $_POST['item_type']);
     $appointment_date = mysqli_real_escape_string($conn, $_POST['appointment_date']);
     $appointment_time = mysqli_real_escape_string($conn, $_POST['appointment_time']);
     $doctor_id = $_POST['doctor_id'] === 'any' ? 'NULL' : (int)$_POST['doctor_id'];
     $notes = mysqli_real_escape_string($conn, $_POST['notes']);
     $contact_number = mysqli_real_escape_string($conn, $_POST['contact_number']);
-    
+
+    // NEW: services can now be multiple, products stay single-select
+    $selected_service_ids = [];
+    $selected_product_id = 0;
+
+    if ($item_type_db === 'service') {
+        $selected_service_ids = isset($_POST['service_ids']) ? array_map('intval', $_POST['service_ids']) : [];
+    } else {
+        $selected_product_id = isset($_POST['item_id']) ? (int)$_POST['item_id'] : 0;
+    }
+
+    $hasSelection = ($item_type_db === 'service') ? !empty($selected_service_ids) : $selected_product_id > 0;
+
     // Validate all fields
-    if (empty($selected_item_id) || empty($appointment_date) || empty($appointment_time) || empty($contact_number)) {
+    if (!$hasSelection || empty($appointment_date) || empty($appointment_time) || empty($contact_number)) {
         $error_message = 'Please complete all steps before confirming';
     } else {
+
+        // ============================================
+        // ✅ NEW: SERVER-SIDE PAST DATE/TIME CHECK
+        // (bawal mag-book ng petsa/oras na nasa nakaraan na — kahit
+        //  ma-bypass ang JS validation, hindi papasa dito)
+        // ============================================
+        $tz = new DateTimeZone(date_default_timezone_get() ?: 'Asia/Manila');
+        $now_server = new DateTime('now', $tz);
+        $appointment_datetime_str = $appointment_date . ' ' . $appointment_time;
+        $appointment_datetime = DateTime::createFromFormat('Y-m-d H:i:s', $appointment_datetime_str, $tz);
+
+        if (!$appointment_datetime) {
+            $error_message = 'Invalid date or time format.';
+        } elseif ($appointment_datetime < $now_server) {
+            $error_message = 'You cannot book an appointment in the past. Please select a valid date and time.';
+        }
+
+        // ============================================
+        // NEW: SERVICE COMBINATION VALIDATION
+        // (server-side — cannot be bypassed even if JS is disabled/tampered)
+        // ============================================
+        $service_rows = [];
+        if (empty($error_message) && $item_type_db === 'service' && !empty($selected_service_ids)) {
+            $ids_str = implode(',', $selected_service_ids);
+            $svc_check = mysqli_query($conn, "SELECT id, name, price, booking_group, max_per_booking FROM services WHERE id IN ($ids_str) AND clinic_id = $clinic_id");
+
+            $groupCounts = [];
+            $hasStandalone = false;
+
+            while ($svcRow = mysqli_fetch_assoc($svc_check)) {
+                $service_rows[] = $svcRow;
+                $grp = $svcRow['booking_group'];
+                if ($grp === 'treatment' || $grp === 'repair' || $grp === null || $grp === '') {
+                    $hasStandalone = true;
+                }
+                $groupCounts[$grp] = ($groupCounts[$grp] ?? 0) + 1;
+            }
+
+            if ($hasStandalone && count($selected_service_ids) > 1) {
+                $error_message = 'Treatment, repair, or standalone services cannot be combined with other services.';
+            } else {
+                foreach ($groupCounts as $grp => $cnt) {
+                    $max_q = mysqli_query($conn, "SELECT max_per_booking FROM services WHERE booking_group = '$grp' AND clinic_id = $clinic_id LIMIT 1");
+                    $max_row = mysqli_fetch_assoc($max_q);
+                    $maxAllowed = $max_row['max_per_booking'] ?? 1;
+                    if ($cnt > $maxAllowed) {
+                        $error_message = "Only $maxAllowed service(s) from the '$grp' group can be combined per booking.";
+                        break;
+                    }
+                }
+            }
+        } elseif ($item_type_db === 'service' && !empty($selected_service_ids)) {
+            // (kailangan pa rin i-populate ang $service_rows kahit may naunang error,
+            //  para hindi masira ang ibang logic pagkatapos nito)
+            $ids_str = implode(',', $selected_service_ids);
+            $svc_check2 = mysqli_query($conn, "SELECT id, name, price, booking_group, max_per_booking FROM services WHERE id IN ($ids_str) AND clinic_id = $clinic_id");
+            while ($svcRow2 = mysqli_fetch_assoc($svc_check2)) {
+                $service_rows[] = $svcRow2;
+            }
+        }
+
         // ============================================
         // SIMPLE VALIDATION (SAME LOGIC AS book-specific-product.php)
         // ============================================
-        
+
         // 1. Check if user already has appointment at this exact date and time (kahit ibang clinic)
-        $conflict_query = mysqli_query($conn, "
-            SELECT a.*, c.name as clinic_name 
-            FROM appointments a
-            JOIN clinics c ON a.clinic_id = c.id
-            WHERE a.user_id = $user_id 
-            AND a.appointment_date = '$appointment_date' 
-            AND a.appointment_time = '$appointment_time'
-            AND a.status != 'cancelled'
-        ");
-        
-        if (mysqli_num_rows($conflict_query) > 0) {
-            $conflict = mysqli_fetch_assoc($conflict_query);
-            $formatted_time = date('g:i A', strtotime($appointment_time));
-            $formatted_date = date('F j, Y', strtotime($appointment_date));
-            $error_message = "You already have an appointment at {$conflict['clinic_name']} on {$formatted_date} at {$formatted_time}. Please choose another time.";
+        if (empty($error_message)) {
+            $conflict_query = mysqli_query($conn, "
+                SELECT a.*, c.name as clinic_name 
+                FROM appointments a
+                JOIN clinics c ON a.clinic_id = c.id
+                WHERE a.user_id = $user_id 
+                AND a.appointment_date = '$appointment_date' 
+                AND a.appointment_time = '$appointment_time'
+                AND a.status != 'cancelled'
+            ");
+
+            if (mysqli_num_rows($conflict_query) > 0) {
+                $conflict = mysqli_fetch_assoc($conflict_query);
+                $formatted_time = date('g:i A', strtotime($appointment_time));
+                $formatted_date = date('F j, Y', strtotime($appointment_date));
+                $error_message = "You already have an appointment at {$conflict['clinic_name']} on {$formatted_date} at {$formatted_time}. Please choose another time.";
+            }
         }
-        
+
         // 2. Check daily limit (max 3 appointments per day)
         if (empty($error_message)) {
             $daily_count_query = mysqli_query($conn, "
@@ -161,12 +235,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 AND status != 'cancelled'
             ");
             $daily_count = mysqli_fetch_assoc($daily_count_query)['total'];
-            
+
             if ($daily_count >= 3) {
                 $error_message = 'You can only book up to 3 appointments per day. Please choose another date.';
             }
         }
-        
+
         // 3. Check if slot is already taken sa clinic na ito
         if (empty($error_message)) {
             $slot_taken_query = mysqli_query($conn, "
@@ -176,22 +250,22 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 AND appointment_time = '$appointment_time'
                 AND status != 'cancelled'
             ");
-            
+
             if (mysqli_num_rows($slot_taken_query) > 0) {
                 $error_message = 'This time slot is already taken. Please choose another time.';
             }
         }
-        
+
         // 4. If specific doctor selected and it's a service, check if doctor is available on that date and time
-        if (empty($error_message) && $doctor_id !== 'NULL' && $selected_item_type_db == 'service') {
+        if (empty($error_message) && $doctor_id !== 'NULL' && $item_type_db == 'service') {
             // Get doctor's schedule
             $doctor_query = mysqli_query($conn, "SELECT schedule FROM doctors WHERE id = $doctor_id");
             $doctor = mysqli_fetch_assoc($doctor_query);
             $schedule = json_decode($doctor['schedule'], true);
-            
+
             // Get day of week (3-letter format: Mon, Tue, etc.)
             $day_of_week = strtolower(date('D', strtotime($appointment_date)));
-            
+
             // Check if doctor works on that day
             if (!isset($schedule[$day_of_week])) {
                 $error_message = 'Selected doctor is not available on this date. Please choose another doctor or date.';
@@ -201,143 +275,162 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 $selected_hour = (int)$time_parts[0];
                 $selected_min = (int)$time_parts[1];
                 $selected_time_mins = $selected_hour * 60 + $selected_min;
-                
+
                 // Check if time is within doctor's schedule for that day
                 $is_valid_time = false;
-                
+
                 foreach ($schedule[$day_of_week] as $time_range) {
                     // Parse time range like "09:00-12:00"
                     $range_parts = explode('-', $time_range);
                     $start_time = $range_parts[0];
                     $end_time = $range_parts[1];
-                    
+
                     $start_parts = explode(':', $start_time);
                     $end_parts = explode(':', $end_time);
-                    
+
                     $start_hour = (int)$start_parts[0];
                     $start_min = (int)($start_parts[1] ?? 0);
                     $start_mins = $start_hour * 60 + $start_min;
-                    
+
                     $end_hour = (int)$end_parts[0];
                     $end_min = (int)($end_parts[1] ?? 0);
                     $end_mins = $end_hour * 60 + $end_min;
-                    
+
                     if ($selected_time_mins >= $start_mins && $selected_time_mins < $end_mins) {
                         $is_valid_time = true;
                         break;
                     }
                 }
-                
+
                 if (!$is_valid_time) {
                     $error_message = 'Selected time is outside doctor\'s working hours. Please choose another time.';
                 }
             }
         }
-        
+
+        // ============================================
         // If no errors, proceed with booking
-// If no errors, proceed with booking
-if (empty($error_message)) {
-    // For products, doctor_id should be NULL
-    if ($selected_item_type_db == 'product') {
-        $doctor_id = 'NULL';
-    }
-    
-    // ✅ STEP 1: Check kung may existing patient na ang user na ito
-    $existingPatientId = null;
-    
-    // 1.1 Check sa users table kung may naka-link na patient_id
-    $userCheck = mysqli_query($conn, "SELECT patient_id FROM users WHERE id = $user_id");
-    if ($userCheck && mysqli_num_rows($userCheck) > 0) {
-        $userData = mysqli_fetch_assoc($userCheck);
-        if ($userData['patient_id']) {
-            $existingPatientId = $userData['patient_id'];
-        }
-    }
-    
-    // 1.2 Kung wala, check sa patients table gamit ang email o contact
-    if (!$existingPatientId) {
-        $userEmail = mysqli_real_escape_string($conn, $user['email'] ?? '');
-        $userContact = mysqli_real_escape_string($conn, $user['contact'] ?? '');
-        
-        if ($userEmail || $userContact) {
-            $patientCheck = mysqli_query($conn, "
-                SELECT id FROM patients 
-                WHERE (email = '$userEmail' OR phone = '$userContact') 
-                AND clinic_id = $clinic_id
-                LIMIT 1
-            ");
-            
-            if ($patientCheck && mysqli_num_rows($patientCheck) > 0) {
-                $existingPatient = mysqli_fetch_assoc($patientCheck);
-                $existingPatientId = $existingPatient['id'];
-                mysqli_query($conn, "UPDATE users SET patient_id = $existingPatientId WHERE id = $user_id");
+        // ============================================
+        if (empty($error_message)) {
+            // For products, doctor_id should be NULL
+            if ($item_type_db == 'product') {
+                $doctor_id = 'NULL';
             }
-        }
-    }
-    
-    $isNewPatient = $existingPatientId ? 0 : 1;
-    
-    // ✅ STEP 2: Insert appointment with patient_id
-    $insert_query = "INSERT INTO appointments 
-                    (user_id, patient_id, clinic_id, item_id, item_type, doctor_id, 
-                     appointment_date, appointment_time, notes, contact_number, status, is_new_patient, created_at) 
-                    VALUES ($user_id, " . ($existingPatientId ?: 'NULL') . ", $clinic_id, $selected_item_id, '$selected_item_type_db', " . 
-                    ($doctor_id === 'NULL' ? 'NULL' : $doctor_id) . ", 
-                    '$appointment_date', '$appointment_time', '$notes', '$contact_number', 'pending', $isNewPatient, NOW())";
-    
-    if (mysqli_query($conn, $insert_query)) {
-        $new_appointment_id = mysqli_insert_id($conn);
-        
-        // Add notification
-        $formatted_date = date('F j, Y', strtotime($appointment_date));
-        $formatted_time = date('g:i A', strtotime($appointment_time));
-        $doctor_text = ($doctor_id === 'NULL' || $selected_item_type_db == 'product') 
-                       ? '' 
-                       : ' with Dr. ' . $_POST['doctor_name'];
-        $item_text = $selected_item ? $selected_item['name'] : 'appointment';
-        
-        if (function_exists('addNotification')) {
-            addNotification(
-                $user_id,
-                'appointment',
-                'New Appointment Booked',
-                "Your {$item_text} at {$clinic['name']}{$doctor_text} on {$formatted_date} at {$formatted_time} is pending confirmation.",
-                'my-appointments.php'
-            );
-        }
-        
-        // ✅ GET ITEM PRICE
-        $item_price = 0;
-        if ($selected_item_type_db == 'service') {
-            $price_query = mysqli_query($conn, "SELECT price FROM services WHERE id = $selected_item_id");
-            $price_row = mysqli_fetch_assoc($price_query);
-            $item_price = $price_row['price'] ?? 0;
-        } else {
-            $price_query = mysqli_query($conn, "SELECT price FROM products WHERE id = $selected_item_id");
-            $price_row = mysqli_fetch_assoc($price_query);
-            $item_price = $price_row['price'] ?? 0;
-        }
-        
-        // ✅ CHECK PAYMENT POLICY
-        $payment_info = calculatePaymentAmounts($conn, $clinic_id, $item_price);
-        $booking_flow = $payment_info['booking_flow'] ?? 'approve_first';
-        
-        if ($payment_info['requires_payment']) {
-            if ($booking_flow === 'pay_first') {
-                header('Location: payment.php?appointment_id=' . $new_appointment_id);
-                exit();
+
+            // STEP 1: Check kung may existing patient na ang user na ito
+            $existingPatientId = null;
+
+            // 1.1 Check sa users table kung may naka-link na patient_id
+            $userCheck = mysqli_query($conn, "SELECT patient_id FROM users WHERE id = $user_id");
+            if ($userCheck && mysqli_num_rows($userCheck) > 0) {
+                $userData = mysqli_fetch_assoc($userCheck);
+                if ($userData['patient_id']) {
+                    $existingPatientId = $userData['patient_id'];
+                }
+            }
+
+            // 1.2 Kung wala, check sa patients table gamit ang email o contact
+            if (!$existingPatientId) {
+                $userEmail = mysqli_real_escape_string($conn, $user['email'] ?? '');
+                $userContact = mysqli_real_escape_string($conn, $user['contact'] ?? '');
+
+                if ($userEmail || $userContact) {
+                    $patientCheck = mysqli_query($conn, "
+                        SELECT id FROM patients 
+                        WHERE (email = '$userEmail' OR phone = '$userContact') 
+                        AND clinic_id = $clinic_id
+                        LIMIT 1
+                    ");
+
+                    if ($patientCheck && mysqli_num_rows($patientCheck) > 0) {
+                        $existingPatient = mysqli_fetch_assoc($patientCheck);
+                        $existingPatientId = $existingPatient['id'];
+                        mysqli_query($conn, "UPDATE users SET patient_id = $existingPatientId WHERE id = $user_id");
+                    }
+                }
+            }
+
+            $isNewPatient = $existingPatientId ? 0 : 1;
+
+            // NEW: compute total price, item names, and the "primary" item_id
+            // (item_id column stays for backward compatibility with old code/reports;
+            //  the FULL list of services now lives in appointment_services)
+            $total_price = 0;
+            $item_names = [];
+            $primary_item_id = 0;
+
+            if ($item_type_db === 'service') {
+                foreach ($service_rows as $svc) {
+                    $total_price += $svc['price'];
+                    $item_names[] = $svc['name'];
+                }
+                $primary_item_id = $selected_service_ids[0];
             } else {
-                $success_message = 'Appointment booked successfully! Please wait for clinic approval before making payment.';
-                $_POST = array();
+                $price_row = mysqli_fetch_assoc(mysqli_query($conn, "SELECT name, price FROM products WHERE id = $selected_product_id"));
+                $total_price = $price_row['price'] ?? 0;
+                $item_names[] = $price_row['name'] ?? 'Product';
+                $primary_item_id = $selected_product_id;
             }
-        } else {
-            $success_message = 'Appointment booked successfully!';
-            $_POST = array();
+
+            // STEP 2: Insert appointment
+            $insert_query = "INSERT INTO appointments 
+                            (user_id, patient_id, clinic_id, item_id, item_type, doctor_id, 
+                             appointment_date, appointment_time, notes, contact_number, status, is_new_patient, created_at) 
+                            VALUES ($user_id, " . ($existingPatientId ?: 'NULL') . ", $clinic_id, $primary_item_id, '$item_type_db', " .
+                            ($doctor_id === 'NULL' ? 'NULL' : $doctor_id) . ", 
+                            '$appointment_date', '$appointment_time', '$notes', '$contact_number', 'pending', $isNewPatient, NOW())";
+
+            if (mysqli_query($conn, $insert_query)) {
+                $new_appointment_id = mysqli_insert_id($conn);
+
+                // NEW: save ALL selected services into the junction table
+                if ($item_type_db === 'service' && !empty($service_rows)) {
+                    foreach ($service_rows as $svc) {
+                        $svc_id = (int)$svc['id'];
+                        $svc_price = (float)$svc['price'];
+                        mysqli_query($conn, "INSERT INTO appointment_services (appointment_id, service_id, price) 
+                                              VALUES ($new_appointment_id, $svc_id, $svc_price)");
+                    }
+                }
+
+                // Add notification
+                $formatted_date = date('F j, Y', strtotime($appointment_date));
+                $formatted_time = date('g:i A', strtotime($appointment_time));
+                $doctor_text = ($doctor_id === 'NULL' || $item_type_db == 'product')
+                               ? ''
+                               : ' with Dr. ' . $_POST['doctor_name'];
+                $item_text = implode(' + ', $item_names);
+
+                if (function_exists('addNotification')) {
+                    addNotification(
+                        $user_id,
+                        'appointment',
+                        'New Appointment Booked',
+                        "Your {$item_text} at {$clinic['name']}{$doctor_text} on {$formatted_date} at {$formatted_time} is pending confirmation.",
+                        'my-appointments.php'
+                    );
+                }
+
+                // CHECK PAYMENT POLICY (based on total combined price of all selected services)
+                $payment_info = calculatePaymentAmounts($conn, $clinic_id, $total_price);
+                $booking_flow = $payment_info['booking_flow'] ?? 'approve_first';
+
+                if ($payment_info['requires_payment']) {
+                    if ($booking_flow === 'pay_first') {
+                        header('Location: payment.php?appointment_id=' . $new_appointment_id);
+                        exit();
+                    } else {
+                        $success_message = 'Appointment booked successfully! Please wait for clinic approval before making payment.';
+                        $_POST = array();
+                    }
+                } else {
+                    $success_message = 'Appointment booked successfully!';
+                    $_POST = array();
+                }
+            } else {
+                $error_message = 'Error booking appointment: ' . mysqli_error($conn);
+            }
         }
-    } else {
-        $error_message = 'Error booking appointment: ' . mysqli_error($conn);
-    }
-}
     }
 }
 
@@ -1057,6 +1150,26 @@ $step1_completed = ($selected_item !== null);
             opacity: 0;
         }
 
+        .doctor-card input[type="checkbox"] {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 20px;
+            height: 20px;
+            opacity: 1;
+            cursor: pointer;
+        }
+
+        .doctor-card.blocked {
+            opacity: 0.4;
+            cursor: not-allowed;
+            background: var(--disabled-bg);
+        }
+
+        .doctor-card.blocked input[type="checkbox"] {
+            cursor: not-allowed;
+        }
+
         .doctor-avatar {
             width: 70px;
             height: 70px;
@@ -1100,6 +1213,19 @@ $step1_completed = ($selected_item !== null);
         .any-doctor-card .doctor-schedule-badge {
             background: var(--success);
             color: white;
+        }
+
+        .service-group-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            background: var(--secondary-light);
+            color: var(--secondary);
+            border-radius: var(--radius-full);
+            font-size: 9px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 6px;
         }
 
         /* Product card image thumbnail */
@@ -1187,6 +1313,21 @@ $step1_completed = ($selected_item !== null);
         
         .service-duration i, .service-doctors i {
             margin-right: 4px;
+        }
+
+        .service-combine-note {
+            background: var(--primary-light);
+            border-left: 4px solid var(--primary);
+            padding: 12px 15px;
+            border-radius: var(--radius-md);
+            margin-bottom: 15px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .service-combine-note i {
+            color: var(--primary);
+            margin-right: 6px;
         }
 
         /* Calendar Styles */
@@ -1687,6 +1828,24 @@ $step1_completed = ($selected_item !== null);
             font-weight: 600;
         }
 
+        .summary-services-list {
+            padding: 10px 0;
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .summary-services-list .summary-label {
+            display: block;
+            margin-bottom: 6px;
+        }
+
+        .summary-service-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: var(--text-primary);
+            padding: 3px 0;
+        }
+
         .total-price {
             font-size: 24px;
             font-weight: 700;
@@ -2054,21 +2213,32 @@ $step1_completed = ($selected_item !== null);
                                 <i class="fas fa-box"></i> Products
                             </button>
                         </div>
+
+                        <div class="service-combine-note" id="servicesTabNote">
+                            <i class="fas fa-info-circle"></i>
+                            You can select more than one service. Exam, screening, and fitting services can be combined — treatment and repair services must be booked alone.
+                        </div>
                         
                         <!-- Services Tab -->
                         <div id="services-tab" class="tab-content active">
-                            <div class="doctors-grid">
+                            <div class="doctors-grid" id="servicesGrid">
                                 <?php 
                                 mysqli_data_seek($services_query, 0);
                                 if (mysqli_num_rows($services_query) > 0):
                                     while($service = mysqli_fetch_assoc($services_query)): 
+                                        $svc_group = $service['booking_group'] ?? '';
+                                        $svc_max = $service['max_per_booking'] ?? 1;
+                                        $is_preselected = ($selected_item && $selected_item['id'] == $service['id'] && $selected_item_type == 'service');
                                 ?>
-                                <label class="doctor-card <?php echo ($selected_item && $selected_item['id'] == $service['id'] && $selected_item_type == 'service') ? 'selected' : ''; ?>">
-                                    <input type="radio" name="item_id" value="<?php echo $service['id']; ?>" 
-                                           data-type="service" data-price="<?php echo $service['price']; ?>"
+                                <label class="doctor-card service-card <?php echo $is_preselected ? 'selected' : ''; ?>" data-service-id="<?php echo $service['id']; ?>">
+                                    <input type="checkbox" name="service_ids[]" value="<?php echo $service['id']; ?>" 
+                                           class="service-checkbox"
+                                           data-group="<?php echo htmlspecialchars($svc_group); ?>" 
+                                           data-max="<?php echo (int)$svc_max; ?>"
+                                           data-price="<?php echo $service['price']; ?>"
                                            data-name="<?php echo htmlspecialchars($service['name']); ?>"
-                                           <?php echo ($selected_item && $selected_item['id'] == $service['id'] && $selected_item_type == 'service') ? 'checked' : ''; ?>
-                                           onchange="handleItemSelection(this)">
+                                           <?php echo $is_preselected ? 'checked' : ''; ?>
+                                           onchange="handleServiceSelection(this)">
                                     <div class="doctor-avatar" style="background: var(--primary-light); color: var(--primary);">
                                         <i class="fas fa-stethoscope"></i>
                                     </div>
@@ -2078,6 +2248,11 @@ $step1_completed = ($selected_item !== null);
                                     <span class="doctor-schedule-badge">
                                         <i class="fas fa-clock"></i> <?php echo $service['duration_minutes'] ?? '30'; ?> mins
                                     </span>
+                                    <?php if ($svc_group): ?>
+                                    <div class="service-group-badge"><?php echo htmlspecialchars($svc_group); ?></div>
+                                    <?php else: ?>
+                                    <div class="service-group-badge" style="background:#f8d7da;color:#721c24;">standalone</div>
+                                    <?php endif; ?>
                                 </label>
                                 <?php 
                                     endwhile;
@@ -2475,7 +2650,11 @@ $step1_completed = ($selected_item !== null);
                 <!-- Booking Summary -->
                 <div class="summary-card">
                     <h4><i class="fas fa-receipt"></i> Booking Summary</h4>
-                    <div class="summary-item">
+                    <div class="summary-services-list" id="summaryServicesWrap" style="display:none;">
+                        <span class="summary-label">Selected Services:</span>
+                        <div id="summaryServicesList"></div>
+                    </div>
+                    <div class="summary-item" id="summarySingleItemRow">
                         <span class="summary-label">Item:</span>
                         <span class="summary-value" id="summaryItem">
                             <?php echo $selected_item ? $selected_item['name'] : 'Not selected'; ?>
@@ -2485,12 +2664,6 @@ $step1_completed = ($selected_item !== null);
                         <span class="summary-label">Type:</span>
                         <span class="summary-value" id="summaryType">
                             <?php echo $selected_item_type ? ucfirst($selected_item_type) : '—'; ?>
-                        </span>
-                    </div>
-                    <div class="summary-item">
-                        <span class="summary-label">Price:</span>
-                        <span class="summary-value" id="summaryPrice">
-                            <?php echo $selected_item ? '₱' . number_format($selected_item['price'], 2) : '—'; ?>
                         </span>
                     </div>
                     <div class="summary-item">
@@ -2541,6 +2714,10 @@ $step1_completed = ($selected_item !== null);
                         <i class="fas fa-box"></i>
                         Products don't need a doctor
                     </p>
+                    <p>
+                        <i class="fas fa-layer-group"></i>
+                        You may combine some services in one booking
+                    </p>
                 </div>
             </div>
         </div>
@@ -2556,6 +2733,7 @@ $step1_completed = ($selected_item !== null);
                 <li>Payment can be made at the clinic via cash, credit card, or GCash.</li>
                 <li>You can only book up to 3 appointments per day.</li>
                 <li>Services require a doctor, products can be booked without one.</li>
+                <li>Not all services can be combined in one booking — treatment and repair services must be booked separately.</li>
             </ul>
         </div>
 
@@ -2626,13 +2804,21 @@ $step1_completed = ($selected_item !== null);
                 if (themeIcon) themeIcon.className = 'fas fa-moon';
             }
             
-            // Initialize booking page
-            if (step1Completed) {
+            // Initialize booking page (pre-selected service via URL, if any)
+            if (step1Completed && selectedItemType === 'service' && selectedServices.length > 0) {
+                updateServiceSummary();
+
+                document.querySelector('.progress-step.step2').classList.remove('disabled');
+                document.getElementById('step2').classList.remove('locked');
+                document.getElementById('step2').classList.add('active');
+                document.getElementById('step2-status').textContent = 'Required';
+                document.getElementById('step2-status').className = 'step-status-badge status-pending';
+                document.getElementById('step2-content').classList.remove('disabled-content');
+            } else if (step1Completed && selectedItemType === 'product') {
                 document.getElementById('summaryItem').textContent = selectedItem;
-                document.getElementById('summaryType').textContent = selectedItemType.charAt(0).toUpperCase() + selectedItemType.slice(1);
-                document.getElementById('summaryPrice').textContent = '₱' + selectedPrice.toFixed(2);
+                document.getElementById('summaryType').textContent = 'Product';
                 document.getElementById('totalPrice').textContent = '₱' + selectedPrice.toFixed(2);
-                
+
                 document.querySelector('.progress-step.step2').classList.remove('disabled');
                 document.getElementById('step2').classList.remove('locked');
                 document.getElementById('step2').classList.add('active');
@@ -2692,6 +2878,14 @@ $step1_completed = ($selected_item !== null);
                 productsTab.classList.add('active');
                 servicesBtn.classList.remove('active');
                 productsBtn.classList.add('active');
+
+                // Switching to products clears any selected services (mutually exclusive item_type)
+                if (selectedServices.length > 0) {
+                    selectedServices = [];
+                    document.querySelectorAll('.service-checkbox').forEach(cb => cb.checked = false);
+                    document.querySelectorAll('.service-card').forEach(card => card.classList.remove('selected'));
+                    refreshServiceLocks();
+                }
             }
         }
 
@@ -2715,97 +2909,321 @@ $step1_completed = ($selected_item !== null);
         let selectedTime = '';
         let currentMonth = new Date();
 
+        // ✅ NEW: Buffer (minutes) bago ang oras ngayon — pumipigil sa pag-book ng
+        // slot na napakalapit na sa kasalukuyang oras. Hindi nito binabago ang
+        // umiiral na logic, dagdag lang na pagsala base sa oras ngayon.
+        const BOOKING_BUFFER_MINUTES = 30;
+
+        // ✅ NEW: kunin ang YYYY-MM-DD ng "today" base sa LOCAL time ng browser
+        function getTodayDateStr() {
+            const now = new Date();
+            return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+        }
+
+        // ✅ NEW: parse ng clinicHours string papuntang { startMinutes, endMinutes } (24h)
+        function getClinicHoursRangeMinutes() {
+            const hoursMatch = clinicHours.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+            if (!hoursMatch) return null;
+
+            let sHour = parseInt(hoursMatch[1]);
+            let sMin = hoursMatch[2] ? parseInt(hoursMatch[2]) : 0;
+            let sAmPm = hoursMatch[3] ? hoursMatch[3].toLowerCase() : 'am';
+            let eHour = parseInt(hoursMatch[4]);
+            let eMin = hoursMatch[5] ? parseInt(hoursMatch[5]) : 0;
+            let eAmPm = hoursMatch[6] ? hoursMatch[6].toLowerCase() : 'pm';
+
+            if (sAmPm === 'pm' && sHour !== 12) sHour += 12;
+            if (sAmPm === 'am' && sHour === 12) sHour = 0;
+            if (eAmPm === 'pm' && eHour !== 12) eHour += 12;
+            if (eAmPm === 'am' && eHour === 12) eHour = 0;
+
+            return { startMinutes: (sHour * 60) + sMin, endMinutes: (eHour * 60) + eMin };
+        }
+
+        // ✅ NEW: base sa napiling doctor (o "any"/product), kunin ang pinaka-huling
+        // available na oras (end minutes) para sa ibinigay na araw ng linggo
+        function getEffectiveEndMinutesForDay(dayOfWeek) {
+            const clinicRange = getClinicHoursRangeMinutes();
+            if (!clinicRange) return null;
+
+            let effectiveEnd = clinicRange.endMinutes;
+
+            if (selectedItemType === 'service' && selectedDoctorId !== 'any' && selectedDoctorSchedule && selectedDoctorSchedule[dayOfWeek]) {
+                const ranges = selectedDoctorSchedule[dayOfWeek];
+                if (!Array.isArray(ranges) || ranges.length === 0) {
+                    return null; // walang schedule ang doctor sa araw na ito
+                }
+                let latestEnd = 0;
+                ranges.forEach(r => {
+                    const parts = r.split('-');
+                    if (parts.length < 2) return;
+                    const endParts = parts[1].split(':');
+                    const eh = parseInt(endParts[0]);
+                    const em = parseInt(endParts[1] || '0');
+                    const mins = (eh * 60) + em;
+                    if (mins > latestEnd) latestEnd = mins;
+                });
+                effectiveEnd = Math.min(effectiveEnd, latestEnd);
+            }
+
+            return effectiveEnd;
+        }
+
+        // ✅ NEW: kung "today" ang dateStr, may matitira pa bang future slot
+        // (base sa kasalukuyang oras + buffer) bago mag-close ang clinic/doctor?
+        function hasFutureSlotToday(dateStr, dayOfWeek) {
+            const todayStr = getTodayDateStr();
+            if (dateStr !== todayStr) return true; // hindi today, walang epekto ang oras ngayon
+
+            const now = new Date();
+            const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+            const effectiveEnd = getEffectiveEndMinutesForDay(dayOfWeek);
+            if (effectiveEnd === null) return false; // walang schedule
+
+            return (nowMinutes + BOOKING_BUFFER_MINUTES) < effectiveEnd;
+        }
+
+        // NEW: holds multiple selected services -> { id, name, price, group, max }
+        let selectedServices = <?php
+            if ($selected_item && $selected_item_type === 'service') {
+                echo json_encode([[
+                    'id' => (string)$selected_item['id'],
+                    'name' => $selected_item['name'],
+                    'price' => (float)$selected_item['price'],
+                    'group' => $selected_item['booking_group'] ?? '',
+                    'max' => (int)($selected_item['max_per_booking'] ?? 1)
+                ]]);
+            } else {
+                echo '[]';
+            }
+        ?>;
+
+        // ============================================
+        // NEW: Multiple-service selection logic
+        // ============================================
+        function handleServiceSelection(checkbox) {
+            const id = checkbox.value;
+            const group = checkbox.getAttribute('data-group') || '';
+            const maxPer = parseInt(checkbox.getAttribute('data-max')) || 1;
+            const name = checkbox.getAttribute('data-name');
+            const price = parseFloat(checkbox.getAttribute('data-price'));
+            const card = checkbox.closest('.service-card');
+            const isStandalone = (group === 'treatment' || group === 'repair' || group === '');
+
+            if (checkbox.checked) {
+                const hasStandaloneSelected = selectedServices.some(s => (s.group === 'treatment' || s.group === 'repair' || s.group === ''));
+
+                if (hasStandaloneSelected && selectedServices.length > 0) {
+                    checkbox.checked = false;
+                    showToast('That service cannot be combined with your current selection. Please book it alone.', 'error');
+                    return;
+                }
+
+                if (isStandalone && selectedServices.length > 0) {
+                    checkbox.checked = false;
+                    showToast('This service must be booked alone. Uncheck other services first.', 'error');
+                    return;
+                }
+
+                const countInGroup = selectedServices.filter(s => s.group === group).length;
+                if (countInGroup >= maxPer) {
+                    checkbox.checked = false;
+                    showToast(`Only ${maxPer} '${group}' service(s) allowed per booking.`, 'error');
+                    return;
+                }
+
+                selectedServices.push({ id, name, price, group, max: maxPer });
+                card.classList.add('selected');
+            } else {
+                selectedServices = selectedServices.filter(s => s.id !== id);
+                card.classList.remove('selected');
+            }
+
+            refreshServiceLocks();
+            updateServiceSummary();
+
+            selectedItemType = 'service';
+            document.getElementById('selectedItemType').value = 'service';
+
+            if (selectedServices.length > 0) {
+                step1Completed = true;
+
+                document.getElementById('step1-status').textContent = '✓ Completed';
+                document.getElementById('step1-status').className = 'step-status-badge status-completed';
+                document.getElementById('step1').classList.add('completed');
+                document.getElementById('step1').classList.remove('active');
+
+                document.querySelector('.progress-step.step1').classList.add('completed');
+                document.querySelector('.progress-step.step1').classList.remove('active');
+                document.querySelector('.progress-step.step2').classList.remove('disabled');
+                document.querySelector('.progress-step.step2').classList.add('active');
+
+                document.getElementById('doctorsGrid').style.display = 'grid';
+                document.getElementById('product-message').style.display = 'none';
+
+                document.getElementById('step2').classList.remove('locked');
+                document.getElementById('step2').classList.add('active');
+                document.getElementById('step2-status').textContent = 'Required';
+                document.getElementById('step2-status').className = 'step-status-badge status-pending';
+                document.getElementById('step2-content').classList.remove('disabled-content');
+
+                setTimeout(() => scrollToStep('step2'), 300);
+            } else {
+                step1Completed = false;
+                document.getElementById('step1-status').textContent = 'Required';
+                document.getElementById('step1-status').className = 'step-status-badge status-pending';
+                document.getElementById('step1').classList.remove('completed');
+                document.getElementById('step1').classList.add('active');
+            }
+        }
+
+        // Grey-out / disable checkboxes that would break the combination rule
+        function refreshServiceLocks() {
+            const hasStandaloneSelected = selectedServices.some(s => (s.group === 'treatment' || s.group === 'repair' || s.group === ''));
+
+            document.querySelectorAll('.service-checkbox').forEach(cb => {
+                const card = cb.closest('.service-card');
+                const group = cb.getAttribute('data-group') || '';
+                const maxPer = parseInt(cb.getAttribute('data-max')) || 1;
+                const isStandalone = (group === 'treatment' || group === 'repair' || group === '');
+                const alreadySelected = selectedServices.some(s => s.id === cb.value);
+
+                if (alreadySelected) {
+                    card.classList.remove('blocked');
+                    return;
+                }
+
+                let blocked = false;
+
+                if (selectedServices.length > 0) {
+                    if (hasStandaloneSelected) {
+                        blocked = true;
+                    } else if (isStandalone) {
+                        blocked = true;
+                    } else {
+                        const countInGroup = selectedServices.filter(s => s.group === group).length;
+                        if (countInGroup >= maxPer) blocked = true;
+                    }
+                }
+
+                cb.disabled = blocked;
+                card.classList.toggle('blocked', blocked);
+            });
+        }
+
+        // Update sidebar summary for multiple services
+        function updateServiceSummary() {
+            const wrap = document.getElementById('summaryServicesWrap');
+            const list = document.getElementById('summaryServicesList');
+            const singleRow = document.getElementById('summarySingleItemRow');
+
+            if (selectedServices.length === 0) {
+                wrap.style.display = 'none';
+                singleRow.style.display = 'flex';
+                document.getElementById('summaryItem').textContent = 'Not selected';
+                document.getElementById('summaryType').textContent = '—';
+                document.getElementById('totalPrice').textContent = '₱0.00';
+                return;
+            }
+
+            singleRow.style.display = 'none';
+            wrap.style.display = 'block';
+
+            let total = 0;
+            list.innerHTML = '';
+            selectedServices.forEach(s => {
+                total += s.price;
+                const row = document.createElement('div');
+                row.className = 'summary-service-row';
+                row.innerHTML = `<span>${s.name}</span><span>₱${s.price.toFixed(2)}</span>`;
+                list.appendChild(row);
+            });
+
+            document.getElementById('summaryType').textContent = 'Service';
+            document.getElementById('totalPrice').textContent = '₱' + total.toFixed(2);
+
+            selectedPrice = total;
+            selectedItem = selectedServices.map(s => s.name).join(' + ');
+        }
+
         function handleItemSelection(radio) {
-            document.querySelectorAll('#services-tab .doctor-card, #products-tab .doctor-card').forEach(card => {
+            // This now only fires for PRODUCT radios (services use handleServiceSelection)
+            document.querySelectorAll('#products-tab .doctor-card').forEach(card => {
                 card.classList.remove('selected');
             });
-            
+
             radio.closest('.doctor-card').classList.add('selected');
-            
+
             const itemType = radio.getAttribute('data-type');
             const itemName = radio.getAttribute('data-name');
             const itemPrice = parseFloat(radio.getAttribute('data-price'));
-            
+
+            // Selecting a product clears any selected services
+            selectedServices = [];
+            document.querySelectorAll('.service-checkbox').forEach(cb => cb.checked = false);
+            document.querySelectorAll('.service-card').forEach(card => card.classList.remove('selected'));
+            refreshServiceLocks();
+            document.getElementById('summaryServicesWrap').style.display = 'none';
+            document.getElementById('summarySingleItemRow').style.display = 'flex';
+
             selectedItem = itemName;
             selectedPrice = itemPrice;
             selectedItemType = itemType;
-            
+
             document.getElementById('selectedItemType').value = itemType;
-            
+
             step1Completed = true;
-            
+
             // Update UI
             document.getElementById('step1-status').textContent = '✓ Completed';
             document.getElementById('step1-status').className = 'step-status-badge status-completed';
             document.getElementById('step1').classList.add('completed');
             document.getElementById('step1').classList.remove('active');
-            
+
             document.querySelector('.progress-step.step1').classList.add('completed');
             document.querySelector('.progress-step.step1').classList.remove('active');
             document.querySelector('.progress-step.step2').classList.remove('disabled');
             document.querySelector('.progress-step.step2').classList.add('active');
-            
+
             document.getElementById('step2').classList.remove('locked');
             document.getElementById('step2').classList.add('active');
             document.getElementById('step2-status').textContent = 'Required';
             document.getElementById('step2-status').className = 'step-status-badge status-pending';
             document.getElementById('step2-content').classList.remove('disabled-content');
-            
+
             // Update summary
             document.getElementById('summaryItem').textContent = itemName;
-            document.getElementById('summaryType').textContent = itemType.charAt(0).toUpperCase() + itemType.slice(1);
-            document.getElementById('summaryPrice').textContent = '₱' + itemPrice.toFixed(2);
+            document.getElementById('summaryType').textContent = 'Product';
             document.getElementById('totalPrice').textContent = '₱' + itemPrice.toFixed(2);
-            
-            // Show/hide doctor selection based on item type
-            if (itemType === 'product') {
-                // For products, hide doctor selection and show message
-                document.getElementById('doctorsGrid').style.display = 'none';
-                document.getElementById('product-message').style.display = 'block';
-                
-                // Auto-mark step 2 as completed for products
-                step2Completed = true;
-                document.getElementById('step2-status').textContent = '✓ Completed (Not needed)';
-                document.getElementById('step2-status').className = 'step-status-badge status-completed';
-                document.getElementById('step2').classList.add('completed');
-                document.getElementById('step2').classList.remove('active');
-                
-                document.querySelector('.progress-step.step2').classList.add('completed');
-                document.querySelector('.progress-step.step2').classList.remove('active');
-                document.querySelector('.progress-step.step3').classList.remove('disabled');
-                document.querySelector('.progress-step.step3').classList.add('active');
-                
-                document.getElementById('step3').classList.remove('locked');
-                document.getElementById('step3').classList.add('active');
-                document.getElementById('step3-status').textContent = 'Required';
-                document.getElementById('step3-status').className = 'step-status-badge status-pending';
-                document.getElementById('step3-content').classList.remove('disabled-content');
-                
-                // Reset doctor selection
-                selectedDoctor = 'Not needed';
-                selectedDoctorId = 'any';
-                document.getElementById('summaryDoctor').textContent = 'Not needed';
-            } else {
-                // For services, show doctor selection
-                document.getElementById('doctorsGrid').style.display = 'grid';
-                document.getElementById('product-message').style.display = 'none';
-                
-                // Reset step 2 status
-                step2Completed = false;
-                document.getElementById('step2-status').textContent = 'Required';
-                document.getElementById('step2-status').className = 'step-status-badge status-pending';
-                document.getElementById('step2').classList.remove('completed');
-                
-                // Select "Any Doctor" by default
-                document.getElementById('anyDoctor').checked = true;
-                selectedDoctor = 'Any Available Doctor';
-                selectedDoctorId = 'any';
-                selectedDoctorSchedule = null;
-                document.getElementById('summaryDoctor').textContent = 'Any Available Doctor';
-            }
-            
+
+            // Products: hide doctor selection and show message, auto-complete step 2
+            document.getElementById('doctorsGrid').style.display = 'none';
+            document.getElementById('product-message').style.display = 'block';
+
+            step2Completed = true;
+            document.getElementById('step2-status').textContent = '✓ Completed (Not needed)';
+            document.getElementById('step2-status').className = 'step-status-badge status-completed';
+            document.getElementById('step2').classList.add('completed');
+            document.getElementById('step2').classList.remove('active');
+
+            document.querySelector('.progress-step.step2').classList.add('completed');
+            document.querySelector('.progress-step.step2').classList.remove('active');
+            document.querySelector('.progress-step.step3').classList.remove('disabled');
+            document.querySelector('.progress-step.step3').classList.add('active');
+
+            document.getElementById('step3').classList.remove('locked');
+            document.getElementById('step3').classList.add('active');
+            document.getElementById('step3-status').textContent = 'Required';
+            document.getElementById('step3-status').className = 'step-status-badge status-pending';
+            document.getElementById('step3-content').classList.remove('disabled-content');
+
+            selectedDoctor = 'Not needed';
+            selectedDoctorId = 'any';
+            document.getElementById('summaryDoctor').textContent = 'Not needed';
+
             setTimeout(() => {
-                scrollToStep('step2');
+                scrollToStep('step3');
             }, 300);
         }
 
@@ -2822,7 +3240,7 @@ $step1_completed = ($selected_item !== null);
                 return false;
             }
             
-            document.querySelectorAll('.doctor-card').forEach(card => {
+            document.querySelectorAll('#doctorsGrid .doctor-card').forEach(card => {
                 card.classList.remove('selected');
             });
             
@@ -2950,8 +3368,17 @@ $step1_completed = ($selected_item !== null);
                         }
                     }
                 }
-                
+
                 const isToday = cellDate.toDateString() === today.toDateString();
+
+                // ✅ NEW: kung "today" ang date at wala nang matitirang oras
+                // (nakalampas na ang lahat ng available hours), i-disable ito.
+                // Idinagdag lang ito bilang karagdagang kondisyon — hindi
+                // binago ang orihinal na canSelect logic sa itaas.
+                if (canSelect && isToday && !hasFutureSlotToday(dateStr, dayOfWeek)) {
+                    canSelect = false;
+                }
+                
                 const isSelected = selectedDate === dateStr;
                 
                 let classes = 'calendar-day';
@@ -2988,6 +3415,13 @@ $step1_completed = ($selected_item !== null);
                     alert('Doctor is not available on this date');
                     return;
                 }
+            }
+
+            // ✅ NEW: huling check kung "today" at nakalampas na ang lahat ng oras
+            // (karagdagang guard lang — hindi pinapalitan ang umiiral na checks sa itaas)
+            if (!hasFutureSlotToday(dateStr, dayOfWeek)) {
+                alert('No more available time slots for today. Please select another date.');
+                return;
             }
             
             selectedDate = dateStr;
@@ -3122,11 +3556,19 @@ function generateSlotsFromMinutes(startMins, endMins, date, dayOfWeek) {
     if (selectedItemType === 'service' && selectedDoctorId !== 'any' && selectedDoctorSchedule && selectedDoctorSchedule[dayOfWeek]) {
         doctorTimeRanges = selectedDoctorSchedule[dayOfWeek];
     }
+
+    // ✅ NEW: kung "today" ang piniling petsa, kunin ang current time
+    // para masabing anong mga oras ang nakalipas na
+    const todayStrForSlots = getTodayDateStr();
+    const isDateToday = (date === todayStrForSlots);
+    const nowForSlots = new Date();
+    const nowMinutesForSlots = nowForSlots.getHours() * 60 + nowForSlots.getMinutes();
     
     let availableSlots = [];
     let breakSlots = [];
     let bookedSlotsForDate = [];
     let unavailableSlots = [];
+    let pastSlots = []; // ✅ NEW: mga oras na nakalipas na (kung "today")
     
     for (let mins = startMins; mins < endMins; mins += 30) {
         const hour = Math.floor(mins / 60);
@@ -3136,6 +3578,13 @@ function generateSlotsFromMinutes(startMins, endMins, date, dayOfWeek) {
         const displayHour = hour % 12 === 0 ? 12 : hour % 12;
         const displayTime = displayHour + ':' + (minute < 10 ? '0' + minute : minute) + ' ' + ampm;
         const time24h = (hour < 10 ? '0' + hour : hour) + ':' + (minute < 10 ? '0' + minute : minute) + ':00';
+
+        // ✅ NEW: skip/disable kung "today" at nakalipas na (may buffer) ang oras na ito.
+        // Idinagdag lang ito bago ang mga umiiral na checks — hindi binago ang mga ito.
+        if (isDateToday && mins < (nowMinutesForSlots + BOOKING_BUFFER_MINUTES)) {
+            pastSlots.push({ time: displayTime });
+            continue;
+        }
         
         const isBooked = bookedSlots.some(slot => 
             slot.appointment_date === date && 
@@ -3231,6 +3680,16 @@ function generateSlotsFromMinutes(startMins, endMins, date, dayOfWeek) {
         });
         html += '</div>';
     }
+
+    // ✅ NEW: ipakita ang mga oras na nakalipas na (para malinaw sa user)
+    if (pastSlots.length > 0) {
+        html += '<h5 style="margin: 15px 0 5px; color: var(--text-muted);">Already Passed</h5>';
+        html += '<div class="time-slots-grid">';
+        pastSlots.forEach(slot => {
+            html += `<div class="time-slot-card disabled" title="This time has already passed">${slot.time}<span class="slot-label">Passed</span></div>`;
+        });
+        html += '</div>';
+    }
     
     if (unavailableSlots.length > 0) {
         html += '<h5 style="margin: 15px 0 5px; color: var(--danger);">Outside Doctor Hours</h5>';
@@ -3259,8 +3718,25 @@ function generateSlotsFromMinutes(startMins, endMins, date, dayOfWeek) {
         html += '</div>';
     }
     
-    if (availableSlots.length === 0 && breakSlots.length === 0 && bookedSlotsForDate.length === 0 && unavailableSlots.length === 0) {
+    if (availableSlots.length === 0 && breakSlots.length === 0 && bookedSlotsForDate.length === 0 && unavailableSlots.length === 0 && pastSlots.length === 0) {
         html = '<div class="no-slots-message"><i class="fas fa-calendar-times"></i><h4>No available slots</h4><p>Please select another date.</p></div>';
+    }
+
+    // ✅ NEW: kung wala nang natitirang available slot dahil lahat ay nakalipas
+    // na (today) at walang break/booked/unavailable, palitan ang message
+    if (availableSlots.length === 0 && isDateToday && pastSlots.length > 0 &&
+        unavailableSlots.length === 0 && bookedSlotsForDate.length === 0) {
+        html = `
+            <div class="time-slots-header">
+                <h4>Available Time Slots</h4>
+                <span>${new Date(date).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}</span>
+            </div>
+            <div class="no-slots-message">
+                <i class="fas fa-clock"></i>
+                <h4>No more slots today</h4>
+                <p>All remaining time slots for today have passed. Please select another date.</p>
+            </div>
+        `;
     }
     
     document.getElementById('timeSlotsContainer').innerHTML = html;
@@ -3307,7 +3783,9 @@ function generateSlotsFromMinutes(startMins, endMins, date, dayOfWeek) {
         function handleContactInput() {
             const contact = document.querySelector('input[name="contact_number"]').value;
             
-            if (contact && step1Completed && (step2Completed || selectedItemType === 'product') && step3Completed && selectedTime) {
+            const itemReady = selectedItemType === 'product' ? step1Completed : selectedServices.length > 0;
+
+            if (contact && itemReady && (step2Completed || selectedItemType === 'product') && step3Completed && selectedTime) {
                 document.getElementById('step4-status').textContent = '✓ Ready';
                 document.getElementById('step4-status').className = 'step-status-badge status-completed';
                 document.getElementById('step4').classList.add('completed');
@@ -3327,12 +3805,13 @@ function generateSlotsFromMinutes(startMins, endMins, date, dayOfWeek) {
         // Form validation
         document.getElementById('bookingForm').addEventListener('submit', function(e) {
             const contactInput = document.querySelector('input[name="contact_number"]');
-            
-            if (!step1Completed || !step3Completed || !selectedTime || !contactInput.value) {
+            const itemReady = selectedItemType === 'product' ? step1Completed : selectedServices.length > 0;
+
+            if (!itemReady || !step3Completed || !selectedTime || !contactInput.value) {
                 e.preventDefault();
                 showToast('Please complete all steps before confirming your booking.', 'error');
                 
-                if (!step1Completed) {
+                if (!itemReady) {
                     scrollToStep('step1');
                 } else if (selectedItemType === 'service' && !step2Completed) {
                     scrollToStep('step2');
@@ -3341,6 +3820,27 @@ function generateSlotsFromMinutes(startMins, endMins, date, dayOfWeek) {
                 } else if (!contactInput.value) {
                     scrollToStep('step4');
                     contactInput.style.borderColor = 'var(--danger)';
+                }
+                return;
+            }
+
+            // ✅ NEW: huling client-side check bago mag-submit — kung sakaling
+            // nakaupo lang ang user sa page at nakalipas na ang piniling oras.
+            // Karagdagang guard lang ito; hindi nito binabago ang itaas na validation.
+            const selDate = document.getElementById('selectedDate').value;
+            const selTimeVal = document.getElementById('selectedTime').value;
+            const todayStrSubmit = getTodayDateStr();
+
+            if (selDate === todayStrSubmit && selTimeVal) {
+                const nowSubmit = new Date();
+                const nowMinutesSubmit = nowSubmit.getHours() * 60 + nowSubmit.getMinutes();
+                const [hSubmit, mSubmit] = selTimeVal.split(':').map(Number);
+                const selMinutesSubmit = (hSubmit * 60) + mSubmit;
+
+                if (selMinutesSubmit < nowMinutesSubmit) {
+                    e.preventDefault();
+                    showToast('That time has already passed. Please choose another time.', 'error');
+                    scrollToStep('step3');
                 }
             }
         });

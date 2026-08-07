@@ -154,7 +154,19 @@ $formatted_date = $apd->format('F j, Y');
 $formatted_time = $apd->format('g:i A');
 $formatted_day  = $apd->format('l');
 
-$reviews_query = mysqli_query($conn,"SELECT r.*,CONCAT(u.first_name,' ',u.last_name) as reviewer_name FROM clinic_reviews r JOIN users u ON r.user_id=u.id WHERE r.clinic_id={$appointment['clinic_id']} ORDER BY r.created_at DESC LIMIT 3");
+// Reviews + attached photos (GROUP_CONCAT so this stays a single query)
+$reviews_query = mysqli_query($conn,"
+    SELECT r.*,
+           CONCAT(u.first_name,' ',u.last_name) as reviewer_name,
+           GROUP_CONCAT(ri.image_path SEPARATOR '||') as review_image_list
+    FROM clinic_reviews r
+    JOIN users u ON r.user_id=u.id
+    LEFT JOIN clinic_review_images ri ON ri.review_id = r.id
+    WHERE r.clinic_id={$appointment['clinic_id']}
+    GROUP BY r.id
+    ORDER BY r.created_at DESC
+    LIMIT 3
+");
 
 $now=new DateTime(); $interval=$now->diff($apd); $days_until=$interval->days;
 if ($apd<$now&&!in_array($appointment['status'],['completed','cancelled','missed'])){$status_message='Past appointment';$status_class='past';}
@@ -450,6 +462,9 @@ $wc = mysqli_query($conn, "SELECT id, status FROM warranty_claims
         .review-rating{display:flex;gap:2px;color:#FFC107;font-size:12px;}
         .review-text{font-size:14px;color:var(--text-secondary);line-height:1.5;margin-bottom:8px;}
         .review-date{font-size:11px;color:var(--text-muted);}
+        .review-photos{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px;}
+        .review-photos img{width:64px;height:64px;object-fit:cover;border-radius:var(--radius-md);border:1px solid var(--border-light);cursor:zoom-in;transition:transform 0.15s;}
+        .review-photos img:hover{transform:scale(1.05);}
         .btn-write-review{display:inline-flex;align-items:center;gap:8px;padding:10px 20px;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:var(--radius-full);color:var(--text-primary);text-decoration:none;font-size:13px;font-weight:500;transition:all 0.3s;}
         .btn-write-review:hover{background:var(--primary);color:white;border-color:var(--primary);}
         .empty-reviews{text-align:center;padding:40px;color:var(--text-muted);}
@@ -826,6 +841,16 @@ $wc = mysqli_query($conn, "SELECT id, status FROM warranty_claims
                     <div class="review-rating"><?php for($i=1;$i<=5;$i++): ?><i class="fas fa-star<?php echo $i<=$review['rating']?'':'-o'; ?>"></i><?php endfor; ?></div>
                 </div>
                 <div class="review-text"><?php echo htmlspecialchars($review['review']); ?></div>
+                <?php if (!empty($review['review_image_list'])): ?>
+                <div class="review-photos">
+                    <?php foreach (explode('||', $review['review_image_list']) as $rimg): ?>
+                        <?php if (trim($rimg) === '') continue; ?>
+                        <img src="<?php echo htmlspecialchars($rimg); ?>"
+                             alt="Review photo"
+                             onclick="openImageModal('<?php echo htmlspecialchars($rimg); ?>','Review photo')">
+                    <?php endforeach; ?>
+                </div>
+                <?php endif; ?>
                 <div class="review-date"><?php echo timeAgo($review['created_at']); ?></div>
             </div>
             <?php endwhile; ?>
@@ -895,20 +920,6 @@ $wc = mysqli_query($conn, "SELECT id, status FROM warranty_claims
     <?php endif; ?>
 </div>
 
-<!-- Refund Button (for cancelled appointments with downpayment) -->
-<?php if ($appointment['status'] == 'cancelled' && ($downpayment_amount ?? 0) > 0 && !($refund_pending ?? false)): ?>
-<div class="action-buttons" style="margin-top:15px; justify-content:flex-end;">
-    <button onclick="requestRefund(<?php echo $appointment['id']; ?>)" class="action-btn action-btn-warning">
-        <i class="fas fa-money-bill-wave"></i> Request Refund (₱<?php echo number_format($downpayment_amount, 2); ?>)
-    </button>
-</div>
-<?php elseif ($appointment['status'] == 'cancelled' && ($downpayment_amount ?? 0) > 0 && ($refund_pending ?? false)): ?>
-<div class="action-buttons" style="margin-top:15px; justify-content:flex-end;">
-    <button class="action-btn action-btn-secondary" disabled style="opacity:0.6; cursor:not-allowed;">
-        <i class="fas fa-spinner fa-pulse"></i> Refund Request Pending
-    </button>
-</div>
-<?php endif; ?>
 <!-- Refund Button (for cancelled appointments with downpayment) -->
 <?php if ($appointment['status'] == 'cancelled' && ($downpayment_amount ?? 0) > 0 && !($refund_pending ?? false)): ?>
 <div class="action-buttons" style="margin-top:15px; justify-content:flex-end;">

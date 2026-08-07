@@ -160,8 +160,22 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         // ============================================
         // SIMPLE VALIDATION
         // ============================================
+
+        // 0. ✅ SERVER-SIDE: Bawal mag-book ng petsa/oras na nasa nakaraan na
+        //    (kahit ma-bypass ang JS validation, hindi papasa dito)
+        $tz = new DateTimeZone(date_default_timezone_get() ?: 'Asia/Manila');
+        $now_server = new DateTime('now', $tz);
+        $appointment_datetime_str = $appointment_date . ' ' . $appointment_time;
+        $appointment_datetime = DateTime::createFromFormat('Y-m-d H:i:s', $appointment_datetime_str, $tz);
+
+        if (!$appointment_datetime) {
+            $error_message = 'Invalid date or time format.';
+        } elseif ($appointment_datetime < $now_server) {
+            $error_message = 'You cannot book an appointment in the past. Please select a valid date and time.';
+        }
         
         // 1. Check if user already has appointment at this exact date and time (kahit ibang clinic)
+        if (empty($error_message)) {
         $conflict_query = mysqli_query($conn, "
             SELECT a.*, c.name as clinic_name 
             FROM appointments a
@@ -177,6 +191,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             $formatted_time = date('g:i A', strtotime($appointment_time));
             $formatted_date = date('F j, Y', strtotime($appointment_date));
             $error_message = "You already have an appointment at {$conflict['clinic_name']} on {$formatted_date} at {$formatted_time}. Please choose another time.";
+        }
         }
         
         // 2. Check daily limit (max 3 appointments per day)
@@ -2719,6 +2734,84 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
         let currentMonth = new Date();
         let availableDatesCache = {};
 
+        // ✅ Buffer (minutes) bago ang oras ngayon — pumipigil sa pag-book ng slot
+        // na napakalapit na (halimbawa 5 minuto na lang bago dumating)
+        const BOOKING_BUFFER_MINUTES = 30;
+
+        // ✅ Helper: kunin ang clinic open/close minutes (24h format) mula sa clinicHours string
+        function getClinicHoursRange() {
+            const hoursMatch = clinicHours.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+            if (!hoursMatch) return null;
+
+            let startHour = parseInt(hoursMatch[1]);
+            let startMinute = hoursMatch[2] ? parseInt(hoursMatch[2]) : 0;
+            let startAmPm = hoursMatch[3] ? hoursMatch[3].toLowerCase() : 'am';
+
+            let endHour = parseInt(hoursMatch[4]);
+            let endMinute = hoursMatch[5] ? parseInt(hoursMatch[5]) : 0;
+            let endAmPm = hoursMatch[6] ? hoursMatch[6].toLowerCase() : 'pm';
+
+            if (startAmPm === 'pm' && startHour !== 12) startHour += 12;
+            if (startAmPm === 'am' && startHour === 12) startHour = 0;
+            if (endAmPm === 'pm' && endHour !== 12) endHour += 12;
+            if (endAmPm === 'am' && endHour === 12) endHour = 0;
+
+            return {
+                startMinutes: (startHour * 60) + startMinute,
+                endMinutes: (endHour * 60) + endMinute
+            };
+        }
+
+        // ✅ Helper: kunin ang YYYY-MM-DD ng "today" gamit ang LOCAL time (hindi UTC)
+        function getTodayDateStr() {
+            const now = new Date();
+            return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+        }
+
+        // ✅ Helper: base sa selected doctor (o "any"), kunin ang pinaka-huling available
+        //    na oras (end minutes) para sa ibinigay na araw ng linggo
+        function getEffectiveEndMinutesForDay(dayOfWeek) {
+            const clinicRange = getClinicHoursRange();
+            if (!clinicRange) return null;
+
+            let effectiveEnd = clinicRange.endMinutes;
+
+            if (selectedDoctorId !== 'any' && selectedDoctorSchedule && selectedDoctorSchedule[dayOfWeek]) {
+                const ranges = selectedDoctorSchedule[dayOfWeek];
+                if (!Array.isArray(ranges) || ranges.length === 0) {
+                    return null; // walang schedule ang doctor sa araw na ito
+                }
+                let latestEnd = 0;
+                ranges.forEach(r => {
+                    const parts = r.split('-');
+                    if (parts.length < 2) return;
+                    const endParts = parts[1].split(':');
+                    const eh = parseInt(endParts[0]);
+                    const em = parseInt(endParts[1] || '0');
+                    const mins = (eh * 60) + em;
+                    if (mins > latestEnd) latestEnd = mins;
+                });
+                effectiveEnd = Math.min(effectiveEnd, latestEnd);
+            }
+
+            return effectiveEnd;
+        }
+
+        // ✅ Helper: kung "today" ang dateStr, may matitira pa bang future slot
+        //    (base sa kasalukuyang oras + buffer) bago mag-close ang clinic/doctor?
+        function hasFutureSlotToday(dateStr, dayOfWeek) {
+            const todayStr = getTodayDateStr();
+            if (dateStr !== todayStr) return true; // hindi today, walang epekto ang oras ngayon
+
+            const now = new Date();
+            const nowMinutes = now.getHours() * 60 + now.getMinutes();
+
+            const effectiveEnd = getEffectiveEndMinutesForDay(dayOfWeek);
+            if (effectiveEnd === null) return false; // walang schedule
+
+            return (nowMinutes + BOOKING_BUFFER_MINUTES) < effectiveEnd;
+        }
+
         function handleDoctorSelection(radio) {
             const doctorCard = radio.closest('.doctor-card');
             
@@ -2843,6 +2936,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                 
                 const isPast = cellDate < today;
                 const dayOfWeek = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][cellDate.getDay()];
+                const isToday = cellDate.toDateString() === today.toDateString();
                 
                 let canSelect = false;
                 
@@ -2857,8 +2951,13 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                         }
                     }
                 }
+
+                // ✅ BAGO: kung "today" ang date at wala nang matitirang oras
+                // (nakalampas na ang lahat ng available hours), i-disable ito
+                if (canSelect && isToday && !hasFutureSlotToday(dateStr, dayOfWeek)) {
+                    canSelect = false;
+                }
                 
-                const isToday = cellDate.toDateString() === today.toDateString();
                 const isSelected = selectedDate === dateStr;
                 
                 let classes = 'calendar-day';
@@ -2895,6 +2994,12 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                     alert('Doctor is not available on this date');
                     return;
                 }
+            }
+
+            // ✅ BAGO: huling check kung "today" at nakalampas na ang oras
+            if (!hasFutureSlotToday(dateStr, dayOfWeek)) {
+                alert('No more available time slots for today. Please select another date.');
+                return;
             }
             
             selectedDate = dateStr;
@@ -2933,38 +3038,33 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
         }
 
         function generateTimeSlots(date, dayOfWeek) {
-            const hoursMatch = clinicHours.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
-            
-            if (!hoursMatch) {
+            const clinicRange = getClinicHoursRange();
+
+            if (!clinicRange) {
                 document.getElementById('timeSlotsContainer').innerHTML = '<div class="no-slots-message"><i class="fas fa-exclamation-triangle"></i><h4>Unable to parse clinic hours</h4><p>Please contact the clinic directly.</p></div>';
                 return;
             }
-            
-            let clinicStartHour = parseInt(hoursMatch[1]);
-            let clinicStartMinute = hoursMatch[2] ? parseInt(hoursMatch[2]) : 0;
-            let clinicStartAmPm = hoursMatch[3] ? hoursMatch[3].toLowerCase() : 'am';
-            
-            let clinicEndHour = parseInt(hoursMatch[4]);
-            let clinicEndMinute = hoursMatch[5] ? parseInt(hoursMatch[5]) : 0;
-            let clinicEndAmPm = hoursMatch[6] ? hoursMatch[6].toLowerCase() : 'pm';
-            
-            if (clinicStartAmPm === 'pm' && clinicStartHour !== 12) clinicStartHour += 12;
-            if (clinicStartAmPm === 'am' && clinicStartHour === 12) clinicStartHour = 0;
-            if (clinicEndAmPm === 'pm' && clinicEndHour !== 12) clinicEndHour += 12;
-            if (clinicEndAmPm === 'am' && clinicEndHour === 12) clinicEndHour = 0;
-            
-            const clinicStartMinutes = (clinicStartHour * 60) + clinicStartMinute;
-            const clinicEndMinutes = (clinicEndHour * 60) + clinicEndMinute;
+
+            const clinicStartMinutes = clinicRange.startMinutes;
+            const clinicEndMinutes = clinicRange.endMinutes;
             
             let doctorTimeRanges = [];
             if (selectedDoctorId !== 'any' && selectedDoctorSchedule && selectedDoctorSchedule[dayOfWeek]) {
                 doctorTimeRanges = selectedDoctorSchedule[dayOfWeek];
             }
+
+            // ✅ BAGO: kung "today" ang piniling petsa, kunin ang current time
+            //    para masabing anong mga oras ang nakalipas na
+            const todayStr = getTodayDateStr();
+            const isSelectedDateToday = (date === todayStr);
+            const now = new Date();
+            const nowMinutes = now.getHours() * 60 + now.getMinutes();
             
             let availableSlots = [];
             let breakSlots = [];
             let bookedSlotsForDate = [];
             let unavailableSlots = [];
+            let pastSlots = []; // ✅ BAGO: mga oras na nakalipas na (kung today)
             
             for (let mins = clinicStartMinutes; mins < clinicEndMinutes; mins += 30) {
                 const hour = Math.floor(mins / 60);
@@ -2974,6 +3074,13 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                 const displayHour = hour % 12 === 0 ? 12 : hour % 12;
                 const displayTime = displayHour + ':' + (minute < 10 ? '0' + minute : minute) + ' ' + ampm;
                 const time24h = (hour < 10 ? '0' + hour : hour) + ':' + (minute < 10 ? '0' + minute : minute) + ':00';
+
+                // ✅ BAGO: skip/disable kung "today" at nakalipas na ang oras na ito
+                // (may buffer para hindi puwedeng mag-book ng slot na masyadong malapit na)
+                if (isSelectedDateToday && mins < (nowMinutes + BOOKING_BUFFER_MINUTES)) {
+                    pastSlots.push({ time: displayTime });
+                    continue;
+                }
                 
                 const isBooked = bookedSlots.some(slot => 
                     slot.appointment_date === date && 
@@ -3067,6 +3174,16 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                 });
                 html += '</div>';
             }
+
+            // ✅ BAGO: ipakita ang mga oras na nakalipas na (para malinaw sa user)
+            if (pastSlots.length > 0) {
+                html += '<h5 style="margin: 15px 0 5px; color: var(--text-muted);">Already Passed</h5>';
+                html += '<div class="time-slots-grid">';
+                pastSlots.forEach(slot => {
+                    html += `<div class="time-slot-card disabled" title="This time has already passed">${slot.time}<span class="slot-label">Passed</span></div>`;
+                });
+                html += '</div>';
+            }
             
             if (unavailableSlots.length > 0) {
                 html += '<h5 style="margin: 15px 0 5px; color: var(--danger);">Outside Doctor Hours</h5>';
@@ -3095,8 +3212,25 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                 html += '</div>';
             }
             
-            if (availableSlots.length === 0 && breakSlots.length === 0 && bookedSlotsForDate.length === 0 && unavailableSlots.length === 0) {
+            if (availableSlots.length === 0 && breakSlots.length === 0 && bookedSlotsForDate.length === 0 && unavailableSlots.length === 0 && pastSlots.length === 0) {
                 html = '<div class="no-slots-message"><i class="fas fa-calendar-times"></i><h4>No available slots</h4><p>Please select another date.</p></div>';
+            }
+
+            // ✅ BAGO: kung wala nang natitirang available slot dahil lahat
+            // ay nakalipas na (today) at walang break/booked/unavailable, palitan ang message
+            if (availableSlots.length === 0 && isSelectedDateToday && pastSlots.length > 0 &&
+                unavailableSlots.length === 0 && bookedSlotsForDate.length === 0) {
+                html = `
+                    <div class="time-slots-header">
+                        <h4>Available Time Slots</h4>
+                        <span>${new Date(date).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}</span>
+                    </div>
+                    <div class="no-slots-message">
+                        <i class="fas fa-clock"></i>
+                        <h4>No more slots today</h4>
+                        <p>All remaining time slots for today have passed. Please select another date.</p>
+                    </div>
+                `;
             }
             
             document.getElementById('timeSlotsContainer').innerHTML = html;
@@ -3175,6 +3309,26 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                 } else if (!contactInput.value) {
                     scrollToStep('step3');
                     contactInput.style.borderColor = 'var(--danger)';
+                }
+                return;
+            }
+
+            // ✅ BAGO: huling client-side check bago mag-submit — kung sakaling
+            // nakaupo lang ang user sa page at nakalipas na ang piniling oras
+            const selDate = document.getElementById('selectedDate').value;
+            const selTimeVal = document.getElementById('selectedTime').value;
+            const todayStr = getTodayDateStr();
+
+            if (selDate === todayStr) {
+                const now = new Date();
+                const nowMinutes = now.getHours() * 60 + now.getMinutes();
+                const [h, m] = selTimeVal.split(':').map(Number);
+                const selMinutes = (h * 60) + m;
+
+                if (selMinutes < nowMinutes) {
+                    e.preventDefault();
+                    showToast('That time has already passed. Please choose another time.', 'error');
+                    scrollToStep('step2');
                 }
             }
         });

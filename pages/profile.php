@@ -1,4 +1,6 @@
 <?php
+ini_set('display_errors', 1);
+error_reporting(E_ALL);
 include '../includes/config.php';
 include '../includes/theme.php';
 
@@ -22,6 +24,126 @@ $_SESSION['user_avatar'] = $user['avatar'] ?? null;
 // Get user avatar and created_at para sa sidebar
 $avatar_query = mysqli_query($conn, "SELECT avatar, created_at FROM users WHERE id = $user_id");
 $user_data = mysqli_fetch_assoc($avatar_query);
+
+// ============================================
+// PWD/SENIOR VERIFICATION - NEW SECTION
+// ============================================
+// Check if user has PWD/Senior verification
+$pwd_senior_query = mysqli_query($conn, "
+    SELECT 
+        pwd_senior_status,
+        pwd_senior_type,
+        pwd_senior_id_number,
+        pwd_senior_id_image,
+        pwd_senior_verified_by,
+        pwd_senior_verified_at,
+        pwd_senior_rejection_reason
+    FROM users 
+    WHERE id = $user_id
+");
+$pwd_senior = mysqli_fetch_assoc($pwd_senior_query);
+
+// Handle PWD/Senior verification submission
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_pwd_senior'])) {
+    $pwd_senior_type = mysqli_real_escape_string($conn, $_POST['pwd_senior_type'] ?? '');
+    $pwd_senior_id_number = mysqli_real_escape_string($conn, trim($_POST['pwd_senior_id_number'] ?? ''));
+    
+    // Validate
+    if (empty($pwd_senior_type) || !in_array($pwd_senior_type, ['pwd', 'senior'])) {
+        $_SESSION['error_message'] = 'Please select a valid type (PWD or Senior Citizen).';
+        header('Location: profile.php');
+        exit();
+    }
+    
+    if (empty($pwd_senior_id_number)) {
+        $_SESSION['error_message'] = 'Please enter your ID number.';
+        header('Location: profile.php');
+        exit();
+    }
+    
+    // Handle file upload
+    $uploaded_image = '';
+    if (isset($_FILES['pwd_senior_id_image']) && $_FILES['pwd_senior_id_image']['error'] == 0) {
+        $allowed = ['jpg', 'jpeg', 'png', 'pdf'];
+        $filename = $_FILES['pwd_senior_id_image']['name'];
+        $ext = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+        
+        if (!in_array($ext, $allowed)) {
+            $_SESSION['error_message'] = 'Invalid file type. Allowed: JPG, PNG, PDF';
+            header('Location: profile.php');
+            exit();
+        }
+        
+        if ($_FILES['pwd_senior_id_image']['size'] > 5 * 1024 * 1024) {
+            $_SESSION['error_message'] = 'File too large. Max 5MB.';
+            header('Location: profile.php');
+            exit();
+        }
+        
+        $upload_dir = '../assets/images/pwd_ids/';
+        if (!file_exists($upload_dir)) {
+            mkdir($upload_dir, 0777, true);
+        }
+        
+        $new_filename = 'pwd_' . $user_id . '_' . time() . '.' . $ext;
+        $upload_path = $upload_dir . $new_filename;
+        
+        if (move_uploaded_file($_FILES['pwd_senior_id_image']['tmp_name'], $upload_path)) {
+            $uploaded_image = $new_filename;
+        } else {
+            $_SESSION['error_message'] = 'Failed to upload ID image.';
+            header('Location: profile.php');
+            exit();
+        }
+    } else {
+        $_SESSION['error_message'] = 'Please upload your valid ID.';
+        header('Location: profile.php');
+        exit();
+    }
+    
+    // Update user record
+    $update_query = mysqli_query($conn, "
+        UPDATE users SET 
+            pwd_senior_status = 'pending',
+            pwd_senior_type = '$pwd_senior_type',
+            pwd_senior_id_number = '$pwd_senior_id_number',
+            pwd_senior_id_image = '$uploaded_image',
+            pwd_senior_rejection_reason = NULL
+        WHERE id = $user_id
+    ");
+    
+    if ($update_query) {
+        // Log the submission
+        mysqli_query($conn, "
+            INSERT INTO pwd_senior_verification_logs (user_id, action, created_at)
+            VALUES ($user_id, 'submitted', NOW())
+        ");
+        
+        $_SESSION['success_message'] = 'Your PWD/Senior verification request has been submitted. Please wait for clinic approval.';
+    } else {
+        $_SESSION['error_message'] = 'Failed to submit verification request. Please try again.';
+    }
+    
+    header('Location: profile.php');
+    exit();
+}
+
+// Handle cancel request
+if (isset($_GET['cancel_pwd_request'])) {
+    mysqli_query($conn, "
+        UPDATE users SET 
+            pwd_senior_status = 'none',
+            pwd_senior_type = NULL,
+            pwd_senior_id_number = NULL,
+            pwd_senior_id_image = NULL,
+            pwd_senior_rejection_reason = NULL
+        WHERE id = $user_id
+    ");
+    
+    $_SESSION['success_message'] = 'Verification request cancelled.';
+    header('Location: profile.php');
+    exit();
+}
 
 // ============================================
 // NOTIFICATION VARIABLES
@@ -240,7 +362,8 @@ $is_home_active = in_array($current_page, $home_active_pages);
     <title>My Profile - Eyecore</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
-        /* ===== RESET AND BASE STYLES ===== */
+        /* ===== ALL YOUR EXISTING CSS HERE (KEEP AS IS) ===== */
+        /* ... (all your existing CSS styles) ... */
         * {
             margin: 0;
             padding: 0;
@@ -351,6 +474,206 @@ $is_home_active = in_array($current_page, $home_active_pages);
         h1, h2, h3, h4, h5, h6, p {
             margin: 0;
         }
+
+        /* ============================================
+           NEW PWD/SENIOR STYLES
+           ============================================ */
+        .pwd-senior-section {
+            margin-top: 20px;
+            border-top: 1px solid var(--border-light);
+            padding-top: 20px;
+        }
+
+        .pwd-senior-section .section-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .pwd-senior-section .section-title i {
+            color: var(--primary);
+        }
+
+        .pwd-status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            border-radius: var(--radius-full);
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 15px;
+        }
+
+        .pwd-status-badge.verified {
+            background: var(--verified-bg);
+            color: var(--verified-color);
+        }
+
+        .pwd-status-badge.pending {
+            background: var(--unverified-bg);
+            color: var(--unverified-color);
+        }
+
+        .pwd-status-badge.rejected {
+            background: var(--closed-bg);
+            color: var(--closed-text);
+        }
+
+        .pwd-status-badge.none {
+            background: var(--border-light);
+            color: var(--text-muted);
+        }
+
+        .pwd-verification-form {
+            background: var(--bg-primary);
+            padding: 20px;
+            border-radius: var(--radius-md);
+            border: 1px solid var(--border-light);
+            margin-top: 10px;
+        }
+
+        .pwd-verification-form .form-group {
+            margin-bottom: 15px;
+        }
+
+        .pwd-verification-form .form-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            margin-bottom: 5px;
+        }
+
+        .pwd-verification-form .form-group label i {
+            color: var(--primary);
+            margin-right: 5px;
+        }
+
+        .pwd-verification-form .form-control {
+            width: 100%;
+            padding: 10px 14px;
+            border: 2px solid var(--border-color);
+            border-radius: var(--radius-md);
+            font-size: 14px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            transition: all 0.2s;
+        }
+
+        .pwd-verification-form .form-control:focus {
+            border-color: var(--primary);
+            outline: none;
+            box-shadow: 0 0 0 3px var(--primary-light);
+        }
+
+        .pwd-verification-form .form-control[readonly] {
+            background: var(--border-light);
+            cursor: not-allowed;
+        }
+
+        .pwd-verification-form .btn-submit-verify {
+            padding: 12px 30px;
+            background: var(--primary-gradient);
+            color: white;
+            border: none;
+            border-radius: var(--radius-md);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .pwd-verification-form .btn-submit-verify:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-md);
+        }
+
+        .pwd-verification-form .btn-submit-verify:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .pwd-verification-form .btn-cancel-verify {
+            padding: 12px 30px;
+            background: var(--danger);
+            color: white;
+            border: none;
+            border-radius: var(--radius-md);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            margin-left: 10px;
+        }
+
+        .pwd-verification-form .btn-cancel-verify:hover {
+            opacity: 0.8;
+        }
+
+        .pwd-info-box {
+            background: var(--bg-primary);
+            padding: 15px 20px;
+            border-radius: var(--radius-md);
+            border-left: 4px solid var(--primary);
+            margin: 10px 0;
+        }
+
+        .pwd-info-box .info-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            font-size: 14px;
+        }
+
+        .pwd-info-box .info-row .label {
+            color: var(--text-secondary);
+        }
+
+        .pwd-info-box .info-row .value {
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .pwd-id-preview {
+            max-width: 200px;
+            margin-top: 10px;
+            border-radius: var(--radius-md);
+            border: 1px solid var(--border-light);
+            overflow: hidden;
+        }
+
+        .pwd-id-preview img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .pwd-helper-text {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 5px;
+        }
+
+        .pwd-helper-text i {
+            margin-right: 4px;
+        }
+
+        /* ============================================
+           EXISTING STYLES (KEEP AS IS)
+           ============================================ */
+        /* ... (all your existing styles here) ... */
 
         /* ===== DESKTOP NAVBAR ===== */
         .navbar {
@@ -1002,8 +1325,6 @@ $is_home_active = in_array($current_page, $home_active_pages);
         .mobile-menu-items .logout-link i {
             color: var(--danger);
         }
-
-        
 
         /* ===== TOOLTIPS ===== */
         [data-tooltip] {
@@ -2150,15 +2471,33 @@ $is_home_active = in_array($current_page, $home_active_pages);
                 align-items: flex-start;
                 gap: 5px;
             }
+            
+            .pwd-verification-form .btn-cancel-verify {
+                margin-left: 0;
+                margin-top: 10px;
+                display: block;
+                width: 100%;
+                text-align: center;
+            }
+            
+            .pwd-verification-form .btn-submit-verify {
+                width: 100%;
+                justify-content: center;
+            }
+            
+            .pwd-info-box .info-row {
+                flex-direction: column;
+                gap: 2px;
+            }
         }
         
         .profile-card .btn-save {
-    display: none;
-}
+            display: none;
+        }
 
-.profile-card.edit-mode .btn-save {
-    display: block;
-}
+        .profile-card.edit-mode .btn-save {
+            display: block;
+        }
     </style>
 </head>
 <body>
@@ -2624,6 +2963,194 @@ $is_home_active = in_array($current_page, $home_active_pages);
                         <i class="fas fa-save"></i> Save Changes
                     </button>
                 </form>
+
+                <!-- ============================================ -->
+                <!-- NEW: PWD/SENIOR VERIFICATION SECTION -->
+                <!-- ============================================ -->
+                <div class="pwd-senior-section">
+                    <div class="section-title">
+                        <i class="fas fa-id-card"></i>
+                        PWD / Senior Citizen Verification
+                    </div>
+                    
+                    <?php 
+                    $status = $pwd_senior['pwd_senior_status'] ?? 'none';
+                    $type = $pwd_senior['pwd_senior_type'] ?? '';
+                    $id_number = $pwd_senior['pwd_senior_id_number'] ?? '';
+                    $id_image = $pwd_senior['pwd_senior_id_image'] ?? '';
+                    $rejection_reason = $pwd_senior['pwd_senior_rejection_reason'] ?? '';
+                    $verified_at = $pwd_senior['pwd_senior_verified_at'] ?? '';
+                    
+                    // Status badge
+                    $status_class = 'none';
+                    $status_text = 'Not Verified';
+                    $status_icon = 'fa-times-circle';
+                    if ($status == 'verified') {
+                        $status_class = 'verified';
+                        $status_text = '✅ Verified';
+                        $status_icon = 'fa-check-circle';
+                    } elseif ($status == 'pending') {
+                        $status_class = 'pending';
+                        $status_text = '⏳ Pending Verification';
+                        $status_icon = 'fa-clock';
+                    } elseif ($status == 'rejected') {
+                        $status_class = 'rejected';
+                        $status_text = '❌ Rejected';
+                        $status_icon = 'fa-exclamation-circle';
+                    }
+                    ?>
+                    
+                    <div class="pwd-status-badge <?php echo $status_class; ?>">
+                        <i class="fas <?php echo $status_icon; ?>"></i>
+                        <?php echo $status_text; ?>
+                    </div>
+                    
+                    <?php if ($status == 'verified'): ?>
+                        <!-- VERIFIED STATE -->
+                        <div class="pwd-info-box">
+                            <div class="info-row">
+                                <span class="label">Type:</span>
+                                <span class="value"><?php echo ucfirst($type); ?></span>
+                            </div>
+                            <div class="info-row">
+                                <span class="label">ID Number:</span>
+                                <span class="value"><?php echo htmlspecialchars($id_number); ?></span>
+                            </div>
+                            <?php if ($verified_at): ?>
+                            <div class="info-row">
+                                <span class="label">Verified On:</span>
+                                <span class="value"><?php echo date('M d, Y \a\t g:i A', strtotime($verified_at)); ?></span>
+                            </div>
+                            <?php endif; ?>
+                        </div>
+                        
+                        <?php if ($id_image): ?>
+                        <div class="pwd-id-preview">
+                            <img src="../assets/images/pwd_ids/<?php echo $id_image; ?>" alt="PWD/Senior ID">
+                        </div>
+                        <?php endif; ?>
+                        
+                        <p style="font-size:13px;color:var(--text-secondary);margin-top:10px;">
+                            <i class="fas fa-check-circle" style="color:var(--success);"></i>
+                            Your <?php echo ucfirst($type); ?> discount is active! You'll get 20% off on all bookings.
+                        </p>
+                        
+                    <?php elseif ($status == 'pending'): ?>
+                        <!-- PENDING STATE -->
+                        <div class="pwd-info-box">
+                            <div class="info-row">
+                                <span class="label">Type:</span>
+                                <span class="value"><?php echo ucfirst($type); ?></span>
+                            </div>
+                            <div class="info-row">
+                                <span class="label">ID Number:</span>
+                                <span class="value"><?php echo htmlspecialchars($id_number); ?></span>
+                            </div>
+                            <div class="info-row">
+                                <span class="label">Status:</span>
+                                <span class="value" style="color:var(--warning);">⏳ Waiting for clinic approval</span>
+                            </div>
+                        </div>
+                        
+                        <?php if ($id_image): ?>
+                        <div class="pwd-id-preview">
+                            <img src="../assets/images/pwd_ids/<?php echo $id_image; ?>" alt="PWD/Senior ID">
+                        </div>
+                        <?php endif; ?>
+                        
+                        <div style="margin-top:15px;">
+                            <a href="?cancel_pwd_request=1" class="btn-cancel-verify" onclick="return confirm('Are you sure you want to cancel your verification request?')">
+                                <i class="fas fa-times"></i> Cancel Request
+                            </a>
+                        </div>
+                        
+                        <p style="font-size:12px;color:var(--text-muted);margin-top:10px;">
+                            <i class="fas fa-info-circle"></i>
+                            Your request is being reviewed. You'll be notified once approved.
+                        </p>
+                        
+                    <?php elseif ($status == 'rejected'): ?>
+                        <!-- REJECTED STATE -->
+                        <div class="pwd-info-box" style="border-left-color:var(--danger);">
+                            <div class="info-row">
+                                <span class="label">Type:</span>
+                                <span class="value"><?php echo ucfirst($type); ?></span>
+                            </div>
+                            <div class="info-row">
+                                <span class="label">ID Number:</span>
+                                <span class="value"><?php echo htmlspecialchars($id_number); ?></span>
+                            </div>
+                            <?php if ($rejection_reason): ?>
+                            <div class="info-row">
+                                <span class="label">Reason:</span>
+                                <span class="value" style="color:var(--danger);"><?php echo htmlspecialchars($rejection_reason); ?></span>
+                            </div>
+                            <?php endif; ?>
+                        </div>
+                        
+                        <?php if ($id_image): ?>
+                        <div class="pwd-id-preview">
+                            <img src="../assets/images/pwd_ids/<?php echo $id_image; ?>" alt="PWD/Senior ID">
+                        </div>
+                        <?php endif; ?>
+                        
+                        <div style="margin-top:15px;">
+                            <button onclick="document.getElementById('pwdSeniorForm').style.display='block'" class="btn-submit-verify">
+                                <i class="fas fa-redo"></i> Resubmit for Verification
+                            </button>
+                        </div>
+                        
+                        <div id="pwdSeniorForm" style="display:none;margin-top:15px;">
+                            <!-- Re-show the form for resubmission -->
+                            <?php include 'pwd_senior_form.php'; ?>
+                        </div>
+                        
+                    <?php else: ?>
+                        <!-- NONE / NOT VERIFIED STATE -->
+                        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:15px;">
+                            <i class="fas fa-info-circle" style="color:var(--primary);"></i>
+                            Apply for PWD or Senior Citizen verification to get <strong>20% discount</strong> on all bookings.
+                            Once verified, discount is automatically applied to all your appointments.
+                        </p>
+                        
+                        <div class="pwd-verification-form" id="pwdSeniorForm">
+                            <form method="POST" action="" enctype="multipart/form-data">
+                                <div class="form-group">
+                                    <label><i class="fas fa-tag"></i> Select Type</label>
+                                    <select name="pwd_senior_type" class="form-control" required>
+                                        <option value="">-- Select --</option>
+                                        <option value="pwd">PWD (Person with Disability)</option>
+                                        <option value="senior">Senior Citizen</option>
+                                    </select>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label><i class="fas fa-id-card"></i> ID Number</label>
+                                    <input type="text" name="pwd_senior_id_number" class="form-control" placeholder="Enter your ID number" required>
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label><i class="fas fa-upload"></i> Upload ID Image</label>
+                                    <input type="file" name="pwd_senior_id_image" class="form-control" accept=".jpg,.jpeg,.png,.pdf" required>
+                                    <div class="pwd-helper-text">
+                                        <i class="fas fa-info-circle"></i>
+                                        Upload a clear photo of your valid ID. Allowed: JPG, PNG, PDF (Max 5MB)
+                                    </div>
+                                </div>
+                                
+                                <button type="submit" name="submit_pwd_senior" class="btn-submit-verify">
+                                    <i class="fas fa-paper-plane"></i> Submit for Verification
+                                </button>
+                            </form>
+                        </div>
+                        
+                        <div class="pwd-helper-text" style="margin-top:10px;">
+                            <i class="fas fa-shield-alt"></i>
+                            Your ID will be verified by the clinic. This is a one-time process.
+                        </div>
+                    <?php endif; ?>
+                </div>
+                <!-- END OF PWD/SENIOR SECTION -->
             </div>
 
             <!-- Recent Activity Card -->
@@ -2678,99 +3205,99 @@ $is_home_active = in_array($current_page, $home_active_pages);
             </div>
         </div>
 
-<!-- EYE EXAMINATION HISTORY CARD -->
-<div class="profile-card" style="margin-bottom: 25px;">
-    <div class="card-header">
-        <i class="fas fa-file-prescription" style="color: var(--primary);"></i>
-        <h2>Eye Examination History</h2>
-        <a href="my-examinations.php" class="edit-badge">
-            <i class="fas fa-history"></i> View Full History
-        </a>
-    </div>
-    
-    <?php
-    // DIREKTA NA: Kunin lahat ng optical records para sa user na ito
-    // Gamitin ang user_id para i-join sa appointments table
-$optical_query = mysqli_query($conn, "
-    SELECT DISTINCT o.*, c.name as clinic_name
-    FROM optical_records o
-    LEFT JOIN clinics c ON o.clinic_id = c.id
-    INNER JOIN appointments a ON o.appointment_id = a.id
-    WHERE a.user_id = $user_id
-    ORDER BY o.examination_date DESC
-    LIMIT 10
-");
-    
-    if (mysqli_num_rows($optical_query) > 0):
-    ?>
-            <div style="display: flex; flex-direction: column; gap: 12px;">
-                <?php while($exam = mysqli_fetch_assoc($optical_query)): ?>
-                    <a href="examination-details.php?id=<?php echo $exam['id']; ?>" class="exam-preview-item">
-                        <div class="exam-icon">
-                            <i class="fas fa-eye"></i>
-                        </div>
-                        <div class="exam-info">
-                            <div class="exam-clinic-name">
-                                <?php echo htmlspecialchars($exam['clinic_name'] ?? 'EYECORE Clinic'); ?>
-                            </div>
-                            <div class="exam-meta">
-                                <span>
-                                    <i class="far fa-calendar"></i>
-                                    <?php echo date('M d, Y', strtotime($exam['examination_date'])); ?>
-                                </span>
-                                <?php if ($exam['od_sph'] != 0 || $exam['os_sph'] != 0): ?>
-                                    <span>
-                                        <i class="fas fa-glasses"></i>
-                                        OD: <?php echo $exam['od_sph']; ?> / OS: <?php echo $exam['os_sph']; ?>
-                                    </span>
-                                <?php endif; ?>
-                                <?php if ($exam['pd'] && $exam['pd'] > 0): ?>
-                                    <span>
-                                        <i class="fas fa-ruler"></i>
-                                        PD: <?php echo $exam['pd']; ?>mm
-                                    </span>
-                                <?php endif; ?>
-                                <span>
-                                    <i class="fas fa-user-md"></i>
-                                    Dr. <?php echo $exam['optometrist']; ?>
-                                </span>
-                            </div>
-                        </div>
-                        <i class="fas fa-chevron-right exam-chevron"></i>
-                    </a>
-                <?php endwhile; ?>
-            </div>
-            
-            <?php 
-$total_count = mysqli_num_rows(mysqli_query($conn, "
-    SELECT DISTINCT o.id FROM optical_records o
-    INNER JOIN appointments a ON o.appointment_id = a.id
-    WHERE a.user_id = $user_id
-"));
-            if ($total_count > 10): 
-            ?>
-                <div class="view-all-exams">
-                    <a href="my-examinations.php">
-                        View All <?php echo $total_count; ?> Records <i class="fas fa-arrow-right"></i>
-                    </a>
-                </div>
-            <?php endif; ?>
-            
-        <?php 
-        else:
-        ?>
-            <div class="empty-exams">
-                <i class="fas fa-file-prescription"></i>
-                <p>No examination records found.</p>
-                <p style="font-size: 12px; margin-top: 5px;">Complete an eye exam appointment to see your records here.</p>
-                <a href="dashboard.php" class="btn-primary">
-                    <i class="fas fa-calendar-plus"></i> Book an Appointment
+        <!-- EYE EXAMINATION HISTORY CARD -->
+        <div class="profile-card" style="margin-bottom: 25px;">
+            <div class="card-header">
+                <i class="fas fa-file-prescription" style="color: var(--primary);"></i>
+                <h2>Eye Examination History</h2>
+                <a href="my-examinations.php" class="edit-badge">
+                    <i class="fas fa-history"></i> View Full History
                 </a>
             </div>
-        <?php 
-        endif;
-    ?>
-</div>
+            
+            <?php
+            // DIREKTA NA: Kunin lahat ng optical records para sa user na ito
+            // Gamitin ang user_id para i-join sa appointments table
+            $optical_query = mysqli_query($conn, "
+                SELECT DISTINCT o.*, c.name as clinic_name
+                FROM optical_records o
+                LEFT JOIN clinics c ON o.clinic_id = c.id
+                INNER JOIN appointments a ON o.appointment_id = a.id
+                WHERE a.user_id = $user_id
+                ORDER BY o.examination_date DESC
+                LIMIT 10
+            ");
+            
+            if (mysqli_num_rows($optical_query) > 0):
+            ?>
+                <div style="display: flex; flex-direction: column; gap: 12px;">
+                    <?php while($exam = mysqli_fetch_assoc($optical_query)): ?>
+                        <a href="examination-details.php?id=<?php echo $exam['id']; ?>" class="exam-preview-item">
+                            <div class="exam-icon">
+                                <i class="fas fa-eye"></i>
+                            </div>
+                            <div class="exam-info">
+                                <div class="exam-clinic-name">
+                                    <?php echo htmlspecialchars($exam['clinic_name'] ?? 'EYECORE Clinic'); ?>
+                                </div>
+                                <div class="exam-meta">
+                                    <span>
+                                        <i class="far fa-calendar"></i>
+                                        <?php echo date('M d, Y', strtotime($exam['examination_date'])); ?>
+                                    </span>
+                                    <?php if ($exam['od_sph'] != 0 || $exam['os_sph'] != 0): ?>
+                                        <span>
+                                            <i class="fas fa-glasses"></i>
+                                            OD: <?php echo $exam['od_sph']; ?> / OS: <?php echo $exam['os_sph']; ?>
+                                        </span>
+                                    <?php endif; ?>
+                                    <?php if ($exam['pd'] && $exam['pd'] > 0): ?>
+                                        <span>
+                                            <i class="fas fa-ruler"></i>
+                                            PD: <?php echo $exam['pd']; ?>mm
+                                        </span>
+                                    <?php endif; ?>
+                                    <span>
+                                        <i class="fas fa-user-md"></i>
+                                        Dr. <?php echo $exam['optometrist']; ?>
+                                    </span>
+                                </div>
+                            </div>
+                            <i class="fas fa-chevron-right exam-chevron"></i>
+                        </a>
+                    <?php endwhile; ?>
+                </div>
+                
+                <?php 
+                $total_count = mysqli_num_rows(mysqli_query($conn, "
+                    SELECT DISTINCT o.id FROM optical_records o
+                    INNER JOIN appointments a ON o.appointment_id = a.id
+                    WHERE a.user_id = $user_id
+                "));
+                if ($total_count > 10): 
+                ?>
+                    <div class="view-all-exams">
+                        <a href="my-examinations.php">
+                            View All <?php echo $total_count; ?> Records <i class="fas fa-arrow-right"></i>
+                        </a>
+                    </div>
+                <?php endif; ?>
+                
+            <?php 
+            else:
+            ?>
+                <div class="empty-exams">
+                    <i class="fas fa-file-prescription"></i>
+                    <p>No examination records found.</p>
+                    <p style="font-size: 12px; margin-top: 5px;">Complete an eye exam appointment to see your records here.</p>
+                    <a href="dashboard.php" class="btn-primary">
+                        <i class="fas fa-calendar-plus"></i> Book an Appointment
+                    </a>
+                </div>
+            <?php 
+            endif;
+            ?>
+        </div>
 
         <!-- Account Information Card -->
         <div class="info-card">
@@ -3046,27 +3573,28 @@ $total_count = mysqli_num_rows(mysqli_query($conn, "
             }
         });
 
-function toggleEditMode() {
-    const profileCard = document.getElementById('profileCard');
-    const inputs = profileCard.querySelectorAll('.form-control');
-    const isEditMode = profileCard.classList.contains('edit-mode');
-    const saveBtn = profileCard.querySelector('.btn-save');
-    
-    if (isEditMode) {
-        profileCard.classList.remove('edit-mode');
-        profileCard.classList.add('view-mode');
-        inputs.forEach(input => input.readOnly = true);
-        if (saveBtn) saveBtn.style.display = 'none';
-        showToast('Edit mode disabled', 'info');
-        location.reload(); // Reload to show updated data
-    } else {
-        profileCard.classList.remove('view-mode');
-        profileCard.classList.add('edit-mode');
-        inputs.forEach(input => input.readOnly = false);
-        if (saveBtn) saveBtn.style.display = 'block';
-        showToast('Edit mode enabled - make your changes then click Save Changes', 'info');
-    }
-}
+        function toggleEditMode() {
+            const profileCard = document.getElementById('profileCard');
+            const inputs = profileCard.querySelectorAll('.form-control');
+            const isEditMode = profileCard.classList.contains('edit-mode');
+            const saveBtn = profileCard.querySelector('.btn-save');
+            
+            if (isEditMode) {
+                profileCard.classList.remove('edit-mode');
+                profileCard.classList.add('view-mode');
+                inputs.forEach(input => input.readOnly = true);
+                if (saveBtn) saveBtn.style.display = 'none';
+                showToast('Edit mode disabled', 'info');
+                location.reload(); // Reload to show updated data
+            } else {
+                profileCard.classList.remove('view-mode');
+                profileCard.classList.add('edit-mode');
+                inputs.forEach(input => input.readOnly = false);
+                if (saveBtn) saveBtn.style.display = 'block';
+                showToast('Edit mode enabled - make your changes then click Save Changes', 'info');
+            }
+        }
+        
         window.addEventListener('beforeunload', function() {
             if (notificationCheckerInterval) clearInterval(notificationCheckerInterval);
         });

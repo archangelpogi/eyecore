@@ -323,10 +323,12 @@ if ($is_reservation) {
     // PROCESS PAYMENT IF NOT YET PROCESSED
     if (!$already_processed) {
         if ($payment_type == 'downpayment') {
+            // ✅ FIXED: UPDATE APPOINTMENT - DOWNPAYMENT WITH amount_paid
             mysqli_query($conn, "
                 UPDATE appointments 
                 SET payment_status = 'downpayment_paid', 
-                    status = 'confirmed'
+                    status = 'confirmed',
+                    amount_paid = downpayment_amount  -- ✅ IDINAGDAG
                 WHERE id = $appointment_id AND user_id = $user_id
             ");
             
@@ -344,11 +346,14 @@ if ($is_reservation) {
             $success_icon = "fa-hand-holding-usd";
             
         } else {
-            // FULL PAYMENT for APPOINTMENT
+            // ✅ FIXED: FULL PAYMENT FOR APPOINTMENT - WITH amount_paid, subtotal, at payment_status
             mysqli_query($conn, "
                 UPDATE appointments 
                 SET payment_status = 'paid', 
-                    status = 'confirmed'
+                    status = 'confirmed',
+                    amount_paid = total_amount,
+                    subtotal = total_amount,
+                    payment_status = 'paid'
                 WHERE id = $appointment_id AND user_id = $user_id
             ");
             

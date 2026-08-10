@@ -13,30 +13,175 @@ $appointment_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 mysqli_query($conn, "UPDATE appointments SET status='missed',updated_at=NOW() WHERE user_id=$user_id AND status='confirmed' AND CONCAT(appointment_date,' ',COALESCE(appointment_time,'23:59:59')) < NOW()");
 
 // ── POST handlers ─────────────────────────────────────────────────────────────
+
+// ============================================
+// PHASE 3: CANCEL APPOINTMENT WITH VALIDATION
+// ============================================
 if (isset($_POST['cancel_appointment'], $_POST['appointment_id'])) {
     ob_end_clean(); header('Content-Type: application/json');
     $cid = (int)$_POST['appointment_id'];
-    $row = mysqli_fetch_assoc(mysqli_query($conn, "SELECT * FROM appointments WHERE id=$cid AND user_id=$user_id AND status NOT IN ('cancelled','completed','missed')"));
+    
+    // Get appointment with clinic policy
+    $row = mysqli_fetch_assoc(mysqli_query($conn, "
+        SELECT a.*, c.cancellation_deadline, c.refund_policy
+        FROM appointments a
+        JOIN clinics c ON a.clinic_id = c.id
+        WHERE a.id=$cid AND a.user_id=$user_id AND a.status NOT IN ('cancelled','completed','missed')
+    "));
+    
     if ($row) {
         $apd = new DateTime($row['appointment_date']);
-        if ($apd < new DateTime()) { echo json_encode(['success'=>false,'message'=>'Cannot cancel past appointments']); exit(); }
-        $ok = mysqli_query($conn, "UPDATE appointments SET status='cancelled',updated_at=NOW() WHERE id=$cid AND user_id=$user_id");
-        echo json_encode($ok ? ['success'=>true,'message'=>'Appointment cancelled successfully'] : ['success'=>false,'message'=>'Database error']);
-    } else { echo json_encode(['success'=>false,'message'=>'Appointment not found or cannot be cancelled']); }
+        $now = new DateTime();
+        
+        // Check if past appointment
+        if ($apd < $now) {
+            echo json_encode(['success'=>false,'message'=>'Cannot cancel past appointments']);
+            exit();
+        }
+        
+        // ✅ PHASE 3: CHECK CANCELLATION DEADLINE
+        $deadline_days = (int)($row['cancellation_deadline'] ?? 2);
+        $deadline_date = clone $apd;
+        $deadline_date->modify("-{$deadline_days} days");
+        
+        if ($now > $deadline_date) {
+            echo json_encode([
+                'success' => false,
+                'message' => "Cancellation deadline is {$deadline_days} days before appointment. You can no longer cancel."
+            ]);
+            exit();
+        }
+        
+        // ✅ PROCEED WITH CANCELLATION
+        $ok = mysqli_query($conn, "UPDATE appointments SET status='cancelled', updated_at=NOW() WHERE id=$cid AND user_id=$user_id");
+        
+        if ($ok) {
+            // ✅ PHASE 4: CALCULATE REFUND
+            $refund_policy = $row['refund_policy'] ?? '2:100|1:50|0:0';
+            $days_until = $now->diff($apd)->days;
+            $refund_percent = 0;
+            
+            // Parse refund policy: "2:100|1:50|0:0"
+            $policy_parts = explode('|', $refund_policy);
+            foreach ($policy_parts as $part) {
+                list($days, $percent) = explode(':', $part);
+                if ($days_until >= (int)$days) {
+                    $refund_percent = (int)$percent;
+                    break;
+                }
+            }
+            
+            // Save refund eligibility
+            $downpayment = (float)($row['downpayment_amount'] ?? 0);
+            $eligible_amount = $downpayment * ($refund_percent / 100);
+            
+            mysqli_query($conn, "
+                UPDATE appointments 
+                SET 
+                    refund_eligible = " . ($refund_percent > 0 ? 1 : 0) . ",
+                    refund_percentage = $refund_percent,
+                    eligible_refund_amount = $eligible_amount
+                WHERE id = $cid
+            ");
+            
+            // Build response message
+            $msg = "Appointment cancelled successfully.";
+            if ($refund_percent > 0) {
+                $msg .= " You are eligible for {$refund_percent}% refund (₱" . number_format($eligible_amount, 2) . ").";
+            } else {
+                $msg .= " No refund is available for this cancellation.";
+            }
+            
+            echo json_encode([
+                'success' => true,
+                'message' => $msg,
+                'refund_percent' => $refund_percent,
+                'refund_amount' => $eligible_amount
+            ]);
+        } else {
+            echo json_encode(['success'=>false,'message'=>'Database error']);
+        }
+    } else {
+        echo json_encode(['success'=>false,'message'=>'Appointment not found or cannot be cancelled']);
+    }
     exit();
 }
 
+// ============================================
+// PHASE 5: PATIENT REFUND REQUEST
+// ============================================
 if (isset($_POST['request_refund'], $_POST['appointment_id'])) {
     ob_end_clean(); header('Content-Type: application/json');
     $rid = (int)$_POST['appointment_id'];
-    $row = mysqli_fetch_assoc(mysqli_query($conn, "SELECT downpayment_amount,clinic_id,status FROM appointments WHERE id=$rid AND user_id=$user_id AND status='cancelled'"));
+    
+    // ✅ Get refund eligibility
+    $row = mysqli_fetch_assoc(mysqli_query($conn, "
+        SELECT 
+            downpayment_amount, 
+            clinic_id, 
+            status,
+            refund_eligible,
+            refund_percentage,
+            eligible_refund_amount
+        FROM appointments 
+        WHERE id=$rid AND user_id=$user_id AND status='cancelled'
+    "));
+    
     if ($row && $row['downpayment_amount'] > 0) {
+        // ✅ Check if refund is eligible
+        if (!$row['refund_eligible'] || $row['refund_percentage'] <= 0) {
+            echo json_encode([
+                'success' => false,
+                'message' => 'This appointment is not eligible for refund based on clinic policy. (Refund: ' . ($row['refund_percentage'] ?? 0) . '%)'
+            ]);
+            exit();
+        }
+        
+        // Check existing refund request
         $ex = mysqli_query($conn, "SELECT id FROM refund_requests WHERE appointment_id=$rid AND status IN ('pending','approved','processing')");
-        if (mysqli_num_rows($ex) > 0) { echo json_encode(['success'=>false,'message'=>'Refund request already submitted.']); exit(); }
-        $cid=(int)$row['clinic_id']; $amt=(float)$row['downpayment_amount'];
-        $ok = mysqli_query($conn, "INSERT INTO refund_requests(appointment_id,user_id,clinic_id,amount,request_type,status,created_at) VALUES($rid,$user_id,$cid,$amt,'refund','pending',NOW())");
-        echo json_encode($ok ? ['success'=>true,'message'=>'Refund request submitted successfully!'] : ['success'=>false,'message'=>'Failed: '.mysqli_error($conn)]);
-    } else { echo json_encode(['success'=>false,'message'=>'No downpayment found for refund.']); }
+        if (mysqli_num_rows($ex) > 0) {
+            echo json_encode(['success'=>false, 'message'=>'Refund request already submitted.']);
+            exit();
+        }
+        
+        $cid = (int)$row['clinic_id'];
+        $refund_amount = (float)($row['eligible_refund_amount'] ?? $row['downpayment_amount'] * $row['refund_percentage'] / 100);
+        $refund_percent = (int)($row['refund_percentage'] ?? 0);
+        
+        // ✅ Insert refund request with percentage
+        $ok = mysqli_query($conn, "
+            INSERT INTO refund_requests(
+                appointment_id, 
+                user_id, 
+                clinic_id, 
+                amount, 
+                request_type, 
+                status, 
+                refund_percentage,
+                created_at
+            ) VALUES(
+                $rid, 
+                $user_id, 
+                $cid, 
+                $refund_amount, 
+                'refund', 
+                'pending',
+                $refund_percent,
+                NOW()
+            )
+        ");
+        
+        echo json_encode($ok ? [
+            'success' => true,
+            'message' => "Refund request submitted! Amount: ₱" . number_format($refund_amount, 2) . " ({$refund_percent}% refund)"
+        ] : [
+            'success' => false,
+            'message' => 'Failed: ' . mysqli_error($conn)
+        ]);
+        
+    } else {
+        echo json_encode(['success'=>false, 'message'=>'No downpayment found for refund.']);
+    }
     exit();
 }
 
@@ -56,12 +201,16 @@ if (isset($_POST['view_penalty'], $_POST['appointment_id'])) {
     exit();
 }
 
+// ============================================
+// GET APPOINTMENT DETAILS WITH CLINIC POLICIES
+// ============================================
 $query = mysqli_query($conn, "
     SELECT a.*, a.downpayment_amount,
            c.clinic_name, c.address, c.contact, c.clinic_email as email,
            c.latitude, c.longitude, c.hours, c.city,
            c.logo, c.clinic_image, c.cover_photo,
            c.refund_policy, c.reschedule_policy, c.penalty_amount,
+           c.cancellation_deadline,
            u.first_name, u.last_name, u.email as user_email, u.contact as user_phone, u.address as user_address,
            p.id as product_id, p.name as product_name, p.description as product_description,
            p.price as product_price,
@@ -83,14 +232,29 @@ $appointment = mysqli_fetch_assoc($query);
 if (!$appointment) { header('Location: my-appointments.php'); exit(); }
 
 $downpayment_amount = max((float)($appointment['downpayment_amount']??0), (float)($appointment['downpayment']??0));
-$refund_available = ($appointment['status']=='cancelled' && $downpayment_amount > 0);
-$refund_pending   = false;
-if ($refund_available) {
+
+// ✅ Check refund eligibility
+$refund_available = false;
+$refund_pending = false;
+$refund_percent = 0;
+$eligible_refund = 0;
+
+if ($appointment['status'] == 'cancelled' && $downpayment_amount > 0) {
+    // Check if refund is eligible
+    $refund_eligible = (int)($appointment['refund_eligible'] ?? 0);
+    $refund_percent = (int)($appointment['refund_percentage'] ?? 0);
+    $eligible_refund = (float)($appointment['eligible_refund_amount'] ?? 0);
+    
+    if ($refund_eligible == 1 && $refund_percent > 0) {
+        $refund_available = true;
+    }
+    
+    // Check if refund request is pending
     $rc = mysqli_query($conn, "SELECT status FROM refund_requests WHERE appointment_id=$appointment_id AND status IN ('pending','approved','processing')");
     $refund_pending = mysqli_num_rows($rc) > 0;
 }
 
-// ── Image helpers ─────────────────────────────────────────────────────────────
+// ── Image helpers (UNCHANGED) ──────────────────────────────────────────────
 function resolveImgPath3($path) {
     if (empty($path)) return '';
     $path = str_replace(['uploads/uploads/','uploads//uploads/'],'uploads/',$path);
@@ -154,7 +318,7 @@ $formatted_date = $apd->format('F j, Y');
 $formatted_time = $apd->format('g:i A');
 $formatted_day  = $apd->format('l');
 
-// Reviews + attached photos (GROUP_CONCAT so this stays a single query)
+// Reviews + attached photos
 $reviews_query = mysqli_query($conn,"
     SELECT r.*,
            CONCAT(u.first_name,' ',u.last_name) as reviewer_name,
@@ -245,7 +409,6 @@ if (!empty($appointment['product_id']) && !empty($appointment['warranty_period']
         $warranty_terms = $appointment['warranty_terms'];
     }
     
-    // Fallback sa appointment_date kung walang purchase_date
     $purchase_date_to_use = !empty($appointment['purchase_date']) 
         ? $appointment['purchase_date'] 
         : $appointment['appointment_date'];
@@ -257,8 +420,7 @@ if (!empty($purchase_date_to_use)) {
     }
 }
 
-// Check existing claim — LABAS na sa if($has_warranty) block
-// Para laging niche-check kahit ano ang status
+// Check existing claim
 $existing_claim = null;
 if (!empty($appointment['product_id'])) {
 $wc = mysqli_query($conn, "SELECT id, status FROM warranty_claims 
@@ -637,14 +799,20 @@ $wc = mysqli_query($conn, "SELECT id, status FROM warranty_claims
         <div class="status-badge <?php echo $status_class; ?>"><?php echo $status_message; ?></div>
     </div>
 
-    <!-- Downpayment Info -->
+    <!-- Downpayment Info with Refund Eligibility -->
     <?php if ($downpayment_amount > 0): ?>
     <div class="downpayment-info">
-        <div><i class="fas fa-receipt"></i> <strong>Downpayment Paid:</strong> <span class="amount">₱<?php echo number_format($downpayment_amount,2); ?></span></div>
-        <?php if ($appointment['status']=='cancelled'&&!$refund_pending): ?>
-        <div><i class="fas fa-exclamation-circle"></i> <span>You can request a refund below</span></div>
+        <div><i class="fas fa-receipt"></i> <strong> Amount Paid:</strong> <span class="amount">₱<?php echo number_format($downpayment_amount,2); ?></span></div>
+        
+        <?php if ($appointment['status'] == 'cancelled'): ?>
+            <?php if ($refund_available && !$refund_pending): ?>
+                <div><i class="fas fa-check-circle" style="color: #00B761;"></i> <span>Refund eligible: <strong><?php echo $refund_percent; ?>%</strong> (₱<?php echo number_format($eligible_refund, 2); ?>)</span></div>
+            <?php elseif ($refund_pending): ?>
+                <div><i class="fas fa-spinner fa-pulse"></i> <span>Refund request pending...</span></div>
+            <?php elseif (!$refund_available && $refund_percent == 0): ?>
+                <div><i class="fas fa-times-circle" style="color: #EF4444;"></i> <span>No refund available (0% per clinic policy)</span></div>
+            <?php endif; ?>
         <?php endif; ?>
-        <?php if ($refund_pending): ?><div><i class="fas fa-spinner fa-pulse"></i> <span>Refund request pending...</span></div><?php endif; ?>
     </div>
     <?php endif; ?>
 
@@ -655,7 +823,6 @@ $wc = mysqli_query($conn, "SELECT id, status FROM warranty_claims
     <div class="product-gallery">
         <div class="gallery-slider-wrap" id="galleryWrap">
             <?php if ($has_img): ?>
-                <!-- Slider Track -->
                 <div class="pc-slider-track" id="galleryTrack">
                     <?php foreach ($product_images as $imgUrl): ?>
                     <div class="pc-slide">
@@ -668,10 +835,8 @@ $wc = mysqli_query($conn, "SELECT id, status FROM warranty_claims
                 </div>
 
                 <?php if ($img_count > 1): ?>
-                <!-- Arrows -->
                 <button class="gallery-arrow prev" onclick="galleryGo(galleryCurrent-1)"><i class="fas fa-chevron-left"></i></button>
                 <button class="gallery-arrow next" onclick="galleryGo(galleryCurrent+1)"><i class="fas fa-chevron-right"></i></button>
-                <!-- Counter -->
                 <div class="gallery-counter" id="galleryCounter"><i class="fas fa-images"></i> 1 / <?php echo $img_count; ?></div>
                 <?php endif; ?>
 
@@ -685,7 +850,6 @@ $wc = mysqli_query($conn, "SELECT id, status FROM warranty_claims
         </div>
 
         <?php if ($has_img && $img_count > 1): ?>
-        <!-- Dots row -->
         <div class="gallery-dots-row" id="galleryDots">
             <?php for($i=0;$i<$img_count;$i++): ?>
             <button class="gallery-dot <?php echo $i===0?'active':''; ?>" onclick="galleryGo(<?php echo $i; ?>)"></button>
@@ -862,7 +1026,6 @@ $wc = mysqli_query($conn, "SELECT id, status FROM warranty_claims
 <!-- Action Buttons -->
 <div class="action-buttons">
     <?php if ($appointment['status'] == 'waiting_payment'): ?>
-        <!-- Pay Now Button - DIRECT REDIRECT TO payment.php -->
         <a href="payment.php?appointment_id=<?php echo $appointment['id']; ?>&amount=<?php echo urlencode(number_format($appointment['downpayment_amount'] ?? $appointment['total_amount'] ?? 0, 2)); ?>" class="action-btn action-btn-primary">
             <i class="fas fa-credit-card"></i> Pay Now (₱<?php echo number_format($appointment['downpayment_amount'] ?? $appointment['total_amount'] ?? 0, 2); ?>)
         </a>
@@ -920,30 +1083,36 @@ $wc = mysqli_query($conn, "SELECT id, status FROM warranty_claims
     <?php endif; ?>
 </div>
 
-<!-- Refund Button (for cancelled appointments with downpayment) -->
-<?php if ($appointment['status'] == 'cancelled' && ($downpayment_amount ?? 0) > 0 && !($refund_pending ?? false)): ?>
-<div class="action-buttons" style="margin-top:15px; justify-content:flex-end;">
-    <button onclick="requestRefund(<?php echo $appointment['id']; ?>)" class="action-btn action-btn-warning">
-        <i class="fas fa-money-bill-wave"></i> Request Refund (₱<?php echo number_format($downpayment_amount, 2); ?>)
-    </button>
-</div>
-<?php elseif ($appointment['status'] == 'cancelled' && ($downpayment_amount ?? 0) > 0 && ($refund_pending ?? false)): ?>
-<div class="action-buttons" style="margin-top:15px; justify-content:flex-end;">
-    <button class="action-btn action-btn-secondary" disabled style="opacity:0.6; cursor:not-allowed;">
-        <i class="fas fa-spinner fa-pulse"></i> Refund Request Pending
-    </button>
-</div>
-<?php endif; ?>
-    <!-- Refund Button -->
-    <?php if ($appointment['status']=='cancelled' && $downpayment_amount>0 && !$refund_pending): ?>
-    <div class="action-buttons" style="margin-top:15px;justify-content:flex-end;">
-        <button onclick="requestRefund(<?php echo $appointment['id']; ?>)" class="action-btn action-btn-warning"><i class="fas fa-money-bill-wave"></i> Request Refund (₱<?php echo number_format($downpayment_amount,2); ?>)</button>
-    </div>
-    <?php elseif ($appointment['status']=='cancelled' && $downpayment_amount>0 && $refund_pending): ?>
-    <div class="action-buttons" style="margin-top:15px;justify-content:flex-end;">
-        <button class="action-btn action-btn-secondary" disabled style="opacity:0.6;cursor:not-allowed;"><i class="fas fa-spinner fa-pulse"></i> Refund Request Pending</button>
-    </div>
+<!-- ============================================ -->
+<!-- PHASE 5: REFUND REQUEST BUTTON WITH ELIGIBILITY -->
+<!-- ============================================ -->
+<?php if ($appointment['status'] == 'cancelled' && $downpayment_amount > 0): ?>
+    <?php if ($refund_pending): ?>
+        <div class="action-buttons" style="margin-top:15px; justify-content:flex-end;">
+            <button class="action-btn action-btn-secondary" disabled style="opacity:0.6; cursor:not-allowed;">
+                <i class="fas fa-spinner fa-pulse"></i> Refund Request Pending
+            </button>
+        </div>
+    <?php elseif ($refund_available): ?>
+        <div class="action-buttons" style="margin-top:15px; justify-content:flex-end;">
+            <button onclick="requestRefund(<?php echo $appointment['id']; ?>)" class="action-btn action-btn-warning">
+                <i class="fas fa-money-bill-wave"></i> 
+                Request Refund (<?php echo $refund_percent; ?>% • ₱<?php echo number_format($eligible_refund, 2); ?>)
+            </button>
+            <small class="text-muted d-block w-100 text-end">
+                <i class="fas fa-info-circle"></i> 
+                Refund eligible: <?php echo $refund_percent; ?>% of downpayment (₱<?php echo number_format($eligible_refund, 2); ?>)
+            </small>
+        </div>
+    <?php elseif ($refund_percent == 0): ?>
+        <div class="action-buttons" style="margin-top:15px; justify-content:flex-end;">
+            <button class="action-btn action-btn-secondary" disabled style="opacity:0.5; cursor:not-allowed;">
+                <i class="fas fa-times-circle"></i> 
+                No Refund Available (0% per clinic policy)
+            </button>
+        </div>
     <?php endif; ?>
+<?php endif; ?>
 
 </div><!-- closing ng main-content -->
 
@@ -1008,7 +1177,7 @@ $wc = mysqli_query($conn, "SELECT id, status FROM warranty_claims
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 // ══════════════════════════════════════════════════════════════
-// GALLERY SLIDER  (clinic-details.php pattern)
+// GALLERY SLIDER
 // ══════════════════════════════════════════════════════════════
 let galleryCurrent = 0;
 const galleryTotal = <?php echo $img_count; ?>;
@@ -1024,7 +1193,6 @@ function galleryGo(index) {
     if (galleryCtr) galleryCtr.innerHTML = '<i class="fas fa-images"></i> ' + (galleryCurrent + 1) + ' / ' + galleryTotal;
 }
 
-// Swipe support on gallery
 (function() {
     if (!galleryTrack) return;
     let sx = 0;
@@ -1040,18 +1208,15 @@ function galleryGo(index) {
 // ============================================
 
 function openWarrantyClaim(reservationId, productId, productName) {
-    // Reset form
     document.getElementById('claim_date').value = '';
     document.getElementById('claim_time').value = '';
     document.getElementById('claim_description').value = '';
     document.getElementById('claim_photos').value = '';
     
-    // Set hidden fields
     document.getElementById('claim_reservation_id').value = reservationId;
     document.getElementById('claim_product_id').value = productId;
     document.getElementById('claim_product_name').value = productName;
     
-    // Set product info
     document.getElementById('warrantyProductInfo').innerHTML = `
         <div class="d-flex gap-3">
             <i class="fas fa-box" style="font-size: 40px; color: #00B761;"></i>
@@ -1063,12 +1228,10 @@ function openWarrantyClaim(reservationId, productId, productName) {
         </div>
     `;
     
-    // Set default date to tomorrow
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     document.getElementById('claim_date').value = tomorrow.toISOString().split('T')[0];
     
-    // Show modal using Bootstrap 5
     const modal = new bootstrap.Modal(document.getElementById('warrantyClaimModal'));
     modal.show();
 }
@@ -1105,7 +1268,6 @@ function submitWarrantyClaim() {
     formData.append('claim_time', claimTime);
     formData.append('description', description);
     
-    // Add photos
     const photosInput = document.getElementById('claim_photos');
     if (photosInput.files) {
         for (let i = 0; i < Math.min(photosInput.files.length, 3); i++) {
@@ -1159,40 +1321,150 @@ function closeImageModal() { document.getElementById('imageModal').classList.rem
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeImageModal(); });
 
 // ══════════════════════════════════════════════════════════════
-// ACTION HANDLERS
+// PHASE 3: CANCEL APPOINTMENT WITH VALIDATION
 // ══════════════════════════════════════════════════════════════
 async function cancelAppointment(id) {
-    const r = await Swal.fire({ title:'Cancel Appointment?', text:'This cannot be undone.', icon:'warning', showCancelButton:true, confirmButtonColor:'#EF4444', cancelButtonColor:'#6B7280', confirmButtonText:'Yes, cancel it!', cancelButtonText:'No, keep it' });
-    if (!r.isConfirmed) return;
-    Swal.fire({ title:'Cancelling...', allowOutsideClick:false, didOpen:()=>Swal.showLoading() });
-    const fd = new URLSearchParams(); fd.append('cancel_appointment','1'); fd.append('appointment_id',id);
-    try {
-        const res = await fetch(window.location.href, { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:fd.toString() });
-        const data = await res.json();
-        if (data.success) { await Swal.fire({ icon:'success', title:'Cancelled!', text:data.message, confirmButtonColor:'#00B761' }); location.reload(); }
-        else Swal.fire({ icon:'error', title:'Failed', text:data.message, confirmButtonColor:'#EF4444' });
-    } catch { Swal.fire({ icon:'error', title:'Error', text:'An error occurred.' }); }
-}
-
-async function requestRefund(id) {
-    const amt = <?php echo $downpayment_amount; ?>;
-    const r = await Swal.fire({
-        title:'Request Refund', icon:'info', showCancelButton:true,
-        confirmButtonColor:'#F59E0B', cancelButtonColor:'#6B7280',
-        confirmButtonText:'Yes, Request Refund', cancelButtonText:'Cancel',
-        html:`<div style="text-align:left;"><p>Request a refund for this cancelled appointment?</p><div style="background:#FFF3E0;padding:15px;border-radius:10px;margin:15px 0;text-align:center;"><i class="fas fa-money-bill-wave" style="font-size:24px;color:#F59E0B;"></i><div style="font-size:20px;font-weight:bold;color:#F59E0B;">₱${amt.toFixed(2)}</div><div style="font-size:12px;color:#666;">Refund Amount</div></div><p style="font-size:13px;color:#6B7280;">Processed within 5–7 business days.</p></div>`
+    const r = await Swal.fire({ 
+        title: 'Cancel Appointment?', 
+        text: 'This cannot be undone. Please check the cancellation policy.', 
+        icon: 'warning', 
+        showCancelButton: true, 
+        confirmButtonColor: '#EF4444', 
+        cancelButtonColor: '#6B7280', 
+        confirmButtonText: 'Yes, cancel it!', 
+        cancelButtonText: 'No, keep it' 
     });
+    
     if (!r.isConfirmed) return;
-    Swal.fire({ title:'Submitting...', allowOutsideClick:false, didOpen:()=>Swal.showLoading() });
-    const fd = new URLSearchParams(); fd.append('request_refund','1'); fd.append('appointment_id',id);
+    
+    Swal.fire({ 
+        title: 'Checking cancellation policy...', 
+        allowOutsideClick: false, 
+        didOpen: () => Swal.showLoading() 
+    });
+    
+    const fd = new URLSearchParams(); 
+    fd.append('cancel_appointment','1'); 
+    fd.append('appointment_id', id);
+    
     try {
-        const res = await fetch(window.location.href, { method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:fd.toString() });
+        const res = await fetch(window.location.href, { 
+            method: 'POST', 
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'}, 
+            body: fd.toString() 
+        });
         const data = await res.json();
-        if (data.success) { await Swal.fire({ icon:'success', title:'Submitted!', text:data.message, confirmButtonColor:'#00B761' }); location.reload(); }
-        else Swal.fire({ icon:'error', title:'Request Failed', text:data.message, confirmButtonColor:'#EF4444' });
-    } catch { Swal.fire({ icon:'error', title:'Error', text:'An error occurred.' }); }
+        
+        if (data.success) {
+            let message = 'Appointment cancelled successfully!';
+            if (data.refund_percent > 0) {
+                message += `<br><br>✅ You are eligible for <strong>${data.refund_percent}% refund</strong> (₱${data.refund_amount.toFixed(2)})`;
+                message += `<br><small>Click "Request Refund" below to claim.</small>`;
+            } else {
+                message += `<br><br>❌ No refund available for this cancellation (0% per clinic policy)`;
+            }
+            
+            await Swal.fire({ 
+                icon: 'success', 
+                title: 'Cancelled!', 
+                html: message, 
+                confirmButtonColor: '#00B761' 
+            });
+            location.reload();
+        } else {
+            Swal.fire({ 
+                icon: 'error', 
+                title: 'Failed', 
+                text: data.message, 
+                confirmButtonColor: '#EF4444' 
+            });
+        }
+    } catch (error) {
+        Swal.fire({ 
+            icon: 'error', 
+            title: 'Error', 
+            text: 'An error occurred. Please try again.' 
+        });
+    }
 }
 
+// ============================================
+// PHASE 5: REQUEST REFUND
+// ============================================
+async function requestRefund(id) {
+    const amt = <?php echo $eligible_refund; ?>;
+    const percent = <?php echo $refund_percent; ?>;
+    
+    const r = await Swal.fire({
+        title: 'Request Refund',
+        icon: 'info',
+        showCancelButton: true,
+        confirmButtonColor: '#F59E0B',
+        cancelButtonColor: '#6B7280',
+        confirmButtonText: 'Yes, Request Refund',
+        cancelButtonText: 'Cancel',
+        html: `<div style="text-align:left;">
+            <p>You are requesting a refund for this cancelled appointment.</p>
+            <div style="background:#FFF3E0;padding:15px;border-radius:10px;margin:15px 0;text-align:center;">
+                <i class="fas fa-money-bill-wave" style="font-size:24px;color:#F59E0B;"></i>
+                <div style="font-size:20px;font-weight:bold;color:#F59E0B;">₱${amt.toFixed(2)}</div>
+                <div style="font-size:12px;color:#666;">${percent}% of downpayment</div>
+            </div>
+            <p style="font-size:13px;color:#6B7280;">
+                <i class="fas fa-info-circle"></i> 
+                Refund will be processed within 5-7 business days after clinic approval.
+            </p>
+        </div>`
+    });
+    
+    if (!r.isConfirmed) return;
+    
+    Swal.fire({ 
+        title: 'Submitting refund request...', 
+        allowOutsideClick: false, 
+        didOpen: () => Swal.showLoading() 
+    });
+    
+    const fd = new URLSearchParams(); 
+    fd.append('request_refund','1'); 
+    fd.append('appointment_id', id);
+    
+    try {
+        const res = await fetch(window.location.href, { 
+            method: 'POST', 
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'}, 
+            body: fd.toString() 
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+            await Swal.fire({ 
+                icon: 'success', 
+                title: 'Refund Request Submitted!', 
+                text: data.message, 
+                confirmButtonColor: '#00B761' 
+            });
+            location.reload();
+        } else {
+            Swal.fire({ 
+                icon: 'error', 
+                title: 'Request Failed', 
+                text: data.message, 
+                confirmButtonColor: '#EF4444' 
+            });
+        }
+    } catch (error) {
+        Swal.fire({ 
+            icon: 'error', 
+            title: 'Error', 
+            text: 'An error occurred. Please try again.' 
+        });
+    }
+}
+
+// ============================================
+// OTHER ACTION HANDLERS (UNCHANGED)
+// ============================================
 async function deleteAppointment(id) {
     const r = await Swal.fire({ title:'Delete Appointment?', text:'This will be permanently removed.', icon:'warning', showCancelButton:true, confirmButtonColor:'#EF4444', cancelButtonColor:'#6B7280', confirmButtonText:'Yes, delete it!' });
     if (!r.isConfirmed) return;

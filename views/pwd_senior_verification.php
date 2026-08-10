@@ -41,7 +41,7 @@ $canDelete = RBACHelper::hasPermission('pwd_senior_delete');
 $canApprove = RBACHelper::hasPermission('pwd_senior_approve');
 $canReject = RBACHelper::hasPermission('pwd_senior_reject');
 
-// Get statistics
+// Get statistics - FILTERED BY CLINIC
 $stats = ['total' => 0, 'pending' => 0, 'verified' => 0, 'rejected' => 0];
 try {
     $stmt = $pdo->prepare("
@@ -51,7 +51,7 @@ try {
             SUM(CASE WHEN pwd_senior_status = 'verified' THEN 1 ELSE 0 END) as verified,
             SUM(CASE WHEN pwd_senior_status = 'rejected' THEN 1 ELSE 0 END) as rejected
         FROM users
-        WHERE clinic_id = ? AND pwd_senior_status IN ('pending', 'verified', 'rejected')
+        WHERE pwd_senior_clinic_id = ? AND pwd_senior_status IN ('pending', 'verified', 'rejected')
     ");
     $stmt->execute([$clinicId]);
     $statsResult = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -429,7 +429,7 @@ function renderRequests(requests) {
         $('#requestsContainer').html(`
             <div class="text-center py-5">
                 <i class="bi bi-inbox fs-1 text-muted"></i>
-                <p class="text-muted mt-2">No verification requests found</p>
+                <p class="text-muted mt-2">No verification requests found for this clinic</p>
             </div>
         `);
         return;
@@ -691,7 +691,7 @@ function approveRequest(id) {
     
     Swal.fire({
         title: 'Approve Verification?',
-        html: 'This will verify the patient as <strong>PWD or Senior Citizen</strong>.<br>They will get <strong>20% discount</strong> on all bookings.',
+        html: 'This will verify the patient as <strong>PWD or Senior Citizen</strong>.<br>They will get <strong>20% discount</strong> on all bookings at your clinic.',
         icon: 'question',
         showCancelButton: true,
         confirmButtonText: 'Yes, Approve',

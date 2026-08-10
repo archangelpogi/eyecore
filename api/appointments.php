@@ -7,7 +7,7 @@ header('Content-Type: application/json');
 
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../include/RBACHelper.php';
-require_once __DIR__ . '/../includes/payment-helper.php';  // ✅ ADDED: Payment helper
+require_once __DIR__ . '/../includes/payment-helper.php';
 
 // ✅ Initialize RBACHelper
 RBACHelper::init($pdo);
@@ -78,9 +78,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['get_permissions'])) {
     exit();
 }
 
-
-
-
 // ── helper: insert notification to a USER ────────────────────────
 function notifyUser(PDO $pdo, int $userId, string $title, string $message, string $type, string $link = 'my-appointments.php', ?int $refId = null): void
 {
@@ -97,13 +94,11 @@ try {
     //  GET  — fetch appointments for a specific date (refresh)
     // ════════════════════════════════════════════════════════════
     if ($method === 'GET') {
-        // ✅ Check view permission first
         if (!canViewAppointments()) {
             echo json_encode([]);
             exit();
         }
 
-                // ✅ GET APPOINTMENT DETAILS FOR APPROVAL MODAL
         if (isset($_GET['action']) && $_GET['action'] === 'get_appointment') {
             $apptId = (int)($_GET['id'] ?? 0);
             
@@ -132,7 +127,6 @@ try {
             exit;
         }
         
-        // ✅ HISTORY ENDPOINT - MUST BE INSIDE GET BLOCK
         if (isset($_GET['action']) && $_GET['action'] === 'history') {
             $search = $_GET['search'] ?? '';
             $fromDate = $_GET['from'] ?? '';
@@ -166,16 +160,13 @@ try {
             ";
             $params = [$clinicId];
             
-            // Add status filter
             if (!empty($status)) {
                 $sql .= " AND a.status = ?";
                 $params[] = $status;
             } else {
-                // Show completed, cancelled, no-show, refunded only
                 $sql .= " AND a.status IN ('completed', 'cancelled', 'no-show', 'refunded')";
             }
             
-            // Add search filter
             if (!empty($search)) {
                 $sql .= " AND (
                     CONCAT(u.first_name, ' ', u.last_name) LIKE ? OR 
@@ -188,7 +179,6 @@ try {
                 $params[] = $searchTerm;
             }
             
-            // Add date range filters
             if (!empty($fromDate)) {
                 $sql .= " AND a.appointment_date >= ?";
                 $params[] = $fromDate;
@@ -205,7 +195,6 @@ try {
             $stmt->execute($params);
             $history = $stmt->fetchAll(PDO::FETCH_ASSOC);
             
-            // Format the data
             foreach ($history as &$row) {
                 $row['appointment_time'] = substr($row['appointment_time'], 0, 5);
                 $row['formatted_date'] = date('M d, Y', strtotime($row['appointment_date']));
@@ -216,7 +205,6 @@ try {
             exit();
         }
         
-        // ✅ REGULAR GET - fetch appointments for a specific date
         $date = $_GET['date'] ?? date('Y-m-d');
 
         $stmt = $pdo->prepare("
@@ -249,7 +237,6 @@ try {
         
         $data = json_decode(file_get_contents('php://input'), true);
         
-        // Validate required fields
         if (empty($data['patient_id'])) {
             echo json_encode(['success' => false, 'message' => 'Patient is required']);
             exit;
@@ -265,7 +252,6 @@ try {
             exit;
         }
         
-        // Get product price for payment calculation
         $price = 0;
         if ($data['item_type'] === 'product') {
             $priceStmt = $pdo->prepare("SELECT price FROM products WHERE id = ? AND clinic_id = ?");
@@ -279,15 +265,12 @@ try {
             $price = $service['price'] ?? 0;
         }
         
-        // Get payment policy to determine initial status
         $payment_info = calculatePaymentAmounts($pdo, $clinicId, $price);
         $booking_flow = $payment_info['booking_flow'] ?? 'approve_first';
         
-        // For walk-in: confirmed agad, for online: pending muna
         $isWalkIn = !empty($data['walk_in']);
         $initialStatus = $isWalkIn ? 'confirmed' : 'pending';
         
-        // Insert appointment
         $stmt = $pdo->prepare("
             INSERT INTO appointments
                 (clinic_id, patient_id, doctor_id, item_id, item_type, service_type, 
@@ -329,199 +312,169 @@ try {
         $data = json_decode(file_get_contents('php://input'), true);
         $action = $data['action'] ?? '';
 
-if ($action === 'approve') {
-    if (!canApproveAppointments()) {
-        echo json_encode(['success' => false, 'message' => 'You do not have permission to approve appointments']);
-        exit();
-    }
-    
-    $apptId = (int)($data['appointment_id'] ?? 0);
-    $userId = (int)($data['user_id'] ?? 0);
-    $patientId = (int)($data['patient_id'] ?? 0);
-
-    if (!$apptId) {
-        echo json_encode(['success' => false, 'message' => 'Missing appointment_id']);
-        exit;
-    }
-    
-    // Get IDs if not provided
-    if ($userId <= 0 && $patientId <= 0) {
-        $fetchIds = $pdo->prepare("SELECT user_id, patient_id FROM appointments WHERE id = ? AND clinic_id = ?");
-        $fetchIds->execute([$apptId, $clinicId]);
-        $ids = $fetchIds->fetch(PDO::FETCH_ASSOC);
-        
-        if ($ids) {
-            $userId = (int)($ids['user_id'] ?? 0);
-            $patientId = (int)($ids['patient_id'] ?? 0);
-        }
-    }
-    
-    $notifyId = $userId > 0 ? $userId : $patientId;
-    
-    if ($notifyId <= 0) {
-        echo json_encode(['success' => false, 'message' => 'No user or patient associated with this appointment']);
-        exit;
-    }
-
-    // Get appointment details
-    $appt = $pdo->prepare("
-        SELECT a.*, 
-               pr.name AS product_name, 
-               pr.price AS product_price,
-               c.name AS clinic_name,
-               c.id AS clinic_id
-        FROM appointments a
-        LEFT JOIN products pr ON a.product_id = pr.id
-        LEFT JOIN clinics c ON a.clinic_id = c.id
-        WHERE a.id = ? AND a.clinic_id = ? AND a.status = 'pending'
-    ");
-    $appt->execute([$apptId, $clinicId]);
-    $row = $appt->fetch(PDO::FETCH_ASSOC);
-
-    if (!$row) {
-        echo json_encode(['success' => false, 'message' => 'Appointment not found or already processed']);
-        exit;
-    }
-
-    // ✅ GET PAYMENT POLICY
-    $payment_info = calculatePaymentAmounts($pdo, $row['clinic_id'], $row['product_price'] ?? 0);
-    
-    $payment_type = $payment_info['payment_type'];
-    $downpayment_amount = $payment_info['downpayment_amount'];
-    $total_amount = $payment_info['total_amount'];
-    $balance_amount = $payment_info['balance_amount'];
-    $requires_payment = $payment_info['requires_payment'];
-    
-    $formattedDate = date('F j, Y', strtotime($row['appointment_date']));
-    $formattedTime = date('g:i A',  strtotime($row['appointment_time']));
-    
-    // ✅ CHECK APPOINTMENT TYPE
-    $isOnlineBooking = ($row['appointment_type'] ?? '') === 'online';
-    $isWalkIn = ($row['appointment_type'] ?? '') === 'walk_in';
-    
-    // ✅ DETERMINE STATUS BASED ON APPOINTMENT TYPE
-    if ($isWalkIn) {
-        // ✅ WALK-IN: confirmed agad (nasa clinic na)
-        $new_status = 'confirmed';
-        $payment_status = 'pending';
-        
-        $notification_message = "Your walk-in appointment at {$row['clinic_name']} on {$formattedDate} at {$formattedTime} has been CONFIRMED.";
-        
-        $updateStmt = $pdo->prepare("
-            UPDATE appointments 
-            SET status = ?,
-                payment_status = ?,
-                total_amount = ?,
-                downpayment_amount = ?,
-                balance_amount = ?,
-                payment_type = ?,
-                updated_at = NOW()
-            WHERE id = ?
-        ");
-        $updateStmt->execute([
-            $new_status,      // ✅ confirmed
-            $payment_status, 
-            $total_amount, 
-            $downpayment_amount, 
-            $balance_amount,
-            $payment_type,
-            $apptId
-        ]);
-        
-    } else if ($isOnlineBooking) {
-        // ✅ ONLINE BOOKING: waiting_payment muna (magbabayad muna online)
-        $new_status = 'waiting_payment';
-        $payment_status = 'pending';
-        
-        if ($payment_type === 'downpayment') {
-            if ($total_amount > 0) {
-                $percent = round(($downpayment_amount / $total_amount) * 100);
-            } else {
-                $percent = 0;
+        if ($action === 'approve') {
+            if (!canApproveAppointments()) {
+                echo json_encode(['success' => false, 'message' => 'You do not have permission to approve appointments']);
+                exit();
             }
-            $notification_message = "Your appointment at {$row['clinic_name']} on {$formattedDate} at {$formattedTime} has been APPROVED. "
-                . "Please pay the {$percent}% downpayment of ₱" . number_format($downpayment_amount, 2) 
-                . " to confirm your slot. Balance of ₱" . number_format($balance_amount, 2) . " to be paid at the clinic.";
-        } else {
-            $notification_message = "Your appointment at {$row['clinic_name']} on {$formattedDate} at {$formattedTime} has been APPROVED. "
-                . "Please pay the full amount of ₱" . number_format($total_amount, 2) . " to confirm your slot.";
+            
+            $apptId = (int)($data['appointment_id'] ?? 0);
+            $userId = (int)($data['user_id'] ?? 0);
+            $patientId = (int)($data['patient_id'] ?? 0);
+
+            if (!$apptId) {
+                echo json_encode(['success' => false, 'message' => 'Missing appointment_id']);
+                exit;
+            }
+            
+            if ($userId <= 0 && $patientId <= 0) {
+                $fetchIds = $pdo->prepare("SELECT user_id, patient_id FROM appointments WHERE id = ? AND clinic_id = ?");
+                $fetchIds->execute([$apptId, $clinicId]);
+                $ids = $fetchIds->fetch(PDO::FETCH_ASSOC);
+                
+                if ($ids) {
+                    $userId = (int)($ids['user_id'] ?? 0);
+                    $patientId = (int)($ids['patient_id'] ?? 0);
+                }
+            }
+            
+            $notifyId = $userId > 0 ? $userId : $patientId;
+            
+            if ($notifyId <= 0) {
+                echo json_encode(['success' => false, 'message' => 'No user or patient associated with this appointment']);
+                exit;
+            }
+
+            $appt = $pdo->prepare("
+                SELECT a.*, 
+                       pr.name AS product_name, 
+                       pr.price AS product_price,
+                       c.name AS clinic_name,
+                       c.id AS clinic_id
+                FROM appointments a
+                LEFT JOIN products pr ON a.product_id = pr.id
+                LEFT JOIN clinics c ON a.clinic_id = c.id
+                WHERE a.id = ? AND a.clinic_id = ? AND a.status = 'pending'
+            ");
+            $appt->execute([$apptId, $clinicId]);
+            $row = $appt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$row) {
+                echo json_encode(['success' => false, 'message' => 'Appointment not found or already processed']);
+                exit;
+            }
+
+            $payment_info = calculatePaymentAmounts($pdo, $row['clinic_id'], $row['product_price'] ?? 0);
+            
+            $payment_type = $payment_info['payment_type'];
+            $downpayment_amount = $payment_info['downpayment_amount'];
+            $total_amount = $payment_info['total_amount'];
+            $balance_amount = $payment_info['balance_amount'];
+            $requires_payment = $payment_info['requires_payment'];
+            
+            $formattedDate = date('F j, Y', strtotime($row['appointment_date']));
+            $formattedTime = date('g:i A',  strtotime($row['appointment_time']));
+            
+            $isOnlineBooking = ($row['appointment_type'] ?? '') === 'online';
+            $isWalkIn = ($row['appointment_type'] ?? '') === 'walk_in';
+            
+            if ($isWalkIn) {
+                $new_status = 'confirmed';
+                $payment_status = 'pending';
+                $notification_message = "Your walk-in appointment at {$row['clinic_name']} on {$formattedDate} at {$formattedTime} has been CONFIRMED.";
+                
+                $updateStmt = $pdo->prepare("
+                    UPDATE appointments 
+                    SET status = ?,
+                        payment_status = ?,
+                        total_amount = ?,
+                        downpayment_amount = ?,
+                        balance_amount = ?,
+                        payment_type = ?,
+                        updated_at = NOW()
+                    WHERE id = ?
+                ");
+                $updateStmt->execute([
+                    $new_status, $payment_status, $total_amount, 
+                    $downpayment_amount, $balance_amount, $payment_type, $apptId
+                ]);
+                
+            } else if ($isOnlineBooking) {
+                $new_status = 'waiting_payment';
+                $payment_status = 'pending';
+                
+                if ($payment_type === 'downpayment') {
+                    if ($total_amount > 0) {
+                        $percent = round(($downpayment_amount / $total_amount) * 100);
+                    } else {
+                        $percent = 0;
+                    }
+                    $notification_message = "Your appointment at {$row['clinic_name']} on {$formattedDate} at {$formattedTime} has been APPROVED. "
+                        . "Please pay the {$percent}% downpayment of ₱" . number_format($downpayment_amount, 2) 
+                        . " to confirm your slot. Balance of ₱" . number_format($balance_amount, 2) . " to be paid at the clinic.";
+                } else {
+                    $notification_message = "Your appointment at {$row['clinic_name']} on {$formattedDate} at {$formattedTime} has been APPROVED. "
+                        . "Please pay the full amount of ₱" . number_format($total_amount, 2) . " to confirm your slot.";
+                }
+                
+                $updateStmt = $pdo->prepare("
+                    UPDATE appointments 
+                    SET status = ?,
+                        payment_status = ?,
+                        total_amount = ?,
+                        downpayment_amount = ?,
+                        balance_amount = ?,
+                        payment_type = ?,
+                        updated_at = NOW()
+                    WHERE id = ?
+                ");
+                $updateStmt->execute([
+                    $new_status, $payment_status, $total_amount, 
+                    $downpayment_amount, $balance_amount, $payment_type, $apptId
+                ]);
+                
+            } else {
+                $new_status = 'confirmed';
+                $payment_status = 'pending';
+                $notification_message = "Your appointment at {$row['clinic_name']} on {$formattedDate} at {$formattedTime} has been CONFIRMED.";
+                
+                $updateStmt = $pdo->prepare("
+                    UPDATE appointments 
+                    SET status = ?,
+                        payment_status = ?,
+                        total_amount = ?,
+                        downpayment_amount = ?,
+                        balance_amount = ?,
+                        payment_type = ?,
+                        updated_at = NOW()
+                    WHERE id = ?
+                ");
+                $updateStmt->execute([
+                    $new_status, $payment_status, $total_amount, 
+                    $downpayment_amount, $balance_amount, $payment_type, $apptId
+                ]);
+            }
+            
+            if ($updateStmt->rowCount() === 0 && $new_status !== 'waiting_payment') {
+                echo json_encode(['success' => false, 'message' => 'Failed to update appointment status']);
+                exit;
+            }
+            
+            if ($userId > 0) {
+                notifyUser($pdo, $userId, $isWalkIn ? 'Appointment Confirmed! ✅' : 'Appointment Approved! 🎉', $notification_message, 'appointment', 'my-appointments.php', $apptId);
+            }
+            
+            echo json_encode([
+                'success' => true, 
+                'message' => $isWalkIn ? 'Walk-in appointment confirmed' : 'Appointment approved, waiting for payment',
+                'payment_required' => $isOnlineBooking && $requires_payment,
+                'payment_amount' => $downpayment_amount ?? $total_amount,
+                'payment_type' => $payment_type,
+                'new_status' => $new_status,
+                'appointment_type' => $row['appointment_type']
+            ]);
+            exit;
         }
-        
-        $updateStmt = $pdo->prepare("
-            UPDATE appointments 
-            SET status = ?,
-                payment_status = ?,
-                total_amount = ?,
-                downpayment_amount = ?,
-                balance_amount = ?,
-                payment_type = ?,
-                updated_at = NOW()
-            WHERE id = ?
-        ");
-        $updateStmt->execute([
-            $new_status,      // ✅ waiting_payment
-            $payment_status, 
-            $total_amount, 
-            $downpayment_amount, 
-            $balance_amount,
-            $payment_type,
-            $apptId
-        ]);
-        
-    } else {
-        // Fallback for other types
-        $new_status = 'confirmed';
-        $payment_status = 'pending';
-        
-        $notification_message = "Your appointment at {$row['clinic_name']} on {$formattedDate} at {$formattedTime} has been CONFIRMED.";
-        
-        $updateStmt = $pdo->prepare("
-            UPDATE appointments 
-            SET status = ?,
-                payment_status = ?,
-                total_amount = ?,
-                downpayment_amount = ?,
-                balance_amount = ?,
-                payment_type = ?,
-                updated_at = NOW()
-            WHERE id = ?
-        ");
-        $updateStmt->execute([
-            $new_status, 
-            $payment_status, 
-            $total_amount, 
-            $downpayment_amount, 
-            $balance_amount,
-            $payment_type,
-            $apptId
-        ]);
-    }
-    
-    // Check if update was successful
-    if ($updateStmt->rowCount() === 0 && $new_status !== 'waiting_payment') {
-        echo json_encode(['success' => false, 'message' => 'Failed to update appointment status']);
-        exit;
-    }
-    
-    // Send notification
-    if ($userId > 0) {
-        notifyUser($pdo, $userId, $isWalkIn ? 'Appointment Confirmed! ✅' : 'Appointment Approved! 🎉', $notification_message, 'appointment', 'my-appointments.php', $apptId);
-    } else {
-        error_log("Appointment {$apptId} approved for patient {$patientId} - no user account");
-    }
-    
-    // Return response
-    echo json_encode([
-        'success' => true, 
-        'message' => $isWalkIn ? 'Walk-in appointment confirmed' : 'Appointment approved, waiting for payment',
-        'payment_required' => $isOnlineBooking && $requires_payment,
-        'payment_amount' => $downpayment_amount ?? $total_amount,
-        'payment_type' => $payment_type,
-        'new_status' => $new_status,
-        'appointment_type' => $row['appointment_type']
-    ]);
-    exit;
-}
 
         // ──────────────────────────────────────────────────────────
         //  PROCESS PAYMENT (called by webhook or manual)
@@ -542,7 +495,6 @@ if ($action === 'approve') {
                 exit;
             }
             
-            // Get appointment with payment info
             $stmt = $pdo->prepare("
                 SELECT a.*, u.id as user_id, c.name as clinic_name
                 FROM appointments a
@@ -563,21 +515,17 @@ if ($action === 'approve') {
                 ? $appt['total_amount'] 
                 : $appt['downpayment_amount'];
             
-            // Update appointment status based on payment type
             if ($payment_type === 'full' || $is_full_payment) {
-                // Full payment received
                 $new_status = 'paid';
                 $payment_status = 'paid';
                 $message = "Full payment received. Your appointment is confirmed.";
             } else {
-                // Downpayment received
                 $new_status = 'confirmed';
                 $payment_status = 'downpayment_paid';
                 $message = "Downpayment of ₱" . number_format($amount_paid, 2) . " received. "
                          . "Please pay the remaining balance of ₱" . number_format($appt['balance_amount'], 2) . " at the clinic.";
             }
             
-            // Update appointment
             $update = $pdo->prepare("
                 UPDATE appointments 
                 SET status = ?, 
@@ -588,14 +536,12 @@ if ($action === 'approve') {
             ");
             $update->execute([$new_status, $payment_status, $apptId]);
             
-            // Save payment record
             $insertPayment = $pdo->prepare("
                 INSERT INTO payments (appointment_id, clinic_id, amount, payment_method, reference_number, payment_status, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, NOW())
             ");
             $insertPayment->execute([$apptId, $clinicId, $amount_paid, $payment_method, $reference_no, $payment_status]);
             
-            // Notify user
             if ($appt['user_id']) {
                 notifyUser(
                     $pdo,
@@ -764,79 +710,75 @@ if ($action === 'approve') {
             exit;
         }
 
-      // ──────────────────────────────────────────────────────────
-//  MARK ARRIVED (UPDATED - DYNAMIC)
-// ──────────────────────────────────────────────────────────
-if ($action === 'mark_arrived') {
-    if (!canEditAppointments()) {
-        echo json_encode(['success' => false, 'message' => 'Permission denied']);
-        exit();
-    }
-    
-    $apptId = (int)($data['appointment_id'] ?? 0);
-    $userId = (int)($data['user_id'] ?? 0);
-    $patientId = (int)($data['patient_id'] ?? 0);
-    
-    if (!$apptId) {
-        echo json_encode(['success' => false, 'message' => 'Missing appointment ID']);
-        exit;
-    }
-    
-    // ✅ AUTO-FETCH IDs if not provided
-    if ($userId <= 0 && $patientId <= 0) {
-        $fetchIds = $pdo->prepare("SELECT user_id, patient_id FROM appointments WHERE id = ? AND clinic_id = ?");
-        $fetchIds->execute([$apptId, $clinicId]);
-        $ids = $fetchIds->fetch(PDO::FETCH_ASSOC);
-        
-        if ($ids) {
-            $userId = (int)($ids['user_id'] ?? 0);
-            $patientId = (int)($ids['patient_id'] ?? 0);
+        // ──────────────────────────────────────────────────────────
+        //  MARK ARRIVED
+        // ──────────────────────────────────────────────────────────
+        if ($action === 'mark_arrived') {
+            if (!canEditAppointments()) {
+                echo json_encode(['success' => false, 'message' => 'Permission denied']);
+                exit();
+            }
+            
+            $apptId = (int)($data['appointment_id'] ?? 0);
+            $userId = (int)($data['user_id'] ?? 0);
+            $patientId = (int)($data['patient_id'] ?? 0);
+            
+            if (!$apptId) {
+                echo json_encode(['success' => false, 'message' => 'Missing appointment ID']);
+                exit;
+            }
+            
+            if ($userId <= 0 && $patientId <= 0) {
+                $fetchIds = $pdo->prepare("SELECT user_id, patient_id FROM appointments WHERE id = ? AND clinic_id = ?");
+                $fetchIds->execute([$apptId, $clinicId]);
+                $ids = $fetchIds->fetch(PDO::FETCH_ASSOC);
+                
+                if ($ids) {
+                    $userId = (int)($ids['user_id'] ?? 0);
+                    $patientId = (int)($ids['patient_id'] ?? 0);
+                }
+            }
+            
+            $check = $pdo->prepare("
+                SELECT id, status, patient_id, appointment_date, appointment_time
+                FROM appointments 
+                WHERE id = ? AND clinic_id = ? AND status = 'confirmed'
+            ");
+            $check->execute([$apptId, $clinicId]);
+            $appt = $check->fetch();
+            
+            if (!$appt) {
+                echo json_encode(['success' => false, 'message' => 'Appointment not found or not confirmed']);
+                exit;
+            }
+            
+            $updateStmt = $pdo->prepare("
+                UPDATE appointments 
+                SET status = 'arrived', 
+                    arrived_at = NOW(),
+                    updated_at = NOW() 
+                WHERE id = ?
+            ");
+            $updateStmt->execute([$apptId]);
+            
+            if ($userId > 0) {
+                notifyUser(
+                    $pdo,
+                    $userId,
+                    'You Have Arrived! 🏥',
+                    "You have been marked as arrived for your appointment. Please proceed to the consultation area.",
+                    'appointment',
+                    'my-appointments.php',
+                    $apptId
+                );
+            }
+            
+            echo json_encode(['success' => true, 'message' => 'Patient marked as arrived']);
+            exit;
         }
-    }
-    
-    // Check if appointment exists and is confirmed
-    $check = $pdo->prepare("
-        SELECT id, status, patient_id, appointment_date, appointment_time
-        FROM appointments 
-        WHERE id = ? AND clinic_id = ? AND status = 'confirmed'
-    ");
-    $check->execute([$apptId, $clinicId]);
-    $appt = $check->fetch();
-    
-    if (!$appt) {
-        echo json_encode(['success' => false, 'message' => 'Appointment not found or not confirmed']);
-        exit;
-    }
-    
-    // Update to 'arrived' status
-    $updateStmt = $pdo->prepare("
-        UPDATE appointments 
-        SET status = 'arrived', 
-            arrived_at = NOW(),
-            updated_at = NOW() 
-        WHERE id = ?
-    ");
-    $updateStmt->execute([$apptId]);
-    
-    // Optional: Send notification if there's a user_id
-    if ($userId > 0) {
-        notifyUser(
-            $pdo,
-            $userId,
-            'You Have Arrived! 🏥',
-            "You have been marked as arrived for your appointment. Please proceed to the consultation area.",
-            'appointment',
-            'my-appointments.php',
-            $apptId
-        );
-    }
-    
-    echo json_encode(['success' => true, 'message' => 'Patient marked as arrived']);
-    exit;
-}
 
         // ──────────────────────────────────────────────────────────
-        //  PROCESS REFUND (approve/reject)
+        //  PROCESS REFUND WITH PAYMONGO INTEGRATION (UPDATED)
         // ──────────────────────────────────────────────────────────
         if ($action === 'process_refund') {
             if (!canEditAppointments()) {
@@ -849,113 +791,122 @@ if ($action === 'mark_arrived') {
             $refundAction = $data['refund_action'] ?? '';
             $adminNotes = trim($data['admin_notes'] ?? '');
             
-            if (!$refundId || !$userId || !in_array($refundAction, ['approve', 'reject'])) {
-                echo json_encode(['success' => false, 'message' => 'Missing fields']);
+            if (!$refundId || !$refundAction) {
+                echo json_encode(['success' => false, 'message' => 'Missing required fields']);
                 exit;
             }
             
+            // Get refund request details
             $stmt = $pdo->prepare("
-                SELECT rr.*, a.appointment_date, a.appointment_time,
-                       c.name AS clinic_name, pr.name AS product_name
+                SELECT rr.*, a.paymongo_payment_id, a.downpayment_amount, a.total_amount,
+                       a.id as appointment_id, a.user_id
                 FROM refund_requests rr
                 JOIN appointments a ON rr.appointment_id = a.id
-                JOIN clinics c ON rr.clinic_id = c.id
-                JOIN products pr ON a.product_id = pr.id
                 WHERE rr.id = ? AND rr.clinic_id = ?
             ");
             $stmt->execute([$refundId, $clinicId]);
-            $refund = $stmt->fetch();
+            $refund = $stmt->fetch(PDO::FETCH_ASSOC);
             
             if (!$refund) {
                 echo json_encode(['success' => false, 'message' => 'Refund request not found']);
                 exit;
             }
             
-            $formattedDate = date('F j, Y', strtotime($refund['appointment_date']));
+            if ($refund['status'] !== 'pending') {
+                echo json_encode(['success' => false, 'message' => 'This refund request is no longer pending']);
+                exit;
+            }
             
-            if ($refundAction === 'approve') {
-                $pdo->prepare("
-                    UPDATE refund_requests 
-                    SET status = 'approved', 
-                        processed_at = NOW(), 
-                        processed_by = ?,
-                        admin_notes = ?
-                    WHERE id = ?
-                ")->execute([$clinicId, $adminNotes, $refundId]);
-                
-                if ($refund['request_type'] === 'refund') {
-                    $pdo->prepare("
-                        UPDATE appointments 
-                        SET status = 'refunded', 
-                            payment_status = 'refunded'
-                        WHERE id = ?
-                    ")->execute([$refund['appointment_id']]);
-                    
-                    notifyUser($pdo, $userId,
-                        'Refund Approved ✅',
-                        "Your refund request for {$refund['clinic_name']} on {$formattedDate} has been approved. Amount will be processed within 3-5 business days.",
-                        'appointment', 'my-appointments.php', $refund['appointment_id']
-                    );
-                    
-                    echo json_encode(['success' => true, 'message' => 'Refund approved successfully']);
-                    
-                } else {
-                    $pdo->prepare("
-                        UPDATE appointments 
-                        SET status = 'confirmed', 
-                            payment_status = 'paid'
-                        WHERE id = ?
-                    ")->execute([$refund['rebook_appointment_id']]);
-                    
-                    $pdo->prepare("
-                        UPDATE appointments 
-                        SET status = 'refunded',
-                            notes = CONCAT(notes, ' | Rebooked to appointment #', ?)
-                        WHERE id = ?
-                    ")->execute([$refund['rebook_appointment_id'], $refund['appointment_id']]);
-                    
-                    notifyUser($pdo, $userId,
-                        'Rebook Approved 📅',
-                        "Your rebook request for {$refund['clinic_name']} has been approved. Please check your new appointment details.",
-                        'appointment', 'my-appointments.php', $refund['rebook_appointment_id']
-                    );
-                    
-                    echo json_encode(['success' => true, 'message' => 'Rebook approved successfully']);
-                }
-                
-            } else {
-                $pdo->prepare("
+            // ==========================================
+            // REJECT: Simple update, no PayMongo
+            // ==========================================
+            if ($refundAction === 'reject') {
+                $stmt = $pdo->prepare("
                     UPDATE refund_requests 
                     SET status = 'rejected', 
-                        processed_at = NOW(), 
-                        processed_by = ?,
-                        admin_notes = ?
+                        admin_notes = CONCAT(IFNULL(admin_notes, ''), ' Rejected: ', ?),
+                        refund_status = 'failed',
+                        updated_at = NOW()
                     WHERE id = ?
-                ")->execute([$clinicId, $adminNotes, $refundId]);
+                ");
+                $stmt->execute([$adminNotes, $refundId]);
                 
-                $pdo->prepare("
-                    UPDATE appointments 
-                    SET status = 'paid'
-                    WHERE id = ?
-                ")->execute([$refund['appointment_id']]);
+                $pdo->prepare("UPDATE appointments SET status = 'paid' WHERE id = ?")
+                    ->execute([$refund['appointment_id']]);
                 
-                if ($refund['rebook_appointment_id']) {
-                    $pdo->prepare("
-                        UPDATE appointments 
-                        SET status = 'cancelled',
-                            cancellation_reason = 'Rebook request rejected'
-                        WHERE id = ?
-                    ")->execute([$refund['rebook_appointment_id']]);
-                }
+                sendRefundNotification($pdo, $refund['user_id'], $refund['appointment_id'], 'rejected', $adminNotes);
                 
-                notifyUser($pdo, $userId,
-                    'Refund Request Rejected ❌',
-                    "Your refund request for {$refund['clinic_name']} on {$formattedDate} was rejected. " . ($adminNotes ? "Reason: $adminNotes" : "Please contact the clinic for more information."),
-                    'appointment', 'my-appointments.php', $refund['appointment_id']
-                );
-                
-                echo json_encode(['success' => true, 'message' => 'Refund rejected']);
+                echo json_encode(['success' => true, 'message' => 'Refund request rejected']);
+                exit;
             }
+            
+// ==========================================
+// APPROVE: Create NEW PayMongo Checkout Session for Refund
+// ==========================================
+if ($refundAction === 'approve') {
+    
+    // ✅ Load PayMongoRefund class
+    require_once __DIR__ . '/paymongos.php';
+    $paymongo = new PayMongoRefund($pdo);
+    
+    // ✅ Determine refund amount
+    $refundAmount = $refund['amount'] ?? $refund['downpayment_amount'] ?? 0;
+    
+    if ($refundAmount <= 0) {
+        echo json_encode(['success' => false, 'message' => 'Invalid refund amount']);
+        exit;
+    }
+    
+    // ✅ Create NEW checkout session for refund (HINDI yung luma!)
+    $result = $paymongo->createRefundCheckout(
+        $refundId,
+        $refund['appointment_id'],
+        $refundAmount,
+        $refund['reason'] ?? 'Customer requested refund'
+    );
+    
+    if ($result['success']) {
+        // ✅ Update refund status to 'processing'
+        $pdo->prepare("
+            UPDATE refund_requests 
+            SET refund_status = 'processing', 
+                status = 'processing',
+                paymongo_refund_id = ?,
+                updated_at = NOW()
+            WHERE id = ?
+        ")->execute([$result['checkout_id'], $refundId]);
+        
+        // ✅ Update admin notes if provided
+        if (!empty($adminNotes)) {
+            $pdo->prepare("
+                UPDATE refund_requests 
+                SET admin_notes = CONCAT(IFNULL(admin_notes, ''), ' Admin note: ', ?),
+                    updated_at = NOW()
+                WHERE id = ?
+            ")->execute([$adminNotes, $refundId]);
+        }
+        
+        // ✅ Return the NEW redirect URL
+        echo json_encode([
+            'success' => true,
+            'redirect' => true,
+            'checkout_url' => $result['checkout_url'],  // ✅ NEW checkout URL
+            'checkout_id' => $result['checkout_id'],
+            'ref_no' => $result['ref_no'],
+            'message' => 'Redirecting to PayMongo to process refund...'
+        ]);
+        exit;
+    } else {
+        echo json_encode([
+            'success' => false,
+            'message' => $result['message'],
+            'requires_manual' => true
+        ]);
+        exit;
+    }
+}
+            
+            echo json_encode(['success' => false, 'message' => 'Invalid action']);
             exit;
         }
 
@@ -967,5 +918,45 @@ if ($action === 'mark_arrived') {
 
 } catch (Exception $e) {
     echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+}
+
+// ============================================
+// HELPER: Send Refund Notification
+// ============================================
+function sendRefundNotification($pdo, $userId, $appointmentId, $status, $message = '') {
+    try {
+        if ($status === 'approved' || $status === 'completed') {
+            $title = "✅ Refund Approved & Processed";
+            $body = "Your refund for appointment #$appointmentId has been approved and processed. The amount will reflect in your account within 3-5 business days.";
+        } elseif ($status === 'rejected') {
+            $title = "❌ Refund Request Rejected";
+            $body = "Your refund request for appointment #$appointmentId was not approved. Reason: " . ($message ?: 'No reason provided.');
+        } else {
+            $title = "🔄 Refund Update";
+            $body = "Your refund request for appointment #$appointmentId has been updated. Status: " . ucfirst($status);
+        }
+        
+        $stmt = $pdo->prepare("
+            INSERT INTO notifications (user_id, title, message, type, link, is_read, created_at)
+            VALUES (?, ?, ?, 'refund', '/profile.php?tab=appointments', 0, NOW())
+        ");
+        $stmt->execute([$userId, $title, $body]);
+        
+        return true;
+    } catch (Exception $e) {
+        return false;
+    }
+}
+
+// ============================================
+// ERROR LOGGING
+// ============================================
+function logError($message, $data = null) {
+    $log = date('Y-m-d H:i:s') . " - " . $message;
+    if ($data) {
+        $log .= " - " . json_encode($data);
+    }
+    error_log($log);
+    file_put_contents(__DIR__ . '/../logs/refund_error.log', $log . PHP_EOL, FILE_APPEND);
 }
 ?>

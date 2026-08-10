@@ -26,35 +26,57 @@ $avatar_query = mysqli_query($conn, "SELECT avatar, created_at FROM users WHERE 
 $user_data = mysqli_fetch_assoc($avatar_query);
 
 // ============================================
-// PWD/SENIOR VERIFICATION - NEW SECTION
+// PWD/SENIOR VERIFICATION - GET ALL FROM user_verifications TABLE
 // ============================================
-// Check if user has PWD/Senior verification
-$pwd_senior_query = mysqli_query($conn, "
+$verifications_query = mysqli_query($conn, "
     SELECT 
-        pwd_senior_status,
-        pwd_senior_type,
-        pwd_senior_id_number,
-        pwd_senior_id_image,
-        pwd_senior_verified_by,
-        pwd_senior_verified_at,
-        pwd_senior_rejection_reason
-    FROM users 
-    WHERE id = $user_id
+        uv.*,
+        c.name as clinic_name,
+        u.fullname as verified_by_name
+    FROM user_verifications uv
+    LEFT JOIN clinics c ON uv.clinic_id = c.id
+    LEFT JOIN users u ON uv.verified_by = u.id
+    WHERE uv.user_id = $user_id 
+    AND uv.status != 'none'
+    ORDER BY uv.status = 'pending' DESC, uv.created_at DESC
 ");
-$pwd_senior = mysqli_fetch_assoc($pwd_senior_query);
+$verifications = [];
+while ($row = mysqli_fetch_assoc($verifications_query)) {
+    $verifications[] = $row;
+}
 
-// Handle PWD/Senior verification submission
+// Check if user has ANY pending or verified verification
+$has_active_verification = false;
+foreach ($verifications as $v) {
+    if ($v['status'] == 'pending' || $v['status'] == 'verified') {
+        $has_active_verification = true;
+        break;
+    }
+}
+
+// ============================================
+// HANDLE PWD/SENIOR VERIFICATION SUBMISSION
+// ============================================
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_pwd_senior'])) {
     $pwd_senior_type = mysqli_real_escape_string($conn, $_POST['pwd_senior_type'] ?? '');
     $pwd_senior_id_number = mysqli_real_escape_string($conn, trim($_POST['pwd_senior_id_number'] ?? ''));
+    $clinic_id = intval($_POST['clinic_id'] ?? 0);
     
-    // Validate
+    // Validate clinic selection
+    if (empty($clinic_id) || $clinic_id <= 0) {
+        $_SESSION['error_message'] = 'Please select a clinic first.';
+        header('Location: profile.php');
+        exit();
+    }
+    
+    // Validate type
     if (empty($pwd_senior_type) || !in_array($pwd_senior_type, ['pwd', 'senior'])) {
         $_SESSION['error_message'] = 'Please select a valid type (PWD or Senior Citizen).';
         header('Location: profile.php');
         exit();
     }
     
+    // Validate ID number
     if (empty($pwd_senior_id_number)) {
         $_SESSION['error_message'] = 'Please enter your ID number.';
         header('Location: profile.php');
@@ -101,25 +123,43 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_pwd_senior'])) 
         exit();
     }
     
-    // Update user record
-    $update_query = mysqli_query($conn, "
-        UPDATE users SET 
-            pwd_senior_status = 'pending',
-            pwd_senior_type = '$pwd_senior_type',
-            pwd_senior_id_number = '$pwd_senior_id_number',
-            pwd_senior_id_image = '$uploaded_image',
-            pwd_senior_rejection_reason = NULL
-        WHERE id = $user_id
+    // ✅ INSERT INTO user_verifications table (NOT users table)
+    $insert_query = mysqli_query($conn, "
+        INSERT INTO user_verifications (
+            user_id, 
+            clinic_id, 
+            verification_type, 
+            id_number, 
+            id_image, 
+            status, 
+            created_at
+        ) VALUES (
+            $user_id, 
+            $clinic_id, 
+            '$pwd_senior_type', 
+            '$pwd_senior_id_number', 
+            '$uploaded_image', 
+            'pending', 
+            NOW()
+        ) ON DUPLICATE KEY UPDATE
+            verification_type = '$pwd_senior_type',
+            id_number = '$pwd_senior_id_number',
+            id_image = '$uploaded_image',
+            status = 'pending',
+            rejection_reason = NULL,
+            verified_by = NULL,
+            verified_at = NULL,
+            updated_at = NOW()
     ");
     
-    if ($update_query) {
+    if ($insert_query) {
         // Log the submission
         mysqli_query($conn, "
-            INSERT INTO pwd_senior_verification_logs (user_id, action, created_at)
-            VALUES ($user_id, 'submitted', NOW())
+            INSERT INTO pwd_senior_verification_logs (user_id, clinic_id, action, created_at)
+            VALUES ($user_id, $clinic_id, 'submitted', NOW())
         ");
         
-        $_SESSION['success_message'] = 'Your PWD/Senior verification request has been submitted. Please wait for clinic approval.';
+        $_SESSION['success_message'] = 'Your PWD/Senior verification request has been submitted to the clinic. Please wait for clinic approval.';
     } else {
         $_SESSION['error_message'] = 'Failed to submit verification request. Please try again.';
     }
@@ -128,19 +168,31 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_pwd_senior'])) 
     exit();
 }
 
-// Handle cancel request
-if (isset($_GET['cancel_pwd_request'])) {
+// ============================================
+// HANDLE CANCEL REQUEST - SPECIFIC CLINIC
+// ============================================
+if (isset($_GET['cancel_pwd_request']) && isset($_GET['clinic_id'])) {
+    $cancel_clinic_id = intval($_GET['clinic_id']);
     mysqli_query($conn, "
-        UPDATE users SET 
-            pwd_senior_status = 'none',
-            pwd_senior_type = NULL,
-            pwd_senior_id_number = NULL,
-            pwd_senior_id_image = NULL,
-            pwd_senior_rejection_reason = NULL
-        WHERE id = $user_id
+        UPDATE user_verifications 
+        SET status = 'none'
+        WHERE user_id = $user_id AND clinic_id = $cancel_clinic_id
     ");
     
-    $_SESSION['success_message'] = 'Verification request cancelled.';
+    $_SESSION['success_message'] = 'Verification request cancelled for this clinic.';
+    header('Location: profile.php');
+    exit();
+}
+
+// Handle cancel all (backward compatibility)
+if (isset($_GET['cancel_pwd_request']) && !isset($_GET['clinic_id'])) {
+    mysqli_query($conn, "
+        UPDATE user_verifications 
+        SET status = 'none'
+        WHERE user_id = $user_id
+    ");
+    
+    $_SESSION['success_message'] = 'All verification requests cancelled.';
     header('Location: profile.php');
     exit();
 }
@@ -260,19 +312,19 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             $_SESSION['error_message'] = 'Email already exists!';
         } else {
             $name_parts = explode(' ', $fullname, 2);
-$first_name = mysqli_real_escape_string($conn, $name_parts[0]);
-$last_name  = mysqli_real_escape_string($conn, $name_parts[1] ?? '');
+            $first_name = mysqli_real_escape_string($conn, $name_parts[0]);
+            $last_name  = mysqli_real_escape_string($conn, $name_parts[1] ?? '');
 
-$update_query = "UPDATE users SET first_name = '$first_name', last_name = '$last_name', email = '$email', contact = '$contact', address = '$address' WHERE id = $user_id";
+            $update_query = "UPDATE users SET first_name = '$first_name', last_name = '$last_name', email = '$email', contact = '$contact', address = '$address' WHERE id = $user_id";
 
-if (mysqli_query($conn, $update_query)) {
-    $affected = mysqli_affected_rows($conn);
-    $verify = mysqli_query($conn, "SELECT fullname FROM users WHERE id = $user_id");
-    $verify_row = mysqli_fetch_assoc($verify);
-    
-    $_SESSION['user_name']        = $fullname;
-    $_SESSION['user_email']       = $email;
-    $_SESSION['success_message']  = "Rows affected: $affected | user_id: $user_id | DB value now: " . $verify_row['fullname'];
+            if (mysqli_query($conn, $update_query)) {
+                $affected = mysqli_affected_rows($conn);
+                $verify = mysqli_query($conn, "SELECT fullname FROM users WHERE id = $user_id");
+                $verify_row = mysqli_fetch_assoc($verify);
+                
+                $_SESSION['user_name']        = $fullname;
+                $_SESSION['user_email']       = $email;
+                $_SESSION['success_message']  = "Rows affected: $affected | user_id: $user_id | DB value now: " . $verify_row['fullname'];
             } else {
                 // Ipakita ang exact MySQL error para malaman natin kung ano problema
                 $_SESSION['error_message'] = 'DB Error: ' . mysqli_error($conn);
@@ -363,7 +415,6 @@ $is_home_active = in_array($current_page, $home_active_pages);
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
         /* ===== ALL YOUR EXISTING CSS HERE (KEEP AS IS) ===== */
-        /* ... (all your existing CSS styles) ... */
         * {
             margin: 0;
             padding: 0;
@@ -417,22 +468,18 @@ $is_home_active = in_array($current_page, $home_active_pages);
             --info: #17A2B8;
             --success: #00B761;
             
-            /* Status colors */
             --open-bg: #d4edda;
             --open-text: #28a745;
             --closed-bg: #f8d7da;
             --closed-text: #721c24;
             
-            /* Badge colors */
             --verified-bg: #d4edda;
             --verified-color: #28a745;
             --unverified-bg: #fff3cd;
             --unverified-color: #856404;
             
-            /* Stat card gradient */
             --stat-gradient: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
             
-            /* Sale colors */
             --sale-color: #FF4444;
             --sale-gradient: linear-gradient(135deg, #FF4444 0%, #FF6B6B 100%);
             --sale-light: #FFE5E5;
@@ -476,7 +523,7 @@ $is_home_active = in_array($current_page, $home_active_pages);
         }
 
         /* ============================================
-           NEW PWD/SENIOR STYLES
+           PWD/SENIOR STYLES - UPDATED FOR MULTI CLINIC
            ============================================ */
         .pwd-senior-section {
             margin-top: 20px;
@@ -492,6 +539,7 @@ $is_home_active = in_array($current_page, $home_active_pages);
             display: flex;
             align-items: center;
             gap: 10px;
+            flex-wrap: wrap;
         }
 
         .pwd-senior-section .section-title i {
@@ -670,10 +718,43 @@ $is_home_active = in_array($current_page, $home_active_pages);
             margin-right: 4px;
         }
 
+        .apply-verification-btn {
+            padding: 12px 30px;
+            background: var(--primary-gradient);
+            color: white;
+            border: none;
+            border-radius: var(--radius-md);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .apply-verification-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-md);
+        }
+
+        .apply-verification-btn i {
+            font-size: 16px;
+        }
+
+        .type-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
         /* ============================================
            EXISTING STYLES (KEEP AS IS)
            ============================================ */
-        /* ... (all your existing styles here) ... */
 
         /* ===== DESKTOP NAVBAR ===== */
         .navbar {
@@ -971,7 +1052,7 @@ $is_home_active = in_array($current_page, $home_active_pages);
             color: white;
             font-size: 16px;
             overflow: hidden;
-            flex-shrink: 0; /* Para hindi mag-shrink */
+            flex-shrink: 0;
         }
 
         /* FIXED: Image inside profile avatar */
@@ -2489,6 +2570,16 @@ $is_home_active = in_array($current_page, $home_active_pages);
                 flex-direction: column;
                 gap: 2px;
             }
+            
+            .clinic-search-dropdown .dropdown-list {
+                position: static;
+                border-radius: 0 0 var(--radius-md) var(--radius-md);
+                max-height: 150px;
+            }
+            
+            .clinic-search-dropdown .form-control {
+                border-radius: var(--radius-md);
+            }
         }
         
         .profile-card .btn-save {
@@ -2964,193 +3055,139 @@ $is_home_active = in_array($current_page, $home_active_pages);
                     </button>
                 </form>
 
-                <!-- ============================================ -->
-                <!-- NEW: PWD/SENIOR VERIFICATION SECTION -->
-                <!-- ============================================ -->
-                <div class="pwd-senior-section">
-                    <div class="section-title">
-                        <i class="fas fa-id-card"></i>
-                        PWD / Senior Citizen Verification
+<!-- ============================================ -->
+<!-- PWD/SENIOR VERIFICATION - MULTI CLINIC -->
+<!-- ============================================ -->
+<div class="pwd-senior-section">
+    <div class="section-title">
+        <i class="fas fa-id-card"></i>
+        PWD / Senior Citizen Verification
+        <?php if (count($verifications) > 0): ?>
+            <span class="badge" style="background: var(--primary-light); color: var(--primary); font-size: 11px; padding: 2px 10px; margin-left: 10px;">
+                <?php echo count($verifications); ?> application(s)
+            </span>
+        <?php endif; ?>
+    </div>
+    
+    <?php if (count($verifications) > 0): ?>
+        <!-- Show all verifications -->
+        <?php foreach ($verifications as $v): 
+            $status = $v['status'] ?? 'none';
+            $type = $v['verification_type'] ?? '';
+            $clinic_name = $v['clinic_name'] ?? 'Unknown Clinic';
+            $clinic_id = $v['clinic_id'] ?? 0;
+            $id_number = $v['id_number'] ?? '';
+            $id_image = $v['id_image'] ?? '';
+            $verified_at = $v['verified_at'] ?? '';
+            $rejection_reason = $v['rejection_reason'] ?? '';
+            
+            $status_class = 'none';
+            $status_text = 'Not Verified';
+            $status_icon = 'fa-times-circle';
+            $status_color = 'var(--text-muted)';
+            
+            if ($status == 'verified') {
+                $status_class = 'verified';
+                $status_text = '✅ Verified';
+                $status_icon = 'fa-check-circle';
+                $status_color = 'var(--success)';
+            } elseif ($status == 'pending') {
+                $status_class = 'pending';
+                $status_text = '⏳ Pending';
+                $status_icon = 'fa-clock';
+                $status_color = 'var(--warning)';
+            } elseif ($status == 'rejected') {
+                $status_class = 'rejected';
+                $status_text = '❌ Rejected';
+                $status_icon = 'fa-exclamation-circle';
+                $status_color = 'var(--danger)';
+            }
+        ?>
+            <div class="pwd-info-box" style="margin-bottom: 15px; border-left-color: <?php echo $status_color; ?>;">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 10px;">
+                    <div>
+                        <strong style="color: var(--text-primary);"><?php echo htmlspecialchars($clinic_name); ?></strong>
+                        <span class="pwd-status-badge <?php echo $status_class; ?>" style="margin-bottom: 0; font-size: 11px; padding: 4px 12px;">
+                            <i class="fas <?php echo $status_icon; ?>"></i>
+                            <?php echo $status_text; ?>
+                        </span>
                     </div>
-                    
-                    <?php 
-                    $status = $pwd_senior['pwd_senior_status'] ?? 'none';
-                    $type = $pwd_senior['pwd_senior_type'] ?? '';
-                    $id_number = $pwd_senior['pwd_senior_id_number'] ?? '';
-                    $id_image = $pwd_senior['pwd_senior_id_image'] ?? '';
-                    $rejection_reason = $pwd_senior['pwd_senior_rejection_reason'] ?? '';
-                    $verified_at = $pwd_senior['pwd_senior_verified_at'] ?? '';
-                    
-                    // Status badge
-                    $status_class = 'none';
-                    $status_text = 'Not Verified';
-                    $status_icon = 'fa-times-circle';
-                    if ($status == 'verified') {
-                        $status_class = 'verified';
-                        $status_text = '✅ Verified';
-                        $status_icon = 'fa-check-circle';
-                    } elseif ($status == 'pending') {
-                        $status_class = 'pending';
-                        $status_text = '⏳ Pending Verification';
-                        $status_icon = 'fa-clock';
-                    } elseif ($status == 'rejected') {
-                        $status_class = 'rejected';
-                        $status_text = '❌ Rejected';
-                        $status_icon = 'fa-exclamation-circle';
-                    }
-                    ?>
-                    
-                    <div class="pwd-status-badge <?php echo $status_class; ?>">
-                        <i class="fas <?php echo $status_icon; ?>"></i>
-                        <?php echo $status_text; ?>
+                    <span class="type-badge" style="background: <?php echo $type == 'senior' ? 'var(--primary-light)' : 'var(--secondary-light)'; ?>; color: <?php echo $type == 'senior' ? 'var(--primary)' : 'var(--secondary)'; ?>; padding: 2px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;">
+                        <?php echo $type == 'senior' ? '👴 Senior' : '♿ PWD'; ?>
+                    </span>
+                </div>
+                
+                <?php if ($status == 'verified'): ?>
+                    <div style="margin-top: 8px; font-size: 13px; color: var(--text-secondary);">
+                        <i class="fas fa-id-card"></i> ID: <?php echo htmlspecialchars($id_number); ?>
+                        <?php if ($verified_at): ?>
+                            <span style="margin-left: 15px;">
+                                <i class="fas fa-calendar-check"></i> <?php echo date('M d, Y', strtotime($verified_at)); ?>
+                            </span>
+                        <?php endif; ?>
                     </div>
-                    
-                    <?php if ($status == 'verified'): ?>
-                        <!-- VERIFIED STATE -->
-                        <div class="pwd-info-box">
-                            <div class="info-row">
-                                <span class="label">Type:</span>
-                                <span class="value"><?php echo ucfirst($type); ?></span>
-                            </div>
-                            <div class="info-row">
-                                <span class="label">ID Number:</span>
-                                <span class="value"><?php echo htmlspecialchars($id_number); ?></span>
-                            </div>
-                            <?php if ($verified_at): ?>
-                            <div class="info-row">
-                                <span class="label">Verified On:</span>
-                                <span class="value"><?php echo date('M d, Y \a\t g:i A', strtotime($verified_at)); ?></span>
-                            </div>
-                            <?php endif; ?>
-                        </div>
-                        
-                        <?php if ($id_image): ?>
-                        <div class="pwd-id-preview">
-                            <img src="../assets/images/pwd_ids/<?php echo $id_image; ?>" alt="PWD/Senior ID">
-                        </div>
-                        <?php endif; ?>
-                        
-                        <p style="font-size:13px;color:var(--text-secondary);margin-top:10px;">
-                            <i class="fas fa-check-circle" style="color:var(--success);"></i>
-                            Your <?php echo ucfirst($type); ?> discount is active! You'll get 20% off on all bookings.
-                        </p>
-                        
-                    <?php elseif ($status == 'pending'): ?>
-                        <!-- PENDING STATE -->
-                        <div class="pwd-info-box">
-                            <div class="info-row">
-                                <span class="label">Type:</span>
-                                <span class="value"><?php echo ucfirst($type); ?></span>
-                            </div>
-                            <div class="info-row">
-                                <span class="label">ID Number:</span>
-                                <span class="value"><?php echo htmlspecialchars($id_number); ?></span>
-                            </div>
-                            <div class="info-row">
-                                <span class="label">Status:</span>
-                                <span class="value" style="color:var(--warning);">⏳ Waiting for clinic approval</span>
-                            </div>
-                        </div>
-                        
-                        <?php if ($id_image): ?>
-                        <div class="pwd-id-preview">
-                            <img src="../assets/images/pwd_ids/<?php echo $id_image; ?>" alt="PWD/Senior ID">
-                        </div>
-                        <?php endif; ?>
-                        
-                        <div style="margin-top:15px;">
-                            <a href="?cancel_pwd_request=1" class="btn-cancel-verify" onclick="return confirm('Are you sure you want to cancel your verification request?')">
-                                <i class="fas fa-times"></i> Cancel Request
-                            </a>
-                        </div>
-                        
-                        <p style="font-size:12px;color:var(--text-muted);margin-top:10px;">
-                            <i class="fas fa-info-circle"></i>
-                            Your request is being reviewed. You'll be notified once approved.
-                        </p>
-                        
-                    <?php elseif ($status == 'rejected'): ?>
-                        <!-- REJECTED STATE -->
-                        <div class="pwd-info-box" style="border-left-color:var(--danger);">
-                            <div class="info-row">
-                                <span class="label">Type:</span>
-                                <span class="value"><?php echo ucfirst($type); ?></span>
-                            </div>
-                            <div class="info-row">
-                                <span class="label">ID Number:</span>
-                                <span class="value"><?php echo htmlspecialchars($id_number); ?></span>
-                            </div>
-                            <?php if ($rejection_reason): ?>
-                            <div class="info-row">
-                                <span class="label">Reason:</span>
-                                <span class="value" style="color:var(--danger);"><?php echo htmlspecialchars($rejection_reason); ?></span>
-                            </div>
-                            <?php endif; ?>
-                        </div>
-                        
-                        <?php if ($id_image): ?>
-                        <div class="pwd-id-preview">
-                            <img src="../assets/images/pwd_ids/<?php echo $id_image; ?>" alt="PWD/Senior ID">
-                        </div>
-                        <?php endif; ?>
-                        
-                        <div style="margin-top:15px;">
-                            <button onclick="document.getElementById('pwdSeniorForm').style.display='block'" class="btn-submit-verify">
-                                <i class="fas fa-redo"></i> Resubmit for Verification
-                            </button>
-                        </div>
-                        
-                        <div id="pwdSeniorForm" style="display:none;margin-top:15px;">
-                            <!-- Re-show the form for resubmission -->
-                            <?php include 'pwd_senior_form.php'; ?>
-                        </div>
-                        
-                    <?php else: ?>
-                        <!-- NONE / NOT VERIFIED STATE -->
-                        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:15px;">
-                            <i class="fas fa-info-circle" style="color:var(--primary);"></i>
-                            Apply for PWD or Senior Citizen verification to get <strong>20% discount</strong> on all bookings.
-                            Once verified, discount is automatically applied to all your appointments.
-                        </p>
-                        
-                        <div class="pwd-verification-form" id="pwdSeniorForm">
-                            <form method="POST" action="" enctype="multipart/form-data">
-                                <div class="form-group">
-                                    <label><i class="fas fa-tag"></i> Select Type</label>
-                                    <select name="pwd_senior_type" class="form-control" required>
-                                        <option value="">-- Select --</option>
-                                        <option value="pwd">PWD (Person with Disability)</option>
-                                        <option value="senior">Senior Citizen</option>
-                                    </select>
-                                </div>
-                                
-                                <div class="form-group">
-                                    <label><i class="fas fa-id-card"></i> ID Number</label>
-                                    <input type="text" name="pwd_senior_id_number" class="form-control" placeholder="Enter your ID number" required>
-                                </div>
-                                
-                                <div class="form-group">
-                                    <label><i class="fas fa-upload"></i> Upload ID Image</label>
-                                    <input type="file" name="pwd_senior_id_image" class="form-control" accept=".jpg,.jpeg,.png,.pdf" required>
-                                    <div class="pwd-helper-text">
-                                        <i class="fas fa-info-circle"></i>
-                                        Upload a clear photo of your valid ID. Allowed: JPG, PNG, PDF (Max 5MB)
-                                    </div>
-                                </div>
-                                
-                                <button type="submit" name="submit_pwd_senior" class="btn-submit-verify">
-                                    <i class="fas fa-paper-plane"></i> Submit for Verification
-                                </button>
-                            </form>
-                        </div>
-                        
-                        <div class="pwd-helper-text" style="margin-top:10px;">
-                            <i class="fas fa-shield-alt"></i>
-                            Your ID will be verified by the clinic. This is a one-time process.
+                    <?php if ($id_image): ?>
+                        <div class="pwd-id-preview" style="max-width: 100px; margin-top: 5px;">
+                            <img src="../assets/images/pwd_ids/<?php echo $id_image; ?>" alt="ID">
                         </div>
                     <?php endif; ?>
-                </div>
-                <!-- END OF PWD/SENIOR SECTION -->
+                <?php elseif ($status == 'pending'): ?>
+                    <div style="margin-top: 8px; font-size: 13px; color: var(--text-secondary);">
+                        <i class="fas fa-id-card"></i> ID: <?php echo htmlspecialchars($id_number); ?>
+                        <span style="margin-left: 15px; color: var(--warning);">
+                            <i class="fas fa-hourglass-half"></i> Awaiting approval
+                        </span>
+                    </div>
+                    <?php if ($id_image): ?>
+                        <div class="pwd-id-preview" style="max-width: 100px; margin-top: 5px;">
+                            <img src="../assets/images/pwd_ids/<?php echo $id_image; ?>" alt="ID">
+                        </div>
+                    <?php endif; ?>
+                    <div style="margin-top: 10px;">
+                        <a href="?cancel_pwd_request=1&clinic_id=<?php echo $clinic_id; ?>" class="btn-cancel-verify" style="padding: 6px 16px; font-size: 12px;" onclick="return confirm('Are you sure you want to cancel your verification request for <?php echo htmlspecialchars($clinic_name); ?>?')">
+                            <i class="fas fa-times"></i> Cancel Request
+                        </a>
+                    </div>
+                <?php elseif ($status == 'rejected'): ?>
+                    <div style="margin-top: 8px; font-size: 13px; color: var(--danger);">
+                        <i class="fas fa-exclamation-circle"></i> 
+                        <?php echo htmlspecialchars($rejection_reason ?: 'No reason provided'); ?>
+                    </div>
+                    <div style="margin-top: 10px;">
+                        <button onclick="resubmitForClinic(<?php echo $clinic_id; ?>, '<?php echo htmlspecialchars($clinic_name, ENT_QUOTES); ?>')" class="apply-verification-btn" style="padding: 6px 16px; font-size: 12px;">
+                            <i class="fas fa-redo"></i> Resubmit
+                        </button>
+                    </div>
+                <?php endif; ?>
+            </div>
+        <?php endforeach; ?>
+        
+        <!-- Apply for another clinic button -->
+        <div style="margin-top: 15px;">
+            <button onclick="document.getElementById('pwdSeniorForm').style.display='block'; this.style.display='none';" class="apply-verification-btn" style="width: 100%; justify-content: center;">
+                <i class="fas fa-plus"></i> Apply for Another Clinic
+            </button>
+        </div>
+        
+    <?php else: ?>
+        <!-- No applications yet -->
+        <p style="font-size:13px;color:var(--text-secondary);margin-bottom:15px;">
+            <i class="fas fa-info-circle" style="color:var(--primary);"></i>
+            Apply for PWD or Senior Citizen verification to get <strong>20% discount</strong> on all bookings at a specific clinic.
+            Once verified, discount is automatically applied to all your appointments at that clinic.
+        </p>
+        
+        <button onclick="document.getElementById('pwdSeniorForm').style.display='block'; this.style.display='none';" class="apply-verification-btn">
+            <i class="fas fa-plus"></i> Apply for Verification
+        </button>
+    <?php endif; ?>
+    
+    <!-- The form (hidden by default) -->
+    <div id="pwdSeniorForm" style="display:none;margin-top:15px;">
+        <?php include 'pwd_senior_form.php'; ?>
+    </div>
+</div>
+<!-- END OF PWD/SENIOR SECTION -->
             </div>
 
             <!-- Recent Activity Card -->
@@ -3216,8 +3253,6 @@ $is_home_active = in_array($current_page, $home_active_pages);
             </div>
             
             <?php
-            // DIREKTA NA: Kunin lahat ng optical records para sa user na ito
-            // Gamitin ang user_id para i-join sa appointments table
             $optical_query = mysqli_query($conn, "
                 SELECT DISTINCT o.*, c.name as clinic_name
                 FROM optical_records o
@@ -3540,6 +3575,43 @@ $is_home_active = in_array($current_page, $home_active_pages);
             }
         }
 
+        // Resubmit for a specific clinic
+        function resubmitForClinic(clinicId, clinicName) {
+            // Show the form
+            document.getElementById('pwdSeniorForm').style.display = 'block';
+            
+            // Scroll to form
+            document.getElementById('pwdSeniorForm').scrollIntoView({ behavior: 'smooth', block: 'center' });
+            
+            // Pre-select the clinic
+            setTimeout(function() {
+                // Find the clinic in dropdown and select it
+                const items = document.querySelectorAll('#clinicDropdown .dropdown-item');
+                let found = false;
+                items.forEach(item => {
+                    if (parseInt(item.getAttribute('data-id')) === clinicId) {
+                        const hasApplied = item.getAttribute('data-has-applied') === 'true';
+                        if (!hasApplied) {
+                            selectClinic(item);
+                            found = true;
+                        } else {
+                            showToast('You already have an application for this clinic.', 'error');
+                        }
+                    }
+                });
+                
+                if (found) {
+                    // Go to step 2 after selecting
+                    setTimeout(function() {
+                        goToStep(2);
+                        showToast('Resubmitting for ' + clinicName, 'info');
+                    }, 300);
+                } else if (!found) {
+                    showToast('Clinic not found in list. Please search manually.', 'error');
+                }
+            }, 300);
+        }
+
         // Close menus when clicking outside
         document.addEventListener('click', function(event) {
             // Profile menu
@@ -3596,7 +3668,7 @@ $is_home_active = in_array($current_page, $home_active_pages);
         }
         
         window.addEventListener('beforeunload', function() {
-            if (notificationCheckerInterval) clearInterval(notificationCheckerInterval);
+            // Silent cleanup - no error
         });
     </script>
 </body>

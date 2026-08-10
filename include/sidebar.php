@@ -41,6 +41,79 @@ $user_role = $_SESSION['role'] ?? '';
 $user_id   = $_SESSION['user_id'] ?? 0;
 
 $v = $_GET['view'] ?? '';
+$current_page = basename($_SERVER['PHP_SELF']);
+
+// ============================================
+// MAP VIEW TO MODULE - PARA SA ACTIVE DETECTION
+// ============================================
+$view_to_module = [
+    // ADMINISTRATION
+    'dashboard' => 'ADMINISTRATION',
+    'reports' => 'ADMINISTRATION',
+    'logs' => 'ADMINISTRATION',
+    'settings' => 'ADMINISTRATION',
+    'roles_management' => 'ADMINISTRATION',
+    
+    // OPTICAL
+    'doctor_dashboard' => 'OPTICAL',
+    'decision-support' => 'OPTICAL',
+    
+    // CUSTOMER CARE
+    'crm_dashboard' => 'CUSTOMER CARE',
+    'patients' => 'CUSTOMER CARE',
+    'appointments' => 'CUSTOMER CARE',
+    'pwd_senior_verification' => 'CUSTOMER CARE',
+    'reservations' => 'CUSTOMER CARE',
+    'crm_messages' => 'CUSTOMER CARE',
+    'crm_tasks' => 'CUSTOMER CARE',
+    'request_data_deletion' => 'CUSTOMER CARE',
+    'clinic_reviews' => 'CUSTOMER CARE',
+    
+    // FINANCE & PAYMENTS
+    'sales' => 'FINANCE & PAYMENTS',
+    'payment-configuration' => 'FINANCE & PAYMENTS',
+    'expenses' => 'FINANCE & PAYMENTS',
+    
+    // SUPPLY CHAIN
+    'inventory' => 'SUPPLY CHAIN',
+    'purchase_requests' => 'SUPPLY CHAIN',
+    'purchase_orders' => 'SUPPLY CHAIN',
+    'products' => 'SUPPLY CHAIN',
+    'supplier' => 'SUPPLY CHAIN',
+    'my-3d-models' => 'SUPPLY CHAIN',
+    
+    // HUMAN RESOURCES
+    'users' => 'HUMAN RESOURCES',
+    'positions' => 'HUMAN RESOURCES',
+    'attendance' => 'HUMAN RESOURCES',
+    'schedule_management' => 'HUMAN RESOURCES',
+    'leave' => 'HUMAN RESOURCES',
+    'payroll' => 'HUMAN RESOURCES',
+    'salary-history' => 'HUMAN RESOURCES',
+    'payslip' => 'HUMAN RESOURCES',
+    'payroll-approval' => 'HUMAN RESOURCES',
+    
+    // WORKFORCE
+    'my_schedule' => 'WORKFORCE',
+    'qr_attendance' => 'WORKFORCE',
+    'employee_leave' => 'WORKFORCE',
+];
+
+// Determine current module
+$current_module = '';
+if (!empty($v)) {
+    $current_module = $view_to_module[$v] ?? '';
+}
+
+if (empty($current_module)) {
+    $page_to_module = [
+        'appointment-scheduling.php' => 'CUSTOMER CARE',
+        'appointments.php' => 'CUSTOMER CARE',
+        'sales.php' => 'FINANCE & PAYMENTS',
+        'dashboard.php' => 'ADMINISTRATION',
+    ];
+    $current_module = $page_to_module[$current_page] ?? '';
+}
 
 // Read permissions directly from session
 $userPermissions = $_SESSION['permissions'] ?? [];
@@ -82,10 +155,6 @@ function canAccessPage($requiredPermission, $userPermissions, $is_clinic_admin) 
 // ============================================================
 // SUBSCRIPTION-BASED LOCKING RULES
 // ============================================================
-// basic       → only ADMINISTRATION, OPTICAL, CUSTOMER CARE
-// professional → + FINANCE & PAYMENTS, SUPPLY CHAIN
-// enterprise  → everything unlocked
-// ============================================================
 $ENTERPRISE_ONLY_GROUPS    = ['HUMAN RESOURCES', 'WORKFORCE'];
 $PROFESSIONAL_ONLY_GROUPS  = ['FINANCE & PAYMENTS', 'SUPPLY CHAIN'];
 
@@ -119,7 +188,7 @@ try {
     $stmt->execute();
     $allMenuItems = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    // clinic_menu_visibility — KEEP AS IS, DO NOT MODIFY
+    // clinic_menu_visibility
     $hidden_modules = [];
     if ($is_clinic_admin && $clinic_id) {
         try {
@@ -143,10 +212,8 @@ try {
         $group              = $item['group_name'];
         $requiredPermission = $item['permission_required'];
 
-        // clinic_menu_visibility check (unchanged)
         if ($is_clinic_admin && in_array($group, $hidden_modules)) continue;
 
-        // RBAC permission check for non-admins
         if (!$is_clinic_admin) {
             if (!canAccessPage($requiredPermission, $userPermissions, $is_clinic_admin)) continue;
         }
@@ -222,7 +289,6 @@ $js_plan        = json_encode($subscription_plan);
         <ul class="nav flex-column">
 
             <?php if (!$hasSubscription): ?>
-                <!-- NO SUBSCRIPTION: Show upgrade banner only -->
                 <li class="nav-item mt-3">
                     <div class="upgrade-sidebar-banner text-center p-3">
                         <i class="bi bi-star-fill fs-1 text-warning"></i>
@@ -235,7 +301,6 @@ $js_plan        = json_encode($subscription_plan);
                 </li>
 
             <?php else: ?>
-                <!-- HAS SUBSCRIPTION: Show menu with plan-based locking -->
                 <?php foreach ($menuGroups as $groupName => $group): ?>
                     <?php if (empty($group['items'])) continue; ?>
                     <?php
@@ -244,9 +309,9 @@ $js_plan        = json_encode($subscription_plan);
                         $plan_label    = $required_plan ? ucfirst($required_plan) : '';
                     ?>
 
-                    <!-- Group Header -->
+                    <!-- GROUP HEADER: PLAIN TEXT ONLY -->
                     <li class="nav-item mt-3">
-                        <div class="nav-link fw-bold text-uppercase small text-muted group-header <?= $is_locked ? 'locked-group-header' : '' ?>">
+                        <div class="nav-link group-header-plain">
                             <i class="bi <?= $group['icon'] ?>"></i>
                             <span><?= htmlspecialchars($groupName) ?></span>
                             <?php if ($is_locked): ?>
@@ -258,7 +323,6 @@ $js_plan        = json_encode($subscription_plan);
                     </li>
 
                     <?php if ($is_locked): ?>
-                        <!-- LOCKED GROUP: Show upgrade CTA -->
                         <li class="nav-item ms-3 mb-2">
                             <a href="views/subscription_manage.php"
                                class="upgrade-plan-hint w-100"
@@ -269,13 +333,37 @@ $js_plan        = json_encode($subscription_plan);
                         </li>
 
                     <?php else: ?>
-                        <!-- UNLOCKED GROUP: Show all menu items -->
                         <?php foreach ($group['items'] as $item): ?>
+                            <?php 
+                            $is_item_active = false;
+                            
+                            // Get the view name (prefer view_name, fallback to page_name)
+                            $item_view = $item['view_name'] ?? $item['page_name'] ?? '';
+                            
+                            // Check if this menu item matches the current view
+                            if (!empty($v) && !empty($item_view) && $v === $item_view) {
+                                $is_item_active = true;
+                            } 
+                            // Check if we're on the page directly
+                            elseif (empty($v) && !empty($item['url'])) {
+                                $url_parts = parse_url($item['url']);
+                                if (isset($url_parts['query'])) {
+                                    parse_str($url_parts['query'], $query_params);
+                                    if (isset($query_params['view']) && $query_params['view'] === $item_view) {
+                                        $is_item_active = true;
+                                    }
+                                }
+                            }
+                            ?>
                             <li class="nav-item ms-3">
-                                <a class="nav-link <?= (!empty($v) && $v === ($item['view_name'] ?? '')) ? 'active' : '' ?>"
+                                <!-- ITEM LINK: HIGHLIGHT LANG DITO -->
+                                <a class="nav-link item-highlight <?= $is_item_active ? 'active' : '' ?>"
                                    href="<?= htmlspecialchars($item['url']) ?>">
                                     <i class="bi <?= $item['icon'] ?>"></i>
                                     <span><?= htmlspecialchars($item['menu_name']) ?></span>
+                                    <?php if ($is_item_active): ?>
+                                        <span class="ms-auto active-dot"></span>
+                                    <?php endif; ?>
                                 </a>
                             </li>
                         <?php endforeach; ?>
@@ -334,15 +422,71 @@ $js_plan        = json_encode($subscription_plan);
 
 /* ── Nav Links ── */
 .nav-link { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 8px; transition: all 0.2s; color: #4a5568; text-decoration: none; }
-.nav-link:hover { background-color: #e9ecef; color: #2d3748; }
+.nav-link:hover { color: #2d3748; }
 
-.nav-link i { width: 20px; color: #6c757d; }
-
-
-/* ── Group Header ── */
-.group-header { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 8px; }
-.locked-group-header { opacity: 0.55; }
+/* ── GROUP HEADER (PLAIN TEXT) ── */
+.group-header-plain { 
+    color: #6c757d; 
+    font-weight: 700; 
+    font-size: 0.75rem; 
+    text-transform: uppercase; 
+    letter-spacing: 0.5px;
+    padding: 8px 12px;
+    border-radius: 8px;
+}
+.group-header-plain i { width: 20px; color: #6c757d; }
+.group-header-plain:hover { background: transparent; color: #495057; }
 .lock-icon { font-size: 0.65rem; color: #9ca3af; }
+
+/* ── ITEM HIGHLIGHT (TEAL GREEN BUTTON STYLE) ── */
+.item-highlight {
+    background: transparent;
+    color: #4a5568;
+    padding: 8px 12px;
+    border-radius: 8px;
+}
+.item-highlight i { width: 20px; color: #6c757d; }
+.item-highlight:hover {
+    background: #0d9488; /* Teal Green */
+    color: white !important;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(13, 148, 136, 0.2);
+}
+.item-highlight:hover i {
+    color: white !important;
+}
+
+/* ── ACTIVE ITEM (TEAL GREEN HIGHLIGHT) ── */
+.item-highlight.active {
+    background: #0d9488;
+    color: white !important;
+    border-radius: 8px;
+    padding: 8px 12px;
+    box-shadow: 0 4px 8px rgba(13, 148, 136, 0.2);
+}
+.item-highlight.active i {
+    color: white !important;
+}
+.item-highlight.active .active-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    background: #99f6e4;
+    border-radius: 50%;
+    margin-left: 8px;
+    animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+
+/* ── Dark mode support ── */
+.theme-dark .item-highlight:hover,
+.theme-dark .item-highlight.active {
+    background: #14b8a6;
+}
 
 /* ── Upgrade CTA (locked group) ── */
 .upgrade-plan-hint {

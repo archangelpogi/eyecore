@@ -18,17 +18,6 @@ $appointment_id = isset($_GET['appointment_id']) ? (int)$_GET['appointment_id'] 
 $reservation_id = isset($_GET['reservation_id']) ? (int)$_GET['reservation_id'] : 0;
 
 // ============================================
-// CHECK USER PWD/SENIOR STATUS
-// ============================================
-$user_status_query = mysqli_query($conn, "
-    SELECT pwd_senior_status, pwd_senior_type 
-    FROM users 
-    WHERE id = $user_id
-");
-$user_status = mysqli_fetch_assoc($user_status_query);
-$is_pwd_senior = ($user_status && $user_status['pwd_senior_status'] === 'verified');
-
-// ============================================
 // IF RESERVATION ID IS PROVIDED
 // ============================================
 if ($reservation_id > 0 && $appointment_id == 0) {
@@ -180,6 +169,25 @@ if (!$appointment) {
     header('Location: my-appointments.php');
     exit();
 }
+
+// ============================================
+// GET CLINIC ID FOR VERIFICATION CHECK
+// ============================================
+$clinic_id = $appointment['clinic_id'] ?? 0;
+
+// ============================================
+// CHECK USER PWD/SENIOR STATUS PER CLINIC
+// ============================================
+$user_status_query = mysqli_query($conn, "
+    SELECT status as pwd_senior_status, verification_type as pwd_senior_type
+    FROM user_verifications
+    WHERE user_id = $user_id 
+    AND clinic_id = $clinic_id
+    AND status = 'verified'
+    LIMIT 1
+");
+$user_status = mysqli_fetch_assoc($user_status_query);
+$is_pwd_senior = ($user_status && $user_status['pwd_senior_status'] === 'verified');
 
 // ============================================
 // GET ALL SERVICES FOR THIS APPOINTMENT
@@ -460,6 +468,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($error)) {
                     )
                 ");
                 
+                $discount_type = $is_pwd_senior ? ($user_status['pwd_senior_type'] ?? 'pwd') : 'none';
+                $discount_percentage = $is_pwd_senior ? ($discount_rate * 100) : 0;
+                $discount_clinic_id = $is_pwd_senior ? $clinic_id : 'NULL';
+                
+                // ✅ FIXED: Updated UPDATE query with amount_paid and payment_status
                 $update_sql = "
                     UPDATE appointments
                     SET 
@@ -469,11 +482,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($error)) {
                         balance_amount = $balance_amount,
                         total_amount = $total_amount_display,
                         subtotal = $subtotal_display,
-                        discount_type = '" . ($is_pwd_senior ? ($user_status['pwd_senior_type'] ?? 'pwd') : 'none') . "',
-                        discount_percentage = " . ($is_pwd_senior ? ($discount_rate * 100) : 0) . ",
+                        discount_type = '$discount_type',
+                        discount_percentage = $discount_percentage,
                         discount_amount = $discount_amount_display,
                         vat_percentage = " . ($vat_rate * 100) . ",
-                        vat_amount = $vat_amount_display
+                        vat_amount = $vat_amount_display,
+                        discount_clinic_id = $discount_clinic_id,
+                        amount_paid = $downpayment_amount,
+                        payment_status = 'downpayment_pending'
                     WHERE id = $appointment_id
                 ";
                 mysqli_query($conn, $update_sql);

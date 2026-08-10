@@ -279,80 +279,94 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         
         // If no errors, proceed with booking
         if (empty($error_message)) {
-// ✅ STEP 1: Check kung may existing patient na ang user na ito
-$existingPatientId = null;
+            // ✅ STEP 1: Check kung may existing patient na ang user na ito
+            $existingPatientId = null;
 
-// 1.1 Search sa patients table by email or contact
-$userEmail   = mysqli_real_escape_string($conn, trim($user['email']   ?? ''));
-$userContact = mysqli_real_escape_string($conn, trim($user['contact'] ?? ''));
+            // 1.1 Search sa patients table by email or contact
+            $userEmail   = mysqli_real_escape_string($conn, trim($user['email']   ?? ''));
+            $userContact = mysqli_real_escape_string($conn, trim($user['contact'] ?? ''));
 
-if ($userEmail !== '' || $userContact !== '') {
-    $conditions = [];
-    if ($userEmail   !== '') $conditions[] = "email = '$userEmail'";
-    if ($userContact !== '') $conditions[] = "phone = '$userContact'";
-    $whereClause = implode(' OR ', $conditions);
+            if ($userEmail !== '' || $userContact !== '') {
+                $conditions = [];
+                if ($userEmail   !== '') $conditions[] = "email = '$userEmail'";
+                if ($userContact !== '') $conditions[] = "phone = '$userContact'";
+                $whereClause = implode(' OR ', $conditions);
 
-    $patientCheck = mysqli_query($conn, "
-        SELECT id FROM patients 
-        WHERE ($whereClause)
-        ORDER BY id ASC
-        LIMIT 1
-    ");
+                $patientCheck = mysqli_query($conn, "
+                    SELECT id FROM patients 
+                    WHERE ($whereClause)
+                    ORDER BY id ASC
+                    LIMIT 1
+                ");
 
-    if ($patientCheck && mysqli_num_rows($patientCheck) > 0) {
-        $existingPatient   = mysqli_fetch_assoc($patientCheck);
-        $existingPatientId = (int)$existingPatient['id'];
-    }
-}
+                if ($patientCheck && mysqli_num_rows($patientCheck) > 0) {
+                    $existingPatient   = mysqli_fetch_assoc($patientCheck);
+                    $existingPatientId = (int)$existingPatient['id'];
+                }
+            }
 
-// 1.2 Last resort: check previous appointments ng same user
-if (!$existingPatientId) {
-    $prevApptCheck = mysqli_query($conn, "
-        SELECT patient_id FROM appointments 
-        WHERE user_id = $user_id 
-          AND patient_id IS NOT NULL 
-          AND patient_id > 0
-        ORDER BY id DESC 
-        LIMIT 1
-    ");
-    if ($prevApptCheck && mysqli_num_rows($prevApptCheck) > 0) {
-        $prevAppt = mysqli_fetch_assoc($prevApptCheck);
-        if (!empty($prevAppt['patient_id'])) {
-            $existingPatientId = (int)$prevAppt['patient_id'];
-        }
-    }
-}
+            // 1.2 Last resort: check previous appointments ng same user
+            if (!$existingPatientId) {
+                $prevApptCheck = mysqli_query($conn, "
+                    SELECT patient_id FROM appointments 
+                    WHERE user_id = $user_id 
+                      AND patient_id IS NOT NULL 
+                      AND patient_id > 0
+                    ORDER BY id DESC 
+                    LIMIT 1
+                ");
+                if ($prevApptCheck && mysqli_num_rows($prevApptCheck) > 0) {
+                    $prevAppt = mysqli_fetch_assoc($prevApptCheck);
+                    if (!empty($prevAppt['patient_id'])) {
+                        $existingPatientId = (int)$prevAppt['patient_id'];
+                    }
+                }
+            }
 
-// ✅ STEP 2: Determine if new patient
-$isNewPatient = ($existingPatientId && $existingPatientId > 0) ? 0 : 1;
+            // ✅ STEP 2: Determine if new patient
+            $isNewPatient = ($existingPatientId && $existingPatientId > 0) ? 0 : 1;
             
-if ($doctor_id === 'NULL') {
-    $insert_query = "INSERT INTO appointments 
-                    (user_id, patient_id, clinic_id, product_id, doctor_id, 
-                     appointment_date, appointment_time, notes, status, is_new_patient, 
-                     color_code, color_name, lens_type, created_at) 
-                    VALUES ($user_id, " . ($existingPatientId ?: 'NULL') . ", $clinic_id, $product_id, NULL, 
-                    '$appointment_date', '$appointment_time', '$notes', 'pending', $isNewPatient, 
-                    '" . mysqli_real_escape_string($conn, $from_color) . "', 
-                    '" . mysqli_real_escape_string($conn, $from_color_name) . "',
-                    '" . mysqli_real_escape_string($conn, $from_lens) . "', NOW())";
-} else {
-    $insert_query = "INSERT INTO appointments 
-                    (user_id, patient_id, clinic_id, product_id, doctor_id, 
-                     appointment_date, appointment_time, notes, status, is_new_patient, 
-                     color_code, color_name, lens_type, created_at) 
-                    VALUES ($user_id, " . ($existingPatientId ?: 'NULL') . ", $clinic_id, $product_id, $doctor_id, 
-                    '$appointment_date', '$appointment_time', '$notes', 'pending', $isNewPatient, 
-                    '" . mysqli_real_escape_string($conn, $from_color) . "', 
-                    '" . mysqli_real_escape_string($conn, $from_color_name) . "',
-                    '" . mysqli_real_escape_string($conn, $from_lens) . "', NOW())";
-}
+            // ✅ STEP 3: Generate reference number
+            $ref_no = 'APP-' . time() . '-' . rand(1000, 9999);
+            
+            // ✅ STEP 4: Insert appointment with ALL fields including payment fields
+            if ($doctor_id === 'NULL') {
+                $insert_query = "INSERT INTO appointments 
+                                (ref_no, user_id, patient_id, clinic_id, product_id, doctor_id, 
+                                 appointment_date, appointment_time, notes, status, is_new_patient, 
+                                 color_code, color_name, lens_type, contact_number,
+                                 total_amount, subtotal, amount_paid, payment_status, payment_type,
+                                 created_at) 
+                                VALUES ('$ref_no', $user_id, " . ($existingPatientId ?: 'NULL') . ", $clinic_id, $product_id, NULL, 
+                                '$appointment_date', '$appointment_time', '$notes', 'pending', $isNewPatient, 
+                                '" . mysqli_real_escape_string($conn, $from_color) . "', 
+                                '" . mysqli_real_escape_string($conn, $from_color_name) . "',
+                                '" . mysqli_real_escape_string($conn, $from_lens) . "',
+                                '$contact_number',
+                                0, 0, 0, 'pending', 'full',
+                                NOW())";
+            } else {
+                $insert_query = "INSERT INTO appointments 
+                                (ref_no, user_id, patient_id, clinic_id, product_id, doctor_id, 
+                                 appointment_date, appointment_time, notes, status, is_new_patient, 
+                                 color_code, color_name, lens_type, contact_number,
+                                 total_amount, subtotal, amount_paid, payment_status, payment_type,
+                                 created_at) 
+                                VALUES ('$ref_no', $user_id, " . ($existingPatientId ?: 'NULL') . ", $clinic_id, $product_id, $doctor_id, 
+                                '$appointment_date', '$appointment_time', '$notes', 'pending', $isNewPatient, 
+                                '" . mysqli_real_escape_string($conn, $from_color) . "', 
+                                '" . mysqli_real_escape_string($conn, $from_color_name) . "',
+                                '" . mysqli_real_escape_string($conn, $from_lens) . "',
+                                '$contact_number',
+                                0, 0, 0, 'pending', 'full',
+                                NOW())";
+            }
             
             if (mysqli_query($conn, $insert_query)) {
                 $new_appointment_id = mysqli_insert_id($conn);
                 
                 // ============================================
-                // ✅ SAVE PAYMENT INFO SA APPOINTMENTS TABLE
+                // ✅ CALCULATE PAYMENT
                 // ============================================
                 $payment_info = calculatePaymentAmounts($conn, $clinic_id, $total_product_price);
                 $total_amount_calc = $payment_info['total_amount'];
@@ -362,13 +376,16 @@ if ($doctor_id === 'NULL') {
                 $booking_flow_calc = $payment_info['booking_flow'] ?? 'approve_first';
                 $requires_payment_calc = $payment_info['requires_payment'];
                 
-                // I-save ang payment info sa appointments table
+                // ✅ STEP 5: Update appointment with payment info
                 $update_payment = mysqli_query($conn, "
                     UPDATE appointments 
                     SET total_amount = $total_amount_calc,
                         downpayment_amount = $downpayment_amount_calc,
                         balance_amount = $balance_amount_calc,
-                        payment_type = '$payment_type_calc'
+                        payment_type = '$payment_type_calc',
+                        amount_paid = 0,
+                        subtotal = $total_product_price,
+                        payment_status = 'pending'
                     WHERE id = $new_appointment_id
                 ");
                 

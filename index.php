@@ -2,6 +2,8 @@
 // TEST SFTP
 // RHAINE RIVERA
 // Check if config file exists
+session_start();
+
 if (file_exists('includes/config.php')) {
     include 'includes/config.php';
 } else {
@@ -13,6 +15,9 @@ if (file_exists('includes/theme.php')) {
 } else {
     die('Theme file missing. Please upload the includes folder.');
 }
+
+// Check if user is logged in
+$is_logged_in = isset($_SESSION['user_id']);
 
 // ============================================
 // DATABASE QUERIES
@@ -28,6 +33,7 @@ $rating_q = mysqli_query($conn, "
         COALESCE(AVG(rating), 0) as avg_rating,
         COUNT(*) as total_reviews
     FROM clinic_reviews
+    WHERE status = 'approved'
 ");
 $rating_data = mysqli_fetch_assoc($rating_q);
 $avg_rating_formatted = number_format($rating_data['avg_rating'], 1);
@@ -51,7 +57,8 @@ while ($row = mysqli_fetch_assoc($cities_q)) {
 }
 $total_cities = count($cities);
 
-// Featured clinics — top rated active clinics with actual review data
+// ===== FEATURED CLINICS - ALGORITHM BASED =====
+// Weighted scoring: 60% rating, 30% review count, 10% recency
 $featured_q = mysqli_query($conn, "
     SELECT 
         c.id,
@@ -63,12 +70,19 @@ $featured_q = mysqli_query($conn, "
         c.logo,
         c.cover_photo,
         COALESCE(AVG(r.rating), 0) as avg_rating,
-        COUNT(r.id) as review_count
+        COUNT(r.id) as review_count,
+        MAX(r.created_at) as latest_review,
+        (
+            (COALESCE(AVG(r.rating), 0) / 5) * 0.60 +
+            (LEAST(COUNT(r.id), 50) / 50) * 0.30 +
+            (DATEDIFF(NOW(), COALESCE(MAX(r.created_at), NOW())) / 365) * 0.10
+        ) * 100 as featured_score
     FROM clinics c
-    LEFT JOIN clinic_reviews r ON c.id = r.clinic_id
+    LEFT JOIN clinic_reviews r ON c.id = r.clinic_id AND r.status = 'approved'
     WHERE c.status = 'Active'
     GROUP BY c.id
-    ORDER BY review_count DESC, avg_rating DESC, c.id ASC
+    HAVING review_count >= 3
+    ORDER BY featured_score DESC, review_count DESC
     LIMIT 6
 ");
 
@@ -101,40 +115,37 @@ while ($row = mysqli_fetch_assoc($sale_q)) {
 }
 $sale_total = count($sale_products);
 
-// ===== DYNAMIC CATEGORIES - Get categories with product counts =====
-$categories_data = [];
+// ===== DYNAMIC CATEGORIES - AUTO DISCOVER FROM DATABASE =====
+$category_counts = [];
 $cat_q = mysqli_query($conn, "
-    SELECT category, COUNT(*) as product_count 
-    FROM products 
-    GROUP BY category 
-    ORDER BY 
-        CASE category 
-            WHEN 'Eyeglasses' THEN 1
-            WHEN 'Sunglasses' THEN 2
-            WHEN 'Computer Glasses' THEN 3
-            WHEN 'Contact Lens' THEN 4
-            WHEN 'Reading' THEN 5
-            WHEN 'Kids' THEN 6
-            ELSE 7
-        END
+    SELECT 
+        p.category, 
+        COUNT(*) as product_count
+    FROM products p
+    JOIN clinics c ON p.clinic_id = c.id
+    WHERE p.category IS NOT NULL 
+      AND p.category != ''
+      AND c.status = 'Active'
+    GROUP BY p.category
+    ORDER BY product_count DESC
 ");
-
-$category_counts = [
-    'eyeglasses' => 0,
-    'sunglasses' => 0,
-    'computer glasses' => 0,
-    'contact lens' => 0,
-    'reading' => 0,
-    'kids' => 0
-];
 
 while ($row = mysqli_fetch_assoc($cat_q)) {
     $cat_key = strtolower($row['category']);
-    if (isset($category_counts[$cat_key])) {
-        $category_counts[$cat_key] = $row['product_count'];
-    }
-    $categories_data[] = $row;
+    $category_counts[$cat_key] = $row['product_count'];
 }
+
+// Category CSS classes mapping
+$category_classes = [
+    'eyeglasses' => 'c-eyeglasses',
+    'sunglasses' => 'c-sunglasses',
+    'computer glasses' => 'c-computer',
+    'contact lens' => 'c-contact',
+    'reading' => 'c-reading',
+    'kids' => 'c-kids',
+    'prescription' => 'c-prescription',
+    'sports' => 'c-sports'
+];
 
 // Helper: get clinic image path
 function getClinicImage($clinic) {
@@ -158,6 +169,22 @@ $clinic_gradients = [
     'linear-gradient(135deg,#ccfbf1,#5eead4)',
 ];
 $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766e'];
+
+// Get sample clinics for each city
+function getCitySampleClinics($conn, $city, $limit = 3) {
+    $result = [];
+    $q = mysqli_query($conn, "
+        SELECT clinic_name, logo, clinic_image, cover_photo 
+        FROM clinics 
+        WHERE city = '".mysqli_real_escape_string($conn, $city)."' 
+        AND status = 'Active' 
+        LIMIT $limit
+    ");
+    while ($row = mysqli_fetch_assoc($q)) {
+        $result[] = $row;
+    }
+    return $result;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en" class="<?php echo getThemeClass(); ?>">
@@ -225,7 +252,7 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
             transition: background 0.3s, color 0.3s;
         }
 
-        /* ===== REDESIGNED NAVBAR - COMPACT & MOBILE RESPONSIVE ===== */
+        /* ===== NAVBAR ===== */
         .navbar {
             position: sticky;
             top: 0;
@@ -316,7 +343,6 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
         
         .logo-mark svg { width: 16px; height: 16px; fill: white; }
 
-        /* Desktop navigation - hidden on mobile */
         .nav-links {
             display: flex;
             gap: 4px;
@@ -350,7 +376,6 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
             background: rgba(0, 183, 97, 0.08);
         }
 
-        /* Right side actions - compact buttons */
         .nav-right {
             display: flex;
             align-items: center;
@@ -566,7 +591,6 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
         }
         @media (max-width: 768px) { .slide-visual { display: none; } }
 
-        /* Floating stat cards on hero */
         .hero-float {
             position: absolute; background: rgba(255,255,255,0.13);
             backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.2);
@@ -578,7 +602,6 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
         .hf1 { top: 20px; right: 0; }
         .hf2 { bottom: 32px; right: 30px; }
 
-        /* Slider controls */
         .s-arrow {
             position: absolute; top: 50%; transform: translateY(-50%);
             z-index: 10; width: 38px; height: 38px;
@@ -634,7 +657,7 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
         .section { max-width: 1200px; margin: 0 auto; padding: 40px 40px 0; }
         @media (max-width: 768px) { .section { padding: 32px 16px 0; } }
 
-        .sec-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+        .sec-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 8px; }
         .sec-title { font-size: 18px; font-weight: 800; letter-spacing: -0.3px; }
         .sec-link {
             font-size: 12px; color: var(--green); font-weight: 600;
@@ -665,13 +688,16 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
         .c-contact     { background: linear-gradient(150deg,#12002e,#3d0080); }
         .c-kids        { background: linear-gradient(150deg,#1a1500,#665000); }
         .c-reading     { background: linear-gradient(150deg,#001a08,#004d1a); }
+        .c-prescription { background: linear-gradient(150deg,#1a0033,#4d0099); }
+        .c-sports      { background: linear-gradient(150deg,#1a0a00,#cc4400); }
+        .c-default     { background: linear-gradient(150deg,#1a1a2e,#2d2d6e); }
 
         .cat-label {
             padding: 8px 10px; background: var(--card);
             border: 1px solid var(--border-light);
             border-top: none;
         }
-        .cat-name { font-size: 11px; font-weight: 700; color: var(--text1); }
+        .cat-name { font-size: 11px; font-weight: 700; color: var(--text1); text-transform: capitalize; }
         .cat-sub  { font-size: 10px; color: var(--text2); margin-top: 1px; }
 
         /* ===== DUAL BANNER ===== */
@@ -705,7 +731,7 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
             transform: translateY(-50%); opacity: 0.25; font-size: 80px;
         }
 
-        /* ===== FEATURED CLINICS — horizontal scroll ===== */
+        /* ===== FEATURED CLINICS ===== */
         .clinics-scroll {
             overflow-x: auto; scrollbar-width: none; margin: 0 -40px;
             padding: 4px 40px 16px;
@@ -779,35 +805,117 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
             border-radius: var(--r-full);
         }
 
-        /* ===== CITIES GRID ===== */
-        .cities-grid {
-            display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+        /* ===== CITIES GRID - ENHANCED UI ===== */
+        .cities-grid-enhanced {
+            display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
         }
-        @media (max-width: 1024px) { .cities-grid { grid-template-columns: repeat(3, 1fr); } }
-        @media (max-width: 640px)  { .cities-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 1024px) { .cities-grid-enhanced { grid-template-columns: repeat(3, 1fr); } }
+        @media (max-width: 768px)  { .cities-grid-enhanced { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 480px)  { .cities-grid-enhanced { grid-template-columns: 1fr; } }
 
-        .city-card {
-            border-radius: var(--r-lg); overflow: hidden; cursor: pointer;
-            text-decoration: none; display: block; transition: transform 0.2s;
+        .city-card-enhanced {
+            border-radius: var(--r-lg);
+            overflow: hidden;
+            cursor: pointer;
+            text-decoration: none;
+            display: block;
+            transition: all 0.3s ease;
             border: 1px solid var(--border-light);
+            background: var(--card);
         }
-        .city-card:hover { transform: translateY(-4px); box-shadow: var(--shadow-md); }
-        .city-bg {
-            height: 88px; display: flex; align-items: flex-end;
-            padding: 10px 14px; position: relative;
-        }
-        .city-name-over {
-            position: relative; z-index: 2;
-            font-size: 13px; font-weight: 800; color: white; letter-spacing: -0.2px;
-        }
-        .city-foot {
-            padding: 8px 14px; background: var(--card);
-            display: flex; align-items: center; justify-content: space-between;
-        }
-        .city-count-lbl { font-size: 11px; color: var(--text2); }
-        .city-arr { font-size: 13px; color: var(--green); font-weight: 700; }
 
-        /* City bg colors */
+        .city-card-enhanced:hover {
+            transform: translateY(-6px);
+            box-shadow: var(--shadow-md);
+            border-color: var(--green);
+        }
+
+        .city-bg {
+            height: 110px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 14px 16px 12px;
+            position: relative;
+            transition: all 0.3s;
+        }
+
+        .city-name-over {
+            font-size: 16px;
+            font-weight: 800;
+            color: white;
+            letter-spacing: -0.3px;
+            text-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+
+        .city-clinic-previews {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .city-clinic-avatar {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.8);
+            background-size: cover;
+            background-position: center;
+            background-color: rgba(255,255,255,0.2);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            color: white;
+            flex-shrink: 0;
+        }
+
+        .city-clinic-avatar i {
+            font-size: 12px;
+            opacity: 0.7;
+        }
+
+        .city-more {
+            background: rgba(255,255,255,0.25);
+            backdrop-filter: blur(4px);
+            font-weight: 700;
+            font-size: 10px;
+        }
+
+        .city-foot {
+            padding: 10px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: var(--card);
+        }
+
+        .city-count-lbl {
+            font-size: 12px;
+            color: var(--text2);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .city-count-lbl i {
+            color: var(--green);
+        }
+
+        .city-arr {
+            font-size: 12px;
+            color: var(--green);
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            transition: all 0.2s;
+        }
+
+        .city-card-enhanced:hover .city-arr {
+            transform: translateX(4px);
+        }
+
         .cb-0{background:linear-gradient(150deg,#003d20,#00874a);}
         .cb-1{background:linear-gradient(150deg,#0d2550,#1a4d99);}
         .cb-2{background:linear-gradient(150deg,#3d0052,#800080);}
@@ -1017,7 +1125,7 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
         .fb-right { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text2); }
         .fb-right i { color: var(--green); font-size: 11px; }
 
-        /* ===== MOBILE MENU - IMPROVED ===== */
+        /* ===== MOBILE MENU ===== */
         .mob-overlay {
             display: none; position: fixed; inset: 0;
             background: rgba(0,0,0,0.5); backdrop-filter: blur(2px);
@@ -1051,19 +1159,18 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
         .mob-btns { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
         .mob-btns a { text-align: center; justify-content: center; width: 100%; }
 
-        /* ===== SECTION SPACING ===== */
         .section-gap { padding-top: 40px; }
     </style>
 </head>
 <body>
 
-    <!-- ===== REDESIGNED NAVBAR - COMPACT & RESPONSIVE ===== -->
+    <!-- ===== NAVBAR ===== -->
     <nav class="navbar">
         <div class="navbar-container">
             <div class="nav-left">
                 <a href="index.php" class="logo">
                     <div class="logo-mark">
-                        <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                        <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5z"/></svg>
                     </div>
                     eyecore
                 </a>
@@ -1080,12 +1187,21 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
                 <button class="icon-btn" onclick="toggleTheme()" id="themeToggle">
                     <i class="fas fa-moon"></i>
                 </button>
-                <a href="auth/user_login.php" class="btn-outline">
-                    <i class="fas fa-sign-in-alt"></i> Login
-                </a>
-                <a href="auth/user_register.php" class="btn-primary">
-                    <i class="fas fa-user-plus"></i> Sign Up
-                </a>
+                <?php if ($is_logged_in): ?>
+                    <a href="pages/dashboard.php" class="btn-primary">
+                        <i class="fas fa-user"></i> Dashboard
+                    </a>
+                    <a href="auth/logout.php" class="btn-outline">
+                        <i class="fas fa-sign-out-alt"></i> Logout
+                    </a>
+                <?php else: ?>
+                    <a href="auth/user_login.php" class="btn-outline">
+                        <i class="fas fa-sign-in-alt"></i> Login
+                    </a>
+                    <a href="auth/user_register.php" class="btn-primary">
+                        <i class="fas fa-user-plus"></i> Sign Up
+                    </a>
+                <?php endif; ?>
                 <button class="mobile-menu-btn" onclick="openMobMenu()">
                     <i class="fas fa-bars"></i>
                 </button>
@@ -1151,7 +1267,7 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
                         <div class="slide-h1">See Every Frame<br>in Full 3D.</div>
                         <div class="slide-sub">Rotate, zoom, and inspect eyeglass frames in detailed 3D view before you book. Available on select frames from partner clinics.</div>
                         <div class="slide-btns">
-                            <a href="pages/dashboard.php" class="sb-white">
+                            <a href="pages/explore-3d.php" class="sb-white">
                                 <i class="fas fa-cube"></i> Explore 3D Frames
                             </a>
                             <a href="auth/user_register.php" class="sb-ghost">Sign Up Free</a>
@@ -1176,7 +1292,7 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
                 </div>
             </div>
 
-            <!-- SLIDE 3: Hot Deals — only show if there are active sales -->
+            <!-- SLIDE 3: Hot Deals -->
             <?php if ($sale_total > 0): ?>
             <div class="slide s3">
                 <div class="slide-inner">
@@ -1195,29 +1311,21 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
                         </div>
                     </div>
                     <div class="slide-visual" style="flex-direction:column;gap:10px;padding:0 20px 0 0;justify-content:center;">
-                        <?php if (!empty($sale_products)): ?>
-                            <?php foreach ($sale_products as $sp): ?>
-                            <div style="background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.18);border-radius:12px;padding:12px 16px;display:flex;align-items:center;gap:12px;">
-                                <div style="width:38px;height:38px;background:rgba(255,255,255,0.14);border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
-                                    <i class="fas fa-glasses" style="color:rgba(255,255,255,0.8);font-size:16px;"></i>
-                                </div>
-                                <div style="flex:1;min-width:0;">
-                                    <div style="font-size:12px;color:white;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><?php echo htmlspecialchars($sp['name']); ?></div>
-                                    <div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
-                                        <span style="font-size:13px;color:#ffb347;font-weight:700;">₱<?php echo number_format($sp['sale_price']); ?></span>
-                                        <span style="font-size:10px;color:rgba(255,255,255,0.45);text-decoration:line-through;">₱<?php echo number_format($sp['price']); ?></span>
-                                    </div>
-                                </div>
-                                <div style="background:#EF4444;color:white;font-size:9px;font-weight:700;padding:3px 8px;border-radius:10px;flex-shrink:0;">-<?php echo $sp['discount_pct']; ?>%</div>
+                        <?php foreach ($sale_products as $sp): ?>
+                        <div style="background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.18);border-radius:12px;padding:12px 16px;display:flex;align-items:center;gap:12px;">
+                            <div style="width:38px;height:38px;background:rgba(255,255,255,0.14);border-radius:10px;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                                <i class="fas fa-glasses" style="color:rgba(255,255,255,0.8);font-size:16px;"></i>
                             </div>
-                            <?php endforeach; ?>
-                        <?php else: ?>
-                            <div style="text-align:center;padding:20px 0;">
-                                <i class="fas fa-tags" style="font-size:36px;color:rgba(255,255,255,0.25);margin-bottom:12px;display:block;"></i>
-                                <div style="font-size:13px;color:rgba(255,255,255,0.6);margin-bottom:6px;">No active deals right now</div>
-                                <div style="font-size:11px;color:rgba(255,255,255,0.4);">Check back soon for hot offers from Cavite clinics.</div>
+                            <div style="flex:1;min-width:0;">
+                                <div style="font-size:12px;color:white;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"><?php echo htmlspecialchars($sp['name']); ?></div>
+                                <div style="display:flex;align-items:center;gap:6px;margin-top:2px;">
+                                    <span style="font-size:13px;color:#ffb347;font-weight:700;">₱<?php echo number_format($sp['sale_price']); ?></span>
+                                    <span style="font-size:10px;color:rgba(255,255,255,0.45);text-decoration:line-through;">₱<?php echo number_format($sp['price']); ?></span>
+                                </div>
                             </div>
-                        <?php endif; ?>
+                            <div style="background:#EF4444;color:white;font-size:9px;font-weight:700;padding:3px 8px;border-radius:10px;flex-shrink:0;">-<?php echo $sp['discount_pct']; ?>%</div>
+                        </div>
+                        <?php endforeach; ?>
                     </div>
                 </div>
             </div>
@@ -1268,128 +1376,42 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
         </div>
     </div>
 
-    <!-- ===== CATEGORIES - DYNAMIC VERSION ===== -->
+    <!-- ===== CATEGORIES - DYNAMIC ===== -->
     <div class="section section-gap">
         <div class="sec-head">
             <div class="sec-title">Shop by Category</div>
             <a href="pages/dashboard.php" class="sec-link">View all <i class="fas fa-arrow-right"></i></a>
         </div>
         <div class="cat-grid">
-            <?php if (isset($category_counts['eyeglasses']) && $category_counts['eyeglasses'] > 0): ?>
-            <a href="pages/dashboard.php?category=eyeglasses" class="cat-tile">
-                <div class="cat-img c-eyeglasses">
-                    <svg width="80" height="52" viewBox="0 0 90 52" fill="none" style="filter:drop-shadow(0 4px 8px rgba(0,0,0,0.4));">
-                        <ellipse cx="24" cy="27" rx="20" ry="17" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="4.5"/>
-                        <ellipse cx="66" cy="27" rx="20" ry="17" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="4.5"/>
-                        <ellipse cx="24" cy="27" rx="11" ry="9" fill="rgba(100,180,255,0.3)"/>
-                        <ellipse cx="66" cy="27" rx="11" ry="9" fill="rgba(100,180,255,0.3)"/>
-                        <path d="M44 27 Q45 23 46 27" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="3.5" stroke-linecap="round"/>
-                        <line x1="4" y1="22" x2="0" y2="20" stroke="rgba(255,255,255,0.9)" stroke-width="4" stroke-linecap="round"/>
-                        <line x1="86" y1="22" x2="90" y2="20" stroke="rgba(255,255,255,0.9)" stroke-width="4" stroke-linecap="round"/>
-                    </svg>
+            <?php if (!empty($category_counts)): ?>
+                <?php foreach ($category_counts as $cat_key => $count): 
+                    $cat_display = ucwords($cat_key);
+                    $cat_class = isset($category_classes[$cat_key]) ? $category_classes[$cat_key] : 'c-default';
+                ?>
+                <a href="pages/dashboard.php?category=<?php echo urlencode($cat_key); ?>" class="cat-tile">
+                    <div class="cat-img <?php echo $cat_class; ?>">
+                        <svg width="80" height="52" viewBox="0 0 90 52" fill="none" style="filter:drop-shadow(0 4px 8px rgba(0,0,0,0.4));">
+                            <ellipse cx="24" cy="27" rx="20" ry="17" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="4.5"/>
+                            <ellipse cx="66" cy="27" rx="20" ry="17" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="4.5"/>
+                            <ellipse cx="24" cy="27" rx="11" ry="9" fill="rgba(100,180,255,0.3)"/>
+                            <ellipse cx="66" cy="27" rx="11" ry="9" fill="rgba(100,180,255,0.3)"/>
+                            <path d="M44 27 Q45 23 46 27" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="3.5" stroke-linecap="round"/>
+                            <line x1="4" y1="22" x2="0" y2="20" stroke="rgba(255,255,255,0.9)" stroke-width="4" stroke-linecap="round"/>
+                            <line x1="86" y1="22" x2="90" y2="20" stroke="rgba(255,255,255,0.9)" stroke-width="4" stroke-linecap="round"/>
+                        </svg>
+                    </div>
+                    <div class="cat-label">
+                        <div class="cat-name"><?php echo $cat_display; ?></div>
+                        <div class="cat-sub"><?php echo $count; ?> products</div>
+                    </div>
+                </a>
+                <?php endforeach; ?>
+            <?php else: ?>
+                <div class="empty-state" style="grid-column: 1/-1; text-align:center; padding:40px;">
+                    <i class="fas fa-box-open" style="font-size:48px; color:var(--text-muted); opacity:0.5;"></i>
+                    <h3 style="margin-top:12px;">No products available yet</h3>
+                    <p style="color:var(--text2);">Check back soon for eyewear products from our partner clinics.</p>
                 </div>
-                <div class="cat-label">
-                    <div class="cat-name">Eyeglasses</div>
-                    <div class="cat-sub"><?php echo $category_counts['eyeglasses']; ?> frames</div>
-                </div>
-            </a>
-            <?php endif; ?>
-
-            <?php if (isset($category_counts['sunglasses']) && $category_counts['sunglasses'] > 0): ?>
-            <a href="pages/dashboard.php?category=sunglasses" class="cat-tile">
-                <div class="cat-img c-sunglasses">
-                    <svg width="80" height="52" viewBox="0 0 90 52" fill="none" style="filter:drop-shadow(0 4px 8px rgba(0,0,0,0.4));">
-                        <ellipse cx="24" cy="27" rx="20" ry="17" fill="rgba(80,30,0,0.55)" stroke="rgba(255,180,60,0.9)" stroke-width="4.5"/>
-                        <ellipse cx="66" cy="27" rx="20" ry="17" fill="rgba(80,30,0,0.55)" stroke="rgba(255,180,60,0.9)" stroke-width="4.5"/>
-                        <path d="M44 27 Q45 23 46 27" fill="none" stroke="rgba(255,180,60,0.9)" stroke-width="3.5" stroke-linecap="round"/>
-                        <line x1="4" y1="22" x2="0" y2="20" stroke="rgba(255,180,60,0.9)" stroke-width="4" stroke-linecap="round"/>
-                        <line x1="86" y1="22" x2="90" y2="20" stroke="rgba(255,180,60,0.9)" stroke-width="4" stroke-linecap="round"/>
-                    </svg>
-                </div>
-                <div class="cat-label">
-                    <div class="cat-name">Sunglasses</div>
-                    <div class="cat-sub"><?php echo $category_counts['sunglasses']; ?> products</div>
-                </div>
-            </a>
-            <?php endif; ?>
-
-            <?php if (isset($category_counts['computer glasses']) && $category_counts['computer glasses'] > 0): ?>
-            <a href="pages/dashboard.php?category=computer" class="cat-tile">
-                <div class="cat-img c-computer">
-                    <svg width="80" height="52" viewBox="0 0 90 52" fill="none" style="filter:drop-shadow(0 4px 8px rgba(0,0,0,0.4));">
-                        <ellipse cx="24" cy="27" rx="20" ry="17" fill="rgba(0,50,80,0.5)" stroke="rgba(80,220,255,0.9)" stroke-width="4.5"/>
-                        <ellipse cx="66" cy="27" rx="20" ry="17" fill="rgba(0,50,80,0.5)" stroke="rgba(80,220,255,0.9)" stroke-width="4.5"/>
-                        <path d="M44 27 Q45 23 46 27" fill="none" stroke="rgba(80,220,255,0.9)" stroke-width="3.5" stroke-linecap="round"/>
-                        <line x1="4" y1="22" x2="0" y2="20" stroke="rgba(80,220,255,0.9)" stroke-width="4" stroke-linecap="round"/>
-                        <line x1="86" y1="22" x2="90" y2="20" stroke="rgba(80,220,255,0.9)" stroke-width="4" stroke-linecap="round"/>
-                    </svg>
-                </div>
-                <div class="cat-label">
-                    <div class="cat-name">Computer Glasses</div>
-                    <div class="cat-sub"><?php echo $category_counts['computer glasses']; ?> products</div>
-                </div>
-            </a>
-            <?php endif; ?>
-
-            <?php if (isset($category_counts['contact lens']) && $category_counts['contact lens'] > 0): ?>
-            <a href="pages/dashboard.php?category=contact" class="cat-tile">
-                <div class="cat-img c-contact">
-                    <svg width="56" height="56" viewBox="0 0 56 56" fill="none" style="filter:drop-shadow(0 4px 8px rgba(0,0,0,0.4));">
-                        <circle cx="28" cy="28" r="23" fill="none" stroke="rgba(180,100,255,0.9)" stroke-width="4.5"/>
-                        <circle cx="28" cy="28" r="14" fill="rgba(100,0,180,0.4)" stroke="rgba(180,100,255,0.6)" stroke-width="2"/>
-                        <circle cx="28" cy="28" r="6" fill="rgba(180,100,255,0.8)"/>
-                        <circle cx="21" cy="21" r="4" fill="rgba(255,255,255,0.25)"/>
-                    </svg>
-                </div>
-                <div class="cat-label">
-                    <div class="cat-name">Contact Lens</div>
-                    <div class="cat-sub"><?php echo $category_counts['contact lens']; ?> products</div>
-                </div>
-            </a>
-            <?php endif; ?>
-
-            <?php if (isset($category_counts['kids']) && $category_counts['kids'] > 0): ?>
-            <a href="pages/dashboard.php?category=kids" class="cat-tile">
-                <div class="cat-img c-kids">
-                    <svg width="80" height="52" viewBox="0 0 90 52" fill="none" style="filter:drop-shadow(0 4px 8px rgba(0,0,0,0.4));">
-                        <ellipse cx="24" cy="27" rx="20" ry="17" fill="rgba(60,40,0,0.4)" stroke="rgba(255,215,50,0.9)" stroke-width="4.5"/>
-                        <ellipse cx="66" cy="27" rx="20" ry="17" fill="rgba(60,40,0,0.4)" stroke="rgba(255,215,50,0.9)" stroke-width="4.5"/>
-                        <path d="M44 27 Q45 23 46 27" fill="none" stroke="rgba(255,215,50,0.9)" stroke-width="3.5" stroke-linecap="round"/>
-                        <line x1="4" y1="22" x2="0" y2="20" stroke="rgba(255,215,50,0.9)" stroke-width="4" stroke-linecap="round"/>
-                        <line x1="86" y1="22" x2="90" y2="20" stroke="rgba(255,215,50,0.9)" stroke-width="4" stroke-linecap="round"/>
-                    </svg>
-                </div>
-                <div class="cat-label">
-                    <div class="cat-name">Kids Glasses</div>
-                    <div class="cat-sub">Ages 4 – 14</div>
-                </div>
-            </a>
-            <?php endif; ?>
-
-            <?php if (isset($category_counts['reading']) && $category_counts['reading'] > 0): ?>
-            <a href="pages/dashboard.php?category=reading" class="cat-tile">
-                <div class="cat-img c-reading">
-                    <svg width="80" height="52" viewBox="0 0 90 52" fill="none" style="filter:drop-shadow(0 4px 8px rgba(0,0,0,0.4));">
-                        <ellipse cx="24" cy="27" rx="20" ry="17" fill="rgba(0,40,10,0.5)" stroke="rgba(80,255,130,0.9)" stroke-width="4.5"/>
-                        <ellipse cx="66" cy="27" rx="20" ry="17" fill="rgba(0,40,10,0.5)" stroke="rgba(80,255,130,0.9)" stroke-width="4.5"/>
-                        <path d="M44 27 Q45 23 46 27" fill="none" stroke="rgba(80,255,130,0.9)" stroke-width="3.5" stroke-linecap="round"/>
-                        <line x1="4" y1="22" x2="0" y2="20" stroke="rgba(80,255,130,0.9)" stroke-width="4" stroke-linecap="round"/>
-                        <line x1="86" y1="22" x2="90" y2="20" stroke="rgba(80,255,130,0.9)" stroke-width="4" stroke-linecap="round"/>
-                    </svg>
-                </div>
-                <div class="cat-label">
-                    <div class="cat-name">Reading Glasses</div>
-                    <div class="cat-sub"><?php echo $category_counts['reading']; ?> products</div>
-                </div>
-            </a>
-            <?php endif; ?>
-
-            <?php if (empty($category_counts) || array_sum($category_counts) == 0): ?>
-            <div class="empty-state" style="grid-column: 1/-1; text-align:center; padding:40px;">
-                <i class="fas fa-box-open" style="font-size:48px; color:var(--text-muted); opacity:0.5;"></i>
-                <h3 style="margin-top:12px;">No products available yet</h3>
-                <p style="color:var(--text2);">Check back soon for eyewear products from our partner clinics.</p>
-            </div>
             <?php endif; ?>
         </div>
     </div>
@@ -1431,6 +1453,10 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
     <div class="section section-gap" id="clinics">
         <div class="sec-head">
             <div class="sec-title">Featured Clinics</div>
+            <span class="sec-link" style="font-size:11px;color:var(--text3);font-weight:400;">
+                <i class="fas fa-star" style="color:var(--warn);"></i> 
+                Top rated by patients
+            </span>
             <a href="pages/dashboard.php" class="sec-link">View all <i class="fas fa-arrow-right"></i></a>
         </div>
     </div>
@@ -1495,21 +1521,40 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
         </div>
     </div>
 
-    <!-- ===== CITIES ===== -->
+    <!-- ===== CITIES - ENHANCED UI ===== -->
     <div class="section section-gap" id="cities">
         <div class="sec-head">
             <div class="sec-title">Explore by City</div>
             <a href="pages/dashboard.php" class="sec-link">See all <i class="fas fa-arrow-right"></i></a>
         </div>
-        <div class="cities-grid">
-            <?php foreach ($cities as $idx => $city): ?>
-            <a href="pages/dashboard.php?city=<?php echo urlencode($city['city']); ?>" class="city-card">
+        <div class="cities-grid-enhanced">
+            <?php foreach ($cities as $idx => $city): 
+                $sample_clinics = getCitySampleClinics($conn, $city['city'], 3);
+            ?>
+            <a href="pages/dashboard.php?city=<?php echo urlencode($city['city']); ?>" class="city-card-enhanced">
                 <div class="city-bg cb-<?php echo $idx % 8; ?>">
                     <div class="city-name-over"><?php echo htmlspecialchars($city['city']); ?></div>
+                    <div class="city-clinic-previews">
+                        <?php foreach ($sample_clinics as $sc): 
+                            $img = getClinicImage($sc);
+                        ?>
+                        <div class="city-clinic-avatar" style="background-image: url('<?php echo $img ? htmlspecialchars($img) : ''; ?>');">
+                            <?php if (!$img): ?>
+                            <i class="fas fa-clinic-medical"></i>
+                            <?php endif; ?>
+                        </div>
+                        <?php endforeach; ?>
+                        <?php if ($city['clinic_count'] > 3): ?>
+                        <div class="city-clinic-avatar city-more">+<?php echo $city['clinic_count'] - 3; ?></div>
+                        <?php endif; ?>
+                    </div>
                 </div>
                 <div class="city-foot">
-                    <div class="city-count-lbl"><?php echo $city['clinic_count']; ?> clinic<?php echo $city['clinic_count'] != 1 ? 's' : ''; ?></div>
-                    <div class="city-arr">›</div>
+                    <div class="city-count-lbl">
+                        <i class="fas fa-clinic-medical"></i> 
+                        <?php echo $city['clinic_count']; ?> clinic<?php echo $city['clinic_count'] != 1 ? 's' : ''; ?>
+                    </div>
+                    <div class="city-arr">Explore <i class="fas fa-arrow-right"></i></div>
                 </div>
             </a>
             <?php endforeach; ?>
@@ -1558,7 +1603,7 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
                     <div class="tf-item"><div class="tf-dot"></div><div class="tf-text">Switch between available color variants</div></div>
                     <div class="tf-item"><div class="tf-dot"></div><div class="tf-text">Available on <?php echo ($clinics_with_3d ?: 'select'); ?>+ partner clinic frames</div></div>
                 </div>
-                <a href="pages/dashboard.php" class="tryon-btn">
+                <a href="pages/explore-3d.php" class="tryon-btn">
                     <i class="fas fa-cube"></i> Explore 3D Frames
                 </a>
             </div>
@@ -1740,11 +1785,17 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
             <a href="#cities"   class="mob-link" onclick="closeMobMenu()"><i class="fas fa-map-marker-alt"></i> Cities</a>
             <a href="#clinics"  class="mob-link" onclick="closeMobMenu()"><i class="fas fa-clinic-medical"></i> Clinics</a>
             <a href="#contact"  class="mob-link" onclick="closeMobMenu()"><i class="fas fa-envelope"></i> Contact</a>
+            <a href="pages/explore-3d.php" class="mob-link" onclick="closeMobMenu()"><i class="fas fa-cube"></i> 3D Frames</a>
         </div>
         <div class="mob-divider"></div>
         <div class="mob-btns">
-            <a href="auth/user_login.php" class="btn-outline">Login</a>
-            <a href="auth/user_register.php" class="btn-primary"><i class="fas fa-user-plus"></i> Sign Up Free</a>
+            <?php if ($is_logged_in): ?>
+                <a href="pages/dashboard.php" class="btn-primary"><i class="fas fa-user"></i> Dashboard</a>
+                <a href="auth/logout.php" class="btn-outline"><i class="fas fa-sign-out-alt"></i> Logout</a>
+            <?php else: ?>
+                <a href="auth/user_login.php" class="btn-outline">Login</a>
+                <a href="auth/user_register.php" class="btn-primary"><i class="fas fa-user-plus"></i> Sign Up Free</a>
+            <?php endif; ?>
         </div>
     </div>
 
@@ -1818,7 +1869,7 @@ $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766
         });
     });
 
-    // ===== 3D COLOR SWITCHER (UI only demo) =====
+    // ===== 3D COLOR SWITCHER =====
     document.querySelectorAll('.tv-color').forEach(btn => {
         btn.addEventListener('click', function () {
             document.querySelectorAll('.tv-color').forEach(b => b.classList.remove('active'));

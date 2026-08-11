@@ -64,22 +64,25 @@ $active_category = isset($_GET['category']) ? trim($_GET['category']) : '';
 // ===== DYNAMIC CATEGORIES =====
 $dynamic_categories = [];
 $cat_q = mysqli_query($conn, "
-    SELECT category, COUNT(*) as product_count
-    FROM products 
-    GROUP BY category
-    ORDER BY 
-        CASE category 
-            WHEN 'Eyeglasses' THEN 1
-            WHEN 'Sunglasses' THEN 2
-            WHEN 'Computer Glasses' THEN 3
-            WHEN 'Contact Lens' THEN 4
-            WHEN 'Reading' THEN 5
-            WHEN 'Kids' THEN 6
-            ELSE 7
-        END
+    SELECT 
+        p.category, 
+        COUNT(*) as product_count
+    FROM products p
+    JOIN clinics c ON p.clinic_id = c.id
+    WHERE p.category IS NOT NULL 
+      AND p.category != ''
+      AND c.status = 'Active'
+    GROUP BY p.category
+    ORDER BY product_count DESC
 ");
-while ($crow = mysqli_fetch_assoc($cat_q)) {
-    $dynamic_categories[] = $crow;
+
+if ($cat_q) {
+    while ($crow = mysqli_fetch_assoc($cat_q)) {
+        $dynamic_categories[] = [
+            'category' => $crow['category'],
+            'product_count' => (int)$crow['product_count']
+        ];
+    }
 }
 
 // ===== CATEGORY HOVER PREVIEW =====

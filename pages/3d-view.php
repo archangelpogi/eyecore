@@ -2,6 +2,7 @@
 
 include '../includes/config.php';
 include '../includes/theme.php';
+require_once '../includes/payment-helper.php';
 
 if (!isset($_SESSION['user_id'])) {
     header('Location: ../auth/user_login.php');
@@ -50,7 +51,7 @@ $product = mysqli_fetch_assoc($product_query);
 $clinic_id = $product['clinic_id'];
 
 // ============================================
-// CATEGORY LOGIC (exact same as product-view.php)
+// CATEGORY LOGIC
 // ============================================
 $category = $product['category'];
 $NEEDS_LENS_SELECTION = in_array($category, ['Frames', 'Eyeglasses', 'Sunglasses', 'Lenses', 'Contact Lens']);
@@ -60,7 +61,7 @@ $IS_CONTACT_LENS = ($category === 'Contact Lens');
 $IS_LENS_ONLY = ($category === 'Lenses');
 
 // ============================================
-// SALE DETECTION (exact same as product-view.php)
+// SALE DETECTION
 // ============================================
 $is_on_sale = !empty($product['is_on_sale'])
     && $product['is_on_sale'] == 1
@@ -97,7 +98,7 @@ $existing_appointment = mysqli_fetch_assoc(mysqli_query($conn,
 )) ?? null;
 
 // ============================================
-// GET COLORS (for color switcher + stock tracking)
+// GET COLORS
 // ============================================
 $colors_query = mysqli_query($conn, "
     SELECT color_code, color_name, quantity
@@ -129,6 +130,43 @@ $has_stock_tracking = $has_colors;
 $fav_check = mysqli_query($conn, "SELECT id FROM favorites WHERE user_id = $user_id AND product_id = $product_id");
 $is_product_favorited = mysqli_num_rows($fav_check) > 0;
 
+// ============================================
+// GET USER PWD/SENIOR STATUS
+// ============================================
+$user_status_query = mysqli_query($conn, "
+    SELECT status as pwd_senior_status, verification_type as pwd_senior_type
+    FROM user_verifications
+    WHERE user_id = $user_id 
+    AND clinic_id = $clinic_id
+    AND status = 'verified'
+    LIMIT 1
+");
+$user_status = mysqli_fetch_assoc($user_status_query);
+$is_pwd_senior = ($user_status && $user_status['pwd_senior_status'] === 'verified');
+
+// ============================================
+// CALCULATE TAX AND DISCOUNT
+// ============================================
+$tax_calc = applyTaxAndDiscount($conn, $display_price, $is_pwd_senior);
+
+$subtotal = $display_price;
+$discount_amount = $tax_calc['discount_amount'];
+$discount_rate = $tax_calc['discount_rate'];
+$vat_amount = $tax_calc['vat_amount'];
+$vat_rate = $tax_calc['vat_rate'];
+$final_total = $tax_calc['final_total'];
+$subtotal_after_discount = $subtotal - $discount_amount;
+
+// Get clinic payment info
+$payment_info = getPaymentDisplayInfo($conn, $clinic_id, $final_total);
+$booking_flow = $payment_info['booking_flow'] ?? 'approve_first';
+$payment_type = $payment_info['payment_type'] ?? 'downpayment';
+$downpayment_percent = $product['downpayment_percentage'] ?? 30;
+$downpayment_amount = $payment_info['downpayment_amount'] ?? round($final_total * ($downpayment_percent / 100), 2);
+$balance_amount = $payment_info['balance_amount'] ?? ($final_total - $downpayment_amount);
+$payment_method_online = $payment_info['payment_method_online'] ?? true;
+$payment_method_onsite = $payment_info['payment_method_onsite'] ?? true;
+
 // Navbar vars
 $appointments_count = mysqli_query($conn, "SELECT COUNT(*) as total FROM appointments WHERE user_id = $user_id AND status = 'pending'");
 $appointments = mysqli_fetch_assoc($appointments_count);
@@ -149,7 +187,7 @@ $reservation_count = $reservation_row_nav['total'] ?? 0;
 $active_nav = 'discover';
 
 // ============================================
-// HANDLE AJAX SUBMISSION (exact same as product-view.php)
+// HANDLE AJAX SUBMISSION
 // ============================================
 if (isset($_POST['ajax_action'])) {
     header('Content-Type: application/json');
@@ -237,7 +275,7 @@ if (isset($_POST['ajax_action'])) {
             VALUES
             ('$ref_no', $clinic_id, $product_id, '$item_type_db', $user_id, $product_id,
              '$preferred_date', '$preferred_time', 'pending', 'pending',
-             'online', {$product['price']}, 0, {$product['price']},
+             'online', $final_total, $downpayment_amount, $balance_amount,
              '$notes_final', '$contact_number')
         ");
         $appointment_id = mysqli_insert_id($conn);
@@ -278,10 +316,17 @@ if (isset($_POST['ajax_action'])) {
         'contact_monthly' => 0,
     ];
     $lens_price_add   = $lens_prices[$lens_type] ?? 0;
-    $total_amount     = $display_price + $lens_price_add;
+    $total_before_tax = $display_price + $lens_price_add;
+    
+    // Apply tax and discount
+    $tax_calc_submit = applyTaxAndDiscount($conn, $total_before_tax, $is_pwd_senior);
+    $final_total_submit = $tax_calc_submit['final_total'];
+    $discount_amount_submit = $tax_calc_submit['discount_amount'];
+    $vat_amount_submit = $tax_calc_submit['vat_amount'];
+    
     $dp_percent       = $product['downpayment_percentage'] ?? 30;
-    $downpayment_amount = round(($total_amount * $dp_percent) / 100, 2);
-    $balance_amount   = $total_amount - $downpayment_amount;
+    $downpayment_amount_submit = round(($final_total_submit * $dp_percent) / 100, 2);
+    $balance_amount_submit   = $final_total_submit - $downpayment_amount_submit;
     $reservation_code = 'RES-' . strtoupper(substr(uniqid(), -8));
     $expires_at       = date('Y-m-d H:i:s', strtotime('+48 hours'));
 
@@ -295,7 +340,7 @@ if (isset($_POST['ajax_action'])) {
         ('$reservation_code', $user_id, $product_id, $clinic_id, '$lens_type',
          " . ($prescription_id ? $prescription_id : 'NULL') . ",
          '$color_code', '$color_name',
-         $total_amount, $downpayment_amount, $balance_amount,
+         $final_total_submit, $downpayment_amount_submit, $balance_amount_submit,
          '$preferred_date', '$preferred_time', '$notes', 'pending', 'unpaid', '$expires_at', NOW())
     ");
     $reservation_id = mysqli_insert_id($conn);
@@ -305,7 +350,7 @@ if (isset($_POST['ajax_action'])) {
     }
 
     addNotification($user_id, 'reservation', 'Reservation Created',
-        "You reserved {$product['name']} at {$product['clinic_name']}. Pay downpayment of ₱" . number_format($downpayment_amount, 2) . " to confirm.",
+        "You reserved {$product['name']} at {$product['clinic_name']}. Pay downpayment of ₱" . number_format($downpayment_amount_submit, 2) . " to confirm.",
         'my-reservations.php'
     );
 
@@ -315,13 +360,25 @@ if (isset($_POST['ajax_action'])) {
         'message'        => 'Reservation created! Please proceed to payment.',
         'redirect'       => 'reservation-payment.php?id=' . $reservation_id,
         'reservation_id' => $reservation_id,
-        'downpayment'    => $downpayment_amount,
-        'total'          => $total_amount
+        'downpayment'    => $downpayment_amount_submit,
+        'total'          => $final_total_submit
     ]);
     exit();
 }
 
 include '../includes/navbar.php';
+
+// ============================================
+// GET LENS PRICE FOR DISPLAY
+// ============================================
+$lens_prices_display = [
+    'frame_only'      => 0,
+    'single_vision'   => 500,
+    'progressive'     => 1500,
+    'blue_cut'        => 800,
+    'contact_daily'   => 0,
+    'contact_monthly' => 0,
+];
 ?>
 <!DOCTYPE html>
 <html lang="en" class="<?php echo getThemeClass(); ?>">
@@ -683,7 +740,7 @@ include '../includes/navbar.php';
     }
     .view-product-link:hover { border-color: var(--primary); color: var(--primary); }
 
-    /* Lens selection (same as product-view.php) */
+    /* Lens selection */
     .flow-card {
         background: var(--bg-secondary);
         border-radius: var(--radius-lg);
@@ -784,7 +841,7 @@ include '../includes/navbar.php';
     .clinic-info .ch { font-size: 11px; color: var(--text-muted); margin-top: 3px; display: flex; align-items: center; gap: 4px; }
     .clinic-info .ch i { color: var(--primary); }
 
-    /* Modal (exact same as product-view.php) */
+    /* ===== IMPROVED MODAL STYLES ===== */
     .modal-overlay {
         display: none;
         position: fixed;
@@ -801,36 +858,173 @@ include '../includes/navbar.php';
         background: var(--bg-secondary);
         border-radius: var(--radius-lg);
         width: 100%;
-        max-width: 460px;
-        max-height: 90vh;
+        max-width: 520px;
+        max-height: 92vh;
         overflow-y: auto;
         animation: modalIn 0.25s ease;
     }
     @keyframes modalIn { from { opacity: 0; transform: translateY(20px) scale(0.97); } to { opacity: 1; transform: none; } }
-    .modal-head { padding: 18px 22px; border-bottom: 1px solid var(--border-light); display: flex; align-items: center; justify-content: space-between; background: var(--primary-gradient); border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
-    .modal-head h3 { font-size: 15px; font-weight: 700; color: white; display: flex; align-items: center; gap: 8px; }
-    .modal-close { background: none; border: none; color: white; font-size: 22px; cursor: pointer; opacity: 0.8; }
-    .modal-close:hover { opacity: 1; }
+    .modal-head {
+        padding: 18px 22px;
+        border-bottom: 1px solid var(--border-light);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background: var(--primary-gradient);
+        border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+    }
+    .modal-head h3 { font-size: 16px; font-weight: 700; color: white; display: flex; align-items: center; gap: 8px; }
+    .modal-close { background: none; border: none; color: white; font-size: 22px; cursor: pointer; opacity: 0.8; padding: 4px; }
+    .modal-close:hover { opacity: 1; transform: rotate(90deg); transition: all 0.2s; }
     .modal-body { padding: 20px 22px; }
-    .form-group { margin-bottom: 14px; }
-    .form-label { font-size: 11px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; display: block; }
-    .form-input { width: 100%; padding: 10px 12px; border: 1.5px solid var(--border-color); border-radius: var(--radius-sm); font-size: 13px; background: var(--bg-primary); color: var(--text-primary); font-family: var(--font-main); transition: border-color 0.2s; }
-    .form-input:focus { outline: none; border-color: var(--primary); }
-    .modal-price-box { background: var(--bg-primary); border-radius: var(--radius-md); padding: 12px 14px; margin-top: 6px; border: 1px solid var(--border-light); }
-    .mpb-row { display: flex; justify-content: space-between; align-items: center; font-size: 12px; margin-bottom: 5px; }
-    .mpb-row:last-child { margin-bottom: 0; }
+
+    /* Modal Summary Box */
+    .modal-summary-box {
+        background: var(--primary-light);
+        border-radius: var(--radius-md);
+        padding: 14px 16px;
+        margin-bottom: 16px;
+        border: 1px solid rgba(0,183,97,0.2);
+    }
+    .ms-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 4px 0;
+        font-size: 13px;
+    }
+    .ms-row .ms-label { color: var(--text-secondary); font-weight: 500; }
+    .ms-row .ms-value { color: var(--text-primary); font-weight: 600; }
+    .ms-row .ms-value.success { color: var(--primary); }
+    .ms-divider {
+        height: 1px;
+        background: var(--border-color);
+        margin: 6px 0;
+    }
+
+    /* Modal form */
+    .modal-form-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-bottom: 12px;
+    }
+    @media (max-width: 480px) {
+        .modal-form-row { grid-template-columns: 1fr; }
+    }
+    .modal-form-group { margin-bottom: 12px; }
+    .modal-form-group.half { margin-bottom: 0; }
+    .modal-label {
+        display: block;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        margin-bottom: 4px;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+    }
+    .modal-label i { color: var(--primary); margin-right: 4px; }
+    .modal-input {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1.5px solid var(--border-color);
+        border-radius: var(--radius-sm);
+        font-size: 13px;
+        background: var(--bg-primary);
+        color: var(--text-primary);
+        font-family: var(--font-main);
+        transition: border-color 0.2s;
+    }
+    .modal-input:focus { outline: none; border-color: var(--primary); }
+    .modal-textarea { resize: vertical; min-height: 50px; }
+
+    /* Modal Price Box - with VAT & Discount */
+    .modal-price-box {
+        background: var(--bg-primary);
+        border-radius: var(--radius-md);
+        padding: 14px 16px;
+        margin-top: 6px;
+        border: 1px solid var(--border-light);
+    }
+    .modal-price-title {
+        font-size: 12px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 10px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .modal-price-title i { color: var(--primary); }
+    .mpb-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 12px;
+        padding: 3px 0;
+    }
     .mpb-row .mpb-label { color: var(--text-secondary); }
     .mpb-row .mpb-value { font-weight: 600; color: var(--text-primary); }
-    .mpb-divider { height: 1px; background: var(--border-color); margin: 8px 0; }
-    .mpb-row.total .mpb-value { font-size: 15px; color: var(--primary); font-weight: 700; }
+    .mpb-row.discount .mpb-value { color: var(--danger); }
+    .mpb-divider { height: 1px; background: var(--border-color); margin: 6px 0; }
+    .mpb-row.total .mpb-value { font-size: 16px; color: var(--primary); font-weight: 700; }
     .mpb-row.dp .mpb-value { color: var(--warning); }
-    .modal-apt-notice { background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: var(--radius-md); padding: 12px; text-align: center; font-size: 12px; color: #1E40AF; margin-top: 6px; }
+    .mpb-row.balance .mpb-value { color: var(--text-secondary); }
+
+    /* Modal notices */
+    .modal-apt-notice {
+        background: #EFF6FF;
+        border: 1px solid #BFDBFE;
+        border-radius: var(--radius-md);
+        padding: 12px;
+        text-align: center;
+        font-size: 12px;
+        color: #1E40AF;
+        margin-top: 6px;
+    }
     .theme-dark .modal-apt-notice { background: #1E2A4A; border-color: #2D4A8A; color: #93C5FD; }
-    .modal-foot { padding: 14px 22px; border-top: 1px solid var(--border-light); display: flex; gap: 10px; }
-    .btn-modal { flex: 1; padding: 11px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 700; cursor: pointer; border: none; display: flex; align-items: center; justify-content: center; gap: 6px; font-family: var(--font-main); transition: all 0.2s; }
+    .modal-exam-notice {
+        background: #FEF3C7;
+        border: 1px solid #FDE68A;
+        border-radius: var(--radius-md);
+        padding: 12px;
+        text-align: center;
+        font-size: 12px;
+        color: #92400E;
+        margin-top: 6px;
+    }
+    .theme-dark .modal-exam-notice { background: #3D2E00; border-color: #5A4C00; color: #FBBF24; }
+
+    /* Modal footer */
+    .modal-foot {
+        padding: 14px 22px;
+        border-top: 1px solid var(--border-light);
+        display: flex;
+        gap: 10px;
+        background: var(--bg-secondary);
+        border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+    }
+    .btn-modal {
+        flex: 1;
+        padding: 11px;
+        border-radius: var(--radius-sm);
+        font-size: 13px;
+        font-weight: 700;
+        cursor: pointer;
+        border: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        font-family: var(--font-main);
+        transition: all 0.2s;
+    }
     .btn-modal.confirm { background: var(--primary-gradient); color: white; }
     .btn-modal.confirm.apt { background: linear-gradient(135deg, #3B82F6, #2563EB); }
-    .btn-modal.confirm:hover { opacity: 0.9; }
+    .btn-modal.confirm:hover { opacity: 0.9; transform: translateY(-1px); }
     .btn-modal.cancel { background: var(--bg-primary); color: var(--text-secondary); border: 1px solid var(--border-color); }
     .btn-modal.cancel:hover { border-color: var(--danger); color: var(--danger); }
 
@@ -851,7 +1045,7 @@ include '../includes/navbar.php';
     @keyframes spin { to { transform: rotate(360deg); } }
     .hidden { display: none !important; }
 
-    /* ===== COLOR SELECTOR (same as product-view.php) ===== */
+    /* ===== COLOR SELECTOR ===== */
     .color-selector-box { background: var(--bg-primary); border-radius: var(--radius-md); padding: 14px; margin-bottom: 8px; border: 1px solid var(--border-light); }
     .cs-title { font-size: 13px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
     .cs-title i { color: var(--primary); }
@@ -944,7 +1138,7 @@ include '../includes/navbar.php';
                 <button class="ctrl-btn" onclick="zoomOut()" title="Zoom Out"><i class="fas fa-search-minus"></i></button>
             </div>
 
-            <!-- Color swatches (3D viewer — for changing model color) -->
+            <!-- Color swatches -->
             <?php if ($has_colors && !$is_fully_sold_out): ?>
             <div class="color-strip">
                 <span class="color-strip-label">3D Color:</span>
@@ -1114,7 +1308,7 @@ include '../includes/navbar.php';
                 </div>
             </div>
 
-            <!-- Lens Selection (if applicable) -->
+            <!-- Lens Selection -->
             <?php if (!$IS_SERVICE && !$IS_ACCESSORY): ?>
             <div class="flow-card">
                 <div class="flow-card-title">
@@ -1242,7 +1436,9 @@ include '../includes/navbar.php';
     </div><!-- /viewer-layout -->
 </div><!-- /main-content -->
 
-<!-- Schedule Modal (exact same as product-view.php) -->
+<!-- ============================================ -->
+<!-- IMPROVED SCHEDULE MODAL WITH VAT & DISCOUNT -->
+<!-- ============================================ -->
 <div class="modal-overlay" id="scheduleModal">
     <div class="modal-box">
         <div class="modal-head">
@@ -1250,60 +1446,162 @@ include '../includes/navbar.php';
             <button class="modal-close" onclick="closeModal()">&times;</button>
         </div>
         <div class="modal-body">
-            <div class="form-group">
-                <label class="form-label">Preferred Date <span style="color:var(--danger)">*</span></label>
-                <input type="date" id="mDate" class="form-input" min="<?php echo date('Y-m-d'); ?>">
-            </div>
-            <div class="form-group">
-                <label class="form-label">Preferred Time <span style="color:var(--danger)">*</span></label>
-                <input type="time" id="mTime" class="form-input">
-            </div>
-            <div class="form-group">
-                <label class="form-label">Contact Number <span style="color:var(--danger)">*</span></label>
-                <input type="tel" id="mContact" class="form-input" placeholder="09XX XXX XXXX" value="<?php echo htmlspecialchars($user['contact'] ?? ''); ?>">
-            </div>
-            <div class="form-group">
-                <label class="form-label">Notes (Optional)</label>
-                <textarea id="mNotes" class="form-input" rows="2" placeholder="Any special requests..."></textarea>
-            </div>
 
-            <!-- Price breakdown -->
-            <div class="modal-price-box" id="modalPriceBox">
-                <div class="mpb-row">
-                    <span class="mpb-label"><?php echo $is_on_sale ? 'Sale Price' : 'Product Price'; ?></span>
-                    <span class="mpb-value" <?php echo $is_on_sale ? 'style="color:#EF4444"' : ''; ?>>₱<?php echo number_format($display_price, 2); ?></span>
+            <!-- ===== SELECTED ITEM SUMMARY ===== -->
+            <div class="modal-summary-box" id="modalSummaryBox">
+                <div class="ms-row">
+                    <span class="ms-label">Product:</span>
+                    <span class="ms-value success" id="modalProductName"><?php echo htmlspecialchars($product['name']); ?></span>
                 </div>
-                <?php if ($is_on_sale): ?>
-                <div class="mpb-row">
-                    <span class="mpb-label" style="text-decoration:line-through; color:var(--text-muted)">Original</span>
-                    <span class="mpb-value" style="text-decoration:line-through; color:var(--text-muted)">₱<?php echo number_format($original_price, 2); ?></span>
+                <div class="ms-row" id="modalColorRow">
+                    <span class="ms-label">Color:</span>
+                    <span class="ms-value" id="modalColorName">—</span>
+                </div>
+                <div class="ms-row" id="modalLensRow">
+                    <span class="ms-label">Lens Type:</span>
+                    <span class="ms-value" id="modalLensName">Frame Only</span>
+                </div>
+                <div class="ms-divider"></div>
+                <div class="ms-row" id="modalClinicRow">
+                    <span class="ms-label">Clinic:</span>
+                    <span class="ms-value"><?php echo htmlspecialchars($product['clinic_name']); ?></span>
+                </div>
+                <?php if (!empty($product['clinic_city'])): ?>
+                <div class="ms-row">
+                    <span class="ms-label">Location:</span>
+                    <span class="ms-value"><?php echo htmlspecialchars($product['clinic_city']); ?></span>
                 </div>
                 <?php endif; ?>
+                <?php if ($is_pwd_senior): ?>
+                <div class="ms-row">
+                    <span class="ms-label">Discount:</span>
+                    <span class="ms-value" style="color:var(--primary);">PWD/Senior (20%)</span>
+                </div>
+                <?php endif; ?>
+            </div>
+
+            <!-- ===== DIVIDER ===== -->
+            <div class="modal-divider" style="height:1px; background:var(--border-color); margin:0 0 14px 0;"></div>
+
+            <!-- ===== DATE & TIME ===== -->
+            <div class="modal-form-row">
+                <div class="modal-form-group half">
+                    <label class="modal-label"><i class="fas fa-calendar-alt"></i> Date *</label>
+                    <input type="date" id="mDate" class="modal-input" min="<?php echo date('Y-m-d'); ?>">
+                </div>
+                <div class="modal-form-group half">
+                    <label class="modal-label"><i class="fas fa-clock"></i> Time *</label>
+                    <input type="time" id="mTime" class="modal-input">
+                </div>
+            </div>
+
+            <div class="modal-form-group">
+                <label class="modal-label"><i class="fas fa-phone"></i> Contact Number *</label>
+                <input type="tel" id="mContact" class="modal-input" placeholder="09XX XXX XXXX" value="<?php echo htmlspecialchars($user['contact'] ?? ''); ?>">
+            </div>
+
+            <div class="modal-form-group">
+                <label class="modal-label"><i class="fas fa-sticky-note"></i> Notes (Optional)</label>
+                <textarea id="mNotes" class="modal-input modal-textarea" rows="2" placeholder="Any special requests..."></textarea>
+            </div>
+
+            <!-- ===== DIVIDER ===== -->
+            <div class="modal-divider" style="height:1px; background:var(--border-color); margin:0 0 14px 0;"></div>
+
+            <!-- ===== PRICE BREAKDOWN WITH VAT & DISCOUNT ===== -->
+            <div class="modal-price-box" id="modalPriceBox">
+                <div class="modal-price-title"><i class="fas fa-receipt"></i> Payment Summary</div>
+                
+                <!-- Subtotal -->
+                <div class="mpb-row">
+                    <span class="mpb-label">Subtotal</span>
+                    <span class="mpb-value" id="mpbSubtotal">₱<?php echo number_format($subtotal, 2); ?></span>
+                </div>
+                
+                <!-- Discount (if applicable) -->
+                <?php if ($discount_amount > 0): ?>
+                <div class="mpb-row discount">
+                    <span class="mpb-label">
+                        <?php echo $is_pwd_senior ? 'PWD/Senior Discount (20%)' : 'Discount'; ?>
+                    </span>
+                    <span class="mpb-value">-₱<?php echo number_format($discount_amount, 2); ?></span>
+                </div>
+                <?php endif; ?>
+                
+                <!-- Subtotal after discount -->
+                <?php if ($discount_amount > 0): ?>
+                <div class="mpb-row">
+                    <span class="mpb-label">Subtotal After Discount</span>
+                    <span class="mpb-value">₱<?php echo number_format($subtotal_after_discount, 2); ?></span>
+                </div>
+                <?php endif; ?>
+                
+                <!-- VAT -->
+                <div class="mpb-row">
+                    <span class="mpb-label">VAT (<?php echo $vat_rate; ?>%)</span>
+                    <span class="mpb-value">₱<?php echo number_format($vat_amount, 2); ?></span>
+                </div>
+                
+                <!-- Lens Upgrade (if selected) -->
                 <div class="mpb-row" id="mpbLensRow" style="display:none;">
                     <span class="mpb-label">Lens Upgrade</span>
                     <span class="mpb-value" id="mpbLensVal">+₱0</span>
                 </div>
+                
                 <div class="mpb-divider"></div>
+                
+                <!-- Total -->
                 <div class="mpb-row total">
                     <span class="mpb-label" style="font-weight:700;">Total</span>
-                    <span class="mpb-value" id="mpbTotal">₱<?php echo number_format($display_price, 2); ?></span>
+                    <span class="mpb-value" id="mpbTotal">₱<?php echo number_format($final_total, 2); ?></span>
                 </div>
+                
+                <!-- Downpayment -->
                 <div class="mpb-row dp">
-                    <span class="mpb-label">Downpayment (<?php echo $product['downpayment_percentage'] ?? 30; ?>%)</span>
-                    <span class="mpb-value" id="mpbDp">₱<?php echo number_format($display_price * ($product['downpayment_percentage'] ?? 30) / 100, 2); ?></span>
+                    <span class="mpb-label">Downpayment (<?php echo $downpayment_percent; ?>%)</span>
+                    <span class="mpb-value" id="mpbDp">₱<?php echo number_format($downpayment_amount, 2); ?></span>
                 </div>
-                <div class="mpb-row">
+                
+                <!-- Balance -->
+                <div class="mpb-row balance">
                     <span class="mpb-label">Balance (upon visit)</span>
-                    <span class="mpb-value" id="mpbBal">₱<?php echo number_format($display_price * (1 - ($product['downpayment_percentage'] ?? 30) / 100), 2); ?></span>
+                    <span class="mpb-value" id="mpbBal">₱<?php echo number_format($balance_amount, 2); ?></span>
+                </div>
+                
+                <!-- Payment Methods Badges -->
+                <div style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">
+                    <?php if ($payment_method_online): ?>
+                    <span style="background: var(--bg-secondary); padding: 3px 10px; border-radius: 20px; font-size: 10px; border: 1px solid var(--border-color);">
+                        <i class="fas fa-mobile-alt" style="color: var(--primary);"></i> Online
+                    </span>
+                    <?php endif; ?>
+                    <?php if ($payment_method_onsite): ?>
+                    <span style="background: var(--bg-secondary); padding: 3px 10px; border-radius: 20px; font-size: 10px; border: 1px solid var(--border-color);">
+                        <i class="fas fa-cash-register" style="color: var(--warning);"></i> On-Site
+                    </span>
+                    <?php endif; ?>
+                    <?php if ($is_pwd_senior): ?>
+                    <span style="background: #FEF3C7; padding: 3px 10px; border-radius: 20px; font-size: 10px; border: 1px solid #FDE68A; color: #92400E;">
+                        <i class="fas fa-id-card"></i> PWD/Senior
+                    </span>
+                    <?php endif; ?>
                 </div>
             </div>
 
-            <!-- Appointment notice -->
+            <!-- ===== APPOINTMENT NOTICE ===== -->
             <div class="modal-apt-notice" id="modalAptNotice" style="display:none;">
                 <i class="fas fa-calendar-check" style="font-size:18px; display:block; margin-bottom:6px;"></i>
                 <strong>Appointment Booking</strong><br>
                 The clinic will confirm your schedule. No downpayment required.
             </div>
+
+            <!-- ===== EYE EXAM NOTICE ===== -->
+            <div class="modal-exam-notice" id="modalExamNotice" style="display:none;">
+                <i class="fas fa-stethoscope" style="font-size:18px; display:block; margin-bottom:6px;"></i>
+                <strong>Eye Exam Required</strong><br>
+                You indicated you need an eye exam. The doctor will perform one during your visit.
+            </div>
+
         </div>
         <div class="modal-foot">
             <button class="btn-modal cancel" onclick="closeModal()">Cancel</button>
@@ -1324,7 +1622,9 @@ let currentModal = null;
 let selectedColor = null;
 
 const BASE_PRICE         = <?php echo $display_price; ?>;
-const DP_PERCENT         = <?php echo (float)($product['downpayment_percentage'] ?? 30); ?>;
+const DP_PERCENT         = <?php echo (float)($downpayment_percent); ?>;
+const DISCOUNT_AMOUNT    = <?php echo (float)$discount_amount; ?>;
+const VAT_RATE           = <?php echo (float)$vat_rate; ?>;
 const IS_SERVICE         = <?php echo $IS_SERVICE ? 'true' : 'false'; ?>;
 const IS_ACCESSORY       = <?php echo $IS_ACCESSORY ? 'true' : 'false'; ?>;
 const IS_LENS_ONLY       = <?php echo $IS_LENS_ONLY ? 'true' : 'false'; ?>;
@@ -1349,9 +1649,7 @@ function selectColor(btn) {
     if (label) { label.textContent = selectedColor.name + ' (' + selectedColor.qty + ' left)'; label.classList.add('chosen'); }
     const hint = document.getElementById('csHint');
     if (hint) hint.style.display = 'none';
-    // Also update 3D model color
     changeColor(selectedColor.code, null);
-    // Enable action button
     const btn2 = document.getElementById('mainActionBtn');
     if (btn2 && btn2.disabled && !IS_FULLY_SOLD_OUT) btn2.disabled = false;
     updateActionButton();
@@ -1378,6 +1676,7 @@ function selectLens(btn) {
     }
     updatePriceDisplay();
     updateActionButton();
+    updateModalSummary();
 }
 
 function handleRxKnowledge(radio) {
@@ -1385,26 +1684,70 @@ function handleRxKnowledge(radio) {
     document.getElementById('rxFormBox').style.display = rxKnowledge === 'know' ? 'block' : 'none';
     document.getElementById('rxExamBox').style.display = rxKnowledge === 'dont_know' ? 'block' : 'none';
     updateActionButton();
+    updateModalSummary();
 }
 
 // ============================================
-// PRICE DISPLAY
+// MODAL SUMMARY UPDATE
+// ============================================
+function updateModalSummary() {
+    const colorRow = document.getElementById('modalColorRow');
+    const colorName = document.getElementById('modalColorName');
+    if (selectedColor) {
+        colorRow.style.display = 'flex';
+        colorName.textContent = selectedColor.name;
+    } else {
+        colorRow.style.display = 'flex';
+        colorName.textContent = '—';
+    }
+
+    const lensRow = document.getElementById('modalLensRow');
+    const lensName = document.getElementById('modalLensName');
+    if (selectedLens) {
+        const lensLabels = {
+            'frame_only': 'Frame Only',
+            'single_vision': 'Single Vision',
+            'progressive': 'Progressive',
+            'blue_cut': 'Blue Cut',
+            'contact_daily': 'Contact Lens (Daily)',
+            'contact_monthly': 'Contact Lens (Monthly)'
+        };
+        lensName.textContent = lensLabels[selectedLens] || selectedLens;
+    } else {
+        lensName.textContent = '—';
+    }
+}
+
+// ============================================
+// PRICE DISPLAY WITH VAT & DISCOUNT
 // ============================================
 function getLensPrice() { return LENS_PRICES[selectedLens] || 0; }
-function getTotalPrice() { return BASE_PRICE + getLensPrice(); }
 
 function updatePriceDisplay() {
     const lp = getLensPrice();
-    const total = getTotalPrice();
+    const basePrice = BASE_PRICE;
+    const subtotal = basePrice + lp;
+    
+    // Calculate with discount and VAT
+    const discountAmount = DISCOUNT_AMOUNT;
+    let totalAfterDiscount = subtotal - discountAmount;
+    const vatAmount = totalAfterDiscount * (VAT_RATE / 100);
+    const total = totalAfterDiscount + vatAmount;
+    
     const mpbLensRow = document.getElementById('mpbLensRow');
     const mpbLensVal = document.getElementById('mpbLensVal');
     const mpbTotal   = document.getElementById('mpbTotal');
     const mpbDp      = document.getElementById('mpbDp');
     const mpbBal     = document.getElementById('mpbBal');
+    const mpbSubtotal = document.getElementById('mpbSubtotal');
+    
     if (mpbLensRow) mpbLensRow.style.display = lp > 0 ? 'flex' : 'none';
     if (mpbLensVal) mpbLensVal.textContent = '+₱' + lp.toLocaleString();
+    if (mpbSubtotal) mpbSubtotal.textContent = '₱' + subtotal.toLocaleString('en-PH', {minimumFractionDigits:2});
     if (mpbTotal) mpbTotal.textContent = '₱' + total.toLocaleString('en-PH', {minimumFractionDigits:2});
-    const dp = (total * DP_PERCENT) / 100;
+    
+    const dpPercent = DP_PERCENT;
+    const dp = (total * dpPercent) / 100;
     const bal = total - dp;
     if (mpbDp) mpbDp.textContent = '₱' + dp.toLocaleString('en-PH', {minimumFractionDigits:2});
     if (mpbBal) mpbBal.textContent = '₱' + bal.toLocaleString('en-PH', {minimumFractionDigits:2});
@@ -1438,7 +1781,6 @@ function updateActionButton() {
 }
 
 function handleMainAction() {
-    // Check color first if product has stock tracking
     if (HAS_STOCK_TRACKING && !IS_FULLY_SOLD_OUT && !selectedColor) {
         showToast('Please select a color/variant first.', 'error');
         document.getElementById('colorBtns')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1467,10 +1809,16 @@ function handleMainAction() {
 function openModal(type) {
     currentModal = type;
     updatePriceDisplay();
+    updateModalSummary();
+
     const title = document.getElementById('modalTitle');
     const confirmBtn = document.getElementById('confirmModalBtn');
     const priceBox = document.getElementById('modalPriceBox');
     const aptNotice = document.getElementById('modalAptNotice');
+    const examNotice = document.getElementById('modalExamNotice');
+
+    aptNotice.style.display = 'none';
+    examNotice.style.display = 'none';
 
     if (type === 'appointment') {
         title.innerHTML = '<i class="fas fa-calendar-plus"></i> Book Appointment';
@@ -1478,15 +1826,20 @@ function openModal(type) {
         confirmBtn.className = 'btn-modal confirm apt';
         priceBox.style.display = 'none';
         aptNotice.style.display = 'block';
+        if (rxKnowledge === 'dont_know') {
+            examNotice.style.display = 'block';
+        }
     } else {
         title.innerHTML = '<i class="fas fa-bookmark"></i> Reserve This Product';
         confirmBtn.innerHTML = '<i class="fas fa-check"></i> Confirm Reservation';
         confirmBtn.className = 'btn-modal confirm';
         priceBox.style.display = 'block';
         aptNotice.style.display = 'none';
+        if (rxKnowledge === 'dont_know') {
+            examNotice.style.display = 'block';
+        }
     }
 
-    // Set default date to tomorrow
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     document.getElementById('mDate').value = tomorrow.toISOString().split('T')[0];
@@ -1551,7 +1904,7 @@ function submitAction() {
 }
 
 // ============================================
-// 3D VIEWER
+// 3D VIEWER (keep your existing 3D viewer code)
 // ============================================
 let scene, camera, renderer, controls, model;
 let autoRotate = false, wireframeMode = false;
@@ -1564,53 +1917,36 @@ document.addEventListener('DOMContentLoaded', function() {
     <?php endif; ?>
 });
 
-// ============================================
-// LENS DETECTION HELPER
-// ============================================
 function isLensMaterial(node, material) {
-    // Check by material name
     const materialName = (material.name || '').toLowerCase();
     const nodeName = (node.name || '').toLowerCase();
-    
-    // Common lens material keywords
     const lensKeywords = ['lens', 'glass', 'clear', 'transparent', 'window', 'lense', 'optic', 'lenses'];
-    
-    // Check if material name or node name contains lens keyword
     for (let keyword of lensKeywords) {
         if (materialName.includes(keyword) || nodeName.includes(keyword)) {
             return true;
         }
     }
-    
-    // Check if material has transparency (lenses are often transparent)
     if (material.transparent === true || material.opacity < 1) {
         return true;
     }
-    
     return false;
 }
+
 function init3DViewer(modelPath) {
     const container = document.getElementById('viewer3D');
     if (!container) return;
-
-    // Clear previous lens colors
     originalLensColors.clear();
-
-    const isDark = document.documentElement.classList.contains('theme-dark');
     scene = new THREE.Scene();
-    scene.background = new THREE.Color(0xFFFFFF);  // pure white background
-
+    scene.background = new THREE.Color(0xFFFFFF);
     const w = container.clientWidth || 600;
     const h = container.clientHeight || 480;
     camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 1000);
     camera.position.set(3, 1.5, 4);
-
     renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setSize(w, h);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(renderer.domElement);
-
     controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.05;
@@ -1619,7 +1955,6 @@ function init3DViewer(modelPath) {
     controls.enableZoom = true;
     controls.enablePan = false;
     controls.target.set(0, 1.5, 0);
-
     const ambient = new THREE.AmbientLight(0xffffff, 0.6);
     scene.add(ambient);
     const mainLight = new THREE.DirectionalLight(0xffffff, 1.2);
@@ -1632,97 +1967,82 @@ function init3DViewer(modelPath) {
     const backLight = new THREE.PointLight(0x88aaff, 0.6);
     backLight.position.set(0, 2, -3);
     scene.add(backLight);
-
     const loader = new THREE.GLTFLoader();
     const fullPath = '/' + modelPath;
-
-    loader.load(
-        fullPath,
-        function(gltf) {
-            model = gltf.scene;
-            
-            // ✅ STORE ORIGINAL LENS COLORS BEFORE ANY COLOR CHANGES
-            model.traverse(node => {
-                if (node.isMesh && node.material) {
-                    const materials = Array.isArray(node.material) ? node.material : [node.material];
-                    materials.forEach((mat, idx) => {
-                        if (isLensMaterial(node, mat) && mat.color) {
-                            const key = `${node.uuid}_${mat.uuid}_${idx}`;
-                            originalLensColors.set(key, {
-                                color: mat.color.getHex(),
-                                transparent: mat.transparent || false,
-                                opacity: mat.opacity !== undefined ? mat.opacity : 1
-                            });
-                            console.log('Lens material detected:', node.name, mat.name);
+    loader.load(fullPath, function(gltf) {
+        model = gltf.scene;
+        model.traverse(node => {
+            if (node.isMesh && node.material) {
+                const materials = Array.isArray(node.material) ? node.material : [node.material];
+                materials.forEach((mat, idx) => {
+                    if (isLensMaterial(node, mat) && mat.color) {
+                        const key = `${node.uuid}_${mat.uuid}_${idx}`;
+                        originalLensColors.set(key, {
+                            color: mat.color.getHex(),
+                            transparent: mat.transparent || false,
+                            opacity: mat.opacity !== undefined ? mat.opacity : 1
+                        });
+                    }
+                });
+            }
+        });
+        const box = new THREE.Box3().setFromObject(model);
+        const size = box.getSize(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z);
+        const scale = 2.5 / maxDim;
+        model.scale.set(scale, scale, scale);
+        model.position.set(0, 1.5, 0);
+        model.traverse(node => {
+            if (node.isMesh) {
+                node.castShadow = true;
+                node.receiveShadow = true;
+                if (node.material) {
+                    const mats = Array.isArray(node.material) ? node.material : [node.material];
+                    mats.forEach((mat, idx) => {
+                        if (mat && mat.color) {
+                            originalMaterials.push({ node, idx: Array.isArray(node.material) ? idx : -1, color: mat.color.clone() });
                         }
                     });
                 }
-            });
-            
-            const box = new THREE.Box3().setFromObject(model);
-            const size = box.getSize(new THREE.Vector3());
-            const maxDim = Math.max(size.x, size.y, size.z);
-            const scale = 2.5 / maxDim;
-            model.scale.set(scale, scale, scale);
-            model.position.set(0, 1.5, 0);
-            model.traverse(node => {
-                if (node.isMesh) {
-                    node.castShadow = true;
-                    node.receiveShadow = true;
-                    if (node.material) {
-                        const mats = Array.isArray(node.material) ? node.material : [node.material];
-                        mats.forEach((mat, idx) => {
-                            if (mat && mat.color) {
-                                originalMaterials.push({ node, idx: Array.isArray(node.material) ? idx : -1, color: mat.color.clone() });
-                            }
-                        });
-                    }
-                }
-            });
-            scene.add(model);
-            showToast('3D model loaded!', 'success');
-            
-            // ✅ Add warning if no lens materials detected
-            if (originalLensColors.size === 0) {
-                const warningDiv = document.createElement('div');
-                warningDiv.style.cssText = `
-                    position: absolute;
-                    bottom: 60px;
-                    left: 16px;
-                    right: 16px;
-                    background: #fff3cd;
-                    border: 1px solid #ffeeba;
-                    color: #856404;
-                    padding: 8px 12px;
-                    border-radius: 8px;
-                    font-size: 11px;
-                    text-align: center;
-                    z-index: 100;
-                `;
-                warningDiv.innerHTML = `
-                    <i class="fas fa-info-circle"></i>
-                    <strong>Note:</strong> No lens material detected. The entire frame (including lens area) will change color.
-                `;
-                const viewerCanvas = document.querySelector('.viewer-canvas');
-                if (viewerCanvas) viewerCanvas.style.position = 'relative';
-                if (viewerCanvas && !viewerCanvas.querySelector('.lens-warning')) {
-                    warningDiv.classList.add('lens-warning');
-                    viewerCanvas.appendChild(warningDiv);
-                    setTimeout(() => warningDiv.remove(), 5000);
-                }
             }
-        },
-        null,
-        function(err) { console.error('3D load error:', err); showToast('Failed to load 3D model.', 'error'); }
-    );
-
+        });
+        scene.add(model);
+        showToast('3D model loaded!', 'success');
+        if (originalLensColors.size === 0) {
+            const warningDiv = document.createElement('div');
+            warningDiv.style.cssText = `
+                position: absolute;
+                bottom: 60px;
+                left: 16px;
+                right: 16px;
+                background: #fff3cd;
+                border: 1px solid #ffeeba;
+                color: #856404;
+                padding: 8px 12px;
+                border-radius: 8px;
+                font-size: 11px;
+                text-align: center;
+                z-index: 100;
+            `;
+            warningDiv.innerHTML = `
+                <i class="fas fa-info-circle"></i>
+                <strong>Note:</strong> No lens material detected. The entire frame (including lens area) will change color.
+            `;
+            const viewerCanvas = document.querySelector('.viewer-canvas');
+            if (viewerCanvas) viewerCanvas.style.position = 'relative';
+            if (viewerCanvas && !viewerCanvas.querySelector('.lens-warning')) {
+                warningDiv.classList.add('lens-warning');
+                viewerCanvas.appendChild(warningDiv);
+                setTimeout(() => warningDiv.remove(), 5000);
+            }
+        }
+    }, null, function(err) { console.error('3D load error:', err); showToast('Failed to load 3D model.', 'error'); });
     function animate() {
         requestAnimationFrame(animate);
         if (controls) { controls.autoRotate = autoRotate; controls.update(); }
         if (renderer && scene && camera) renderer.render(scene, camera);
     }
     animate();
-
     window.addEventListener('resize', () => {
         const w2 = container.clientWidth;
         const h2 = container.clientHeight;
@@ -1733,6 +2053,7 @@ function init3DViewer(modelPath) {
         }
     });
 }
+
 function resetView() {
     if (camera && controls) { camera.position.set(3, 1.5, 4); controls.target.set(0, 1.5, 0); controls.update(); }
     showToast('View reset', 'info');
@@ -1765,8 +2086,6 @@ function changeColor(colorCode, el) {
     document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
     if (el) el.classList.add('active');
     if (!model) return;
-    
-    // ✅ Frame only changes color, lens restores original
     model.traverse(node => {
         if (node.isMesh && node.material) {
             const materials = Array.isArray(node.material) ? node.material : [node.material];
@@ -1774,15 +2093,11 @@ function changeColor(colorCode, el) {
                 if (mat && mat.color) {
                     const isLens = isLensMaterial(node, mat);
                     const key = `${node.uuid}_${mat.uuid}_${idx}`;
-                    
                     if (!isLens) {
-                        // Change frame color only
                         mat.color.set(colorCode);
-                        // Adjust emissive for dark colors
                         const darkColors = ['#000000', '#2C2C2C', '#111111', '#2C3539', '#000080', '#800000'];
                         mat.emissiveIntensity = darkColors.includes(colorCode.toLowerCase()) ? 0.1 : 0;
                     } else if (originalLensColors.has(key)) {
-                        // Restore original lens color
                         const original = originalLensColors.get(key);
                         mat.color.setHex(original.color);
                         mat.transparent = original.transparent;
@@ -1798,8 +2113,6 @@ function changeColor(colorCode, el) {
 function resetColor() {
     document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
     if (!model) return;
-    
-    // ✅ Reset frame colors to original, preserve lens
     let idx = 0;
     model.traverse(node => {
         if (node.isMesh && node.material) {
@@ -1807,12 +2120,9 @@ function resetColor() {
             materials.forEach((mat, matIdx) => {
                 if (mat && mat.color && originalMaterials[idx]) {
                     const isLens = isLensMaterial(node, mat);
-                    
                     if (!isLens) {
-                        // Reset frame color to original
                         mat.color.copy(originalMaterials[idx].color);
                     } else if (originalLensColors.has(`${node.uuid}_${mat.uuid}_${matIdx}`)) {
-                        // Restore lens to original
                         const original = originalLensColors.get(`${node.uuid}_${mat.uuid}_${matIdx}`);
                         mat.color.setHex(original.color);
                         mat.transparent = original.transparent;
@@ -1825,6 +2135,7 @@ function resetColor() {
     });
     showToast('Original colors restored', 'info');
 }
+
 // ============================================
 // UTILITIES
 // ============================================
@@ -1844,13 +2155,11 @@ function hideLoading() { document.getElementById('loadingOverlay').classList.add
 document.addEventListener('keydown', e => { if (e.key==='Escape') closeModal(); });
 document.getElementById('scheduleModal').addEventListener('click', e => { if (e.target===e.currentTarget) closeModal(); });
 
-// Product favorite toggle
 function toggleProductFav(btn) {
     const productId = btn.dataset.productId;
     const isActive  = btn.classList.contains('active');
     const formData  = new FormData();
     formData.append('product_id', productId);
-
     btn.classList.toggle('active');
     btn.classList.add('pop');
     const icon  = btn.querySelector('i');
@@ -1858,7 +2167,6 @@ function toggleProductFav(btn) {
     icon.className    = btn.classList.contains('active') ? 'fas fa-heart' : 'far fa-heart';
     label.textContent = btn.classList.contains('active') ? 'Saved to Favorites' : 'Save to Favorites';
     setTimeout(() => btn.classList.remove('pop'), 300);
-
     fetch('toggle-product-favorite.php', { method: 'POST', body: formData })
         .then(r => r.json())
         .then(data => {

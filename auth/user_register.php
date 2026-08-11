@@ -782,7 +782,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
                     <div class="form-group">
                         <label for="fullname"><i class="fas fa-user"></i> Full Name</label>
                         <div class="input-wrapper">
-                            <input type="text" name="fullname" id="fullname" placeholder="Juan Dela Cruz"
+                            <input type="text" name="fullname" id="fullname" placeholder="Enter your Full Name"
                                 value="<?php echo isset($_POST['fullname']) ? htmlspecialchars($_POST['fullname']) : ''; ?>"
                                 required autocomplete="name">
                         </div>
@@ -791,7 +791,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
                     <div class="form-group">
                         <label for="email"><i class="fas fa-envelope"></i> Email Address</label>
                         <div class="input-wrapper">
-                            <input type="email" name="email" id="email" placeholder="juandelacruz@email.com"
+                            <input type="email" name="email" id="email" placeholder="Enter your Email Address"
                                 value="<?php echo isset($_POST['email']) ? htmlspecialchars($_POST['email']) : ''; ?>"
                                 required autocomplete="email">
                         </div>

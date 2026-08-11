@@ -410,7 +410,7 @@ $email = $_SESSION['reset_email'] ?? '';
                     <div class="form-group">
                         <label for="email"><i class="fas fa-envelope"></i> Email Address</label>
                         <div class="input-wrapper">
-                            <input type="email" name="email" id="email" placeholder="juandelacruz@email.com" required>
+                            <input type="email" name="email" id="email" placeholder="Enter your Email Address" required>
                         </div>
                     </div>
                     <button type="submit" class="btn-primary" id="requestBtn">

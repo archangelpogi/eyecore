@@ -12,6 +12,7 @@ if (isset($_SESSION['user_id']) && isset($_SESSION['user_role']) && $_SESSION['u
 $error = '';
 $success = false;
 $user_data = null;
+$redirect_url = '../pages/dashboard.php'; // Default redirect
 
 if ($_SERVER['REQUEST_METHOD'] == 'POST') {
     $email = mysqli_real_escape_string($conn, $_POST['email']);
@@ -104,7 +105,24 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 setcookie('user_email', $email, time() + (86400 * 30), '/');
             }
 
-            // Check if login alerts are enabled
+            // ============================================
+            // CHECK FOR REDIRECT AFTER LOGIN - ADDED
+            // ============================================
+            // Determine where to redirect
+if (isset($_SESSION['redirect_after_login'])) {
+    $redirect_url = $_SESSION['redirect_after_login'];
+    unset($_SESSION['redirect_after_login']);
+    // Make sure path is correct
+    if (strpos($redirect_url, 'pages/') !== 0 && strpos($redirect_url, '../') !== 0) {
+        $redirect_url = '../' . $redirect_url;
+    } elseif (strpos($redirect_url, 'pages/') === 0) {
+        $redirect_url = '../' . $redirect_url;
+    }
+} else {
+    $redirect_url = '../pages/dashboard.php';
+}
+
+            // Check if login alerts are enabled (YOUR ORIGINAL CODE)
             $settings_query = mysqli_query($conn, "SELECT login_alerts FROM user_settings WHERE user_id = " . $user['id']);
             if (mysqli_num_rows($settings_query) > 0) {
                 $settings = mysqli_fetch_assoc($settings_query);
@@ -784,7 +802,7 @@ $remembered_email = isset($_COOKIE['user_email']) ? $_COOKIE['user_email'] : '';
                             name="email" 
                             id="email"
                             value="<?php echo htmlspecialchars($remembered_email); ?>" 
-                            placeholder="juandelacruz@email.com" 
+                            placeholder="Enter your Email Address" 
                             required
                         >
                     </div>
@@ -848,21 +866,22 @@ $remembered_email = isset($_COOKIE['user_email']) ? $_COOKIE['user_email'] : '';
     <script>
         // Pass PHP data to JavaScript
         <?php if ($success && $user_data): ?>
-            // Show simplified SweetAlert welcome message
+            // Get redirect URL
+            var redirectUrl = '<?php echo $redirect_url; ?>';
+            
             Swal.fire({
                 title: 'Welcome, <?php echo addslashes($user_data['fullname']); ?>! 👋',
                 text: 'Successfully logged in',
                 icon: 'success',
                 iconColor: '#00B761',
-                confirmButtonText: 'OK',
+                confirmButtonText: 'Continue',
                 confirmButtonColor: '#00B761',
                 allowOutsideClick: false,
                 timer: 2000,
                 timerProgressBar: true,
                 showConfirmButton: true
             }).then((result) => {
-                // Redirect to dashboard after SweetAlert is closed
-                window.location.href = '../pages/dashboard.php';
+                window.location.href = redirectUrl;
             });
         <?php endif; ?>
         

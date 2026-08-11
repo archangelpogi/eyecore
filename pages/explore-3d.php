@@ -1,13 +1,26 @@
 <?php
+// ============================================
+// SESSION START - MUST BE FIRST
+// ============================================
+session_name('eyecore_user');
+session_start();
 
 include '../includes/config.php';
 include '../includes/theme.php';
 
+// ============================================
+// CHECK IF USER IS LOGGED IN
+// ============================================
 if (!isset($_SESSION['user_id'])) {
-    header('Location: ../auth/user_login.php');
+    // Save the intended destination
+    $_SESSION['redirect_after_login'] = 'pages/explore-3d.php';
+    header('Location: ../auth/user_login.php?redirect=explore-3d');
     exit();
 }
 
+// ============================================
+// CONTINUE WITH PAGE
+// ============================================
 $user_id = $_SESSION['user_id'];
 
 $user_query  = mysqli_query($conn, "SELECT * FROM users WHERE id = $user_id");
@@ -68,6 +81,7 @@ $products_query = mysqli_query($conn, "
 
 $products_list  = [];
 $all_categories = [];
+$seen_ids = [];
 while ($row = mysqli_fetch_assoc($products_query)) {
     // Deduplicate by product id (LEFT JOIN may return multiple rows)
     if (!isset($seen_ids[$row['id']])) {
@@ -125,6 +139,7 @@ function getProductImg($product) {
 $active_nav = 'discover';
 include '../includes/navbar.php';
 ?>
+<!-- REST OF YOUR HTML STAYS THE SAME -->
 <!DOCTYPE html>
 <html lang="en" class="<?php echo getThemeClass(); ?>">
 <head>

@@ -55,6 +55,14 @@ $canReject = RBACHelper::hasPermission('sales_reject');
 $search = $_GET['search'] ?? '';
 $today = date('Y-m-d');
 
+// ✅ GET SYSTEM SETTINGS
+$settingsStmt = $pdo->prepare("SELECT vat_rate, pwd_senior_discount, pwd_senior_vat_exempt FROM system_settings LIMIT 1");
+$settingsStmt->execute();
+$settings = $settingsStmt->fetch(PDO::FETCH_ASSOC);
+$vat_rate = floatval($settings['vat_rate'] ?? 0.12);
+$pwd_senior_discount = floatval($settings['pwd_senior_discount'] ?? 0.20);
+$pwd_senior_vat_exempt = intval($settings['pwd_senior_vat_exempt'] ?? 1);
+
 // ============================================
 // ✅ FIXED: FETCH FROM BOTH APPOINTMENTS AND SALES
 // ============================================
@@ -70,10 +78,7 @@ $query = "
         a.discount_amount,
         a.vat_percentage,
         a.vat_amount,
-        CASE 
-            WHEN a.subtotal > 0 THEN (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0))
-            ELSE a.total_amount
-        END AS total_amount,
+        COALESCE(NULLIF(a.total_amount, 0), (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0))) AS total_amount,
         a.amount_paid,
         a.status,
         a.ref_no,
@@ -90,23 +95,30 @@ $query = "
         END AS customer_code,
         a.amount_paid,
         CASE 
-            WHEN a.amount_paid >= (CASE WHEN a.subtotal > 0 THEN (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0)) ELSE a.total_amount END) THEN 'Paid'
-            WHEN a.amount_paid > 0 AND a.amount_paid < (CASE WHEN a.subtotal > 0 THEN (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0)) ELSE a.total_amount END) THEN 'Partial'
+            WHEN a.amount_paid >= COALESCE(NULLIF(a.total_amount, 0), (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0))) 
+                AND COALESCE(NULLIF(a.total_amount, 0), (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0))) > 0 
+            THEN 'Paid'
+            WHEN a.amount_paid > 0 AND a.amount_paid < COALESCE(NULLIF(a.total_amount, 0), (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0))) 
+            THEN 'Partial'
             ELSE 'Unpaid'
         END AS payment_status,
         'appointment' AS source_type,
-        (
-            SELECT CONCAT('[', GROUP_CONCAT(
-                JSON_OBJECT(
-                    'name', s.name, 
-                    'price', aps.price, 
-                    'quantity', 1, 
-                    'type', 'service'
-                )
-            ), ']') 
-            FROM appointment_services aps 
-            JOIN services s ON aps.service_id = s.id 
-            WHERE aps.appointment_id = a.id
+        COALESCE(
+            (SELECT s3.items FROM sales s3 WHERE s3.appointment_id = a.id LIMIT 1),
+            a.items,
+            (
+                SELECT CONCAT('[', GROUP_CONCAT(
+                    JSON_OBJECT(
+                        'name', s.name, 
+                        'price', aps.price, 
+                        'quantity', 1, 
+                        'type', 'service'
+                    )
+                ), ']') 
+                FROM appointment_services aps 
+                JOIN services s ON aps.service_id = s.id 
+                WHERE aps.appointment_id = a.id
+            )
         ) AS items,
         d.name as doctor_name,
         NULL AS walk_in_name,
@@ -127,11 +139,11 @@ $query = "
         NULL AS user_id,
         s.patient_id,
         s.subtotal,
-        NULL AS discount_type,
-        0 AS discount_percentage,
+        s.discount_type,
+        s.discount_percentage,
         s.discount,
-        0 AS vat_percentage,
-        0 AS vat_amount,
+        s.vat_percentage,
+        s.vat_amount,
         s.total_amount,
         s.amount_paid,
         s.status,
@@ -158,13 +170,9 @@ $query = "
     AND s.status IN ('Paid', 'Partial', 'Unpaid')
 ";
 
-// ✅ FIXED: Both clinic_id parameters for both UNION parts
 $params = [$clinic_id, $clinic_id];
 
-// ✅ FIXED: Add search filter for both UNION parts (simplified approach)
 if (!empty($search)) {
-    // Since UNION ALL has two parts with different column structures,
-    // we wrap the whole UNION in a subquery and apply search there
     $query = "SELECT * FROM (" . $query . ") AS combined 
               WHERE customer_name LIKE ? 
                  OR invoice_id LIKE ? 
@@ -172,30 +180,17 @@ if (!empty($search)) {
                  OR walk_in_name LIKE ?";
     $searchTerm = "%$search%";
     $params = array_merge([$clinic_id, $clinic_id], [$searchTerm, $searchTerm, $searchTerm, $searchTerm]);
-    
-    // ✅ FIXED: ORDER BY using the ALIAS column name
     $query .= " ORDER BY sale_date DESC LIMIT 20";
 } else {
-    // ✅ FIXED: ORDER BY using the ALIAS column name
     $query .= " ORDER BY sale_date DESC LIMIT 20";
 }
-
-// ✅ Debug: Log the query for troubleshooting
-error_log("=== SALES QUERY DEBUG ===");
-error_log("Clinic ID: " . $clinic_id);
-error_log("Search: " . $search);
-error_log("Query: " . str_replace("\n", " ", $query));
-error_log("Params: " . json_encode($params));
 
 $stmt = $pdo->prepare($query);
 $stmt->execute($params);
 $invoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-// ✅ Debug: Log results
-error_log("Invoices found: " . count($invoices));
-
 // ============================================
-// ✅ FIXED: FETCH STATS FROM BOTH APPOINTMENTS AND SALES
+// ✅ FETCH STATS FROM BOTH APPOINTMENTS AND SALES
 // ============================================
 $statsStmt = $pdo->prepare("
     SELECT 
@@ -205,7 +200,6 @@ $statsStmt = $pdo->prepare("
         COALESCE(SUM(CASE WHEN status = 'Partial' THEN total_amount END), 0) as partial_amount,
         COALESCE(SUM(CASE WHEN status = 'Unpaid' THEN total_amount END), 0) as unpaid_amount
     FROM (
-        -- ✅ Appointment-based sales
         SELECT 
             appointment_date as sale_date,
             CASE 
@@ -223,7 +217,6 @@ $statsStmt = $pdo->prepare("
         
         UNION ALL
         
-        -- ✅ Walk-in sales
         SELECT 
             sale_date,
             CASE 
@@ -241,21 +234,22 @@ $statsStmt = $pdo->prepare("
 $statsStmt->execute([$today, $today, $clinic_id, $clinic_id]);
 $stats = $statsStmt->fetch(PDO::FETCH_ASSOC);
 
-// ✅ Ensure stats are not null
 $stats['today_sales'] = $stats['today_sales'] ?? 0;
 $stats['today_count'] = $stats['today_count'] ?? 0;
 $stats['paid_amount'] = $stats['paid_amount'] ?? 0;
 $stats['partial_amount'] = $stats['partial_amount'] ?? 0;
 $stats['unpaid_amount'] = $stats['unpaid_amount'] ?? 0;
 
-// Fetch patients for dropdown
+// Fetch patients for dropdown (with user_id for verification)
 $patientsStmt = $pdo->prepare("
-    SELECT id, CONCAT(first_name, ' ', last_name) as full_name, email, phone 
-    FROM patients 
-    WHERE clinic_id = ? AND status = 'Active' 
-    ORDER BY first_name ASC
+    SELECT p.id, CONCAT(p.first_name, ' ', p.last_name) as full_name, p.email, p.phone, p.user_id,
+           v.status as verified_status, v.verification_type
+    FROM patients p
+    LEFT JOIN user_verifications v ON p.user_id = v.user_id AND v.clinic_id = ? AND v.status = 'verified'
+    WHERE p.clinic_id = ? AND p.status = 'Active' 
+    ORDER BY p.first_name ASC
 ");
-$patientsStmt->execute([$clinic_id]);
+$patientsStmt->execute([$clinic_id, $clinic_id]);
 $patients = $patientsStmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Fetch PRODUCTS from inventory
@@ -278,24 +272,18 @@ $servicesStmt = $pdo->prepare("
 $servicesStmt->execute([$clinic_id]);
 $services = $servicesStmt->fetchAll(PDO::FETCH_ASSOC);
 
-// Combine items
 $allItems = array_merge($products, $services);
 
-// ============================================
-// ✅ FIXED: Process invoices with correct balance
-// ============================================
+// Process invoices with correct balance
 foreach ($invoices as &$invoice) {
     $total_amount = $invoice['total_amount'] ?? 0;
     $amount_paid = $invoice['amount_paid'] ?? 0;
     $balance = $total_amount - $amount_paid;
-    
-    // ✅ FIXED: If balance is negative, set to 0 (fully paid)
     if ($balance < 0) {
         $balance = 0;
     }
     $invoice['balance'] = $balance;
     
-    // ✅ FIXED: Recalculate payment status
     if ($amount_paid >= $total_amount && $total_amount > 0) {
         $invoice['payment_status'] = 'Paid';
     } elseif ($amount_paid > 0 && $amount_paid < $total_amount) {
@@ -515,7 +503,7 @@ unset($invoice);
                             <th>Subtotal</th>
                             <th>Discount</th>
                             <th>VAT</th>
-                            <th>Total</th>
+                            <th>Amount Paid</th>
                             <th>Status</th>
                             <th>Actions</th>
                         </tr>
@@ -528,400 +516,110 @@ unset($invoice);
                                 </td>
                             </tr>
                         <?php else: ?>
-<?php
-if (session_status() === PHP_SESSION_NONE) {
-    session_name('eyecore_admin');
-    session_start();
-}
-
-require_once __DIR__ . '/../config/db.php';
-require_once __DIR__ . '/../include/RBACHelper.php';
-require_once __DIR__ . '/../include/SubscriptionHelper.php';
-
-// ✅ Initialize RBACHelper
-RBACHelper::init($pdo);
-
-// ✅ SUBSCRIPTION CHECK - Finance module (Professional or Enterprise plan required)
-$subHelper = new SubscriptionHelper($pdo, $_SESSION['clinic_id']);
-if (!$subHelper->canAccessModule('finance')) {
-    header('Location: ../views/subscription.php');
-    exit;
-}
-
-// Load permissions to session if not already loaded
-if (isset($_SESSION['user_id']) && isset($_SESSION['clinic_id']) && !isset($_SESSION['permissions'])) {
-    RBACHelper::loadPermissionsToSession($_SESSION['user_id'], $_SESSION['clinic_id']);
-}
-
-// ✅ RBAC Permission Check
-if (!RBACHelper::hasPermission('sales_view')) {
-    ?>
-    <div class="container-fluid p-5 text-center">
-        <div class="alert alert-danger">
-            <i class="bi bi-shield-lock display-4 d-block mb-3"></i>
-            <h3>Access Denied</h3>
-            <p>You don't have permission to access Sales & Billing.</p>
-        </div>
-    </div>
-    <?php
-    exit;
-}
-
-// Get session data
-$current_user_id = $_SESSION['user_id'];
-$user_role = $_SESSION['role'] ?? 'SCM';
-$clinic_id = $_SESSION['clinic_id'];
-$user_name = $_SESSION['name'] ?? 'User';
-
-// ✅ Get user permissions for UI
-$canView = RBACHelper::hasPermission('sales_view');
-$canCreate = RBACHelper::hasPermission('sales_create');
-$canEdit = RBACHelper::hasPermission('sales_edit');
-$canDelete = RBACHelper::hasPermission('sales_delete');
-$canApprove = RBACHelper::hasPermission('sales_approve');
-$canReject = RBACHelper::hasPermission('sales_reject');
-
-// Get filter parameters
-$search = $_GET['search'] ?? '';
-$today = date('Y-m-d');
-
-// ============================================
-// ✅ FIXED: FETCH FROM BOTH APPOINTMENTS AND SALES
-// ============================================
-$query = "
-    SELECT 
-        a.id,
-        a.appointment_date as sale_date,
-        a.user_id,
-        a.patient_id,
-        a.subtotal,
-        a.discount_type,
-        a.discount_percentage,
-        a.discount_amount,
-        a.vat_percentage,
-        a.vat_amount,
-        CASE 
-            WHEN a.subtotal > 0 THEN (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0))
-            ELSE a.total_amount
-        END AS total_amount,
-        a.amount_paid,
-        a.status,
-        a.ref_no,
-        CONCAT('INV-', DATE_FORMAT(a.appointment_date, '%Y%m'), '-', LPAD(a.id, 4, '0')) AS invoice_id,
-        CASE 
-            WHEN a.patient_id IS NOT NULL THEN CONCAT(p.first_name, ' ', p.last_name)
-            WHEN u.id IS NOT NULL THEN CONCAT(u.first_name, ' ', u.last_name)
-            ELSE 'Walk-in'
-        END AS customer_name,
-        CASE 
-            WHEN a.patient_id IS NOT NULL THEN p.id
-            WHEN u.id IS NOT NULL THEN u.id
-            ELSE 'WALK-IN'
-        END AS customer_code,
-        a.amount_paid,
-        CASE 
-            WHEN a.amount_paid >= (CASE WHEN a.subtotal > 0 THEN (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0)) ELSE a.total_amount END) THEN 'Paid'
-            WHEN a.amount_paid > 0 AND a.amount_paid < (CASE WHEN a.subtotal > 0 THEN (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0)) ELSE a.total_amount END) THEN 'Partial'
-            ELSE 'Unpaid'
-        END AS payment_status,
-        'appointment' AS source_type,
-        (
-            SELECT CONCAT('[', GROUP_CONCAT(
-                JSON_OBJECT(
-                    'name', s.name, 
-                    'price', aps.price, 
-                    'quantity', 1, 
-                    'type', 'service'
-                )
-            ), ']') 
-            FROM appointment_services aps 
-            JOIN services s ON aps.service_id = s.id 
-            WHERE aps.appointment_id = a.id
-        ) AS items,
-        d.name as doctor_name,
-        NULL AS walk_in_name,
-        NULL AS walk_in_contact,
-        NULL AS walk_in_email
-    FROM appointments a
-    LEFT JOIN patients p ON a.patient_id = p.id
-    LEFT JOIN users u ON a.user_id = u.id
-    LEFT JOIN doctors d ON a.doctor_id = d.id
-    WHERE a.clinic_id = ?
-    AND a.status IN ('paid', 'completed', 'confirmed', 'pending')
-    
-    UNION ALL
-    
-    SELECT 
-        s.id,
-        s.sale_date,
-        NULL AS user_id,
-        s.patient_id,
-        s.subtotal,
-        NULL AS discount_type,
-        0 AS discount_percentage,
-        s.discount,
-        0 AS vat_percentage,
-        0 AS vat_amount,
-        s.total_amount,
-        s.amount_paid,
-        s.status,
-        NULL AS ref_no,
-        CONCAT('INV-', DATE_FORMAT(s.sale_date, '%Y%m'), '-', LPAD(s.id, 4, '0')) AS invoice_id,
-        COALESCE(s.walk_in_name, CONCAT(p2.first_name, ' ', p2.last_name), 'Walk-in') AS customer_name,
-        COALESCE(s.patient_id, 'WALK-IN') AS customer_code,
-        s.amount_paid,
-        CASE 
-            WHEN s.amount_paid >= s.total_amount THEN 'Paid'
-            WHEN s.amount_paid > 0 AND s.amount_paid < s.total_amount THEN 'Partial'
-            ELSE 'Unpaid'
-        END AS payment_status,
-        'walkin' AS source_type,
-        s.items,
-        NULL AS doctor_name,
-        s.walk_in_name,
-        s.walk_in_contact,
-        s.walk_in_email
-    FROM sales s
-    LEFT JOIN patients p2 ON s.patient_id = p2.id
-    WHERE s.clinic_id = ?
-    AND s.appointment_id IS NULL
-    AND s.status IN ('Paid', 'Partial', 'Unpaid')
-";
-
-// ✅ FIXED: Both clinic_id parameters for both UNION parts
-$params = [$clinic_id, $clinic_id];
-
-// ✅ FIXED: Add search filter for both UNION parts (simplified approach)
-if (!empty($search)) {
-    // Since UNION ALL has two parts with different column structures,
-    // we wrap the whole UNION in a subquery and apply search there
-    $query = "SELECT * FROM (" . $query . ") AS combined 
-              WHERE customer_name LIKE ? 
-                 OR invoice_id LIKE ? 
-                 OR id LIKE ? 
-                 OR walk_in_name LIKE ?";
-    $searchTerm = "%$search%";
-    $params = array_merge([$clinic_id, $clinic_id], [$searchTerm, $searchTerm, $searchTerm, $searchTerm]);
-    
-    // ✅ FIXED: ORDER BY using the ALIAS column name
-    $query .= " ORDER BY sale_date DESC LIMIT 20";
-} else {
-    // ✅ FIXED: ORDER BY using the ALIAS column name
-    $query .= " ORDER BY sale_date DESC LIMIT 20";
-}
-
-// ✅ Debug: Log the query for troubleshooting
-error_log("=== SALES QUERY DEBUG ===");
-error_log("Clinic ID: " . $clinic_id);
-error_log("Search: " . $search);
-error_log("Query: " . str_replace("\n", " ", $query));
-error_log("Params: " . json_encode($params));
-
-$stmt = $pdo->prepare($query);
-$stmt->execute($params);
-$invoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-// ✅ Debug: Log results
-error_log("Invoices found: " . count($invoices));
-
-// ============================================
-// ✅ FIXED: FETCH STATS FROM BOTH APPOINTMENTS AND SALES
-// ============================================
-$statsStmt = $pdo->prepare("
-    SELECT 
-        COALESCE(SUM(CASE WHEN sale_date = ? AND status = 'Paid' THEN total_amount END), 0) as today_sales,
-        COUNT(CASE WHEN sale_date = ? AND status = 'Paid' THEN 1 END) as today_count,
-        COALESCE(SUM(CASE WHEN status = 'Paid' THEN total_amount END), 0) as paid_amount,
-        COALESCE(SUM(CASE WHEN status = 'Partial' THEN total_amount END), 0) as partial_amount,
-        COALESCE(SUM(CASE WHEN status = 'Unpaid' THEN total_amount END), 0) as unpaid_amount
-    FROM (
-        -- ✅ Appointment-based sales
-        SELECT 
-            appointment_date as sale_date,
-            CASE 
-                WHEN a.amount_paid >= (CASE WHEN a.subtotal > 0 THEN (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0)) ELSE a.total_amount END) THEN 'Paid'
-                WHEN a.amount_paid > 0 THEN 'Partial'
-                ELSE 'Unpaid'
-            END as status,
-            CASE 
-                WHEN a.subtotal > 0 THEN (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0))
-                ELSE a.total_amount
-            END as total_amount
-        FROM appointments a
-        WHERE a.clinic_id = ?
-        AND a.status IN ('paid', 'completed', 'confirmed', 'pending')
-        
-        UNION ALL
-        
-        -- ✅ Walk-in sales
-        SELECT 
-            sale_date,
-            CASE 
-                WHEN amount_paid >= total_amount THEN 'Paid'
-                WHEN amount_paid > 0 THEN 'Partial'
-                ELSE 'Unpaid'
-            END as status,
-            total_amount
-        FROM sales s
-        WHERE s.clinic_id = ?
-        AND s.appointment_id IS NULL
-        AND s.status IN ('Paid', 'Partial', 'Unpaid')
-    ) combined
-");
-$statsStmt->execute([$today, $today, $clinic_id, $clinic_id]);
-$stats = $statsStmt->fetch(PDO::FETCH_ASSOC);
-
-// ✅ Ensure stats are not null
-$stats['today_sales'] = $stats['today_sales'] ?? 0;
-$stats['today_count'] = $stats['today_count'] ?? 0;
-$stats['paid_amount'] = $stats['paid_amount'] ?? 0;
-$stats['partial_amount'] = $stats['partial_amount'] ?? 0;
-$stats['unpaid_amount'] = $stats['unpaid_amount'] ?? 0;
-
-// Fetch patients for dropdown
-$patientsStmt = $pdo->prepare("
-    SELECT id, CONCAT(first_name, ' ', last_name) as full_name, email, phone 
-    FROM patients 
-    WHERE clinic_id = ? AND status = 'Active' 
-    ORDER BY first_name ASC
-");
-$patientsStmt->execute([$clinic_id]);
-$patients = $patientsStmt->fetchAll(PDO::FETCH_ASSOC);
-
-// Fetch PRODUCTS from inventory
-$productsStmt = $pdo->prepare("
-    SELECT id, name, selling_price as price, 'product' as item_type, stock
-    FROM inventory 
-    WHERE clinic_id = ? AND stock > 0 AND is_archived = 0
-    ORDER BY name ASC
-");
-$productsStmt->execute([$clinic_id]);
-$products = $productsStmt->fetchAll(PDO::FETCH_ASSOC);
-
-// Fetch SERVICES from services table
-$servicesStmt = $pdo->prepare("
-    SELECT id, name, price, 'service' as item_type, NULL as stock
-    FROM services 
-    WHERE clinic_id = ? AND status = 'active'
-    ORDER BY name ASC
-");
-$servicesStmt->execute([$clinic_id]);
-$services = $servicesStmt->fetchAll(PDO::FETCH_ASSOC);
-
-// Combine items
-$allItems = array_merge($products, $services);
-
-// ============================================
-// ✅ FIXED: Process invoices with correct balance
-// ============================================
-foreach ($invoices as &$invoice) {
-    $total_amount = $invoice['total_amount'] ?? 0;
-    $amount_paid = $invoice['amount_paid'] ?? 0;
-    $balance = $total_amount - $amount_paid;
-    
-    // ✅ FIXED: If balance is negative, set to 0 (fully paid)
-    if ($balance < 0) {
-        $balance = 0;
-    }
-    $invoice['balance'] = $balance;
-    
-    // ✅ FIXED: Recalculate payment status
-    if ($amount_paid >= $total_amount && $total_amount > 0) {
-        $invoice['payment_status'] = 'Paid';
-    } elseif ($amount_paid > 0 && $amount_paid < $total_amount) {
-        $invoice['payment_status'] = 'Partial';
-    } else {
-        $invoice['payment_status'] = 'Unpaid';
-    }
-}
-unset($invoice);
-?>
-
-<!-- ============================================ -->
-<!-- HTML TABLE DISPLAY - FIXED BALANCE -->
-<!-- ============================================ -->
-<!-- Sa table row, gamitin ang computed balance: -->
-
-<?php foreach ($invoices as $invoice): 
-    $total_amount = $invoice['total_amount'] ?? 0;
-    $amount_paid = $invoice['amount_paid'] ?? 0;
-    $balance = $invoice['balance'] ?? 0;
-    $payment_status = $invoice['payment_status'] ?? 'Unpaid';
-    $statusColors = [
-        'Paid' => 'success',
-        'Partial' => 'warning',
-        'Unpaid' => 'danger'
-    ];
-    $color = $statusColors[$payment_status] ?? 'secondary';
-?>
-<tr>
-    <td class="fw-semibold"><?php echo $invoice['invoice_id']; ?></td>
-    <td><?php echo date('M d, Y', strtotime($invoice['sale_date'])); ?></td>
-    <td>
-        <div><?php echo htmlspecialchars($invoice['customer_name']); ?></div>
-        <div class="text-muted small"><?php echo $invoice['customer_code']; ?></div>
-    </td>
-    <td>
-        <?php 
-        $items = json_decode($invoice['items'] ?? '[]', true);
-        if(is_array($items) && !empty($items)) {
-            $count = count($items);
-            $itemNames = array_slice(array_column($items, 'name'), 0, 2);
-            echo '<div>' . $count . ' item' . ($count > 1 ? 's' : '') . '</div>';
-            echo '<small class="text-muted">' . htmlspecialchars(implode(', ', $itemNames));
-            if(count($items) > 2) echo '...';
-            echo '</small>';
-        } else {
-            echo 'No items';
-        }
-        ?>
-    </td>
-    <td class="fw-bold">₱<?php echo number_format($invoice['subtotal'] ?? $invoice['total_amount'], 2); ?></td>
-    <td>
-        <?php if(!empty($invoice['discount_type']) && $invoice['discount_type'] !== 'none'): ?>
-            <span class="discount-badge <?php echo $invoice['discount_type']; ?>">
-                <?php echo strtoupper($invoice['discount_type']); ?> 
-                <?php echo round($invoice['discount_percentage'] ?? 0); ?>%
-            </span>
-            <br><small class="text-danger">-₱<?php echo number_format($invoice['discount_amount'] ?? 0, 2); ?></small>
-        <?php else: ?>
-            <span class="text-muted small">—</span>
-        <?php endif; ?>
-    </td>
-    <td>
-        <?php if(($invoice['vat_percentage'] ?? 0) > 0): ?>
-            <span class="vat-badge standard">VAT <?php echo round($invoice['vat_percentage']); ?>%</span>
-            <br><small class="text-warning">+₱<?php echo number_format($invoice['vat_amount'] ?? 0, 2); ?></small>
-        <?php else: ?>
-            <span class="vat-badge exempt">VAT Exempt</span>
-        <?php endif; ?>
-    </td>
-    <td class="fw-bold text-primary">
-        ₱<?php echo number_format($total_amount, 2); ?>
-    </td>
-    <td>
-        <span class="badge bg-<?php echo $color; ?>"><?php echo $payment_status; ?></span>
-    </td>
-    <td>
-        <div class="d-flex gap-1">
-            <?php if ($canView): ?>
-                <button class="btn btn-sm btn-outline-info" onclick="viewInvoice(<?php echo $invoice['id']; ?>, '<?php echo $invoice['source_type']; ?>')">
-                    <i class="bi bi-eye"></i>
-                </button>
-                <button class="btn btn-sm btn-outline-secondary" onclick="printInvoice(<?php echo $invoice['id']; ?>, '<?php echo $invoice['source_type']; ?>')">
-                    <i class="bi bi-printer"></i>
-                </button>
-            <?php endif; ?>
-            
-            <?php if ($canEdit && $payment_status !== 'Paid'): ?>
-                <button class="btn btn-sm btn-outline-success" onclick="recordPayment(<?php echo $invoice['id']; ?>, <?php echo $total_amount; ?>, <?php echo $amount_paid; ?>, '<?php echo $invoice['source_type']; ?>')">
-                    <i class="bi bi-cash"></i>
-                </button>
-            <?php endif; ?>
-        </div>
-    </td>
-</tr>
-<?php endforeach; ?>
+                        <?php foreach ($invoices as $invoice): 
+                            $total_amount = $invoice['total_amount'] ?? 0;
+                            $amount_paid = $invoice['amount_paid'] ?? 0;
+                            $balance = $invoice['balance'] ?? 0;
+                            $payment_status = $invoice['payment_status'] ?? 'Unpaid';
+                            $statusColors = [
+                                'Paid' => 'success',
+                                'Partial' => 'warning',
+                                'Unpaid' => 'danger'
+                            ];
+                            $color = $statusColors[$payment_status] ?? 'secondary';
+                            
+                            // ✅ FIXED: Get items and compute subtotal
+                            $items_raw = trim($invoice['items'] ?? '[]');
+                            $items = json_decode($items_raw, true);
+                            
+                            // Fix JSON if needed
+                            if (json_last_error() !== JSON_ERROR_NONE) {
+                                $items_raw = preg_replace('/[\x00-\x1F\x80-\xFF]/', '', $items_raw);
+                                $items = json_decode($items_raw, true);
+                            }
+                            
+                            // Compute subtotal from items
+                            $computed_subtotal = 0;
+                            if (is_array($items) && !empty($items)) {
+                                foreach ($items as $item) {
+                                    $price = floatval($item['price'] ?? 0);
+                                    $qty = intval($item['quantity'] ?? 1);
+                                    $computed_subtotal += $price * $qty;
+                                }
+                            }
+                            
+                            // Use computed subtotal if available
+                            $display_subtotal = ($computed_subtotal > 0) ? $computed_subtotal : ($invoice['subtotal'] ?? $invoice['total_amount'] ?? 0);
+                            
+                            // Get item names for display
+                            $itemNames = [];
+                            if (is_array($items) && !empty($items)) {
+                                foreach ($items as $item) {
+                                    $itemNames[] = $item['name'] ?? $item['item_name'] ?? 'Item';
+                                }
+                            }
+                        ?>
+                        <tr>
+                            <td class="fw-semibold"><?php echo $invoice['invoice_id']; ?></td>
+                            <td><?php echo date('M d, Y', strtotime($invoice['sale_date'])); ?></td>
+                            <td>
+                                <div><?php echo htmlspecialchars($invoice['customer_name']); ?></div>
+                                <div class="text-muted small"><?php echo $invoice['customer_code']; ?></div>
+                            </td>
+                            <td>
+                                <?php if (!empty($itemNames)): ?>
+                                    <div><?php echo count($itemNames); ?> item<?php echo count($itemNames) > 1 ? 's' : ''; ?></div>
+                                    <small class="text-muted"><?php echo htmlspecialchars(implode(', ', array_slice($itemNames, 0, 2))); ?><?php echo count($itemNames) > 2 ? '...' : ''; ?></small>
+                                <?php else: ?>
+                                    <span class="text-muted">No items</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="fw-bold">₱<?php echo number_format($display_subtotal, 2); ?></td>
+                            <td>
+                                <?php if(!empty($invoice['discount_type']) && $invoice['discount_type'] !== 'none'): ?>
+                                    <span class="discount-badge <?php echo $invoice['discount_type']; ?>">
+                                        <?php echo strtoupper($invoice['discount_type']); ?> 
+                                        <?php echo round($invoice['discount_percentage'] ?? 0); ?>%
+                                    </span>
+                                    <br><small class="text-danger">-₱<?php echo number_format($invoice['discount_amount'] ?? 0, 2); ?></small>
+                                <?php else: ?>
+                                    <span class="text-muted small">—</span>
+                                <?php endif; ?>
+                            </td>
+                            <td>
+                                <?php if(($invoice['vat_percentage'] ?? 0) > 0): ?>
+                                    <span class="vat-badge standard">VAT <?php echo round($invoice['vat_percentage']); ?>%</span>
+                                    <br><small class="text-warning">+₱<?php echo number_format($invoice['vat_amount'] ?? 0, 2); ?></small>
+                                <?php else: ?>
+                                    <span class="vat-badge exempt">VAT Exempt</span>
+                                <?php endif; ?>
+                            </td>
+                            <td class="fw-bold text-primary">
+                                ₱<?php echo number_format($amount_paid, 2); ?>
+                            </td>
+                            <td>
+                                <span class="badge bg-<?php echo $color; ?>"><?php echo $payment_status; ?></span>
+                            </td>
+                            <td>
+                                <div class="d-flex gap-1">
+                                    <?php if ($canView): ?>
+                                        <button class="btn btn-sm btn-outline-info" onclick="viewInvoice(<?php echo $invoice['id']; ?>, '<?php echo $invoice['source_type']; ?>')">
+                                            <i class="bi bi-eye"></i>
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-secondary" onclick="printInvoice(<?php echo $invoice['id']; ?>, '<?php echo $invoice['source_type']; ?>')">
+                                            <i class="bi bi-printer"></i>
+                                        </button>
+                                    <?php endif; ?>
+                                    
+                                    <?php if ($canEdit && $payment_status !== 'Paid'): ?>
+                                        <button class="btn btn-sm btn-outline-success" onclick="recordPayment(<?php echo $invoice['id']; ?>, <?php echo $total_amount; ?>, <?php echo $amount_paid; ?>, '<?php echo $invoice['source_type']; ?>')">
+                                            <i class="bi bi-cash"></i>
+                                        </button>
+                                    <?php endif; ?>
+                                </div>
+                            </td>
+                        </tr>
+                        <?php endforeach; ?>
                         <?php endif; ?>
                     </tbody>
                 </table>
@@ -954,7 +652,7 @@ unset($invoice);
                         </div>
                     </div>
 
-                    <!-- ✅ PWD/SENIOR VERIFICATION DISPLAY -->
+                    <!-- PWD/SENIOR VERIFICATION DISPLAY -->
                     <div id="pwd_senior_status" style="display: none; padding: 10px; border-radius: 8px; margin-bottom: 15px;">
                         <div class="d-flex align-items-center">
                             <i class="fas fa-check-circle" style="font-size: 20px;"></i>
@@ -966,7 +664,7 @@ unset($invoice);
                     <div id="registered_section">
                         <div class="mb-3">
                             <label class="form-label fw-semibold">Select Patient</label>
-                            <select class="form-select patient-select" name="patient_id" id="patient_select" style="width: 100%;" onchange="checkPwdSenior(this.value)">
+                            <select class="form-select patient-select" name="patient_id" id="patient_select" style="width: 100%;">
                                 <option value="" disabled selected>Search and select patient...</option>
                                 <?php foreach($patients as $patient): ?>
                                     <option value="<?php echo $patient['id']; ?>" 
@@ -984,7 +682,7 @@ unset($invoice);
                         <div class="row">
                             <div class="col-md-6 mb-3">
                                 <label class="form-label fw-semibold">Full Name <span class="text-danger">*</span></label>
-                                <input type="text" class="form-control" name="walk_in_name" id="walk_in_name" placeholder="Enter customer name" onchange="checkWalkInPwdSenior(this.value)">
+                                <input type="text" class="form-control" name="walk_in_name" id="walk_in_name" placeholder="Enter customer name">
                             </div>
                             <div class="col-md-6 mb-3">
                                 <label class="form-label fw-semibold">Contact Number</label>
@@ -1063,7 +761,7 @@ unset($invoice);
                                         <td>
                                             <div class="input-group input-group-sm">
                                                 <span class="input-group-text">₱</span>
-                                                <input type="number" class="form-control" id="discount" value="0" min="0" step="0.01" onchange="calculateTotal()">
+                                                <input type="number" class="form-control" id="discount" value="0" min="0" step="0.01">
                                             </div>
                                         </td>
                                         <td></td>
@@ -1082,7 +780,7 @@ unset($invoice);
                     <div class="row g-3">
                         <div class="col-md-4">
                             <label class="form-label fw-semibold">Payment Method</label>
-                            <select class="form-select" name="payment_method" id="payment_method" required onchange="togglePaymentFields()">
+                            <select class="form-select" name="payment_method" id="payment_method" required>
                                 <option value="cash">Cash</option>
                                 <option value="credit_card">Credit Card</option>
                                 <option value="gcash">GCash</option>
@@ -1092,7 +790,7 @@ unset($invoice);
                         </div>
                         <div class="col-md-4">
                             <label class="form-label fw-semibold">Amount Paid</label>
-                            <input type="number" class="form-control" name="amount_paid" step="0.01" min="0" value="0" required onchange="updateStatus()">
+                            <input type="number" class="form-control" name="amount_paid" step="0.01" min="0" value="0" required>
                         </div>
                         <div class="col-md-4" id="reference_field" style="display: none;">
                             <label class="form-label fw-semibold">Reference Number</label>
@@ -1155,7 +853,7 @@ unset($invoice);
                     </div>
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Payment Method</label>
-                        <select class="form-select" name="payment_method" id="payment_method_modal" required onchange="toggleModalReferenceField()">
+                        <select class="form-select" name="payment_method" id="payment_method_modal" required>
                             <option value="cash">Cash</option>
                             <option value="credit_card">Credit Card</option>
                             <option value="gcash">GCash</option>
@@ -1384,7 +1082,7 @@ function calculateTotal() {
         subtotal += item.price * item.quantity;
     });
     
-    // ✅ Check if PWD/Senior is verified
+    // Check if PWD/Senior is verified
     let isPwdSenior = document.getElementById('pwd_senior_status').style.display === 'block' &&
                       document.getElementById('pwd_senior_status').style.background === '#d1fae5';
     
@@ -1429,6 +1127,7 @@ function calculateTotal() {
     
     updateStatus();
 }
+
 // Update status
 function updateStatus() {
     var amountPaid = parseFloat(document.querySelector('input[name="amount_paid"]').value) || 0;
@@ -1696,16 +1395,24 @@ function showBillFromAppointment(bill) {
     
     var items = bill.items || [];
     
-    if (items.length === 0 && bill.item_name) {
-        items = [{
-            item_name: bill.item_name || bill.service_type || 'Service',
-            item_type: bill.item_type || 'service',
-            unit_price: parseFloat(bill.item_price || bill.subtotal || 0),
-            quantity: 1,
-            total_price: parseFloat(bill.subtotal || 0)
-        }];
+    // ✅ FIXED: Compute subtotal from items
+    var subtotal = parseFloat(bill.subtotal || 0);
+    var computedSubtotal = 0;
+    
+    if (Array.isArray(items) && items.length > 0) {
+        items.forEach(function(item) {
+            var price = parseFloat(item.unit_price || item.price || 0);
+            var qty = parseInt(item.quantity || 1);
+            computedSubtotal += price * qty;
+        });
     }
     
+    // Use computed subtotal if available and more accurate
+    if (computedSubtotal > 0 && computedSubtotal > subtotal) {
+        subtotal = computedSubtotal;
+    }
+    
+    // Build items HTML
     var itemsHtml = '';
     
     if (items.length === 0) {
@@ -1717,9 +1424,10 @@ function showBillFromAppointment(bill) {
                 '<span class="badge bg-success">Service</span>';
             var price = parseFloat(item.unit_price || item.price || 0);
             var qty = parseInt(item.quantity || 1);
+            var itemName = item.item_name || item.name || 'Item';
             itemsHtml += `
                 <tr>
-                    <td>${escapeHtml(item.item_name || item.name)}</td>
+                    <td><strong>${escapeHtml(itemName)}</strong></td>
                     <td>${typeBadge}</td>
                     <td class="text-end">₱${price.toFixed(2)}</td>
                     <td class="text-center">${qty}</td>
@@ -1729,26 +1437,32 @@ function showBillFromAppointment(bill) {
         });
     }
     
+    // Build discount display
     var discountDisplay = '';
     if (bill.discount_type && bill.discount_type !== 'none') {
+        var discountAmount = parseFloat(bill.discount_amount || 0);
+        var discountPercentage = parseFloat(bill.discount_percentage || 0);
         discountDisplay = `
             <div class="d-flex justify-content-between text-danger">
-                <span>${bill.discount_type.toUpperCase()} Discount (${bill.discount_percentage || 0}%):</span>
-                <span>-₱${parseFloat(bill.discount_amount || 0).toFixed(2)}</span>
+                <span>${bill.discount_type.toUpperCase()} Discount (${discountPercentage}%):</span>
+                <span>-₱${discountAmount.toFixed(2)}</span>
             </div>
             <div class="d-flex justify-content-between">
                 <span class="text-muted">Subtotal after discount:</span>
-                <span>₱${(parseFloat(bill.subtotal || 0) - parseFloat(bill.discount_amount || 0)).toFixed(2)}</span>
+                <span>₱${(subtotal - discountAmount).toFixed(2)}</span>
             </div>
         `;
     }
     
+    // Build VAT display
     var vatDisplay = '';
-    if (parseFloat(bill.vat_percentage || 0) > 0) {
+    var vatAmount = parseFloat(bill.vat_amount || 0);
+    var vatPercentage = parseFloat(bill.vat_percentage || 0);
+    if (vatAmount > 0) {
         vatDisplay = `
             <div class="d-flex justify-content-between text-warning">
-                <span>VAT (${bill.vat_percentage}%):</span>
-                <span>+₱${parseFloat(bill.vat_amount || 0).toFixed(2)}</span>
+                <span>VAT (${vatPercentage}%):</span>
+                <span>+₱${vatAmount.toFixed(2)}</span>
             </div>
         `;
     } else {
@@ -1760,24 +1474,58 @@ function showBillFromAppointment(bill) {
         `;
     }
     
-    document.getElementById('invoiceDetails').innerHTML = `
-        <div class="row">
-            <div class="col-md-6">
-                <h6 class="fw-semibold border-bottom pb-2 mb-3">Invoice Information</h6>
-                <p><strong>Invoice ID:</strong> ${bill.invoice_id || 'N/A'}</p>
-                <p><strong>Date:</strong> ${bill.sale_date || bill.appointment_date || 'N/A'}</p>
-                <p><strong>Status:</strong> <span class="badge bg-${status === 'Paid' ? 'success' : status === 'Partial' ? 'warning' : 'danger'}">${status || 'Unpaid'}</span></p>
-                <p><strong>Appointment ID:</strong> ${bill.appointment_id || bill.id || 'N/A'}</p>
-                <p><strong>Source:</strong> ${bill.source_type === 'walkin' ? 'Walk-in Sale' : 'Appointment'}</p>
+    // Build payment display
+    var paymentDisplay = '';
+    if (totalPaid > 0) {
+        paymentDisplay = `
+            <div class="d-flex justify-content-between text-success">
+                <span>Amount Paid:</span>
+                <span class="fw-bold">₱${totalPaid.toFixed(2)}</span>
             </div>
-            <div class="col-md-6">
-                <h6 class="fw-semibold border-bottom pb-2 mb-3">Customer Information</h6>
-                <p><strong>Name:</strong> ${escapeHtml(bill.customer_name || bill.walk_in_name || 'N/A')}</p>
-                <p><strong>Type:</strong> ${bill.patient_id ? 'Registered Patient' : 'Walk-in Customer'}</p>
+            <div class="d-flex justify-content-between ${balanceAmount > 0 ? 'text-danger' : 'text-success'}">
+                <span>Balance:</span>
+                <span class="fw-bold">₱${balanceAmount.toFixed(2)}</span>
+            </div>
+        `;
+    }
+    
+    // Get status badge class
+    var statusClass = status === 'Paid' ? 'success' : status === 'Partial' ? 'warning' : 'danger';
+    
+    // Build the invoice HTML
+    document.getElementById('invoiceDetails').innerHTML = `
+        <!-- Invoice Header -->
+        <div class="row mb-4">
+            <div class="col-6">
+                <h4 class="fw-bold" style="color: var(--teal);">INVOICE</h4>
+                <p class="text-muted small mb-0">${escapeHtml(bill.invoice_id || 'N/A')}</p>
+                <p class="text-muted small">${bill.source_type === 'walkin' ? 'Walk-in Sale' : 'Appointment'}</p>
+            </div>
+            <div class="col-6 text-end">
+                <p class="mb-1"><strong>Date:</strong> ${bill.sale_date || 'N/A'}</p>
+                <p class="mb-0"><strong>Status:</strong> <span class="badge bg-${statusClass}">${status}</span></p>
             </div>
         </div>
         
-        <div class="row mt-4">
+        <!-- Customer Info -->
+        <div class="row mb-4">
+            <div class="col-12">
+                <h6 class="fw-semibold border-bottom pb-2 mb-3">Customer Information</h6>
+                <div class="row">
+                    <div class="col-md-6">
+                        <p><strong>Name:</strong> ${escapeHtml(bill.customer_name || 'N/A')}</p>
+                        <p><strong>Type:</strong> ${bill.patient_id ? 'Registered Patient' : 'Walk-in Customer'}</p>
+                    </div>
+                    <div class="col-md-6">
+                        ${bill.doctor_name ? `<p><strong>Doctor:</strong> Dr. ${escapeHtml(bill.doctor_name)}</p>` : ''}
+                        ${bill.reference_number ? `<p><strong>Reference:</strong> ${escapeHtml(bill.reference_number)}</p>` : ''}
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Items Table -->
+        <div class="row mb-4">
             <div class="col-12">
                 <h6 class="fw-semibold border-bottom pb-2 mb-3">Items</h6>
                 <div class="table-responsive">
@@ -1792,72 +1540,25 @@ function showBillFromAppointment(bill) {
                             </tr>
                         </thead>
                         <tbody>${itemsHtml}</tbody>
-                        <tfoot class="table-light">
+                        <tfoot>
                             <tr>
-                                <td colspan="4" class="text-end fw-bold">Subtotal:</td>
-                                <td class="text-end fw-bold">₱${parseFloat(bill.subtotal || 0).toFixed(2)}</td>
+                                <td colspan="4" class="text-end fw-semibold">Subtotal:</td>
+                                <td class="text-end fw-bold">₱${subtotal.toFixed(2)}</td>
                             </tr>
-                            ${bill.discount_type && bill.discount_type !== 'none' ? `
-                            <tr>
-                                <td colspan="4" class="text-end fw-bold text-danger">${bill.discount_type.toUpperCase()} Discount:</td>
-                                <td class="text-end text-danger">-₱${parseFloat(bill.discount_amount || 0).toFixed(2)}</td>
-                            </tr>
-                            ` : ''}
-                            ${parseFloat(bill.vat_percentage || 0) > 0 ? `
-                            <tr>
-                                <td colspan="4" class="text-end fw-bold text-warning">VAT (${bill.vat_percentage}%):</td>
-                                <td class="text-end text-warning">+₱${parseFloat(bill.vat_amount || 0).toFixed(2)}</td>
-                            </tr>
-                            ` : ''}
+                            ${discountDisplay}
+                            ${vatDisplay}
                             <tr class="table-primary">
-                                <td colspan="4" class="text-end fw-bold">Total Amount:</td>
-                                <td class="text-end fw-bold text-primary fs-5">₱${totalAmount.toFixed(2)}</td>
+                                <td colspan="4" class="text-end fw-bold fs-5">TOTAL:</td>
+                                <td class="text-end fw-bold fs-5" style="color: var(--teal);">₱${totalAmount.toFixed(2)}</td>
                             </tr>
-                            <tr>
-                                <td colspan="4" class="text-end fw-bold">Amount Paid:</td>
-                                <td class="text-end fw-bold text-success">₱${totalPaid.toFixed(2)}</td>
-                            </tr>
-                            <tr>
-                                <td colspan="4" class="text-end fw-bold">Balance:</td>
-                                <td class="text-end fw-bold ${balanceAmount > 0 ? 'text-danger' : 'text-success'}">₱${balanceAmount.toFixed(2)}</td>
-                            </tr>
+                            ${paymentDisplay}
                         </tfoot>
                     </table>
                 </div>
             </div>
         </div>
         
-        <div class="row mt-3">
-            <div class="col-12">
-                <h6 class="fw-semibold border-bottom pb-2 mb-3">Payment Breakdown</h6>
-                <div class="card bg-light">
-                    <div class="card-body">
-                        <div class="d-flex justify-content-between">
-                            <span>Subtotal:</span>
-                            <span>₱${parseFloat(bill.subtotal || 0).toFixed(2)}</span>
-                        </div>
-                        ${discountDisplay}
-                        ${vatDisplay}
-                        <hr>
-                        <div class="d-flex justify-content-between fw-bold fs-5">
-                            <span>TOTAL:</span>
-                            <span style="color: var(--teal);">₱${totalAmount.toFixed(2)}</span>
-                        </div>
-                        ${totalPaid > 0 ? `
-                        <div class="d-flex justify-content-between mt-2">
-                            <span class="text-success">Amount Paid:</span>
-                            <span class="text-success fw-bold">₱${totalPaid.toFixed(2)}</span>
-                        </div>
-                        <div class="d-flex justify-content-between ${balanceAmount > 0 ? 'text-danger' : 'text-success'}">
-                            <span>Balance:</span>
-                            <span class="fw-bold">₱${balanceAmount.toFixed(2)}</span>
-                        </div>
-                        ` : ''}
-                    </div>
-                </div>
-            </div>
-        </div>
-        
+        <!-- Footer Actions -->
         <div class="row mt-3">
             <div class="col-12 text-end">
                 ${balanceAmount > 0 ? `
@@ -1865,14 +1566,15 @@ function showBillFromAppointment(bill) {
                         <i class="bi bi-credit-card me-2"></i>Record Payment
                     </button>
                 ` : ''}
-                <button class="btn btn-teal" onclick="printInvoice(${bill.id}, '${bill.source_type || 'appointment'}')">
-                    <i class="bi bi-printer me-2"></i>Print Invoice
+                <button class="btn btn-teal me-2" onclick="printInvoice(${bill.id}, '${bill.source_type || 'appointment'}')">
+                    <i class="bi bi-printer me-2"></i>Print
                 </button>
                 <button class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
             </div>
         </div>
     `;
     
+    // Show modal
     var modal = new bootstrap.Modal(document.getElementById('viewInvoiceModal'));
     modal.show();
 }
@@ -1996,23 +1698,119 @@ function exportData() {
 function generatePrintView(bill) {
     var totalAmount = parseFloat(bill.total_amount || 0);
     var totalPaid = parseFloat(bill.total_paid || bill.amount_paid || 0);
+    var subtotal = parseFloat(bill.subtotal || 0);
+    var discountAmount = parseFloat(bill.discount_amount || 0);
+    var discountPercentage = parseFloat(bill.discount_percentage || 0);
+    var discountType = bill.discount_type || 'none';
+    var vatAmount = parseFloat(bill.vat_amount || 0);
+    var vatPercentage = parseFloat(bill.vat_percentage || 0);
     var balanceAmount = totalAmount - totalPaid;
     if (balanceAmount < 0) balanceAmount = 0;
-
+    
+    // Parse items
+    var items = bill.items || [];
+    if (typeof items === 'string') {
+        try {
+            items = JSON.parse(items);
+        } catch(e) {
+            items = [];
+        }
+    }
+    if (!Array.isArray(items)) {
+        items = [];
+    }
+    
+    // Compute subtotal from items if available
+    var computedSubtotal = 0;
+    if (items.length > 0) {
+        items.forEach(function(item) {
+            var price = parseFloat(item.unit_price || item.price || 0);
+            var qty = parseInt(item.quantity || 1);
+            computedSubtotal += price * qty;
+        });
+    }
+    if (computedSubtotal > 0 && computedSubtotal > subtotal) {
+        subtotal = computedSubtotal;
+    }
+    
+    // Build items rows
     var itemsRows = '';
-    (bill.items || []).forEach(function(item) {
-        var price = parseFloat(item.unit_price || item.price || 0);
-        var qty = parseInt(item.quantity || 1);
-        itemsRows += `
+    if (items.length === 0) {
+        itemsRows = '<tr><td colspan="4" style="text-align:center;color:#64748b;padding:20px;">No items found</td></tr>';
+    } else {
+        items.forEach(function(item) {
+            var price = parseFloat(item.unit_price || item.price || 0);
+            var qty = parseInt(item.quantity || 1);
+            var total = price * qty;
+            var itemName = item.item_name || item.name || 'Item';
+            itemsRows += `
+                <tr>
+                    <td>${escapeHtml(itemName)}</td>
+                    <td style="text-align:right;">₱${price.toFixed(2)}</td>
+                    <td style="text-align:center;">${qty}</td>
+                    <td style="text-align:right;">₱${total.toFixed(2)}</td>
+                </tr>
+            `;
+        });
+    }
+    
+    // Build discount rows
+    var discountRows = '';
+    if (discountType !== 'none' && discountAmount > 0) {
+        discountRows += `
             <tr>
-                <td>${escapeHtml(item.item_name || item.name || '')}</td>
-                <td style="text-align:right;">₱${price.toFixed(2)}</td>
-                <td style="text-align:center;">${qty}</td>
-                <td style="text-align:right;">₱${(price * qty).toFixed(2)}</td>
+                <td colspan="3" style="text-align:right;font-weight:600;color:#dc2626;">${discountType.toUpperCase()} Discount (${discountPercentage}%):</td>
+                <td style="text-align:right;color:#dc2626;">-₱${discountAmount.toFixed(2)}</td>
+            </tr>
+            <tr>
+                <td colspan="3" style="text-align:right;font-weight:600;">Subtotal after discount:</td>
+                <td style="text-align:right;">₱${(subtotal - discountAmount).toFixed(2)}</td>
             </tr>
         `;
-    });
-
+    }
+    
+    // Build VAT rows
+    var vatRows = '';
+    if (vatAmount > 0) {
+        vatRows = `
+            <tr>
+                <td colspan="3" style="text-align:right;font-weight:600;color:#d97706;">VAT (${vatPercentage}%):</td>
+                <td style="text-align:right;color:#d97706;">+₱${vatAmount.toFixed(2)}</td>
+            </tr>
+        `;
+    } else {
+        vatRows = `
+            <tr>
+                <td colspan="3" style="text-align:right;font-weight:600;color:#065f46;">VAT:</td>
+                <td style="text-align:right;color:#065f46;">Exempt</td>
+            </tr>
+        `;
+    }
+    
+    // Build payment rows
+    var paymentRows = '';
+    if (totalPaid > 0) {
+        paymentRows = `
+            <tr>
+                <td colspan="3" style="text-align:right;font-weight:600;color:#065f46;">Amount Paid:</td>
+                <td style="text-align:right;color:#065f46;font-weight:700;">₱${totalPaid.toFixed(2)}</td>
+            </tr>
+            <tr>
+                <td colspan="3" style="text-align:right;font-weight:600;${balanceAmount > 0 ? 'color:#dc2626;' : 'color:#065f46;'}">Balance:</td>
+                <td style="text-align:right;font-weight:700;${balanceAmount > 0 ? 'color:#dc2626;' : 'color:#065f46;'}">₱${balanceAmount.toFixed(2)}</td>
+            </tr>
+        `;
+    }
+    
+    // Get status
+    var status = 'Unpaid';
+    if (totalPaid >= totalAmount && totalAmount > 0) {
+        status = 'Paid';
+    } else if (totalPaid > 0 && totalPaid < totalAmount) {
+        status = 'Partial';
+    }
+    
+    // Generate print window
     var printWindow = window.open('', '_blank', 'width=800,height=900');
     printWindow.document.write(`
         <!DOCTYPE html>
@@ -2020,64 +1818,166 @@ function generatePrintView(bill) {
         <head>
             <title>${escapeHtml(bill.invoice_id)}</title>
             <style>
-                body { font-family: Arial, sans-serif; padding: 30px; color: #0f172a; }
-                h1 { font-size: 20px; margin-bottom: 4px; }
-                table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-                th, td { padding: 8px; border-bottom: 1px solid #e2e8f0; font-size: 13px; }
-                th { text-align: left; background: #f8fafc; }
-                .totals td { border: none; }
-                .totals .label { text-align: right; font-weight: 600; }
-                .totals .value { text-align: right; }
-                .grand-total { font-size: 16px; font-weight: 700; color: #0d9488; }
+                * { margin: 0; padding: 0; box-sizing: border-box; }
+                body { 
+                    font-family: Arial, Helvetica, sans-serif; 
+                    padding: 40px; 
+                    color: #0f172a; 
+                    max-width: 800px; 
+                    margin: 0 auto;
+                }
+                .header { 
+                    display: flex; 
+                    justify-content: space-between; 
+                    align-items: start; 
+                    border-bottom: 2px solid #0d9488; 
+                    padding-bottom: 15px; 
+                    margin-bottom: 20px;
+                }
+                .header h1 { 
+                    font-size: 24px; 
+                    color: #0d9488; 
+                    margin-bottom: 4px; 
+                }
+                .header .sub { color: #64748b; font-size: 14px; }
+                .info-grid { 
+                    display: grid; 
+                    grid-template-columns: 1fr 1fr; 
+                    gap: 15px; 
+                    margin-bottom: 25px; 
+                }
+                .info-grid .label { font-weight: 600; color: #475569; }
+                table { 
+                    width: 100%; 
+                    border-collapse: collapse; 
+                    margin: 20px 0; 
+                }
+                th { 
+                    background: #f8fafc; 
+                    padding: 10px 12px; 
+                    text-align: left; 
+                    font-weight: 600; 
+                    border-bottom: 2px solid #e2e8f0;
+                }
+                td { 
+                    padding: 8px 12px; 
+                    border-bottom: 1px solid #e2e8f0; 
+                }
+                .text-right { text-align: right; }
+                .text-center { text-align: center; }
+                .fw-bold { font-weight: 700; }
+                .total-row { 
+                    border-top: 2px solid #0d9488; 
+                    font-size: 18px; 
+                }
+                .total-row td { padding-top: 12px; }
+                .footer { 
+                    margin-top: 30px; 
+                    padding-top: 15px; 
+                    border-top: 1px solid #e2e8f0; 
+                    color: #64748b; 
+                    font-size: 12px; 
+                    text-align: center;
+                }
+                .status-badge {
+                    display: inline-block;
+                    padding: 4px 12px;
+                    border-radius: 12px;
+                    font-size: 12px;
+                    font-weight: 600;
+                }
+                .status-paid { background: #d1fae5; color: #065f46; }
+                .status-partial { background: #fef3c7; color: #92400e; }
+                .status-unpaid { background: #fee2e2; color: #991b1b; }
+                .discount { color: #dc2626; }
+                .vat { color: #d97706; }
+                .vat-exempt { color: #065f46; }
+                .paid { color: #065f46; }
+                .balance-positive { color: #dc2626; }
+                .balance-zero { color: #065f46; }
+                @media print {
+                    body { padding: 20px; }
+                    .no-print { display: none; }
+                }
             </style>
         </head>
         <body>
-            <h1>EyeCore Clinic</h1>
-            <p>Invoice: <strong>${escapeHtml(bill.invoice_id)}</strong><br>
-               Date: ${escapeHtml(bill.sale_date)}<br>
-               Customer: ${escapeHtml(bill.customer_name)}<br>
-               Status: ${escapeHtml(bill.status)}</p>
+            <!-- Header -->
+            <div class="header">
+                <div>
+                    <h1>INVOICE</h1>
+                    <div class="sub">${escapeHtml(bill.invoice_id || 'N/A')}</div>
+                    <div class="sub">${bill.source_type === 'walkin' ? 'Walk-in Sale' : 'Appointment'}</div>
+                </div>
+                <div style="text-align:right;">
+                    <div><strong>Date:</strong> ${bill.sale_date || 'N/A'}</div>
+                    <div><strong>Status:</strong> 
+                        <span class="status-badge status-${status.toLowerCase()}">${status}</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Customer Info -->
+            <div class="info-grid">
+                <div>
+                    <div class="label">Customer Name</div>
+                    <div>${escapeHtml(bill.customer_name || 'N/A')}</div>
+                    <div class="label" style="margin-top:8px;">Type</div>
+                    <div>${bill.patient_id ? 'Registered Patient' : 'Walk-in Customer'}</div>
+                </div>
+                <div>
+                    ${bill.doctor_name ? `
+                        <div class="label">Doctor</div>
+                        <div>Dr. ${escapeHtml(bill.doctor_name)}</div>
+                    ` : ''}
+                    ${bill.reference_number ? `
+                        <div class="label" style="margin-top:8px;">Reference</div>
+                        <div>${escapeHtml(bill.reference_number)}</div>
+                    ` : ''}
+                </div>
+            </div>
+            
+            <!-- Items Table -->
             <table>
                 <thead>
-                    <tr><th>Item</th><th style="text-align:right;">Price</th><th style="text-align:center;">Qty</th><th style="text-align:right;">Total</th></tr>
+                    <tr>
+                        <th style="width:50%;">Item</th>
+                        <th style="width:20%;text-align:right;">Price</th>
+                        <th style="width:15%;text-align:center;">Qty</th>
+                        <th style="width:25%;text-align:right;">Total</th>
+                    </tr>
                 </thead>
                 <tbody>
-                    ${itemsRows || '<tr><td colspan="4" style="text-align:center;color:#64748b;">No items found</td></tr>'}
+                    ${itemsRows}
                 </tbody>
-<tfoot>
-    <tr class="table-light">
-        <td colspan="4" class="text-end fw-semibold">Subtotal:</td>
-        <td id="subtotal" class="fw-bold">₱0.00</td>
-        <td></td>
-    </tr>
-    <tr id="discountRow" style="display: none;">
-        <td colspan="4" class="text-end fw-semibold text-success">PWD/Senior Discount:</td>
-        <td id="discountDisplay" class="fw-bold text-success">₱0.00</td>
-        <td></td>
-    </tr>
-    <tr id="vatRow">
-        <td colspan="4" class="text-end fw-semibold text-warning">VAT (12%):</td>
-        <td id="vatDisplay" class="fw-bold text-warning">₱0.00</td>
-        <td></td>
-    </tr>
-    <tr>
-        <td colspan="4" class="text-end fw-semibold">Manual Discount:</td>
-        <td>
-            <div class="input-group input-group-sm">
-                <span class="input-group-text">₱</span>
-                <input type="number" class="form-control" id="discount" value="0" min="0" step="0.01" onchange="calculateTotal()">
-            </div>
-        </td>
-        <td></td>
-    </tr>
-    <tr class="table-primary">
-        <td colspan="4" class="text-end fw-bold">Total:</td>
-        <td id="totalAmount" class="fw-bold text-primary fs-5">₱0.00</td>
-        <td></td>
-    </tr>
-</tfoot>
+                <tfoot>
+                    <tr>
+                        <td colspan="3" style="text-align:right;font-weight:600;">Subtotal:</td>
+                        <td style="text-align:right;font-weight:700;">₱${subtotal.toFixed(2)}</td>
+                    </tr>
+                    ${discountRows}
+                    ${vatRows}
+                    <tr class="total-row">
+                        <td colspan="3" style="text-align:right;font-weight:700;font-size:18px;color:#0d9488;">TOTAL:</td>
+                        <td style="text-align:right;font-weight:700;font-size:18px;color:#0d9488;">₱${totalAmount.toFixed(2)}</td>
+                    </tr>
+                    ${paymentRows}
+                </tfoot>
             </table>
-            <script>window.onload = function() { window.print(); };<\/script>
+            
+            <!-- Footer -->
+            <div class="footer">
+                <p>Thank you for your business!</p>
+                <p>Generated on ${new Date().toLocaleString()}</p>
+            </div>
+            
+            <script>
+                // Auto-print when loaded
+                window.onload = function() {
+                    window.print();
+                    window.close();
+                };
+            <\/script>
         </body>
         </html>
     `);
@@ -2092,16 +1992,15 @@ function escapeHtml(text) {
 }
 
 // ============================================
-// ✅ CHECK PWD/SENIOR STATUS FOR REGISTERED PATIENT
+// ✅ CHECK PWD/SENIOR STATUS FOR WALK-IN
 // ============================================
-function checkPwdSenior(patientId) {
-    if (!patientId) {
+function checkWalkInPwdSenior(name) {
+    if (!name || name.length < 3) {
         document.getElementById('pwd_senior_status').style.display = 'none';
         return;
     }
     
-    // ✅ Use api/sales.php instead of api/patients.php
-    fetch('api/sales.php?action=check_pwd_senior&patient_id=' + patientId + '&clinic_id=' + <?php echo $clinic_id; ?>)
+    fetch('api/sales.php?action=check_pwd_senior_by_name&name=' + encodeURIComponent(name) + '&clinic_id=' + <?php echo $clinic_id; ?>)
         .then(function(res) { return res.json(); })
         .then(function(data) {
             if (data.success && data.is_pwd_senior) {
@@ -2130,16 +2029,15 @@ function checkPwdSenior(patientId) {
 }
 
 // ============================================
-// ✅ CHECK PWD/SENIOR STATUS FOR WALK-IN
+// ✅ CHECK PWD/SENIOR STATUS FOR REGISTERED PATIENT
 // ============================================
-function checkWalkInPwdSenior(name) {
-    if (!name || name.length < 3) {
+function checkPwdSenior(patientId) {
+    if (!patientId) {
         document.getElementById('pwd_senior_status').style.display = 'none';
         return;
     }
     
-    // ✅ Use api/sales.php instead of api/patients.php
-    fetch('api/sales.php?action=check_pwd_senior_by_name&name=' + encodeURIComponent(name) + '&clinic_id=' + <?php echo $clinic_id; ?>)
+    fetch('api/sales.php?action=check_pwd_senior&patient_id=' + patientId + '&clinic_id=' + <?php echo $clinic_id; ?>)
         .then(function(res) { return res.json(); })
         .then(function(data) {
             if (data.success && data.is_pwd_senior) {

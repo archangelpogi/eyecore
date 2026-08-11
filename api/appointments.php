@@ -312,6 +312,9 @@ try {
         $data = json_decode(file_get_contents('php://input'), true);
         $action = $data['action'] ?? '';
 
+        // ──────────────────────────────────────────────────────────
+        //  APPROVE - FIXED!
+        // ──────────────────────────────────────────────────────────
         if ($action === 'approve') {
             if (!canApproveAppointments()) {
                 echo json_encode(['success' => false, 'message' => 'You do not have permission to approve appointments']);
@@ -345,10 +348,18 @@ try {
                 exit;
             }
 
+            // ✅ FIX: Include lens_price and all discount fields
             $appt = $pdo->prepare("
                 SELECT a.*, 
                        pr.name AS product_name, 
                        pr.price AS product_price,
+                       a.lens_type,
+                       a.lens_price,
+                       a.subtotal,
+                       a.discount_amount,
+                       a.discount_type,
+                       a.discount_percentage,
+                       a.total_amount,
                        c.name AS clinic_name,
                        c.id AS clinic_id
                 FROM appointments a
@@ -364,11 +375,25 @@ try {
                 exit;
             }
 
-            $payment_info = calculatePaymentAmounts($pdo, $row['clinic_id'], $row['product_price'] ?? 0);
+            // ✅ FIX: Use existing values, don't recompute!
+            $subtotal = (float)($row['subtotal'] ?? 0);
+            $discount_amount = (float)($row['discount_amount'] ?? 0);
+            $total_amount = (float)($row['total_amount'] ?? 0);
+            $discount_type = $row['discount_type'] ?? 'none';
+            $discount_percentage = (float)($row['discount_percentage'] ?? 0);
+            $lens_price = (float)($row['lens_price'] ?? 0);
+            $lens_type = $row['lens_type'] ?? '';
+            
+            // Compute payment based on existing total
+            $payment_info = calculatePaymentAmounts(
+                $pdo, 
+                $row['clinic_id'], 
+                $total_amount,
+                ($discount_type !== 'none')
+            );
             
             $payment_type = $payment_info['payment_type'];
             $downpayment_amount = $payment_info['downpayment_amount'];
-            $total_amount = $payment_info['total_amount'];
             $balance_amount = $payment_info['balance_amount'];
             $requires_payment = $payment_info['requires_payment'];
             
@@ -383,10 +408,13 @@ try {
                 $payment_status = 'pending';
                 $notification_message = "Your walk-in appointment at {$row['clinic_name']} on {$formattedDate} at {$formattedTime} has been CONFIRMED.";
                 
+                // ✅ FIX: Preserve existing subtotal, discount_amount, total_amount
                 $updateStmt = $pdo->prepare("
                     UPDATE appointments 
                     SET status = ?,
                         payment_status = ?,
+                        subtotal = ?,
+                        discount_amount = ?,
                         total_amount = ?,
                         downpayment_amount = ?,
                         balance_amount = ?,
@@ -395,8 +423,15 @@ try {
                     WHERE id = ?
                 ");
                 $updateStmt->execute([
-                    $new_status, $payment_status, $total_amount, 
-                    $downpayment_amount, $balance_amount, $payment_type, $apptId
+                    $new_status, 
+                    $payment_status, 
+                    $subtotal,           // ✅ Preserve
+                    $discount_amount,    // ✅ Preserve
+                    $total_amount,       // ✅ Preserve
+                    $downpayment_amount, 
+                    $balance_amount, 
+                    $payment_type, 
+                    $apptId
                 ]);
                 
             } else if ($isOnlineBooking) {
@@ -417,10 +452,13 @@ try {
                         . "Please pay the full amount of ₱" . number_format($total_amount, 2) . " to confirm your slot.";
                 }
                 
+                // ✅ FIX: Preserve existing subtotal, discount_amount, total_amount
                 $updateStmt = $pdo->prepare("
                     UPDATE appointments 
                     SET status = ?,
                         payment_status = ?,
+                        subtotal = ?,
+                        discount_amount = ?,
                         total_amount = ?,
                         downpayment_amount = ?,
                         balance_amount = ?,
@@ -429,8 +467,15 @@ try {
                     WHERE id = ?
                 ");
                 $updateStmt->execute([
-                    $new_status, $payment_status, $total_amount, 
-                    $downpayment_amount, $balance_amount, $payment_type, $apptId
+                    $new_status, 
+                    $payment_status,
+                    $subtotal,           // ✅ Preserve
+                    $discount_amount,    // ✅ Preserve
+                    $total_amount,       // ✅ Preserve
+                    $downpayment_amount, 
+                    $balance_amount, 
+                    $payment_type, 
+                    $apptId
                 ]);
                 
             } else {
@@ -438,10 +483,13 @@ try {
                 $payment_status = 'pending';
                 $notification_message = "Your appointment at {$row['clinic_name']} on {$formattedDate} at {$formattedTime} has been CONFIRMED.";
                 
+                // ✅ FIX: Preserve existing subtotal, discount_amount, total_amount
                 $updateStmt = $pdo->prepare("
                     UPDATE appointments 
                     SET status = ?,
                         payment_status = ?,
+                        subtotal = ?,
+                        discount_amount = ?,
                         total_amount = ?,
                         downpayment_amount = ?,
                         balance_amount = ?,
@@ -450,8 +498,15 @@ try {
                     WHERE id = ?
                 ");
                 $updateStmt->execute([
-                    $new_status, $payment_status, $total_amount, 
-                    $downpayment_amount, $balance_amount, $payment_type, $apptId
+                    $new_status, 
+                    $payment_status,
+                    $subtotal,           // ✅ Preserve
+                    $discount_amount,    // ✅ Preserve
+                    $total_amount,       // ✅ Preserve
+                    $downpayment_amount, 
+                    $balance_amount, 
+                    $payment_type, 
+                    $apptId
                 ]);
             }
             
@@ -471,7 +526,11 @@ try {
                 'payment_amount' => $downpayment_amount ?? $total_amount,
                 'payment_type' => $payment_type,
                 'new_status' => $new_status,
-                'appointment_type' => $row['appointment_type']
+                'appointment_type' => $row['appointment_type'],
+                'subtotal' => $subtotal,
+                'discount_amount' => $discount_amount,
+                'total_amount' => $total_amount,
+                'lens_price' => $lens_price
             ]);
             exit;
         }
@@ -778,7 +837,7 @@ try {
         }
 
         // ──────────────────────────────────────────────────────────
-        //  PROCESS REFUND WITH PAYMONGO INTEGRATION (UPDATED)
+        //  PROCESS REFUND WITH PAYMONGO INTEGRATION
         // ──────────────────────────────────────────────────────────
         if ($action === 'process_refund') {
             if (!canEditAppointments()) {
@@ -840,71 +899,71 @@ try {
                 exit;
             }
             
-// ==========================================
-// APPROVE: Create NEW PayMongo Checkout Session for Refund
-// ==========================================
-if ($refundAction === 'approve') {
-    
-    // ✅ Load PayMongoRefund class
-    require_once __DIR__ . '/paymongos.php';
-    $paymongo = new PayMongoRefund($pdo);
-    
-    // ✅ Determine refund amount
-    $refundAmount = $refund['amount'] ?? $refund['downpayment_amount'] ?? 0;
-    
-    if ($refundAmount <= 0) {
-        echo json_encode(['success' => false, 'message' => 'Invalid refund amount']);
-        exit;
-    }
-    
-    // ✅ Create NEW checkout session for refund (HINDI yung luma!)
-    $result = $paymongo->createRefundCheckout(
-        $refundId,
-        $refund['appointment_id'],
-        $refundAmount,
-        $refund['reason'] ?? 'Customer requested refund'
-    );
-    
-    if ($result['success']) {
-        // ✅ Update refund status to 'processing'
-        $pdo->prepare("
-            UPDATE refund_requests 
-            SET refund_status = 'processing', 
-                status = 'processing',
-                paymongo_refund_id = ?,
-                updated_at = NOW()
-            WHERE id = ?
-        ")->execute([$result['checkout_id'], $refundId]);
-        
-        // ✅ Update admin notes if provided
-        if (!empty($adminNotes)) {
-            $pdo->prepare("
-                UPDATE refund_requests 
-                SET admin_notes = CONCAT(IFNULL(admin_notes, ''), ' Admin note: ', ?),
-                    updated_at = NOW()
-                WHERE id = ?
-            ")->execute([$adminNotes, $refundId]);
-        }
-        
-        // ✅ Return the NEW redirect URL
-        echo json_encode([
-            'success' => true,
-            'redirect' => true,
-            'checkout_url' => $result['checkout_url'],  // ✅ NEW checkout URL
-            'checkout_id' => $result['checkout_id'],
-            'ref_no' => $result['ref_no'],
-            'message' => 'Redirecting to PayMongo to process refund...'
-        ]);
-        exit;
-    } else {
-        echo json_encode([
-            'success' => false,
-            'message' => $result['message'],
-            'requires_manual' => true
-        ]);
-        exit;
-    }
-}
+            // ==========================================
+            // APPROVE: Create NEW PayMongo Checkout Session for Refund
+            // ==========================================
+            if ($refundAction === 'approve') {
+                
+                // ✅ Load PayMongoRefund class
+                require_once __DIR__ . '/paymongos.php';
+                $paymongo = new PayMongoRefund($pdo);
+                
+                // ✅ Determine refund amount
+                $refundAmount = $refund['amount'] ?? $refund['downpayment_amount'] ?? 0;
+                
+                if ($refundAmount <= 0) {
+                    echo json_encode(['success' => false, 'message' => 'Invalid refund amount']);
+                    exit;
+                }
+                
+                // ✅ Create NEW checkout session for refund
+                $result = $paymongo->createRefundCheckout(
+                    $refundId,
+                    $refund['appointment_id'],
+                    $refundAmount,
+                    $refund['reason'] ?? 'Customer requested refund'
+                );
+                
+                if ($result['success']) {
+                    // ✅ Update refund status to 'processing'
+                    $pdo->prepare("
+                        UPDATE refund_requests 
+                        SET refund_status = 'processing', 
+                            status = 'processing',
+                            paymongo_refund_id = ?,
+                            updated_at = NOW()
+                        WHERE id = ?
+                    ")->execute([$result['checkout_id'], $refundId]);
+                    
+                    // ✅ Update admin notes if provided
+                    if (!empty($adminNotes)) {
+                        $pdo->prepare("
+                            UPDATE refund_requests 
+                            SET admin_notes = CONCAT(IFNULL(admin_notes, ''), ' Admin note: ', ?),
+                                updated_at = NOW()
+                            WHERE id = ?
+                        ")->execute([$adminNotes, $refundId]);
+                    }
+                    
+                    // ✅ Return the NEW redirect URL
+                    echo json_encode([
+                        'success' => true,
+                        'redirect' => true,
+                        'checkout_url' => $result['checkout_url'],
+                        'checkout_id' => $result['checkout_id'],
+                        'ref_no' => $result['ref_no'],
+                        'message' => 'Redirecting to PayMongo to process refund...'
+                    ]);
+                    exit;
+                } else {
+                    echo json_encode([
+                        'success' => false,
+                        'message' => $result['message'],
+                        'requires_manual' => true
+                    ]);
+                    exit;
+                }
+            }
             
             echo json_encode(['success' => false, 'message' => 'Invalid action']);
             exit;

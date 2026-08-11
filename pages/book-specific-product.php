@@ -329,62 +329,208 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             // ✅ STEP 3: Generate reference number
             $ref_no = 'APP-' . time() . '-' . rand(1000, 9999);
             
-            // ✅ STEP 4: Insert appointment with ALL fields including payment fields
+            // ============================================
+            // 🆕 STEP 4: BUILD ITEMS ARRAY (DAPAT MAY LENS)
+            // ============================================
+            $items_array = [];
+
+            // 1. Frame (product)
+            $items_array[] = [
+                'name' => $product['name'] . ' (Frame)',
+                'price' => (float)$product['price'],
+                'quantity' => 1,
+                'type' => 'product',
+                'product_id' => $product_id
+            ];
+
+            // 2. Lens (kung may lens at hindi frame_only)
+            if ($from_lens && $from_lens !== 'frame_only') {
+                $lens_name = ucwords(str_replace('_', ' ', $from_lens));
+                $items_array[] = [
+                    'name' => $lens_name . ' Lens',
+                    'price' => (float)$lens_price,
+                    'quantity' => 1,
+                    'type' => 'service',
+                    'lens_type' => $from_lens
+                ];
+            }
+
+            $items_json = json_encode($items_array);
+
+            // ============================================
+            // 🆕 STEP 5: CHECK USER PWD/SENIOR STATUS
+            // ============================================
+            $user_status_query = mysqli_query($conn, "
+                SELECT status as pwd_senior_status, verification_type as pwd_senior_type
+                FROM user_verifications
+                WHERE user_id = $user_id 
+                AND clinic_id = $clinic_id
+                AND status = 'verified'
+                LIMIT 1
+            ");
+            $user_status = mysqli_fetch_assoc($user_status_query);
+            $is_pwd_senior = ($user_status && $user_status['pwd_senior_status'] === 'verified');
+
+            // ============================================
+            // 🆕 STEP 6: APPLY TAX AND DISCOUNT USING HELPER
+            // ============================================
+            $tax_calc = applyTaxAndDiscount($conn, $total_product_price, $is_pwd_senior);
+
+            $subtotal = $total_product_price;
+            $discount_amount = $tax_calc['discount_amount'];
+            $discount_rate = $tax_calc['discount_rate'];
+            $vat_amount = $tax_calc['vat_amount'];
+            $vat_rate = $tax_calc['vat_rate'];
+            $total_amount = $tax_calc['final_total'];
+            $subtotal_after_discount = $subtotal - $discount_amount;
+            
+            // ============================================
+            // 🆕 STEP 7: INSERT APPOINTMENT WITH COMPLETE DATA
+            // ============================================
+            $lens_price_safe = (float)$lens_price;
+            $subtotal_safe = (float)$subtotal;
+            $discount_amount_safe = (float)$discount_amount;
+            $total_amount_safe = (float)$total_amount;
+
             if ($doctor_id === 'NULL') {
                 $insert_query = "INSERT INTO appointments 
-                                (ref_no, user_id, patient_id, clinic_id, product_id, doctor_id, 
-                                 appointment_date, appointment_time, notes, status, is_new_patient, 
-                                 color_code, color_name, lens_type, contact_number,
-                                 total_amount, subtotal, amount_paid, payment_status, payment_type,
-                                 created_at) 
-                                VALUES ('$ref_no', $user_id, " . ($existingPatientId ?: 'NULL') . ", $clinic_id, $product_id, NULL, 
-                                '$appointment_date', '$appointment_time', '$notes', 'pending', $isNewPatient, 
-                                '" . mysqli_real_escape_string($conn, $from_color) . "', 
-                                '" . mysqli_real_escape_string($conn, $from_color_name) . "',
-                                '" . mysqli_real_escape_string($conn, $from_lens) . "',
-                                '$contact_number',
-                                0, 0, 0, 'pending', 'full',
-                                NOW())";
+                    (ref_no, user_id, patient_id, clinic_id, product_id, doctor_id, 
+                     appointment_date, appointment_time, notes, status, is_new_patient, 
+                     color_code, color_name, lens_type, lens_price, contact_number,
+                     subtotal, discount_amount, total_amount, amount_paid, payment_status, payment_type,
+                     items, created_at) 
+                    VALUES (
+                        '$ref_no', 
+                        $user_id, 
+                        " . ($existingPatientId ?: 'NULL') . ", 
+                        $clinic_id, 
+                        $product_id, 
+                        NULL, 
+                        '$appointment_date', 
+                        '$appointment_time', 
+                        '$notes', 
+                        'pending', 
+                        $isNewPatient, 
+                        '" . mysqli_real_escape_string($conn, $from_color) . "', 
+                        '" . mysqli_real_escape_string($conn, $from_color_name) . "',
+                        '" . mysqli_real_escape_string($conn, $from_lens) . "',
+                        $lens_price_safe,
+                        '$contact_number',
+                        $subtotal_safe, 
+                        $discount_amount_safe, 
+                        $total_amount_safe, 
+                        0, 
+                        'pending', 
+                        'full',
+                        '$items_json', 
+                        NOW()
+                    )";
             } else {
                 $insert_query = "INSERT INTO appointments 
-                                (ref_no, user_id, patient_id, clinic_id, product_id, doctor_id, 
-                                 appointment_date, appointment_time, notes, status, is_new_patient, 
-                                 color_code, color_name, lens_type, contact_number,
-                                 total_amount, subtotal, amount_paid, payment_status, payment_type,
-                                 created_at) 
-                                VALUES ('$ref_no', $user_id, " . ($existingPatientId ?: 'NULL') . ", $clinic_id, $product_id, $doctor_id, 
-                                '$appointment_date', '$appointment_time', '$notes', 'pending', $isNewPatient, 
-                                '" . mysqli_real_escape_string($conn, $from_color) . "', 
-                                '" . mysqli_real_escape_string($conn, $from_color_name) . "',
-                                '" . mysqli_real_escape_string($conn, $from_lens) . "',
-                                '$contact_number',
-                                0, 0, 0, 'pending', 'full',
-                                NOW())";
+                    (ref_no, user_id, patient_id, clinic_id, product_id, doctor_id, 
+                     appointment_date, appointment_time, notes, status, is_new_patient, 
+                     color_code, color_name, lens_type, lens_price, contact_number,
+                     subtotal, discount_amount, total_amount, amount_paid, payment_status, payment_type,
+                     items, created_at) 
+                    VALUES (
+                        '$ref_no', 
+                        $user_id, 
+                        " . ($existingPatientId ?: 'NULL') . ", 
+                        $clinic_id, 
+                        $product_id, 
+                        $doctor_id, 
+                        '$appointment_date', 
+                        '$appointment_time', 
+                        '$notes', 
+                        'pending', 
+                        $isNewPatient, 
+                        '" . mysqli_real_escape_string($conn, $from_color) . "', 
+                        '" . mysqli_real_escape_string($conn, $from_color_name) . "',
+                        '" . mysqli_real_escape_string($conn, $from_lens) . "',
+                        $lens_price_safe,
+                        '$contact_number',
+                        $subtotal_safe, 
+                        $discount_amount_safe, 
+                        $total_amount_safe, 
+                        0, 
+                        'pending', 
+                        'full',
+                        '$items_json', 
+                        NOW()
+                    )";
             }
             
             if (mysqli_query($conn, $insert_query)) {
                 $new_appointment_id = mysqli_insert_id($conn);
                 
                 // ============================================
-                // ✅ CALCULATE PAYMENT
+                // 🔧 FIXED STEP 8: UPDATE PAYMENT INFO (GAMIT ANG TAMANG VALUES)
                 // ============================================
-                $payment_info = calculatePaymentAmounts($conn, $clinic_id, $total_product_price);
-                $total_amount_calc = $payment_info['total_amount'];
-                $downpayment_amount_calc = $payment_info['downpayment_amount'];
-                $balance_amount_calc = $payment_info['balance_amount'];
-                $payment_type_calc = $payment_info['payment_type'];
-                $booking_flow_calc = $payment_info['booking_flow'] ?? 'approve_first';
-                $requires_payment_calc = $payment_info['requires_payment'];
-                
-                // ✅ STEP 5: Update appointment with payment info
+                // Kunin ang payment policy ng clinic
+                $policy = getClinicPaymentPolicy($conn, $clinic_id);
+                $payment_policy = $policy['payment_policy'];
+                $downpayment_percent = $policy['downpayment_percentage'] ?? 30;
+                $booking_flow = $policy['booking_flow'] ?? 'approve_first';
+
+                // ✅ I-base sa CORRECT total_amount (from applyTaxAndDiscount)
+                $final_total = $total_amount_safe;
+
+                // ✅ Compute downpayment based on policy
+                switch ($payment_policy) {
+                    case 'full_payment':
+                        $downpayment_amount = $final_total;
+                        $balance_amount = 0;
+                        $payment_type = 'full';
+                        $requires_payment = true;
+                        break;
+                    case 'downpayment_30':
+                        $downpayment_amount = round($final_total * 0.30, 2);
+                        $balance_amount = round($final_total - $downpayment_amount, 2);
+                        $payment_type = 'downpayment';
+                        $requires_payment = true;
+                        break;
+                    case 'downpayment_custom':
+                        $downpayment_amount = round($final_total * ($downpayment_percent / 100), 2);
+                        $balance_amount = round($final_total - $downpayment_amount, 2);
+                        $payment_type = 'downpayment';
+                        $requires_payment = true;
+                        break;
+                    case 'no_payment':
+                        $downpayment_amount = 0;
+                        $balance_amount = 0;
+                        $payment_type = 'free';
+                        $requires_payment = false;
+                        break;
+                    case 'pay_on_site':
+                        $downpayment_amount = 0;
+                        $balance_amount = $final_total;
+                        $payment_type = 'onsite';
+                        $requires_payment = false;
+                        break;
+                    default:
+                        $downpayment_amount = round($final_total * 0.30, 2);
+                        $balance_amount = round($final_total - $downpayment_amount, 2);
+                        $payment_type = 'downpayment';
+                        $requires_payment = true;
+                }
+
+                // ✅ Ensure downpayment is not zero when payment is required
+                if ($requires_payment && $downpayment_amount <= 0 && $final_total > 0) {
+                    $downpayment_amount = $final_total;
+                    $balance_amount = 0;
+                    $payment_type = 'full';
+                }
+
+                // ✅ UPDATE: Gamitin ang tamang values
                 $update_payment = mysqli_query($conn, "
                     UPDATE appointments 
-                    SET total_amount = $total_amount_calc,
-                        downpayment_amount = $downpayment_amount_calc,
-                        balance_amount = $balance_amount_calc,
-                        payment_type = '$payment_type_calc',
+                    SET 
+                        total_amount = $final_total,
+                        discount_amount = $discount_amount_safe,
+                        downpayment_amount = $downpayment_amount,
+                        balance_amount = $balance_amount,
+                        payment_type = '$payment_type',
                         amount_paid = 0,
-                        subtotal = $total_product_price,
                         payment_status = 'pending'
                     WHERE id = $new_appointment_id
                 ");
@@ -405,9 +551,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 }
                 
                 // CHECK PAYMENT POLICY AT BOOKING FLOW NG CLINIC
-                if ($requires_payment_calc) {
+                if ($requires_payment) {
                     
-                    if ($booking_flow_calc === 'pay_first') {
+                    if ($booking_flow === 'pay_first') {
                         // 💳 PAY FIRST: Redirect to payment immediately
                         header('Location: payment.php?appointment_id=' . $new_appointment_id);
                         exit();

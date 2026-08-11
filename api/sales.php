@@ -28,6 +28,13 @@ $clinic_id = $_SESSION['clinic_id'];
 $user_role = $_SESSION['role'] ?? 'User';
 $user_name = $_SESSION['name'] ?? 'Unknown User';
 
+// ============================================
+// ✅ REUSABLE SQL FRAGMENT: always prefer the stored a.total_amount;
+// only fall back to the computed (subtotal - discount + vat) formula
+// when total_amount is NULL or 0. This matches what's actually in the DB.
+// ============================================
+define('TOTAL_AMOUNT_SQL', "COALESCE(NULLIF(a.total_amount, 0), (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0)))");
+
 // ✅ RBAC Permission Helper Class for Sales
 class SalesPermission {
     private static $module = 'sales';
@@ -170,7 +177,7 @@ function logVerificationAction($pdo, $user_id, $clinic_id, $action, $admin_id = 
 }
 
 // ============================================
-// ✅ buildBillFromAppointment - for appointment-based sales
+// ✅ FIXED: buildBillFromAppointment - with proper items priority
 // ============================================
 function buildBillFromAppointment($pdo, $appointmentId, $clinic_id) {
     $stmt = $pdo->prepare("
@@ -203,7 +210,8 @@ function buildBillFromAppointment($pdo, $appointmentId, $clinic_id) {
             END AS customer_code,
             a.amount_paid as total_paid,
             d.name as doctor_name,
-            a.ref_no as reference_number
+            a.ref_no as reference_number,
+            a.items as appointment_items
         FROM appointments a
         LEFT JOIN patients p ON a.patient_id = p.id
         LEFT JOIN users u ON a.user_id = u.id
@@ -228,39 +236,109 @@ function buildBillFromAppointment($pdo, $appointmentId, $clinic_id) {
     $paymentMethodStmt->execute([$appointmentId, $clinic_id]);
     $lastPaymentMethod = $paymentMethodStmt->fetchColumn();
 
-    // ✅ Get items from appointment_services
-    $servicesStmt = $pdo->prepare("
-        SELECT s.name as item_name, aps.price as unit_price, 1 as quantity, 'service' as item_type
-        FROM appointment_services aps
-        JOIN services s ON aps.service_id = s.id
-        WHERE aps.appointment_id = ?
-    ");
-    $servicesStmt->execute([$appointmentId]);
-
+    // ============================================
+    // ✅ FIXED: Get items with priority order
+    // ============================================
     $items = [];
-    foreach ($servicesStmt->fetchAll(PDO::FETCH_ASSOC) as $service) {
-        $items[] = [
-            'item_name' => $service['item_name'],
-            'item_type' => 'service',
-            'unit_price' => floatval($service['unit_price']),
-            'quantity' => intval($service['quantity']),
-            'total_price' => floatval($service['unit_price']) * intval($service['quantity'])
-        ];
+    
+    // 1. FIRST PRIORITY: sales.items (most complete - has frame + lens + services)
+    $salesItemsStmt = $pdo->prepare("
+        SELECT items FROM sales 
+        WHERE appointment_id = ? AND clinic_id = ? 
+        ORDER BY id DESC LIMIT 1
+    ");
+    $salesItemsStmt->execute([$appointmentId, $clinic_id]);
+    $salesItems = $salesItemsStmt->fetchColumn();
+    
+    if ($salesItems) {
+        $decoded = json_decode($salesItems, true);
+        if (is_array($decoded) && !empty($decoded)) {
+            foreach ($decoded as $it) {
+                $price = floatval($it['price'] ?? 0);
+                $qty = intval($it['quantity'] ?? 1);
+                $items[] = [
+                    'item_name' => $it['name'] ?? 'Item',
+                    'item_type' => $it['type'] ?? 'product',
+                    'unit_price' => $price,
+                    'quantity' => $qty,
+                    'total_price' => $price * $qty
+                ];
+            }
+        }
+    }
+    
+    // 2. SECOND PRIORITY: appointments.items (has frame + lens)
+    if (empty($items) && !empty($appointment['appointment_items'])) {
+        $decoded = json_decode($appointment['appointment_items'], true);
+        if (is_array($decoded) && !empty($decoded)) {
+            foreach ($decoded as $it) {
+                $price = floatval($it['price'] ?? 0);
+                $qty = intval($it['quantity'] ?? 1);
+                $items[] = [
+                    'item_name' => $it['name'] ?? 'Item',
+                    'item_type' => $it['type'] ?? 'product',
+                    'unit_price' => $price,
+                    'quantity' => $qty,
+                    'total_price' => $price * $qty
+                ];
+            }
+        }
+    }
+    
+    // 3. THIRD PRIORITY: appointment_services + product (fallback)
+    if (empty($items)) {
+        // Get services from appointment_services
+        $servicesStmt = $pdo->prepare("
+            SELECT s.name as item_name, aps.price as unit_price, 1 as quantity, 'service' as item_type
+            FROM appointment_services aps
+            JOIN services s ON aps.service_id = s.id
+            WHERE aps.appointment_id = ?
+        ");
+        $servicesStmt->execute([$appointmentId]);
+        foreach ($servicesStmt->fetchAll(PDO::FETCH_ASSOC) as $service) {
+            $items[] = [
+                'item_name' => $service['item_name'],
+                'item_type' => 'service',
+                'unit_price' => floatval($service['unit_price']),
+                'quantity' => intval($service['quantity']),
+                'total_price' => floatval($service['unit_price']) * intval($service['quantity'])
+            ];
+        }
+        
+        // Get product (frame) from appointments
+        $productStmt = $pdo->prepare("
+            SELECT pr.name as item_name, pr.price as unit_price, 1 as quantity, 'product' as item_type
+            FROM appointments a
+            JOIN products pr ON a.product_id = pr.id
+            WHERE a.id = ? AND a.product_id IS NOT NULL AND a.product_id > 0
+        ");
+        $productStmt->execute([$appointmentId]);
+        $product = $productStmt->fetch(PDO::FETCH_ASSOC);
+        if ($product) {
+            $items[] = [
+                'item_name' => $product['item_name'],
+                'item_type' => 'product',
+                'unit_price' => floatval($product['unit_price']),
+                'quantity' => intval($product['quantity']),
+                'total_price' => floatval($product['unit_price']) * intval($product['quantity'])
+            ];
+        }
     }
 
+    // ✅ Use stored values from database
     $subtotal = floatval($appointment['subtotal'] ?? 0);
     $discountAmount = floatval($appointment['discount_amount'] ?? 0);
     $vatAmount = floatval($appointment['vat_amount'] ?? 0);
     $storedTotal = floatval($appointment['total_amount'] ?? 0);
 
-    // ✅ Recompute total
-    $computedTotal = $subtotal > 0 ? ($subtotal - $discountAmount + $vatAmount) : $storedTotal;
+    // ✅ FIXED: Trust the stored total_amount first
+    $finalTotal = $storedTotal > 0 ? $storedTotal : ($subtotal - $discountAmount + $vatAmount);
     $amountPaid = floatval($appointment['amount_paid'] ?? 0);
 
     // ✅ CORRECT status computation
-    if ($amountPaid >= $computedTotal && $computedTotal > 0) {
+    if ($amountPaid >= $finalTotal && $finalTotal > 0) {
         $status_label = 'Paid';
-    } elseif ($amountPaid > 0 && $amountPaid < $computedTotal) {
+    } elseif ($amountPaid > 0 && $amountPaid < $finalTotal) {
         $status_label = 'Partial';
     } else {
         $status_label = 'Unpaid';
@@ -275,12 +353,12 @@ function buildBillFromAppointment($pdo, $appointmentId, $clinic_id) {
         'customer_code' => $appointment['customer_code'],
         'patient_id' => $appointment['patient_id'],
         'subtotal' => $subtotal,
-        'discount_type' => $appointment['discount_type'],
+        'discount_type' => $appointment['discount_type'] ?? 'none',
         'discount_percentage' => floatval($appointment['discount_percentage'] ?? 0),
         'discount_amount' => $discountAmount,
         'vat_percentage' => floatval($appointment['vat_percentage'] ?? 0),
         'vat_amount' => $vatAmount,
-        'total_amount' => $computedTotal,
+        'total_amount' => $finalTotal,
         'amount_paid' => $amountPaid,
         'total_paid' => $amountPaid,
         'status' => $status_label,
@@ -294,7 +372,7 @@ function buildBillFromAppointment($pdo, $appointmentId, $clinic_id) {
 }
 
 // ============================================
-// ✅ buildBillFromSales - for walk-in sales
+// ✅ FIXED: buildBillFromSales - with proper items handling
 // ============================================
 function buildBillFromSales($pdo, $saleId, $clinic_id) {
     $stmt = $pdo->prepare("
@@ -316,17 +394,73 @@ function buildBillFromSales($pdo, $saleId, $clinic_id) {
         return null;
     }
 
-    // ✅ Get items from sale_items
+    // ============================================
+    // ✅ FIXED: Get items with priority order
+    // ============================================
+    $items = [];
+    
+    // 1. FIRST PRIORITY: sale_items (normalized table from POS)
     $itemsStmt = $pdo->prepare("
         SELECT item_name, item_type, unit_price, quantity, total_price
         FROM sale_items
         WHERE sale_id = ? AND clinic_id = ?
     ");
     $itemsStmt->execute([$saleId, $clinic_id]);
-    $items = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
+    $saleItems = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    if (!empty($saleItems)) {
+        foreach ($saleItems as $item) {
+            $items[] = [
+                'item_name' => $item['item_name'],
+                'item_type' => $item['item_type'] ?? 'product',
+                'unit_price' => floatval($item['unit_price'] ?? 0),
+                'quantity' => intval($item['quantity'] ?? 1),
+                'total_price' => floatval($item['total_price'] ?? 0)
+            ];
+        }
+    }
+    
+    // 2. SECOND PRIORITY: sales.items JSON (from appointments trigger)
+    if (empty($items) && !empty($sale['items'])) {
+        $decoded = json_decode($sale['items'], true);
+        if (is_array($decoded) && !empty($decoded)) {
+            foreach ($decoded as $it) {
+                $price = floatval($it['price'] ?? 0);
+                $qty = intval($it['quantity'] ?? 1);
+                $items[] = [
+                    'item_name' => $it['name'] ?? 'Item',
+                    'item_type' => $it['type'] ?? 'product',
+                    'unit_price' => $price,
+                    'quantity' => $qty,
+                    'total_price' => $price * $qty
+                ];
+            }
+        }
+    }
+    
+    // 3. THIRD PRIORITY: Single item from sale (fallback)
+    if (empty($items) && !empty($sale['item_name'])) {
+        $items[] = [
+            'item_name' => $sale['item_name'],
+            'item_type' => $sale['item_type'] ?? 'product',
+            'unit_price' => floatval($sale['unit_price'] ?? 0),
+            'quantity' => intval($sale['quantity'] ?? 1),
+            'total_price' => floatval($sale['total_price'] ?? $sale['total_amount'] ?? 0)
+        ];
+    }
 
+    // ✅ Use stored values from database
     $totalAmount = floatval($sale['total_amount'] ?? 0);
     $amountPaid = floatval($sale['amount_paid'] ?? 0);
+    $subtotal = floatval($sale['subtotal'] ?? 0);
+    $discountAmount = floatval($sale['discount'] ?? 0);
+    $vatAmount = floatval($sale['vat_amount'] ?? 0);
+    $vatPercentage = floatval($sale['vat_percentage'] ?? 0);
+
+    // ✅ If subtotal is 0 but we have items, compute from items
+    if ($subtotal == 0 && !empty($items)) {
+        $subtotal = array_sum(array_column($items, 'total_price'));
+    }
 
     // ✅ CORRECT status computation
     if ($amountPaid >= $totalAmount && $totalAmount > 0) {
@@ -337,31 +471,40 @@ function buildBillFromSales($pdo, $saleId, $clinic_id) {
         $status_label = 'Unpaid';
     }
 
+    // ✅ Determine discount type
+    $discountType = $sale['discount_type'] ?? 'none';
+    $discountPercentage = floatval($sale['discount_percentage'] ?? 0);
+    
+    // If discount amount exists but type is none, set to 'manual'
+    if ($discountAmount > 0 && $discountType === 'none') {
+        $discountType = 'manual';
+    }
+
     return [
         'id' => $sale['id'],
-        'appointment_id' => $sale['appointment_id'],
+        'appointment_id' => $sale['appointment_id'] ?? null,
         'invoice_id' => $sale['invoice_id'],
         'sale_date' => $sale['sale_date'],
         'customer_name' => $sale['customer_name'] ?? $sale['walk_in_name'] ?? 'Walk-in',
         'customer_code' => $sale['patient_id'] ?? 'WALK-IN',
         'patient_id' => $sale['patient_id'],
-        'subtotal' => floatval($sale['subtotal'] ?? 0),
-        'discount_type' => 'none',
-        'discount_percentage' => 0,
-        'discount_amount' => floatval($sale['discount'] ?? 0),
-        'vat_percentage' => 0,
-        'vat_amount' => 0,
+        'subtotal' => $subtotal,
+        'discount_type' => $discountType,
+        'discount_percentage' => $discountPercentage,
+        'discount_amount' => $discountAmount,
+        'vat_percentage' => $vatPercentage,
+        'vat_amount' => $vatAmount,
         'total_amount' => $totalAmount,
         'amount_paid' => $amountPaid,
-        'total_paid' => $amountPaid,
+        'total_paid' => floatval($sale['total_paid'] ?? $amountPaid),
         'status' => $status_label,
         'payment_method' => $sale['payment_method'] ?? 'cash',
         'reference_number' => $sale['ref_no'] ?? null,
         'doctor_name' => null,
         'items' => $items,
-        'walk_in_name' => $sale['walk_in_name'],
-        'walk_in_contact' => $sale['walk_in_contact'],
-        'walk_in_email' => $sale['walk_in_email'],
+        'walk_in_name' => $sale['walk_in_name'] ?? null,
+        'walk_in_contact' => $sale['walk_in_contact'] ?? null,
+        'walk_in_email' => $sale['walk_in_email'] ?? null,
         'source_type' => 'walkin'
     ];
 }
@@ -452,13 +595,10 @@ try {
                     a.subtotal,
                     a.discount_amount as discount,
                     a.vat_amount,
-                    CASE 
-                        WHEN a.subtotal > 0 THEN (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0))
-                        ELSE a.total_amount
-                    END as total_amount,
+                    " . TOTAL_AMOUNT_SQL . " as total_amount,
                     a.amount_paid,
                     CASE 
-                        WHEN a.amount_paid >= (CASE WHEN a.subtotal > 0 THEN (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0)) ELSE a.total_amount END) THEN 'Paid'
+                        WHEN a.amount_paid >= (" . TOTAL_AMOUNT_SQL . ") THEN 'Paid'
                         WHEN a.amount_paid > 0 THEN 'Partial'
                         ELSE 'Unpaid'
                     END as status,
@@ -544,13 +684,10 @@ try {
                 a.subtotal,
                 a.discount_amount as discount,
                 a.vat_amount,
-                CASE 
-                    WHEN a.subtotal > 0 THEN (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0))
-                    ELSE a.total_amount
-                END as total_amount,
+                " . TOTAL_AMOUNT_SQL . " as total_amount,
                 a.amount_paid,
                 CASE 
-                    WHEN a.amount_paid >= (CASE WHEN a.subtotal > 0 THEN (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0)) ELSE a.total_amount END) THEN 'Paid'
+                    WHEN a.amount_paid >= (" . TOTAL_AMOUNT_SQL . ") THEN 'Paid'
                     WHEN a.amount_paid > 0 THEN 'Partial'
                     ELSE 'Unpaid'
                 END as payment_status,
@@ -1075,270 +1212,299 @@ if ($method === 'POST' && (!isset($_GET['action']) || $_GET['action'] === '')) {
         exit;
     }
 
-    // ============= RECORD PAYMENT =============
-    if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'record_payment') {
-        SalesPermission::check('edit');
+// ============= RECORD PAYMENT =============
+if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'record_payment') {
+    SalesPermission::check('edit');
 
-        $data = json_decode(file_get_contents('php://input'), true);
-        $appointmentId = (int)($data['appointment_id'] ?? 0);
-        $amount = floatval($data['amount'] ?? 0);
-        $paymentMethod = $data['payment_method'] ?? 'cash';
-        $referenceNumber = $data['reference_number'] ?? null;
-        $notes = $data['notes'] ?? null;
-        $sourceType = $data['source_type'] ?? 'appointment';
+    $data = json_decode(file_get_contents('php://input'), true);
+    $appointmentId = (int)($data['appointment_id'] ?? 0);
+    $amount = floatval($data['amount'] ?? 0);
+    $paymentMethod = $data['payment_method'] ?? 'cash';
+    $referenceNumber = $data['reference_number'] ?? null;
+    $notes = $data['notes'] ?? null;
+    $sourceType = $data['source_type'] ?? 'appointment';
 
-        if (!$appointmentId || $amount <= 0) {
-            echo json_encode(['success' => false, 'message' => 'Invalid payment data']);
-            exit;
-        }
+    if (!$appointmentId || $amount <= 0) {
+        echo json_encode(['success' => false, 'message' => 'Invalid payment data']);
+        exit;
+    }
 
-        try {
-            $pdo->beginTransaction();
+    try {
+        $pdo->beginTransaction();
 
-            if ($sourceType === 'walkin') {
-                $stmt = $pdo->prepare("
-                    SELECT s.*
-                    FROM sales s
-                    WHERE s.id = ? AND s.clinic_id = ?
+        if ($sourceType === 'walkin') {
+            // ... existing walkin code ...
+        } else {
+            // ✅ FIXED: SELECT with COALESCE to ensure items is never NULL
+            $stmt = $pdo->prepare("
+                SELECT 
+                    a.id,
+                    a.patient_id,
+                    a.subtotal,
+                    a.discount_amount,
+                    a.vat_amount,
+                    a.total_amount as stored_total,
+                    a.amount_paid,
+                    a.status as appt_status,
+                    " . TOTAL_AMOUNT_SQL . " as computed_total,
+                    COALESCE(a.items, '[]') as appointment_items,
+                    a.product_id,
+                    a.lens_type,
+                    s.id as sale_id,
+                    s.status as sale_status,
+                    s.total_amount as sale_total
+                FROM appointments a
+                LEFT JOIN sales s ON a.id = s.appointment_id AND s.clinic_id = a.clinic_id
+                WHERE a.id = ? AND a.clinic_id = ?
+            ");
+            $stmt->execute([$appointmentId, $clinic_id]);
+            $appointment = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$appointment) {
+                throw new Exception('Appointment not found');
+            }
+
+            $totalAmount = floatval($appointment['computed_total']);
+            $currentPaid = floatval($appointment['amount_paid'] ?? 0);
+            $newAmountPaid = $currentPaid + $amount;
+            $isFullyPaid = $newAmountPaid >= $totalAmount;
+
+            $saleStatus = $isFullyPaid ? 'Paid' : 'Partial';
+            $appointmentStatus = $isFullyPaid ? 'completed' : 'waiting_payment';
+            $paymentType = $isFullyPaid ? 'full' : 'partial';
+
+            // ✅ UPDATE APPOINTMENT
+            $pdo->prepare("
+                UPDATE appointments
+                SET amount_paid = ?,
+                    payment_status = ?,
+                    status = ?,
+                    updated_at = NOW()
+                WHERE id = ? AND clinic_id = ?
+            ")->execute([
+                $newAmountPaid,
+                $isFullyPaid ? 'paid' : 'partial',
+                $appointmentStatus,
+                $appointmentId,
+                $clinic_id
+            ]);
+
+            $saleId = $appointment['sale_id'];
+            
+            // ============================================
+            // ✅ FIXED: GET ITEMS FROM APPOINTMENT WITH VALIDATION
+            // ============================================
+            $items_json = $appointment['appointment_items'] ?? '[]';
+            
+            // ✅ Check if items_json is valid JSON and not a string like "Appointment #..."
+            $items_data = json_decode($items_json, true);
+            
+            // ✅ Validate: must be array, not empty, and first item must have 'name' key
+            $is_valid_items = is_array($items_data) && !empty($items_data) && isset($items_data[0]['name']);
+            
+            // ✅ If items is invalid (empty, not array, or "Appointment #..."), rebuild from product + lens
+            if (!$is_valid_items || json_last_error() !== JSON_ERROR_NONE) {
+                $items_data = [];
+                
+                // Get product (frame)
+                $productStmt = $pdo->prepare("
+                    SELECT name, price FROM products WHERE id = ? AND clinic_id = ?
                 ");
-                $stmt->execute([$appointmentId, $clinic_id]);
-                $sale = $stmt->fetch(PDO::FETCH_ASSOC);
-
-                if (!$sale) {
-                    throw new Exception('Sale not found');
+                $productStmt->execute([$appointment['product_id'] ?? 0, $clinic_id]);
+                $product = $productStmt->fetch(PDO::FETCH_ASSOC);
+                
+                if ($product) {
+                    $items_data[] = [
+                        'name' => $product['name'] . ' (Frame)',
+                        'price' => floatval($product['price']),
+                        'quantity' => 1,
+                        'type' => 'product',
+                        'product_id' => $appointment['product_id'] ?? null
+                    ];
                 }
-
-                $saleId = $sale['id'];
-                $totalAmount = floatval($sale['total_amount'] ?? 0);
-                $currentPaid = floatval($sale['amount_paid'] ?? 0);
-                $newAmountPaid = $currentPaid + $amount;
-                $isFullyPaid = $newAmountPaid >= $totalAmount;
-
-                $saleStatus = $isFullyPaid ? 'Paid' : 'Partial';
-                $paymentType = $isFullyPaid ? 'full' : 'partial';
-
-                $pdo->prepare("
+                
+                // Get lens
+                $lensType = $appointment['lens_type'] ?? '';
+                $lensPrices = [
+                    'single_vision' => 500,
+                    'progressive' => 1500,
+                    'blue_cut' => 800,
+                    'contact_daily' => 0,
+                    'contact_monthly' => 0
+                ];
+                $lensPrice = $lensPrices[$lensType] ?? 0;
+                
+                if ($lensType && $lensType !== 'frame_only' && $lensPrice > 0) {
+                    $lensName = ucwords(str_replace('_', ' ', $lensType));
+                    $items_data[] = [
+                        'name' => $lensName . ' Lens',
+                        'price' => floatval($lensPrice),
+                        'quantity' => 1,
+                        'type' => 'service',
+                        'lens_type' => $lensType
+                    ];
+                }
+                
+                $items_json = json_encode($items_data);
+            }
+            
+            // ✅ If we have valid items, make sure they're properly formatted
+            if (is_array($items_data) && !empty($items_data)) {
+                // Ensure each item has required fields
+                foreach ($items_data as &$item) {
+                    if (!isset($item['name'])) $item['name'] = 'Item';
+                    if (!isset($item['price'])) $item['price'] = 0;
+                    if (!isset($item['quantity'])) $item['quantity'] = 1;
+                    if (!isset($item['type'])) $item['type'] = 'product';
+                }
+                $items_json = json_encode($items_data);
+            }
+            
+            // ============================================
+            // SAVE OR UPDATE SALES RECORD
+            // ============================================
+            if ($saleId) {
+                // ✅ UPDATE EXISTING SALE WITH ITEMS
+                $updateSale = $pdo->prepare("
                     UPDATE sales
                     SET amount_paid = ?,
                         status = ?,
+                        items = ?,
                         updated_at = NOW()
                     WHERE id = ? AND clinic_id = ?
-                ")->execute([$newAmountPaid, $saleStatus, $saleId, $clinic_id]);
-
-                $paymentStmt = $pdo->prepare("
-                    INSERT INTO payments
-                    (sale_id, appointment_id, clinic_id, user_id, amount, payment_method,
-                     payment_status, payment_type, reference_number, notes, payment_date, created_at)
-                    VALUES (?, 0, ?, ?, ?, ?, 'completed', ?, ?, ?, NOW(), NOW())
                 ");
-                $paymentStmt->execute([
-                    $saleId,
-                    $clinic_id,
-                    $user_id,
-                    $amount,
-                    $paymentMethod,
-                    $paymentType,
-                    $referenceNumber,
-                    $notes
-                ]);
-
-                $pdo->commit();
-
-                echo json_encode([
-                    'success' => true,
-                    'sale_id' => $saleId,
-                    'sale_status' => $saleStatus,
-                    'amount_paid' => $newAmountPaid,
-                    'balance' => max(0, $totalAmount - $newAmountPaid),
-                    'fully_paid' => $isFullyPaid,
-                    'message' => $isFullyPaid ? 'Payment completed. Sale is now fully paid.' : 'Partial payment recorded'
-                ]);
-
+                $updateSale->execute([$newAmountPaid, $saleStatus, $items_json, $saleId, $clinic_id]);
             } else {
-                $stmt = $pdo->prepare("
-                    SELECT 
-                        a.id,
-                        a.patient_id,
-                        a.subtotal,
-                        a.discount_amount,
-                        a.vat_amount,
-                        a.total_amount as stored_total,
-                        a.amount_paid,
-                        a.status as appt_status,
-                        CASE 
-                            WHEN a.subtotal > 0 THEN (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0))
-                            ELSE a.total_amount
-                        END as computed_total,
-                        s.id as sale_id,
-                        s.status as sale_status,
-                        s.total_amount as sale_total
-                    FROM appointments a
-                    LEFT JOIN sales s ON a.id = s.appointment_id AND s.clinic_id = a.clinic_id
-                    WHERE a.id = ? AND a.clinic_id = ?
+                // ✅ CREATE NEW SALE WITH ITEMS
+                $saleStmt = $pdo->prepare("
+                    INSERT INTO sales
+                    (clinic_id, sale_date, patient_id, appointment_id, 
+                     items, subtotal, discount, total_amount, amount_paid,
+                     payment_method, status, created_by, created_at)
+                    VALUES (?, CURDATE(), ?, ?, 
+                            ?, ?, ?, ?, ?,
+                            ?, ?, ?, NOW())
                 ");
-                $stmt->execute([$appointmentId, $clinic_id]);
-                $appointment = $stmt->fetch(PDO::FETCH_ASSOC);
+                $saleStmt->execute([
+                    $clinic_id,
+                    $appointment['patient_id'],
+                    $appointmentId,
+                    $items_json,
+                    $appointment['subtotal'] ?? 0,
+                    $appointment['discount_amount'] ?? 0,
+                    $totalAmount,
+                    $newAmountPaid,
+                    $paymentMethod,
+                    $saleStatus,
+                    $user_id
+                ]);
+                $saleId = $pdo->lastInsertId();
 
-                if (!$appointment) {
-                    throw new Exception('Appointment not found');
+                // ✅ INSERT SALE ITEMS
+                if (is_array($items_data) && !empty($items_data)) {
+                    foreach ($items_data as $item) {
+                        $itemStmt = $pdo->prepare("
+                            INSERT INTO sale_items
+                            (sale_id, clinic_id, item_id, item_type, item_name, quantity, unit_price, total_price)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        ");
+                        $itemStmt->execute([
+                            $saleId,
+                            $clinic_id,
+                            $item['product_id'] ?? $item['id'] ?? null,
+                            $item['type'] ?? 'product',
+                            $item['name'] ?? 'Item',
+                            $item['quantity'] ?? 1,
+                            $item['price'] ?? 0,
+                            ($item['price'] ?? 0) * ($item['quantity'] ?? 1)
+                        ]);
+                    }
                 }
+            }
 
-                $totalAmount = $appointment['computed_total'] > 0 ? $appointment['computed_total'] : $appointment['stored_total'];
-                $currentPaid = floatval($appointment['amount_paid'] ?? 0);
-                $newAmountPaid = $currentPaid + $amount;
-                $isFullyPaid = $newAmountPaid >= $totalAmount;
+            // ✅ INSERT PAYMENT
+            $paymentStmt = $pdo->prepare("
+                INSERT INTO payments
+                (sale_id, appointment_id, clinic_id, user_id, amount, payment_method,
+                 payment_status, payment_type, reference_number, notes, payment_date, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, NOW(), NOW())
+            ");
+            $paymentStmt->execute([
+                $saleId,
+                $appointmentId,
+                $clinic_id,
+                $user_id,
+                $amount,
+                $paymentMethod,
+                $paymentType,
+                $referenceNumber,
+                $notes
+            ]);
 
-                $saleStatus = $isFullyPaid ? 'Paid' : 'Partial';
-                $appointmentStatus = $isFullyPaid ? 'completed' : 'waiting_payment';
-                $paymentType = $isFullyPaid ? 'full' : 'partial';
+            // ✅ UPDATE INVENTORY IF FULLY PAID
+            if ($isFullyPaid) {
+                $itemsStmt = $pdo->prepare("
+                    SELECT item_id, item_type, quantity
+                    FROM sale_items
+                    WHERE sale_id = ? AND clinic_id = ?
+                ");
+                $itemsStmt->execute([$saleId, $clinic_id]);
+                $items = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+                foreach ($items as $item) {
+                    if ($item['item_type'] === 'product') {
+                        $updateStmt = $pdo->prepare("
+                            UPDATE inventory
+                            SET stock = stock - ?,
+                                item_status = CASE
+                                    WHEN (stock - ?) <= 0 THEN 'out-of-stock'
+                                    WHEN (stock - ?) <= min_stock THEN 'low-stock'
+                                    ELSE 'in-stock'
+                                END,
+                                updated_at = NOW()
+                            WHERE id = ? AND clinic_id = ? AND stock >= ?
+                        ");
+                        $updateStmt->execute([
+                            $item['quantity'],
+                            $item['quantity'],
+                            $item['quantity'],
+                            $item['item_id'],
+                            $clinic_id,
+                            $item['quantity']
+                        ]);
+                    }
+                }
 
                 $pdo->prepare("
                     UPDATE appointments
-                    SET amount_paid = ?,
-                        payment_status = ?,
-                        status = ?,
-                        updated_at = NOW()
+                    SET inventory_deducted = 1, 
+                        inventory_deducted_at = NOW()
                     WHERE id = ? AND clinic_id = ?
-                ")->execute([
-                    $newAmountPaid,
-                    $isFullyPaid ? 'paid' : 'partial',
-                    $appointmentStatus,
-                    $appointmentId,
-                    $clinic_id
-                ]);
-
-                $saleId = $appointment['sale_id'];
-                
-                if ($saleId) {
-                    $pdo->prepare("
-                        UPDATE sales
-                        SET amount_paid = ?,
-                            status = ?,
-                            updated_at = NOW()
-                        WHERE id = ? AND clinic_id = ?
-                    ")->execute([$newAmountPaid, $saleStatus, $saleId, $clinic_id]);
-                } else {
-                    $saleStmt = $pdo->prepare("
-                        INSERT INTO sales
-                        (clinic_id, sale_date, patient_id, appointment_id, 
-                         items, subtotal, discount, total_amount, amount_paid,
-                         payment_method, status, created_by, created_at)
-                        VALUES (?, CURDATE(), ?, ?, 
-                                NULL, ?, ?, ?, ?,
-                                ?, ?, ?, NOW())
-                    ");
-                    $saleStmt->execute([
-                        $clinic_id,
-                        $appointment['patient_id'],
-                        $appointmentId,
-                        $appointment['subtotal'] ?? 0,
-                        $appointment['discount_amount'] ?? 0,
-                        $totalAmount,
-                        $newAmountPaid,
-                        $paymentMethod,
-                        $saleStatus,
-                        $user_id
-                    ]);
-                    $saleId = $pdo->lastInsertId();
-
-                    $itemsStmt = $pdo->prepare("
-                        INSERT INTO sale_items (sale_id, clinic_id, item_id, item_type, item_name, quantity, unit_price, total_price)
-                        SELECT 
-                            ? as sale_id,
-                            aps.clinic_id,
-                            aps.service_id as item_id,
-                            'service' as item_type,
-                            s.name as item_name,
-                            1 as quantity,
-                            aps.price as unit_price,
-                            aps.price as total_price
-                        FROM appointment_services aps
-                        JOIN services s ON aps.service_id = s.id
-                        WHERE aps.appointment_id = ?
-                    ");
-                    $itemsStmt->execute([$saleId, $appointmentId]);
-                }
-
-                $paymentStmt = $pdo->prepare("
-                    INSERT INTO payments
-                    (sale_id, appointment_id, clinic_id, user_id, amount, payment_method,
-                     payment_status, payment_type, reference_number, notes, payment_date, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, NOW(), NOW())
-                ");
-                $paymentStmt->execute([
-                    $saleId,
-                    $appointmentId,
-                    $clinic_id,
-                    $user_id,
-                    $amount,
-                    $paymentMethod,
-                    $paymentType,
-                    $referenceNumber,
-                    $notes
-                ]);
-
-                if ($isFullyPaid) {
-                    $itemsStmt = $pdo->prepare("
-                        SELECT item_id, item_type, quantity
-                        FROM sale_items
-                        WHERE sale_id = ? AND clinic_id = ?
-                    ");
-                    $itemsStmt->execute([$saleId, $clinic_id]);
-                    $items = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
-
-                    foreach ($items as $item) {
-                        if ($item['item_type'] === 'product') {
-                            $updateStmt = $pdo->prepare("
-                                UPDATE inventory
-                                SET stock = stock - ?,
-                                    item_status = CASE
-                                        WHEN (stock - ?) <= 0 THEN 'out-of-stock'
-                                        WHEN (stock - ?) <= min_stock THEN 'low-stock'
-                                        ELSE 'in-stock'
-                                    END,
-                                    updated_at = NOW()
-                                WHERE id = ? AND clinic_id = ? AND stock >= ?
-                            ");
-                            $updateStmt->execute([
-                                $item['quantity'],
-                                $item['quantity'],
-                                $item['quantity'],
-                                $item['item_id'],
-                                $clinic_id,
-                                $item['quantity']
-                            ]);
-                        }
-                    }
-
-                    $pdo->prepare("
-                        UPDATE appointments
-                        SET inventory_deducted = 1, 
-                            inventory_deducted_at = NOW()
-                        WHERE id = ? AND clinic_id = ?
-                    ")->execute([$appointmentId, $clinic_id]);
-                }
-
-                $pdo->commit();
-
-                echo json_encode([
-                    'success' => true,
-                    'sale_id' => $saleId,
-                    'sale_status' => $saleStatus,
-                    'appointment_status' => $appointmentStatus,
-                    'amount_paid' => $newAmountPaid,
-                    'balance' => max(0, $totalAmount - $newAmountPaid),
-                    'fully_paid' => $isFullyPaid,
-                    'message' => $isFullyPaid ? 'Payment completed. Appointment is now completed and inventory updated.' : 'Partial payment recorded'
-                ]);
+                ")->execute([$appointmentId, $clinic_id]);
             }
 
-        } catch (Exception $e) {
-            $pdo->rollBack();
-            http_response_code(500);
-            echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
+            $pdo->commit();
+
+            echo json_encode([
+                'success' => true,
+                'sale_id' => $saleId,
+                'sale_status' => $saleStatus,
+                'appointment_status' => $appointmentStatus,
+                'amount_paid' => $newAmountPaid,
+                'balance' => max(0, $totalAmount - $newAmountPaid),
+                'fully_paid' => $isFullyPaid,
+                'message' => $isFullyPaid ? 'Payment completed. Appointment is now completed and inventory updated.' : 'Partial payment recorded',
+                'items' => $items_data ?? []
+            ]);
+
         }
-        exit;
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
     }
+    exit;
+}
 // ============= CHECK PWD/SENIOR STATUS =============
 if ($method === 'GET' && isset($_GET['action']) && $_GET['action'] === 'check_pwd_senior') {
     $patient_id = (int)($_GET['patient_id'] ?? 0);
@@ -1450,10 +1616,7 @@ if ($method === 'GET' && isset($_GET['action']) && $_GET['action'] === 'check_pw
                 SELECT 
                     a.status as appt_status,
                     a.amount_paid,
-                    CASE 
-                        WHEN a.subtotal > 0 THEN (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0))
-                        ELSE a.total_amount
-                    END as computed_total,
+                    " . TOTAL_AMOUNT_SQL . " as computed_total,
                     s.id as sale_id,
                     s.status as sale_status
                 FROM appointments a

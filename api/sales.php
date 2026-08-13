@@ -16,11 +16,32 @@ if (isset($_SESSION['user_id']) && isset($_SESSION['clinic_id']) && !isset($_SES
     RBACHelper::loadPermissionsToSession($_SESSION['user_id'], $_SESSION['clinic_id']);
 }
 
-// Check session
+// Check session - allow AJAX requests
 if (!isset($_SESSION['user_id']) || !isset($_SESSION['clinic_id'])) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'message' => 'Unauthorized']);
-    exit;
+    // ✅ Allow if it's an AJAX request with proper headers
+    if (isset($_SERVER['HTTP_X_REQUESTED_WITH']) && 
+        strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
+        // Try to get session from cookie
+        if (isset($_COOKIE['PHPSESSID'])) {
+            session_id($_COOKIE['PHPSESSID']);
+            session_start();
+            if (isset($_SESSION['user_id']) && isset($_SESSION['clinic_id'])) {
+                // Session restored, continue
+            } else {
+                http_response_code(401);
+                echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+                exit;
+            }
+        } else {
+            http_response_code(401);
+            echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+            exit;
+        }
+    } else {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+        exit;
+    }
 }
 
 $user_id = $_SESSION['user_id'];
@@ -95,13 +116,12 @@ function getSystemSettings($pdo) {
 // ✅ CHECK PWD/SENIOR VERIFICATION STATUS
 // ============================================
 function checkPwdSeniorStatus($pdo, $user_id, $clinic_id) {
-    // ✅ Check main verification table (source of truth)
+    // ✅ SIMPLIFIED: Same as booking process - direktang check sa user_verifications
     $stmt = $pdo->prepare("
         SELECT 
             status, 
             verification_type, 
-            verified_at,
-            DATE_ADD(verified_at, INTERVAL 1 YEAR) as expiry_date
+            verified_at
         FROM user_verifications 
         WHERE user_id = ? 
         AND clinic_id = ? 
@@ -112,55 +132,24 @@ function checkPwdSeniorStatus($pdo, $user_id, $clinic_id) {
     $stmt->execute([$user_id, $clinic_id]);
     $verification = $stmt->fetch(PDO::FETCH_ASSOC);
 
+    // ✅ If no verification found, return not verified
     if (!$verification) {
         return [
             'is_verified' => false,
             'verification_type' => null,
             'status' => 'none',
-            'expiry_date' => null,
+            'verified_at' => null,
             'message' => 'No verification found'
         ];
     }
 
-    // ✅ Check if verification has expired (1 year validity)
-    $expiry_date = $verification['expiry_date'] ?? null;
-    $is_expired = false;
-
-    if ($expiry_date) {
-        $today = new DateTime();
-        $expiry = new DateTime($expiry_date);
-        if ($today > $expiry) {
-            $is_expired = true;
-        }
-    }
-
-    if ($is_expired) {
-        // ✅ Log the expired verification
-        logVerificationAction(
-            $pdo,
-            $user_id,
-            $clinic_id,
-            'expired',
-            null,
-            'Verification expired on ' . $expiry_date
-        );
-
-        return [
-            'is_verified' => false,
-            'verification_type' => $verification['verification_type'],
-            'status' => 'expired',
-            'expiry_date' => $expiry_date,
-            'message' => 'Verification has expired on ' . date('F j, Y', strtotime($expiry_date))
-        ];
-    }
-
+    // ✅ If verified, return the verification data
     return [
         'is_verified' => true,
         'verification_type' => $verification['verification_type'],
         'status' => 'verified',
         'verified_at' => $verification['verified_at'],
-        'expiry_date' => $expiry_date,
-        'message' => 'Verified ' . strtoupper($verification['verification_type']) . ' - Valid until ' . date('F j, Y', strtotime($expiry_date))
+        'message' => 'Verified ' . strtoupper($verification['verification_type'])
     ];
 }
 
@@ -367,7 +356,12 @@ function buildBillFromAppointment($pdo, $appointmentId, $clinic_id) {
         'doctor_name' => $appointment['doctor_name'],
         'items' => $items,
         'walk_in_name' => null,
-        'source_type' => 'appointment'
+        'source_type' => 'appointment',
+        // ✅ PHASE 5: Add manual discount info
+        'verified_by' => $appointment['verified_by'] ?? null,
+        'id_number' => $appointment['id_number'] ?? null,
+        'is_manual_discount' => ($appointment['discount_type'] ?? '') === 'manual',
+        'is_verified_discount' => ($appointment['discount_type'] ?? '') !== 'none' && ($appointment['discount_type'] ?? '') !== 'manual'
     ];
 }
 
@@ -543,139 +537,216 @@ try {
         exit;
     }
 
-    // ============= GET SALES =============
-    if ($method === 'GET') {
+// ============= GET SALES =============
+if ($method === 'GET') {
+    
+    // ============================================
+    // ✅ PHASE 4: CHECK APPOINTMENT VERIFICATION (PINAKA-NAUNA)
+    // ============================================
+    if (isset($_GET['action']) && $_GET['action'] === 'check_appointment_verification') {
+        $appointmentId = (int)($_GET['appointment_id'] ?? 0);
+        $clinic_id = (int)($_GET['clinic_id'] ?? 0);
+        
+        if (!$appointmentId || !$clinic_id) {
+            echo json_encode(['success' => false, 'message' => 'Missing parameters']);
+            exit;
+        }
+        
+        $stmt = $pdo->prepare("
+            SELECT a.patient_id, a.user_id, a.discount_type, a.discount_percentage
+            FROM appointments a
+            WHERE a.id = ? AND a.clinic_id = ?
+        ");
+        $stmt->execute([$appointmentId, $clinic_id]);
+        $appointment = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$appointment) {
+            echo json_encode(['success' => false, 'message' => 'Appointment not found']);
+            exit;
+        }
+        
+        $is_verified = !empty($appointment['discount_type']) && $appointment['discount_type'] !== 'none';
+        
+        if (!$is_verified && $appointment['user_id']) {
+            $verification_result = checkPwdSeniorStatus($pdo, $appointment['user_id'], $clinic_id);
+            $is_verified = $verification_result['is_verified'];
+        }
+        
+        echo json_encode([
+            'success' => true,
+            'is_verified' => $is_verified,
+            'appointment_id' => $appointmentId,
+            'discount_type' => $appointment['discount_type'] ?? 'none',
+            'discount_percentage' => $appointment['discount_percentage'] ?? 0
+        ]);
+        exit;
+    }
+    
+    // ============================================
+    // ✅ CHECK PWD/SENIOR STATUS (PANGALAWA)
+    // ============================================
+    if (isset($_GET['action']) && $_GET['action'] === 'check_pwd_senior') {
+        $patient_id = (int)($_GET['patient_id'] ?? 0);
+        $clinic_id = (int)($_GET['clinic_id'] ?? 0);
+        
+        if (!$patient_id || !$clinic_id) {
+            echo json_encode(['success' => false, 'message' => 'Missing patient_id or clinic_id']);
+            exit;
+        }
+        
+        $userStmt = $pdo->prepare("
+            SELECT id, first_name, last_name, user_id 
+            FROM patients 
+            WHERE id = ? AND clinic_id = ?
+        ");
+        $userStmt->execute([$patient_id, $clinic_id]);
+        $patientUser = $userStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$patientUser) {
+            echo json_encode(['success' => false, 'is_pwd_senior' => false, 'message' => 'Patient not found']);
+            exit;
+        }
+        
+        if (!$patientUser['user_id']) {
+            echo json_encode([
+                'success' => true, 
+                'is_pwd_senior' => false, 
+                'message' => 'Patient is not linked to a user account'
+            ]);
+            exit;
+        }
+        
+        $verification_result = checkPwdSeniorStatus($pdo, $patientUser['user_id'], $clinic_id);
+        
+        echo json_encode([
+            'success' => true,
+            'is_pwd_senior' => $verification_result['is_verified'],
+            'verification_type' => $verification_result['verification_type'],
+            'status' => $verification_result['status'],
+            'message' => $verification_result['message'],
+            'discount_percentage' => $verification_result['is_verified'] ? 20 : 0
+        ]);
+        exit;
+    }
+    
+    // ============================================
+    // ✅ CHECK PWD/SENIOR BY NAME (WALK-IN) (PANGATLO)
+    // ============================================
+    if (isset($_GET['action']) && $_GET['action'] === 'check_pwd_senior_by_name') {
+        $name = $_GET['name'] ?? '';
+        $clinic_id = (int)($_GET['clinic_id'] ?? 0);
+        
+        if (empty($name) || !$clinic_id) {
+            echo json_encode(['success' => false, 'message' => 'Missing name or clinic_id']);
+            exit;
+        }
+        
+        $patientStmt = $pdo->prepare("
+            SELECT id, user_id FROM patients 
+            WHERE CONCAT(first_name, ' ', last_name) = ? 
+            LIMIT 1
+        ");
+        $patientStmt->execute([$name]);
+        $patient = $patientStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$patient) {
+            echo json_encode(['success' => true, 'is_pwd_senior' => false, 'message' => 'Patient not found']);
+            exit;
+        }
+        
+        $verification_result = checkPwdSeniorStatus($pdo, $patient['user_id'], $clinic_id);
+        
+        echo json_encode([
+            'success' => true,
+            'is_pwd_senior' => $verification_result['is_verified'],
+            'verification_type' => $verification_result['verification_type'],
+            'status' => $verification_result['status'],
+            'message' => $verification_result['message'],
+            'discount_percentage' => $verification_result['is_verified'] ? 20 : 0
+        ]);
+        exit;
+    }
+    
+    // ============================================
+    // ✅ GET PERMISSIONS (PANG-APAT)
+    // ============================================
+    if (isset($_GET['action']) && $_GET['action'] === 'get_permissions') {
+        $hasHR = false;
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM users WHERE id = ? AND role = 'HR' AND status = 'Active'");
+        $stmt->execute([$user_id]);
+        $hasHR = $stmt->fetchColumn() > 0;
+
+        $permissions = [
+            'view' => SalesPermission::can('view'),
+            'create' => SalesPermission::can('create'),
+            'edit' => SalesPermission::can('edit'),
+            'delete' => SalesPermission::can('delete'),
+            'approve' => SalesPermission::can('approve'),
+            'reject' => SalesPermission::can('reject'),
+            'export' => SalesPermission::can('view')
+        ];
+
+        echo json_encode([
+            'success' => true,
+            'data' => [
+                'role' => $user_role,
+                'permissions' => $permissions,
+                'hasHR' => $hasHR,
+                'isOwner' => ($user_role === 'ClinicAdmin' && !$hasHR),
+                'user_id' => $user_id,
+                'user_name' => $user_name
+            ]
+        ]);
+        exit;
+    }
+    
+    // ============================================
+    // ✅ VIEW INVOICE BY ID (PANG-LIMA)
+    // ============================================
+    if (isset($_GET['id'])) {
+        SalesPermission::check('view');
+        $id = (int)$_GET['id'];
+        
+        $bill = buildBillFromAppointment($pdo, $id, $clinic_id);
+        
+        if (!$bill) {
+            $bill = buildBillFromSales($pdo, $id, $clinic_id);
+        }
+
+        if (!$bill) {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'message' => 'Sale not found']);
+            exit;
+        }
+
+        $paymentsStmt = $pdo->prepare("
+            SELECT id, amount, payment_method, payment_status, payment_type,
+                   reference_number, notes, payment_date, created_at
+            FROM payments
+            WHERE (sale_id = ? OR appointment_id = ?) AND clinic_id = ?
+            ORDER BY payment_date DESC, created_at DESC
+        ");
+        $paymentsStmt->execute([$id, $id, $clinic_id]);
+        $payments = $paymentsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $bill['payments'] = $payments;
+
+        logAudit($pdo, $user_id, $clinic_id, 'VIEW', 'sales', $id);
+        echo json_encode([
+            'success' => true,
+            'bill' => $bill,
+            'balance' => max(0, $bill['total_amount'] - $bill['amount_paid'])
+        ]);
+        exit;
+    }
+    
+    // ============================================
+    // ✅ EXPORT (PANG-ANIM)
+    // ============================================
+    if (isset($_GET['export'])) {
         SalesPermission::check('view');
 
-        if (isset($_GET['id'])) {
-            $id = (int)$_GET['id'];
-            
-            $bill = buildBillFromAppointment($pdo, $id, $clinic_id);
-            
-            if (!$bill) {
-                $bill = buildBillFromSales($pdo, $id, $clinic_id);
-            }
-
-            if (!$bill) {
-                http_response_code(404);
-                echo json_encode(['success' => false, 'message' => 'Sale not found']);
-                exit;
-            }
-
-            $paymentsStmt = $pdo->prepare("
-                SELECT id, amount, payment_method, payment_status, payment_type,
-                       reference_number, notes, payment_date, created_at
-                FROM payments
-                WHERE (sale_id = ? OR appointment_id = ?) AND clinic_id = ?
-                ORDER BY payment_date DESC, created_at DESC
-            ");
-            $paymentsStmt->execute([$id, $id, $clinic_id]);
-            $payments = $paymentsStmt->fetchAll(PDO::FETCH_ASSOC);
-
-            $bill['payments'] = $payments;
-
-            logAudit($pdo, $user_id, $clinic_id, 'VIEW', 'sales', $id);
-            echo json_encode([
-                'success' => true,
-                'bill' => $bill,
-                'balance' => max(0, $bill['total_amount'] - $bill['amount_paid'])
-            ]);
-            exit;
-        }
-
-        if (isset($_GET['export'])) {
-            SalesPermission::check('view');
-
-            $stmt = $pdo->prepare("
-                SELECT 
-                    a.id,
-                    a.appointment_date as sale_date,
-                    a.patient_id,
-                    CONCAT(p.first_name, ' ', p.last_name) as customer_name,
-                    a.subtotal,
-                    a.discount_amount as discount,
-                    a.vat_amount,
-                    " . TOTAL_AMOUNT_SQL . " as total_amount,
-                    a.amount_paid,
-                    CASE 
-                        WHEN a.amount_paid >= (" . TOTAL_AMOUNT_SQL . ") THEN 'Paid'
-                        WHEN a.amount_paid > 0 THEN 'Partial'
-                        ELSE 'Unpaid'
-                    END as status,
-                    CONCAT('INV-', DATE_FORMAT(a.appointment_date, '%Y%m'), '-', LPAD(a.id, 4, '0')) AS invoice_id,
-                    'appointment' as source_type
-                FROM appointments a
-                LEFT JOIN patients p ON a.patient_id = p.id
-                WHERE a.clinic_id = ? AND a.status IN ('paid', 'completed', 'confirmed', 'pending')
-                
-                UNION ALL
-                
-                SELECT 
-                    s.id,
-                    s.sale_date,
-                    s.patient_id,
-                    COALESCE(s.walk_in_name, CONCAT(p2.first_name, ' ', p2.last_name), 'Walk-in') as customer_name,
-                    s.subtotal,
-                    s.discount,
-                    0 as vat_amount,
-                    s.total_amount,
-                    s.amount_paid,
-                    CASE 
-                        WHEN s.amount_paid >= s.total_amount THEN 'Paid'
-                        WHEN s.amount_paid > 0 THEN 'Partial'
-                        ELSE 'Unpaid'
-                    END as status,
-                    CONCAT('INV-', DATE_FORMAT(s.sale_date, '%Y%m'), '-', LPAD(s.id, 4, '0')) AS invoice_id,
-                    'walkin' as source_type
-                FROM sales s
-                LEFT JOIN patients p2 ON s.patient_id = p2.id
-                WHERE s.clinic_id = ? AND s.appointment_id IS NULL
-                ORDER BY sale_date DESC
-            ");
-            $stmt->execute([$clinic_id, $clinic_id]);
-            $sales = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            logAudit($pdo, $user_id, $clinic_id, 'EXPORT', 'sales', null, null, ['count' => count($sales)]);
-            echo json_encode($sales);
-            exit;
-        }
-
-        if (isset($_GET['appointment_id'])) {
-            $appointmentId = (int)$_GET['appointment_id'];
-
-            $bill = buildBillFromAppointment($pdo, $appointmentId, $clinic_id);
-
-            if (!$bill) {
-                $saleStmt = $pdo->prepare("
-                    SELECT id FROM sales WHERE appointment_id = ? AND clinic_id = ?
-                ");
-                $saleStmt->execute([$appointmentId, $clinic_id]);
-                $sale = $saleStmt->fetch(PDO::FETCH_ASSOC);
-                
-                if ($sale) {
-                    $bill = buildBillFromSales($pdo, $sale['id'], $clinic_id);
-                }
-            }
-
-            if ($bill === null) {
-                echo json_encode(['success' => false, 'message' => 'Bill not found for this appointment']);
-                exit;
-            }
-
-            logAudit($pdo, $user_id, $clinic_id, 'VIEW', 'appointments', $appointmentId);
-
-            echo json_encode([
-                'success' => true,
-                'bill' => $bill,
-                'balance' => max(0, $bill['total_amount'] - $bill['amount_paid'])
-            ]);
-            exit;
-        }
-
-        $search = $_GET['search'] ?? '';
-        $limit = isset($_GET['limit']) ? intval($_GET['limit']) : 20;
-
-        $sql = "
+        $stmt = $pdo->prepare("
             SELECT 
                 a.id,
                 a.appointment_date as sale_date,
@@ -690,14 +761,12 @@ try {
                     WHEN a.amount_paid >= (" . TOTAL_AMOUNT_SQL . ") THEN 'Paid'
                     WHEN a.amount_paid > 0 THEN 'Partial'
                     ELSE 'Unpaid'
-                END as payment_status,
+                END as status,
                 CONCAT('INV-', DATE_FORMAT(a.appointment_date, '%Y%m'), '-', LPAD(a.id, 4, '0')) AS invoice_id,
-                'appointment' as source_type,
-                NULL as walk_in_name
+                'appointment' as source_type
             FROM appointments a
             LEFT JOIN patients p ON a.patient_id = p.id
-            WHERE a.clinic_id = ?
-            AND a.status IN ('paid', 'completed', 'confirmed', 'pending')
+            WHERE a.clinic_id = ? AND a.status IN ('paid', 'completed', 'confirmed', 'pending')
             
             UNION ALL
             
@@ -715,40 +784,140 @@ try {
                     WHEN s.amount_paid >= s.total_amount THEN 'Paid'
                     WHEN s.amount_paid > 0 THEN 'Partial'
                     ELSE 'Unpaid'
-                END as payment_status,
+                END as status,
                 CONCAT('INV-', DATE_FORMAT(s.sale_date, '%Y%m'), '-', LPAD(s.id, 4, '0')) AS invoice_id,
-                'walkin' as source_type,
-                s.walk_in_name
+                'walkin' as source_type
             FROM sales s
             LEFT JOIN patients p2 ON s.patient_id = p2.id
-            WHERE s.clinic_id = ?
-            AND s.appointment_id IS NULL
-        ";
+            WHERE s.clinic_id = ? AND s.appointment_id IS NULL
+            ORDER BY sale_date DESC
+        ");
+        $stmt->execute([$clinic_id, $clinic_id]);
+        $sales = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        $params = [$clinic_id, $clinic_id];
-
-        if (!empty($search)) {
-            $sql .= " AND (
-                id LIKE ?
-                OR invoice_id LIKE ?
-                OR customer_name LIKE ?
-                OR walk_in_name LIKE ?
-                OR patient_id LIKE ?
-            )";
-            $searchTerm = "%$search%";
-            $params = array_merge($params, [$searchTerm, $searchTerm, $searchTerm, $searchTerm, $searchTerm]);
-        }
-
-        $sql .= " ORDER BY sale_date DESC LIMIT ?";
-        $params[] = $limit;
-
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute($params);
-        $invoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        echo json_encode(['success' => true, 'data' => $invoices]);
+        logAudit($pdo, $user_id, $clinic_id, 'EXPORT', 'sales', null, null, ['count' => count($sales)]);
+        echo json_encode($sales);
         exit;
     }
+    
+    // ============================================
+    // ✅ VIEW INVOICE BY APPOINTMENT ID (PANG-PITO)
+    // ============================================
+    if (isset($_GET['appointment_id'])) {
+        SalesPermission::check('view');
+        $appointmentId = (int)$_GET['appointment_id'];
+
+        $bill = buildBillFromAppointment($pdo, $appointmentId, $clinic_id);
+
+        if (!$bill) {
+            $saleStmt = $pdo->prepare("
+                SELECT id FROM sales WHERE appointment_id = ? AND clinic_id = ?
+            ");
+            $saleStmt->execute([$appointmentId, $clinic_id]);
+            $sale = $saleStmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($sale) {
+                $bill = buildBillFromSales($pdo, $sale['id'], $clinic_id);
+            }
+        }
+
+        if ($bill === null) {
+            echo json_encode(['success' => false, 'message' => 'Bill not found for this appointment']);
+            exit;
+        }
+
+        logAudit($pdo, $user_id, $clinic_id, 'VIEW', 'appointments', $appointmentId);
+
+        echo json_encode([
+            'success' => true,
+            'bill' => $bill,
+            'balance' => max(0, $bill['total_amount'] - $bill['amount_paid'])
+        ]);
+        exit;
+    }
+    
+    // ============================================
+    // ✅ LIST ALL INVOICES (PINAKA-HULI - DEFAULT)
+    // ============================================
+    SalesPermission::check('view');
+
+    $search = $_GET['search'] ?? '';
+    $limit = isset($_GET['limit']) ? intval($_GET['limit']) : 20;
+
+    $sql = "
+        SELECT 
+            a.id,
+            a.appointment_date as sale_date,
+            a.patient_id,
+            CONCAT(p.first_name, ' ', p.last_name) as customer_name,
+            a.subtotal,
+            a.discount_amount as discount,
+            a.vat_amount,
+            " . TOTAL_AMOUNT_SQL . " as total_amount,
+            a.amount_paid,
+            CASE 
+                WHEN a.amount_paid >= (" . TOTAL_AMOUNT_SQL . ") THEN 'Paid'
+                WHEN a.amount_paid > 0 THEN 'Partial'
+                ELSE 'Unpaid'
+            END as payment_status,
+            CONCAT('INV-', DATE_FORMAT(a.appointment_date, '%Y%m'), '-', LPAD(a.id, 4, '0')) AS invoice_id,
+            'appointment' as source_type,
+            NULL as walk_in_name
+        FROM appointments a
+        LEFT JOIN patients p ON a.patient_id = p.id
+        WHERE a.clinic_id = ?
+        AND a.status IN ('paid', 'completed', 'confirmed', 'pending')
+        
+        UNION ALL
+        
+        SELECT 
+            s.id,
+            s.sale_date,
+            s.patient_id,
+            COALESCE(s.walk_in_name, CONCAT(p2.first_name, ' ', p2.last_name), 'Walk-in') as customer_name,
+            s.subtotal,
+            s.discount,
+            0 as vat_amount,
+            s.total_amount,
+            s.amount_paid,
+            CASE 
+                WHEN s.amount_paid >= s.total_amount THEN 'Paid'
+                WHEN s.amount_paid > 0 THEN 'Partial'
+                ELSE 'Unpaid'
+            END as payment_status,
+            CONCAT('INV-', DATE_FORMAT(s.sale_date, '%Y%m'), '-', LPAD(s.id, 4, '0')) AS invoice_id,
+            'walkin' as source_type,
+            s.walk_in_name
+        FROM sales s
+        LEFT JOIN patients p2 ON s.patient_id = p2.id
+        WHERE s.clinic_id = ?
+        AND s.appointment_id IS NULL
+    ";
+
+    $params = [$clinic_id, $clinic_id];
+
+    if (!empty($search)) {
+        $sql .= " AND (
+            id LIKE ?
+            OR invoice_id LIKE ?
+            OR customer_name LIKE ?
+            OR walk_in_name LIKE ?
+            OR patient_id LIKE ?
+        )";
+        $searchTerm = "%$search%";
+        $params = array_merge($params, [$searchTerm, $searchTerm, $searchTerm, $searchTerm, $searchTerm]);
+    }
+
+    $sql .= " ORDER BY sale_date DESC LIMIT ?";
+    $params[] = $limit;
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $invoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    echo json_encode(['success' => true, 'data' => $invoices]);
+    exit;
+}
 
 // ============= CREATE SALE =============
 if ($method === 'POST' && (!isset($_GET['action']) || $_GET['action'] === '')) {
@@ -792,12 +961,25 @@ if ($method === 'POST' && (!isset($_GET['action']) || $_GET['action'] === '')) {
         $walk_in_email = null;
         $user_id_for_verification = null;
         $is_pwd_senior = false;
-        $discount_type = 'none';
-        $discount_percentage = 0;
+        $is_vat_exempt = false;
+        $discount_type_final = 'none';
+        $discount_percentage_final = 0;
         $discount_amount = 0;
         $vat_percentage = 0;
         $vat_amount = 0;
         $subtotal = floatval($data['subtotal'] ?? 0);
+        
+        // ✅ PHASE 2 & 6: Get manual discount data with type
+        $manual_discount = isset($data['manual_discount']) ? floatval($data['manual_discount']) : 0;
+        $manual_discount_type = isset($data['manual_discount_type']) ? $data['manual_discount_type'] : 'senior';
+        $verified_by = $data['verified_by'] ?? null;
+        $id_number = $data['id_number'] ?? null;
+
+        // ✅ PHASE 6: Get walk-in manual discount with type
+        $walkin_manual_discount = isset($data['walkin_manual_discount']) ? floatval($data['walkin_manual_discount']) : 0;
+        $walkin_manual_discount_type = isset($data['walkin_manual_discount_type']) ? $data['walkin_manual_discount_type'] : 'senior';
+        $walkin_verified_by = $data['walkin_verified_by'] ?? null;
+        $walkin_id_number = $data['walkin_id_number'] ?? null;
 
         // ✅ CHECK IF CUSTOMER IS PWD/SENIOR
         if ($data['customer_type'] === 'registered') {
@@ -814,8 +996,8 @@ if ($method === 'POST' && (!isset($_GET['action']) || $_GET['action'] === '')) {
                 
                 if ($verification_result['is_verified']) {
                     $is_pwd_senior = true;
-                    $discount_type = $verification_result['verification_type'] ?? 'pwd';
-                    $discount_percentage = $pwd_senior_discount * 100;
+                    $discount_type_final = $verification_result['verification_type'] ?? 'senior';
+                    $discount_percentage_final = $pwd_senior_discount * 100;
                     
                     logVerificationAction(
                         $pdo, 
@@ -867,8 +1049,8 @@ if ($method === 'POST' && (!isset($_GET['action']) || $_GET['action'] === '')) {
                     
                     if ($verification_result['is_verified']) {
                         $is_pwd_senior = true;
-                        $discount_type = $verification_result['verification_type'] ?? 'pwd';
-                        $discount_percentage = $pwd_senior_discount * 100;
+                        $discount_type_final = $verification_result['verification_type'] ?? 'senior';
+                        $discount_percentage_final = $pwd_senior_discount * 100;
                         
                         logVerificationAction(
                             $pdo, 
@@ -905,8 +1087,8 @@ if ($method === 'POST' && (!isset($_GET['action']) || $_GET['action'] === '')) {
                     
                     if ($verification_result['is_verified']) {
                         $is_pwd_senior = true;
-                        $discount_type = $verification_result['verification_type'] ?? 'pwd';
-                        $discount_percentage = $pwd_senior_discount * 100;
+                        $discount_type_final = $verification_result['verification_type'] ?? 'senior';
+                        $discount_percentage_final = $pwd_senior_discount * 100;
                         
                         logVerificationAction(
                             $pdo, 
@@ -921,18 +1103,65 @@ if ($method === 'POST' && (!isset($_GET['action']) || $_GET['action'] === '')) {
             }
         }
 
-        // ✅ APPLY DISCOUNT
+        // ============================================
+        // ✅ PHASE 1, 2 & 6: APPLY DISCOUNT
+        // ============================================
+        
+        // ✅ Check if customer is verified PWD/Senior
         if ($is_pwd_senior) {
+            // ✅ Auto discount for verified patients (NO manual override)
             $discount_amount = $subtotal * $pwd_senior_discount;
+            $discount_type_final = $discount_type_final ?: 'senior';
+            $discount_percentage_final = $pwd_senior_discount * 100;
+            $is_vat_exempt = true;
+            $manual_discount = 0; // Reset manual discount
+        } 
+        // ✅ PHASE 2 & 6: Manual discount for registered unverified patients
+        elseif ($manual_discount > 0) {
+            $discount_amount = $subtotal * ($manual_discount / 100);
+            $discount_type_final = $manual_discount_type;
+            $discount_percentage_final = $manual_discount;
+            $is_vat_exempt = true;
+        } 
+        // ✅ PHASE 3 & 6: Manual discount for walk-in
+        elseif ($walkin_manual_discount > 0) {
+            $discount_amount = $subtotal * ($walkin_manual_discount / 100);
+            $discount_type_final = $walkin_manual_discount_type;
+            $discount_percentage_final = $walkin_manual_discount;
+            $is_vat_exempt = true;
+            $verified_by = $walkin_verified_by;
+            $id_number = $walkin_id_number;
+        } 
+        // ✅ No discount
+        else {
+            $discount_amount = 0;
+            $discount_type_final = 'none';
+            $discount_percentage_final = 0;
+            $is_vat_exempt = false;
         }
 
+        // ============================================
         // ✅ COMPUTE VAT
+        // ============================================
         $amount_after_discount = $subtotal - $discount_amount;
-        $is_vat_exempt = ($is_pwd_senior && $pwd_senior_vat_exempt == 1);
         
-        if (!$is_vat_exempt) {
+        // ✅ If PWD/Senior, VAT exempt per law
+        if ($is_pwd_senior && $pwd_senior_vat_exempt == 1) {
+            $vat_percentage = 0;
+            $vat_amount = 0;
+            $is_vat_exempt = true;
+        } 
+        // ✅ If manual discount, VAT exempt
+        elseif ($manual_discount > 0 || $walkin_manual_discount > 0) {
+            $vat_percentage = 0;
+            $vat_amount = 0;
+            $is_vat_exempt = true;
+        } 
+        // ✅ Regular customer - with VAT
+        else {
             $vat_percentage = $vat_rate * 100;
             $vat_amount = $amount_after_discount * $vat_rate;
+            $is_vat_exempt = false;
         }
 
         $total_amount = $amount_after_discount + $vat_amount;
@@ -946,13 +1175,15 @@ if ($method === 'POST' && (!isset($_GET['action']) || $_GET['action'] === '')) {
             $sale_status = 'Unpaid';
         }
 
-        // ✅ INSERT SALE
+        // ============================================
+        // ✅ PHASE 2 & 6: INSERT SALE WITH DISCOUNT TYPE
+        // ============================================
         $stmt = $pdo->prepare("
             INSERT INTO sales
             (clinic_id, sale_date, patient_id, appointment_id, walk_in_name, walk_in_contact, walk_in_email,
-             items, subtotal, discount, vat_percentage, vat_amount, total_amount, amount_paid,
-             payment_method, status, created_by, created_at)
-            VALUES (?, CURDATE(), ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+             items, subtotal, discount, discount_type, discount_percentage, vat_percentage, vat_amount, total_amount, amount_paid,
+             payment_method, status, created_by, verified_by, id_number, created_at)
+            VALUES (?, CURDATE(), ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
         ");
 
         $stmt->execute([
@@ -964,13 +1195,17 @@ if ($method === 'POST' && (!isset($_GET['action']) || $_GET['action'] === '')) {
             json_encode($data['items']),
             $subtotal,
             $discount_amount,
+            $discount_type_final,
+            $discount_percentage_final,
             $vat_percentage,
             $vat_amount,
             $total_amount,
             $amount_paid,
             $data['payment_method'] ?? 'cash',
             $sale_status,
-            $user_id
+            $user_id,
+            $verified_by,
+            $id_number
         ]);
 
         $sale_id = $pdo->lastInsertId();
@@ -1062,9 +1297,16 @@ if ($method === 'POST' && (!isset($_GET['action']) || $_GET['action'] === '')) {
             'customer_type' => $data['customer_type'],
             'subtotal' => $subtotal,
             'discount' => $discount_amount,
+            'discount_type' => $discount_type_final,
+            'discount_percentage' => $discount_percentage_final,
             'vat' => $vat_amount,
             'total_amount' => $total_amount,
             'is_pwd_senior' => $is_pwd_senior,
+            'manual_discount' => $manual_discount,
+            'walkin_manual_discount' => $walkin_manual_discount,
+            'discount_type_selected' => $manual_discount_type,
+            'walkin_discount_type' => $walkin_manual_discount_type,
+            'verified_by' => $verified_by,
             'items' => $item_details
         ]);
 
@@ -1076,10 +1318,18 @@ if ($method === 'POST' && (!isset($_GET['action']) || $_GET['action'] === '')) {
             'sale_id' => $sale_id,
             'subtotal' => $subtotal,
             'discount' => $discount_amount,
+            'discount_type' => $discount_type_final,
+            'discount_percentage' => $discount_percentage_final,
             'vat' => $vat_amount,
             'total_amount' => $total_amount,
             'is_pwd_senior' => $is_pwd_senior,
-            'discount_type' => $discount_type,
+            'is_vat_exempt' => $is_vat_exempt,
+            'manual_discount' => $manual_discount,
+            'walkin_manual_discount' => $walkin_manual_discount,
+            'manual_discount_type' => $manual_discount_type,
+            'walkin_discount_type' => $walkin_manual_discount_type,
+            'verified_by' => $verified_by,
+            'id_number' => $id_number,
             'status' => $sale_status
         ]);
 
@@ -1236,12 +1486,15 @@ if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'record_
             // ... existing walkin code ...
         } else {
             // ✅ FIXED: SELECT with COALESCE to ensure items is never NULL
+            // ✅ PHASE 4 & 6: Added discount_type and discount_percentage to SELECT
             $stmt = $pdo->prepare("
                 SELECT 
                     a.id,
                     a.patient_id,
                     a.subtotal,
                     a.discount_amount,
+                    a.discount_type,
+                    a.discount_percentage,
                     a.vat_amount,
                     a.total_amount as stored_total,
                     a.amount_paid,
@@ -1264,6 +1517,34 @@ if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'record_
                 throw new Exception('Appointment not found');
             }
 
+            // ✅ PHASE 4 & 6: Check for manual discount override
+            $manual_discount = isset($data['manual_discount']) ? floatval($data['manual_discount']) : 0;
+            $manual_discount_type = isset($data['manual_discount_type']) ? $data['manual_discount_type'] : 'senior';
+            $verified_by = $data['verified_by'] ?? null;
+            $id_number = $data['id_number'] ?? null;
+            $is_manual_discount = false;
+
+            // ✅ Only apply manual discount if NOT already verified
+            $existing_discount_type = $appointment['discount_type'] ?? 'none';
+            $is_already_verified = ($existing_discount_type !== 'none' && $existing_discount_type !== 'manual');
+
+            if ($manual_discount > 0 && !$is_already_verified) {
+                $is_manual_discount = true;
+                $discount_amount = $appointment['subtotal'] * ($manual_discount / 100);
+                $discount_type = $manual_discount_type;
+                $discount_percentage = $manual_discount;
+                $is_vat_exempt = true;
+                $vat_amount = 0;
+                $totalAmount = $appointment['subtotal'] - $discount_amount;
+                
+                // ✅ Override the computed total
+                $appointment['computed_total'] = $totalAmount;
+                $appointment['discount_amount'] = $discount_amount;
+                $appointment['discount_type'] = $discount_type;
+                $appointment['discount_percentage'] = $discount_percentage;
+                $appointment['vat_amount'] = 0;
+            }
+
             $totalAmount = floatval($appointment['computed_total']);
             $currentPaid = floatval($appointment['amount_paid'] ?? 0);
             $newAmountPaid = $currentPaid + $amount;
@@ -1273,21 +1554,51 @@ if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'record_
             $appointmentStatus = $isFullyPaid ? 'completed' : 'waiting_payment';
             $paymentType = $isFullyPaid ? 'full' : 'partial';
 
+            // ✅ Determine final discount type for saving
+            $discount_type_final = $appointment['discount_type'] ?? 'none';
+            $discount_percentage_final = $appointment['discount_percentage'] ?? 0;
+            $discount_amount_final = $appointment['discount_amount'] ?? 0;
+
             // ✅ UPDATE APPOINTMENT
-            $pdo->prepare("
-                UPDATE appointments
-                SET amount_paid = ?,
-                    payment_status = ?,
-                    status = ?,
-                    updated_at = NOW()
-                WHERE id = ? AND clinic_id = ?
-            ")->execute([
-                $newAmountPaid,
-                $isFullyPaid ? 'paid' : 'partial',
-                $appointmentStatus,
-                $appointmentId,
-                $clinic_id
-            ]);
+            if ($is_manual_discount) {
+                $pdo->prepare("
+                    UPDATE appointments
+                    SET amount_paid = ?,
+                        payment_status = ?,
+                        status = ?,
+                        discount_amount = ?,
+                        discount_type = ?,
+                        discount_percentage = ?,
+                        vat_amount = ?,
+                        updated_at = NOW()
+                    WHERE id = ? AND clinic_id = ?
+                ")->execute([
+                    $newAmountPaid,
+                    $isFullyPaid ? 'paid' : 'partial',
+                    $appointmentStatus,
+                    $discount_amount_final,
+                    $discount_type_final,
+                    $discount_percentage_final,
+                    $appointment['vat_amount'] ?? 0,
+                    $appointmentId,
+                    $clinic_id
+                ]);
+            } else {
+                $pdo->prepare("
+                    UPDATE appointments
+                    SET amount_paid = ?,
+                        payment_status = ?,
+                        status = ?,
+                        updated_at = NOW()
+                    WHERE id = ? AND clinic_id = ?
+                ")->execute([
+                    $newAmountPaid,
+                    $isFullyPaid ? 'paid' : 'partial',
+                    $appointmentStatus,
+                    $appointmentId,
+                    $clinic_id
+                ]);
+            }
 
             $saleId = $appointment['sale_id'];
             
@@ -1296,13 +1607,13 @@ if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'record_
             // ============================================
             $items_json = $appointment['appointment_items'] ?? '[]';
             
-            // ✅ Check if items_json is valid JSON and not a string like "Appointment #..."
+            // ✅ Check if items_json is valid JSON
             $items_data = json_decode($items_json, true);
             
             // ✅ Validate: must be array, not empty, and first item must have 'name' key
             $is_valid_items = is_array($items_data) && !empty($items_data) && isset($items_data[0]['name']);
             
-            // ✅ If items is invalid (empty, not array, or "Appointment #..."), rebuild from product + lens
+            // ✅ If items is invalid, rebuild from product + lens
             if (!$is_valid_items || json_last_error() !== JSON_ERROR_NONE) {
                 $items_data = [];
                 
@@ -1350,7 +1661,6 @@ if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'record_
             
             // ✅ If we have valid items, make sure they're properly formatted
             if (is_array($items_data) && !empty($items_data)) {
-                // Ensure each item has required fields
                 foreach ($items_data as &$item) {
                     if (!isset($item['name'])) $item['name'] = 'Item';
                     if (!isset($item['price'])) $item['price'] = 0;
@@ -1361,42 +1671,73 @@ if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'record_
             }
             
             // ============================================
-            // SAVE OR UPDATE SALES RECORD
+            // ✅ PHASE 4 & 6: SAVE OR UPDATE SALES RECORD WITH DISCOUNT TYPE
             // ============================================
+            $vat_amount_save = $appointment['vat_amount'] ?? 0;
+            $subtotal_save = $appointment['subtotal'] ?? 0;
+
             if ($saleId) {
-                // ✅ UPDATE EXISTING SALE WITH ITEMS
+                // ✅ UPDATE EXISTING SALE WITH DISCOUNT TYPE
                 $updateSale = $pdo->prepare("
                     UPDATE sales
                     SET amount_paid = ?,
                         status = ?,
                         items = ?,
+                        discount = ?,
+                        discount_type = ?,
+                        discount_percentage = ?,
+                        vat_amount = ?,
+                        total_amount = ?,
+                        verified_by = ?,
+                        id_number = ?,
                         updated_at = NOW()
                     WHERE id = ? AND clinic_id = ?
                 ");
-                $updateSale->execute([$newAmountPaid, $saleStatus, $items_json, $saleId, $clinic_id]);
+                $updateSale->execute([
+                    $newAmountPaid,
+                    $saleStatus,
+                    $items_json,
+                    $discount_amount_final,
+                    $discount_type_final,
+                    $discount_percentage_final,
+                    $vat_amount_save,
+                    $totalAmount,
+                    $verified_by,
+                    $id_number,
+                    $saleId,
+                    $clinic_id
+                ]);
             } else {
-                // ✅ CREATE NEW SALE WITH ITEMS
+                // ✅ CREATE NEW SALE WITH DISCOUNT TYPE
                 $saleStmt = $pdo->prepare("
                     INSERT INTO sales
                     (clinic_id, sale_date, patient_id, appointment_id, 
-                     items, subtotal, discount, total_amount, amount_paid,
-                     payment_method, status, created_by, created_at)
+                     items, subtotal, discount, discount_type, discount_percentage,
+                     vat_percentage, vat_amount, total_amount, amount_paid,
+                     payment_method, status, created_by, verified_by, id_number, created_at)
                     VALUES (?, CURDATE(), ?, ?, 
                             ?, ?, ?, ?, ?,
-                            ?, ?, ?, NOW())
+                            ?, ?, ?, ?,
+                            ?, ?, ?, ?, ?, NOW())
                 ");
                 $saleStmt->execute([
                     $clinic_id,
                     $appointment['patient_id'],
                     $appointmentId,
                     $items_json,
-                    $appointment['subtotal'] ?? 0,
-                    $appointment['discount_amount'] ?? 0,
+                    $subtotal_save,
+                    $discount_amount_final,
+                    $discount_type_final,
+                    $discount_percentage_final,
+                    $appointment['vat_percentage'] ?? 0,
+                    $vat_amount_save,
                     $totalAmount,
                     $newAmountPaid,
                     $paymentMethod,
                     $saleStatus,
-                    $user_id
+                    $user_id,
+                    $verified_by,
+                    $id_number
                 ]);
                 $saleId = $pdo->lastInsertId();
 
@@ -1493,6 +1834,10 @@ if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'record_
                 'amount_paid' => $newAmountPaid,
                 'balance' => max(0, $totalAmount - $newAmountPaid),
                 'fully_paid' => $isFullyPaid,
+                'discount_type' => $discount_type_final,
+                'discount_percentage' => $discount_percentage_final,
+                'discount_amount' => $discount_amount_final,
+                'is_manual_discount' => $is_manual_discount,
                 'message' => $isFullyPaid ? 'Payment completed. Appointment is now completed and inventory updated.' : 'Partial payment recorded',
                 'items' => $items_data ?? []
             ]);
@@ -1505,6 +1850,50 @@ if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'record_
     }
     exit;
 }
+
+// ============= CHECK APPOINTMENT VERIFICATION =============
+if ($method === 'GET' && isset($_GET['action']) && $_GET['action'] === 'check_appointment_verification') {
+    $appointmentId = (int)($_GET['appointment_id'] ?? 0);
+    $clinic_id = (int)($_GET['clinic_id'] ?? 0);
+    
+    if (!$appointmentId || !$clinic_id) {
+        echo json_encode(['success' => false, 'message' => 'Missing parameters']);
+        exit;
+    }
+    
+    // Get patient/user info from appointment
+    $stmt = $pdo->prepare("
+        SELECT a.patient_id, a.user_id, a.discount_type, a.discount_percentage
+        FROM appointments a
+        WHERE a.id = ? AND a.clinic_id = ?
+    ");
+    $stmt->execute([$appointmentId, $clinic_id]);
+    $appointment = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$appointment) {
+        echo json_encode(['success' => false, 'message' => 'Appointment not found']);
+        exit;
+    }
+    
+    // Check if already verified (may discount_type at discount_percentage)
+    $is_verified = !empty($appointment['discount_type']) && $appointment['discount_type'] !== 'none';
+    
+    // If not verified by discount_type, check user_verifications
+    if (!$is_verified && $appointment['user_id']) {
+        $verification_result = checkPwdSeniorStatus($pdo, $appointment['user_id'], $clinic_id);
+        $is_verified = $verification_result['is_verified'];
+    }
+    
+    echo json_encode([
+        'success' => true,
+        'is_verified' => $is_verified,
+        'appointment_id' => $appointmentId,
+        'discount_type' => $appointment['discount_type'] ?? 'none',
+        'discount_percentage' => $appointment['discount_percentage'] ?? 0
+    ]);
+    exit;
+}
+
 // ============= CHECK PWD/SENIOR STATUS =============
 if ($method === 'GET' && isset($_GET['action']) && $_GET['action'] === 'check_pwd_senior') {
     $patient_id = (int)($_GET['patient_id'] ?? 0);
@@ -1516,7 +1905,11 @@ if ($method === 'GET' && isset($_GET['action']) && $_GET['action'] === 'check_pw
     }
     
     // ✅ Get user_id from patients table
-    $userStmt = $pdo->prepare("SELECT id, first_name, last_name, user_id FROM patients WHERE id = ? AND clinic_id = ?");
+    $userStmt = $pdo->prepare("
+        SELECT id, first_name, last_name, user_id 
+        FROM patients 
+        WHERE id = ? AND clinic_id = ?
+    ");
     $userStmt->execute([$patient_id, $clinic_id]);
     $patientUser = $userStmt->fetch(PDO::FETCH_ASSOC);
     
@@ -1528,9 +1921,9 @@ if ($method === 'GET' && isset($_GET['action']) && $_GET['action'] === 'check_pw
     // ✅ Check if patient has user_id
     if (!$patientUser['user_id']) {
         echo json_encode([
-            'success' => false, 
+            'success' => true, 
             'is_pwd_senior' => false, 
-            'message' => 'Patient is not linked to a user account. Please contact clinic admin.',
+            'message' => 'Patient is not linked to a user account',
             'debug' => [
                 'patient_id' => $patient_id,
                 'patient_name' => $patientUser['first_name'] . ' ' . $patientUser['last_name'],
@@ -1548,7 +1941,6 @@ if ($method === 'GET' && isset($_GET['action']) && $_GET['action'] === 'check_pw
         'is_pwd_senior' => $verification_result['is_verified'],
         'verification_type' => $verification_result['verification_type'],
         'status' => $verification_result['status'],
-        'expiry_date' => $verification_result['expiry_date'] ?? null,
         'message' => $verification_result['message'],
         'discount_percentage' => $verification_result['is_verified'] ? 20 : 0,
         'debug' => [
@@ -1560,42 +1952,46 @@ if ($method === 'GET' && isset($_GET['action']) && $_GET['action'] === 'check_pw
     exit;
 }
 
-    // ============= CHECK PWD/SENIOR STATUS BY NAME (for walk-in) =============
-    if ($method === 'GET' && isset($_GET['action']) && $_GET['action'] === 'check_pwd_senior_by_name') {
-        $name = $_GET['name'] ?? '';
-        $clinic_id = (int)($_GET['clinic_id'] ?? 0);
-        
-        if (empty($name) || !$clinic_id) {
-            echo json_encode(['success' => false, 'message' => 'Missing name or clinic_id']);
-            exit;
-        }
-        
-        $patientStmt = $pdo->prepare("
-            SELECT id, user_id FROM patients 
-            WHERE CONCAT(first_name, ' ', last_name) = ? 
-            LIMIT 1
-        ");
-        $patientStmt->execute([$name]);
-        $patient = $patientStmt->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$patient) {
-            echo json_encode(['success' => true, 'is_pwd_senior' => false, 'message' => 'Patient not found']);
-            exit;
-        }
-        
-        $verification_result = checkPwdSeniorStatus($pdo, $patient['user_id'], $clinic_id);
-        
-        echo json_encode([
-            'success' => true,
-            'is_pwd_senior' => $verification_result['is_verified'],
-            'verification_type' => $verification_result['verification_type'],
-            'status' => $verification_result['status'],
-            'expiry_date' => $verification_result['expiry_date'] ?? null,
-            'message' => $verification_result['message'],
-            'discount_percentage' => $verification_result['is_verified'] ? 20 : 0
-        ]);
+// ============= CHECK PWD/SENIOR STATUS BY NAME (for walk-in) =============
+if ($method === 'GET' && isset($_GET['action']) && $_GET['action'] === 'check_pwd_senior_by_name') {
+    $name = $_GET['name'] ?? '';
+    $clinic_id = (int)($_GET['clinic_id'] ?? 0);
+    
+    if (empty($name) || !$clinic_id) {
+        echo json_encode(['success' => false, 'message' => 'Missing name or clinic_id']);
         exit;
     }
+    
+    $patientStmt = $pdo->prepare("
+        SELECT id, user_id FROM patients 
+        WHERE CONCAT(first_name, ' ', last_name) = ? 
+        LIMIT 1
+    ");
+    $patientStmt->execute([$name]);
+    $patient = $patientStmt->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$patient) {
+        echo json_encode(['success' => true, 'is_pwd_senior' => false, 'message' => 'Patient not found']);
+        exit;
+    }
+    
+    $verification_result = checkPwdSeniorStatus($pdo, $patient['user_id'], $clinic_id);
+    
+    echo json_encode([
+        'success' => true,
+        'is_pwd_senior' => $verification_result['is_verified'],
+        'verification_type' => $verification_result['verification_type'],
+        'status' => $verification_result['status'],
+        'message' => $verification_result['message'],
+        'discount_percentage' => $verification_result['is_verified'] ? 20 : 0,
+        'debug' => [
+            'patient_id' => $patient['id'],
+            'user_id' => $patient['user_id'],
+            'verification_status' => $verification_result['status']
+        ]
+    ]);
+    exit;
+}
 
     // ============= COMPLETE SERVICE =============
     if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'complete_service') {

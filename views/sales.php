@@ -240,10 +240,19 @@ $stats['paid_amount'] = $stats['paid_amount'] ?? 0;
 $stats['partial_amount'] = $stats['partial_amount'] ?? 0;
 $stats['unpaid_amount'] = $stats['unpaid_amount'] ?? 0;
 
-// Fetch patients for dropdown (with user_id for verification)
+// ============================================
+// ✅ FIXED: Fetch patients for dropdown
+// ============================================
 $patientsStmt = $pdo->prepare("
-    SELECT p.id, CONCAT(p.first_name, ' ', p.last_name) as full_name, p.email, p.phone, p.user_id,
-           v.status as verified_status, v.verification_type
+    SELECT 
+        p.id, 
+        CONCAT(p.first_name, ' ', p.last_name) as full_name, 
+        p.email, 
+        p.phone, 
+        p.user_id,
+        p.clinic_id,
+        COALESCE(v.status, 'none') as verified_status,
+        v.verification_type
     FROM patients p
     LEFT JOIN user_verifications v ON p.user_id = v.user_id AND v.clinic_id = ? AND v.status = 'verified'
     WHERE p.clinic_id = ? AND p.status = 'Active' 
@@ -251,6 +260,20 @@ $patientsStmt = $pdo->prepare("
 ");
 $patientsStmt->execute([$clinic_id, $clinic_id]);
 $patients = $patientsStmt->fetchAll(PDO::FETCH_ASSOC);
+
+// ✅ Debug: Log results
+if (empty($patients)) {
+    error_log("⚠️ WARNING: No patients found for clinic_id = " . $clinic_id);
+    // Try a direct query without user_verifications join
+    $checkStmt = $pdo->prepare("
+        SELECT id, CONCAT(first_name, ' ', last_name) as full_name, email, phone, user_id
+        FROM patients 
+        WHERE clinic_id = ? AND status = 'Active'
+    ");
+    $checkStmt->execute([$clinic_id]);
+    $patients = $checkStmt->fetchAll(PDO::FETCH_ASSOC);
+    error_log("Patients found without verification join: " . count($patients));
+}
 
 // Fetch PRODUCTS from inventory
 $productsStmt = $pdo->prepare("
@@ -660,40 +683,107 @@ unset($invoice);
                         </div>
                     </div>
 
-                    <!-- Registered Patient Section -->
-                    <div id="registered_section">
-                        <div class="mb-3">
-                            <label class="form-label fw-semibold">Select Patient</label>
-                            <select class="form-select patient-select" name="patient_id" id="patient_select" style="width: 100%;">
-                                <option value="" disabled selected>Search and select patient...</option>
-                                <?php foreach($patients as $patient): ?>
-                                    <option value="<?php echo $patient['id']; ?>" 
-                                            data-email="<?php echo $patient['email']; ?>"
-                                            data-phone="<?php echo $patient['phone']; ?>">
-                                        <?php echo htmlspecialchars($patient['full_name']); ?> (<?php echo $patient['email'] ?? 'No email'; ?>)
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                    </div>
+<!-- Registered Patient Section -->
+<div id="registered_section">
+    <div class="mb-3">
+        <label class="form-label fw-semibold">Select Patient</label>
+        <select class="form-select patient-select" name="patient_id" id="patient_select" style="width: 100%;" onchange="checkPwdSenior(this.value)">
+            <option value="" disabled selected>Search and select patient...</option>
+            <?php if(!empty($patients)): ?>
+                <?php foreach($patients as $patient): ?>
+                    <option value="<?php echo $patient['id']; ?>" 
+                            data-email="<?php echo $patient['email']; ?>"
+                            data-phone="<?php echo $patient['phone']; ?>"
+                            data-user-id="<?php echo $patient['user_id']; ?>">
+                        <?php echo htmlspecialchars($patient['full_name']); ?> 
+                        <?php if(!empty($patient['email'])): ?>
+                            (<?php echo htmlspecialchars($patient['email']); ?>)
+                        <?php endif; ?>
+                    </option>
+                <?php endforeach; ?>
+            <?php else: ?>
+                <option value="" disabled>No patients found</option>
+            <?php endif; ?>
+        </select>
+        <?php if(empty($patients)): ?>
+            <div class="text-muted small mt-1">
+                <i class="fas fa-info-circle"></i> 
+                No active patients found. Please add patients first.
+            </div>
+        <?php endif; ?>
+    </div>
+    
+    <!-- ✅ PHASE 2: Manual Discount for Unverified -->
+    <div id="manual_discount_section" style="display: none;" class="mt-3 p-3 border border-warning rounded">
+        <div class="d-flex align-items-center mb-2">
+            <i class="fas fa-id-card text-warning me-2"></i>
+            <strong class="text-warning">Manual Discount (Unverified Patient)</strong>
+        </div>
+        <p class="small text-muted">Patient must present physical PWD/Senior ID before applying discount.</p>
+        <div class="row g-2">
+            <div class="col-md-4">
+                <label class="form-label fw-semibold">Discount %</label>
+                <input type="number" class="form-control" id="manual_discount" name="manual_discount" value="0" min="0" max="100" step="0.01" onchange="calculateTotal()">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label fw-semibold">ID Verified By</label>
+                <input type="text" class="form-control" id="verified_by" name="verified_by" placeholder="Staff name who verified the ID">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label fw-semibold">ID Number</label>
+                <input type="text" class="form-control" id="id_number" name="id_number" placeholder="PWD/Senior ID number">
+            </div>
+        </div>
+    </div>
+</div>
 
-                    <!-- Walk-in Customer Section -->
-                    <div id="walkin_section" style="display: none;">
-                        <div class="row">
-                            <div class="col-md-6 mb-3">
-                                <label class="form-label fw-semibold">Full Name <span class="text-danger">*</span></label>
-                                <input type="text" class="form-control" name="walk_in_name" id="walk_in_name" placeholder="Enter customer name">
-                            </div>
-                            <div class="col-md-6 mb-3">
-                                <label class="form-label fw-semibold">Contact Number</label>
-                                <input type="text" class="form-control" name="walk_in_contact" placeholder="Optional">
-                            </div>
-                            <div class="col-md-12 mb-3">
-                                <label class="form-label fw-semibold">Email Address</label>
-                                <input type="email" class="form-control" name="walk_in_email" placeholder="Optional">
-                            </div>
-                        </div>
-                    </div>
+<!-- Walk-in Customer Section -->
+<div id="walkin_section" style="display: none;">
+    <div class="row">
+        <div class="col-md-6 mb-3">
+            <label class="form-label fw-semibold">Full Name <span class="text-danger">*</span></label>
+            <input type="text" class="form-control" name="walk_in_name" id="walk_in_name" placeholder="Enter customer name" oninput="checkWalkInPwdSenior(this.value)" onchange="checkWalkInPwdSenior(this.value)">
+        </div>
+        <div class="col-md-6 mb-3">
+            <label class="form-label fw-semibold">Contact Number</label>
+            <input type="text" class="form-control" name="walk_in_contact" placeholder="Optional">
+        </div>
+        <div class="col-md-12 mb-3">
+            <label class="form-label fw-semibold">Email Address</label>
+            <input type="email" class="form-control" name="walk_in_email" placeholder="Optional">
+        </div>
+    </div>
+    
+<!-- ✅ PHASE 6: Manual Discount for Walk-in -->
+<div id="walkin_manual_discount_section" style="display: none;" class="mt-3 p-3 border border-warning rounded">
+    <div class="d-flex align-items-center mb-2">
+        <i class="fas fa-id-card text-warning me-2"></i>
+        <strong class="text-warning">Manual Discount (Walk-in with Physical ID)</strong>
+    </div>
+    <p class="small text-muted">Customer must present physical PWD/Senior ID before applying discount.</p>
+    <div class="row g-2">
+        <div class="col-md-3">
+            <label class="form-label fw-semibold">Discount Type <span class="text-danger">*</span></label>
+            <select class="form-select" id="walkin_manual_discount_type" name="walkin_manual_discount_type" onchange="calculateTotal()">
+                <option value="senior">👴 Senior Citizen</option>
+                <option value="pwd">♿ PWD</option>
+            </select>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label fw-semibold">Discount %</label>
+            <input type="number" class="form-control" id="walkin_manual_discount" name="walkin_manual_discount" value="20" min="0" max="100" step="0.01" onchange="calculateTotal()" oninput="calculateTotal()">
+        </div>
+        <div class="col-md-3">
+            <label class="form-label fw-semibold">ID Verified By</label>
+            <input type="text" class="form-control" id="walkin_verified_by" name="walkin_verified_by" placeholder="Staff name">
+        </div>
+        <div class="col-md-3">
+            <label class="form-label fw-semibold">ID Number</label>
+            <input type="text" class="form-control" id="walkin_id_number" name="walkin_id_number" placeholder="PWD/Senior ID number">
+        </div>
+    </div>
+</div>
+</div>
 
                     <!-- Items Section -->
                     <div class="mb-3">
@@ -747,7 +837,9 @@ unset($invoice);
                                         <td></td>
                                     </tr>
                                     <tr id="discountRow" style="display: none;">
-                                        <td colspan="4" class="text-end fw-semibold text-success">PWD/Senior Discount:</td>
+                                        <td colspan="4" class="text-end fw-semibold text-success">
+                                            <span id="discountLabel">PWD/Senior Discount:</span>
+                                        </td>
                                         <td id="discountDisplay" class="fw-bold text-success">₱0.00</td>
                                         <td></td>
                                     </tr>
@@ -756,12 +848,16 @@ unset($invoice);
                                         <td id="vatDisplay" class="fw-bold text-warning">₱0.00</td>
                                         <td></td>
                                     </tr>
-                                    <tr>
-                                        <td colspan="4" class="text-end fw-semibold">Manual Discount:</td>
+                                    <!-- ✅ PHASE 1: Manual Discount Section (Hidden by default) -->
+                                    <tr id="manual_discount_section" style="display: none;">
+                                        <td colspan="4" class="text-end fw-semibold">
+                                            <span class="text-warning">Manual Discount (for unverified customers only):</span>
+                                            <br><small class="text-muted">Requires physical PWD/Senior ID</small>
+                                        </td>
                                         <td>
                                             <div class="input-group input-group-sm">
-                                                <span class="input-group-text">₱</span>
-                                                <input type="number" class="form-control" id="discount" value="0" min="0" step="0.01">
+                                                <span class="input-group-text">%</span>
+                                                <input type="number" class="form-control" id="discount" value="0" min="0" max="100" step="0.01" placeholder="e.g., 20">
                                             </div>
                                         </td>
                                         <td></td>
@@ -847,6 +943,37 @@ unset($invoice);
                         <label class="form-label fw-semibold text-warning">Remaining Balance</label>
                         <input type="text" class="form-control bg-light text-warning fw-bold" id="payment_remaining_balance" readonly>
                     </div>
+                    
+<!-- ✅ PHASE 6: Manual Discount for Unverified -->
+<div id="manual_discount_section" style="display: none;" class="mt-3 p-3 border border-warning rounded">
+    <div class="d-flex align-items-center mb-2">
+        <i class="fas fa-id-card text-warning me-2"></i>
+        <strong class="text-warning">Manual Discount (Unverified Patient)</strong>
+    </div>
+    <p class="small text-muted">Patient must present physical PWD/Senior ID before applying discount.</p>
+    <div class="row g-2">
+        <div class="col-md-3">
+            <label class="form-label fw-semibold">Discount Type <span class="text-danger">*</span></label>
+            <select class="form-select" id="manual_discount_type" name="manual_discount_type" onchange="calculateTotal()">
+                <option value="senior">👴 Senior Citizen</option>
+                <option value="pwd">♿ PWD</option>
+            </select>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label fw-semibold">Discount %</label>
+            <input type="number" class="form-control" id="manual_discount" name="manual_discount" value="20" min="0" max="100" step="0.01" onchange="calculateTotal()">
+        </div>
+        <div class="col-md-3">
+            <label class="form-label fw-semibold">ID Verified By</label>
+            <input type="text" class="form-control" id="verified_by" name="verified_by" placeholder="Staff name">
+        </div>
+        <div class="col-md-3">
+            <label class="form-label fw-semibold">ID Number</label>
+            <input type="text" class="form-control" id="id_number" name="id_number" placeholder="PWD/Senior ID number">
+        </div>
+    </div>
+</div>
+                    
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Payment Amount</label>
                         <input type="number" class="form-control" name="amount" id="payment_amount" step="0.01" min="0" required>
@@ -1075,60 +1202,211 @@ function removeItem(index) {
     updateItemsList();
 }
 
-// Calculate totals with VAT and Discount
 function calculateTotal() {
+    // ✅ DEBUG: Check flags
+    console.log('=== FLAGS DEBUG ===');
+    console.log('window.isPwdSeniorVerified:', window.isPwdSeniorVerified);
+    console.log('window.isWalkInPwdSenior:', window.isWalkInPwdSenior);
+    console.log('saleItems:', saleItems);
+    
     let subtotal = 0;
     saleItems.forEach(item => {
         subtotal += item.price * item.quantity;
     });
     
-    // Check if PWD/Senior is verified
-    let isPwdSenior = document.getElementById('pwd_senior_status').style.display === 'block' &&
-                      document.getElementById('pwd_senior_status').style.background === '#d1fae5';
+    // ✅ Check manual discount values
+    var manualDiscountPercentRegistered = parseFloat(document.getElementById('manual_discount').value) || 0;
+    var manualDiscountPercentWalkin = parseFloat(document.getElementById('walkin_manual_discount').value) || 0;
+    var manualDiscountPercent = manualDiscountPercentRegistered || manualDiscountPercentWalkin;
+    var hasManualDiscount = manualDiscountPercent > 0;
+    
+    console.log('manualDiscountPercent:', manualDiscountPercent);
+    console.log('hasManualDiscount:', hasManualDiscount);
+    
+    // ✅ Check verification status using flags
+    let isPwdSenior = window.isPwdSeniorVerified === true;
+    let isWalkInVerified = window.isWalkInPwdSenior === true;
+    
+    // ✅ If manual discount is applied, force VAT exempt
+    if (hasManualDiscount) {
+        isWalkInVerified = true; // Treat as verified for VAT exemption
+        console.log('✅ Manual discount detected - forcing VAT exempt');
+    }
+    
+    console.log('isPwdSenior:', isPwdSenior);
+    console.log('isWalkInVerified:', isWalkInVerified);
     
     const discountRate = <?php echo $pwd_senior_discount ?? 0.20; ?>;
     const vatRate = <?php echo $vat_rate ?? 0.12; ?>;
-    const isVatExempt = <?php echo $pwd_senior_vat_exempt ?? 1; ?>;
     
     let discount = 0;
     let vat = 0;
     let total = subtotal;
+    let discountType = 'none';
+    let discountPercentage = 0;
     
-    if (isPwdSenior) {
-        discount = subtotal * discountRate;
-        total = subtotal - discount;
-        // VAT Exempt for PWD/Senior
-        if (isVatExempt) {
-            vat = 0;
+    // ✅ VERIFIED OR MANUAL: Apply discount
+    if (isPwdSenior || isWalkInVerified) {
+        // ✅ Use manual discount if applied, otherwise auto
+        if (hasManualDiscount && manualDiscountPercent > 0) {
+            discount = subtotal * (manualDiscountPercent / 100);
+            discountType = 'manual';
+            discountPercentage = manualDiscountPercent;
+            console.log('✅ MANUAL DISCOUNT applied:', discount);
         } else {
-            vat = total * vatRate;
-            total = total + vat;
+            discount = subtotal * discountRate;
+            discountType = 'senior';
+            discountPercentage = discountRate * 100;
+            console.log('✅ AUTO DISCOUNT applied:', discount);
         }
-    } else {
-        // Standard customer - with VAT
+        total = subtotal - discount;
+        vat = 0; // VAT Exempt
+    } 
+    // ✅ No discount - Regular customer
+    else {
         vat = subtotal * vatRate;
         total = subtotal + vat;
+        console.log('❌ NO DISCOUNT: Regular customer');
     }
     
-    // Apply manual discount if any
-    const manualDiscount = parseFloat(document.getElementById('discount').value) || 0;
-    total = total - manualDiscount;
+    console.log('Final - Subtotal:', subtotal, 'Discount:', discount, 'VAT:', vat, 'Total:', total);
     
-    document.getElementById('subtotal').textContent = `₱${subtotal.toFixed(2)}`;
-    document.getElementById('totalAmount').textContent = `₱${total.toFixed(2)}`;
-    document.getElementById('vatDisplay').textContent = `₱${vat.toFixed(2)}`;
-    document.getElementById('discountDisplay').textContent = `₱${discount.toFixed(2)}`;
+    // ============================================
+    // ✅ PHASE 6: GET DISCOUNT TYPE FOR DISPLAY (FIXED)
+    // ============================================
+    var discountTypeDisplay = 'senior';
+    var discountTypeIcon = '👴';
+    var discountTypeLabel = 'Senior';
     
+    // ✅ DEBUG: Check customer type
+    var isWalkInSelected = document.querySelector('input[name="customer_type"]:checked')?.value === 'walkin';
+    var isRegisteredSelected = document.querySelector('input[name="customer_type"]:checked')?.value === 'registered';
+    
+    console.log('=== DISCOUNT TYPE DEBUG ===');
+    console.log('isWalkInSelected:', isWalkInSelected);
+    console.log('isRegisteredSelected:', isRegisteredSelected);
+    console.log('hasManualDiscount:', hasManualDiscount);
+    console.log('discountType:', discountType);
+    console.log('isPwdSenior:', isPwdSenior);
+    console.log('isWalkInVerified:', isWalkInVerified);
+    
+    // ✅ FIXED: Check if it's MANUAL discount first
+    if (discountType === 'manual' && hasManualDiscount) {
+        // ✅ MANUAL DISCOUNT - get type from dropdown
+        var walkinTypeSelect = document.getElementById('walkin_manual_discount_type');
+        var typeSelect = document.getElementById('manual_discount_type');
+        
+        console.log('walkinTypeSelect value:', walkinTypeSelect?.value);
+        console.log('typeSelect value:', typeSelect?.value);
+        
+        // ✅ PRIORITY: If walk-in is selected, use walk-in discount type
+        if (isWalkInSelected && walkinTypeSelect && walkinTypeSelect.value) {
+            discountTypeDisplay = walkinTypeSelect.value;
+            console.log('✅ Using WALK-IN discount type:', discountTypeDisplay);
+        } 
+        // ✅ If registered is selected, use registered discount type
+        else if (isRegisteredSelected && typeSelect && typeSelect.value) {
+            discountTypeDisplay = typeSelect.value;
+            console.log('✅ Using REGISTERED discount type:', discountTypeDisplay);
+        }
+        // ✅ Fallback: try both
+        else {
+            if (typeSelect && typeSelect.value) {
+                discountTypeDisplay = typeSelect.value;
+                console.log('✅ Fallback - Using REGISTERED discount type:', discountTypeDisplay);
+            } else if (walkinTypeSelect && walkinTypeSelect.value) {
+                discountTypeDisplay = walkinTypeSelect.value;
+                console.log('✅ Fallback - Using WALK-IN discount type:', discountTypeDisplay);
+            }
+        }
+        
+        discountTypeIcon = discountTypeDisplay === 'pwd' ? '♿' : '👴';
+        discountTypeLabel = discountTypeDisplay === 'pwd' ? 'PWD' : 'Senior';
+        
+        console.log('✅ MANUAL DISCOUNT type final:', discountTypeDisplay);
+        console.log('✅ MANUAL DISCOUNT icon:', discountTypeIcon);
+        console.log('✅ MANUAL DISCOUNT label:', discountTypeLabel);
+        
+    } 
+    // ✅ AUTO DISCOUNT (Verified PWD/Senior)
+    else if (isPwdSenior || isWalkInVerified) {
+        // Get from verification status text
+        var statusDiv = document.getElementById('pwd_senior_status');
+        var statusText = statusDiv ? statusDiv.innerText : '';
+        console.log('statusText:', statusText);
+        
+        if (statusText.includes('PWD')) {
+            discountTypeDisplay = 'pwd';
+            discountTypeIcon = '♿';
+            discountTypeLabel = 'PWD';
+        } else if (statusText.includes('SENIOR')) {
+            discountTypeDisplay = 'senior';
+            discountTypeIcon = '👴';
+            discountTypeLabel = 'Senior';
+        } else {
+            // Fallback
+            if (window.pwdSeniorType === 'pwd') {
+                discountTypeDisplay = 'pwd';
+                discountTypeIcon = '♿';
+                discountTypeLabel = 'PWD';
+            } else {
+                discountTypeDisplay = 'senior';
+                discountTypeIcon = '👴';
+                discountTypeLabel = 'Senior';
+            }
+        }
+        console.log('✅ AUTO DISCOUNT type detected:', discountTypeDisplay);
+    }
+    
+    // ✅ BUILD DISCOUNT LABEL
+    var discountLabelText = '';
+    if (discountType === 'manual') {
+        discountLabelText = 'Manual ' + discountTypeIcon + ' ' + discountTypeLabel + ' Discount';
+    } else if (discountType === 'senior' || discountType === 'pwd') {
+        discountLabelText = discountTypeIcon + ' ' + discountTypeLabel + ' Discount (Verified)';
+    } else {
+        discountLabelText = 'Discount';
+    }
+    
+    console.log('✅ Final discount label:', discountLabelText);
+    
+    // ✅ UPDATE UI
+    document.getElementById('subtotal').textContent = '₱' + subtotal.toFixed(2);
+    document.getElementById('totalAmount').textContent = '₱' + total.toFixed(2);
+    document.getElementById('vatDisplay').textContent = '₱' + vat.toFixed(2);
+    document.getElementById('discountDisplay').textContent = '₱' + discount.toFixed(2);
+    
+    // ✅ Show/hide discount row with proper label
+    var discountRow = document.getElementById('discountRow');
+    var discountLabel = document.getElementById('discountLabel');
+    
+    if (discount > 0) {
+        discountRow.style.display = 'table-row';
+        discountLabel.textContent = discountLabelText + ' (' + discountPercentage + '%):';
+    } else {
+        discountRow.style.display = 'none';
+    }
+    
+    // ✅ Show/hide VAT row
+    var vatRow = document.getElementById('vatRow');
+    if (vat > 0) {
+        vatRow.style.display = 'table-row';
+        document.getElementById('vatDisplay').textContent = '₱' + vat.toFixed(2);
+    } else {
+        vatRow.style.display = 'none';
+        document.getElementById('vatDisplay').textContent = '₱0.00';
+    }
+    
+    // ✅ Update hidden inputs
     document.getElementById('itemsInput').value = JSON.stringify(saleItems);
     document.getElementById('subtotalInput').value = subtotal;
-    document.getElementById('discountInput').value = discount + manualDiscount;
+    document.getElementById('discountInput').value = discount;
     document.getElementById('vatInput').value = vat;
     document.getElementById('totalInput').value = total;
     
     updateStatus();
 }
 
-// Update status
 function updateStatus() {
     var amountPaid = parseFloat(document.querySelector('input[name="amount_paid"]').value) || 0;
     var total = parseFloat(document.getElementById('totalInput').value) || 0;
@@ -1162,22 +1440,32 @@ document.getElementById('newSaleForm').addEventListener('submit', function(e){
     
     var customerType = document.querySelector('input[name="customer_type"]:checked').value;
     
-    var data = {
-        customer_type: customerType,
-        patient_id: customerType === 'registered' ? document.querySelector('select[name="patient_id"]').value : null,
-        walk_in_name: customerType === 'walkin' ? document.querySelector('input[name="walk_in_name"]').value : null,
-        walk_in_contact: customerType === 'walkin' ? document.querySelector('input[name="walk_in_contact"]').value : null,
-        walk_in_email: customerType === 'walkin' ? document.querySelector('input[name="walk_in_email"]').value : null,
-        payment_method: document.querySelector('select[name="payment_method"]').value,
-        amount_paid: document.querySelector('input[name="amount_paid"]').value,
-        reference_number: document.querySelector('input[name="reference_number"]').value,
-        items: saleItems,
-        subtotal: document.getElementById('subtotalInput').value,
-        discount: document.getElementById('discountInput').value,
-        total_amount: document.getElementById('totalInput').value,
-        status: document.getElementById('statusInput').value,
-        payment_type: document.getElementById('paymentTypeInput').value
-    };
+var data = {
+    customer_type: customerType,
+    patient_id: customerType === 'registered' ? document.querySelector('select[name="patient_id"]').value : null,
+    walk_in_name: customerType === 'walkin' ? document.querySelector('input[name="walk_in_name"]').value : null,
+    walk_in_contact: customerType === 'walkin' ? document.querySelector('input[name="walk_in_contact"]').value : null,
+    walk_in_email: customerType === 'walkin' ? document.querySelector('input[name="walk_in_email"]').value : null,
+    payment_method: document.querySelector('select[name="payment_method"]').value,
+    amount_paid: document.querySelector('input[name="amount_paid"]').value,
+    reference_number: document.querySelector('input[name="reference_number"]').value,
+    items: saleItems,
+    subtotal: document.getElementById('subtotalInput').value,
+    discount: document.getElementById('discountInput').value,
+    total_amount: document.getElementById('totalInput').value,
+    status: document.getElementById('statusInput').value,
+    payment_type: document.getElementById('paymentTypeInput').value,
+    // ✅ PHASE 7: Registered manual discount with type
+    manual_discount: customerType === 'registered' ? document.getElementById('manual_discount').value : 0,
+    manual_discount_type: customerType === 'registered' ? document.getElementById('manual_discount_type').value : 'senior',
+    verified_by: customerType === 'registered' ? document.getElementById('verified_by').value : null,
+    id_number: customerType === 'registered' ? document.getElementById('id_number').value : null,
+    // ✅ PHASE 7: Walk-in manual discount with type
+    walkin_manual_discount: customerType === 'walkin' ? document.getElementById('walkin_manual_discount').value : 0,
+    walkin_manual_discount_type: customerType === 'walkin' ? document.getElementById('walkin_manual_discount_type').value : 'senior',
+    walkin_verified_by: customerType === 'walkin' ? document.getElementById('walkin_verified_by').value : null,
+    walkin_id_number: customerType === 'walkin' ? document.getElementById('walkin_id_number').value : null
+};
     
     if(customerType === 'walkin' && !data.walk_in_name) {
         Swal.fire('Error!', 'Please enter customer name for walk-in', 'error');
@@ -1248,6 +1536,11 @@ function recordPayment(id, totalAmount, alreadyPaid, sourceType) {
     document.getElementById('payment_amount').value = remainingBalance;
     document.getElementById('payment_amount').max = remainingBalance;
     
+    // ✅ PHASE 4: Check if patient is verified
+    // Show manual discount section only if NOT verified
+    // This will be checked by calling the API
+    checkAppointmentVerification(id);
+    
     // Generate invoice ID
     var invoiceId = 'INV-' + new Date().toISOString().slice(0,7).replace('-','') + '-' + String(id).padStart(4, '0');
     document.getElementById('payment_invoice_id').value = invoiceId;
@@ -1255,6 +1548,37 @@ function recordPayment(id, totalAmount, alreadyPaid, sourceType) {
     new bootstrap.Modal(document.getElementById('recordPaymentModal')).show();
 }
 
+// ✅ PHASE 4: Check appointment verification status
+function checkAppointmentVerification(appointmentId) {
+fetch('api/sales.php?action=check_appointment_verification&appointment_id=' + appointmentId + '&clinic_id=' + <?php echo $clinic_id; ?>, {
+    method: 'GET',
+    credentials: 'same-origin',
+    headers: {
+        'X-Requested-With': 'XMLHttpRequest'
+    }
+})
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+            var section = document.getElementById('payment_manual_discount_section');
+            if (data.success && !data.is_verified) {
+                // ✅ NOT VERIFIED - Show manual discount section
+                section.style.display = 'block';
+                document.getElementById('payment_manual_discount').value = 0;
+                document.getElementById('payment_manual_discount').disabled = false;
+                document.getElementById('payment_verified_by').value = '';
+                document.getElementById('payment_id_number').value = '';
+            } else {
+                // ✅ VERIFIED - Hide manual discount section
+                section.style.display = 'none';
+                document.getElementById('payment_manual_discount').value = 0;
+                document.getElementById('payment_manual_discount').disabled = true;
+            }
+        })
+        .catch(function(err) {
+            console.error('Error checking verification:', err);
+            document.getElementById('payment_manual_discount_section').style.display = 'none';
+        });
+}
 // Submit payment
 function submitPayment() {
     var amount = parseFloat(document.getElementById('payment_amount').value);
@@ -1382,9 +1706,34 @@ function viewInvoice(id, sourceType) {
 function showBillFromAppointment(bill) {
     var totalAmount = parseFloat(bill.total_amount || 0);
     var totalPaid = parseFloat(bill.amount_paid || bill.total_paid || 0);
-    
+    var subtotal = parseFloat(bill.subtotal || 0);
+    var discountAmount = parseFloat(bill.discount_amount || 0);
+    var discountPercentage = parseFloat(bill.discount_percentage || 0);
+    var discountType = bill.discount_type || 'none';
+    var vatAmount = parseFloat(bill.vat_amount || 0);
+    var vatPercentage = parseFloat(bill.vat_percentage || 0);
     var balanceAmount = totalAmount - totalPaid;
     if (balanceAmount < 0) balanceAmount = 0;
+    
+    // ✅ PHASE 5: Get manual discount info
+    var verifiedBy = bill.verified_by || null;
+    var idNumber = bill.id_number || null;
+    var isManualDiscount = bill.is_manual_discount || false;
+    var isVerifiedDiscount = bill.is_verified_discount || false;
+    
+    // Determine discount label and note
+    var discountLabel = '';
+    var discountNote = '';
+    
+    if (isManualDiscount) {
+        discountLabel = 'Manual Discount (Unverified with Physical ID)';
+        discountNote = '✅ ID Verified by: ' + (verifiedBy || 'N/A') + ' | ID #: ' + (idNumber || 'N/A');
+    } else if (isVerifiedDiscount) {
+        discountLabel = discountType.toUpperCase() + ' Discount (Verified)';
+        discountNote = '✅ Auto-applied - Verified ' + discountType.toUpperCase();
+    } else {
+        discountLabel = 'Discount';
+    }
     
     var status = 'Unpaid';
     if (totalPaid >= totalAmount && totalAmount > 0) {
@@ -1395,10 +1744,8 @@ function showBillFromAppointment(bill) {
     
     var items = bill.items || [];
     
-    // ✅ FIXED: Compute subtotal from items
-    var subtotal = parseFloat(bill.subtotal || 0);
+    // Compute subtotal from items
     var computedSubtotal = 0;
-    
     if (Array.isArray(items) && items.length > 0) {
         items.forEach(function(item) {
             var price = parseFloat(item.unit_price || item.price || 0);
@@ -1406,15 +1753,12 @@ function showBillFromAppointment(bill) {
             computedSubtotal += price * qty;
         });
     }
-    
-    // Use computed subtotal if available and more accurate
     if (computedSubtotal > 0 && computedSubtotal > subtotal) {
         subtotal = computedSubtotal;
     }
     
     // Build items HTML
     var itemsHtml = '';
-    
     if (items.length === 0) {
         itemsHtml = '<tr><td colspan="5" class="text-center text-muted">No items found</td></tr>';
     } else {
@@ -1437,16 +1781,20 @@ function showBillFromAppointment(bill) {
         });
     }
     
-    // Build discount display
+    // ✅ Build discount display with note
     var discountDisplay = '';
-    if (bill.discount_type && bill.discount_type !== 'none') {
-        var discountAmount = parseFloat(bill.discount_amount || 0);
-        var discountPercentage = parseFloat(bill.discount_percentage || 0);
+    if (discountType !== 'none' && discountAmount > 0) {
         discountDisplay = `
             <div class="d-flex justify-content-between text-danger">
-                <span>${bill.discount_type.toUpperCase()} Discount (${discountPercentage}%):</span>
+                <span>${discountLabel} (${discountPercentage}%):</span>
                 <span>-₱${discountAmount.toFixed(2)}</span>
             </div>
+            ${discountNote ? `
+            <div class="d-flex justify-content-between text-muted small" style="font-size: 11px;">
+                <span><i class="fas fa-info-circle"></i> ${discountNote}</span>
+                <span></span>
+            </div>
+            ` : ''}
             <div class="d-flex justify-content-between">
                 <span class="text-muted">Subtotal after discount:</span>
                 <span>₱${(subtotal - discountAmount).toFixed(2)}</span>
@@ -1456,8 +1804,6 @@ function showBillFromAppointment(bill) {
     
     // Build VAT display
     var vatDisplay = '';
-    var vatAmount = parseFloat(bill.vat_amount || 0);
-    var vatPercentage = parseFloat(bill.vat_percentage || 0);
     if (vatAmount > 0) {
         vatDisplay = `
             <div class="d-flex justify-content-between text-warning">
@@ -1489,7 +1835,6 @@ function showBillFromAppointment(bill) {
         `;
     }
     
-    // Get status badge class
     var statusClass = status === 'Paid' ? 'success' : status === 'Partial' ? 'warning' : 'danger';
     
     // Build the invoice HTML
@@ -1519,6 +1864,8 @@ function showBillFromAppointment(bill) {
                     <div class="col-md-6">
                         ${bill.doctor_name ? `<p><strong>Doctor:</strong> Dr. ${escapeHtml(bill.doctor_name)}</p>` : ''}
                         ${bill.reference_number ? `<p><strong>Reference:</strong> ${escapeHtml(bill.reference_number)}</p>` : ''}
+                        ${isManualDiscount ? `<p><strong>ID Verified By:</strong> ${escapeHtml(verifiedBy || 'N/A')}</p>` : ''}
+                        ${isManualDiscount ? `<p><strong>ID Number:</strong> ${escapeHtml(idNumber || 'N/A')}</p>` : ''}
                     </div>
                 </div>
             </div>
@@ -1574,11 +1921,9 @@ function showBillFromAppointment(bill) {
         </div>
     `;
     
-    // Show modal
     var modal = new bootstrap.Modal(document.getElementById('viewInvoiceModal'));
     modal.show();
 }
-
 // Print Invoice
 function printInvoice(id, sourceType) {
     if (!permissions.canView) {
@@ -1992,80 +2337,187 @@ function escapeHtml(text) {
 }
 
 // ============================================
-// ✅ CHECK PWD/SENIOR STATUS FOR WALK-IN
+// ✅ PHASE 3: CHECK PWD/SENIOR STATUS FOR WALK-IN
 // ============================================
 function checkWalkInPwdSenior(name) {
+    console.log('🔍 checkWalkInPwdSenior called with name:', name);
+    
     if (!name || name.length < 3) {
+        console.log('❌ Name too short, hiding discount section');
         document.getElementById('pwd_senior_status').style.display = 'none';
+        document.getElementById('walkin_manual_discount_section').style.display = 'none';
+        document.getElementById('walkin_manual_discount').disabled = false;
+        window.isWalkInPwdSenior = false;
+        calculateTotal();
         return;
     }
     
-    fetch('api/sales.php?action=check_pwd_senior_by_name&name=' + encodeURIComponent(name) + '&clinic_id=' + <?php echo $clinic_id; ?>)
-        .then(function(res) { return res.json(); })
-        .then(function(data) {
-            if (data.success && data.is_pwd_senior) {
-                document.getElementById('pwd_senior_status').style.display = 'block';
-                document.getElementById('pwd_senior_status').style.background = '#d1fae5';
-                document.getElementById('pwd_senior_status').style.border = '1px solid #10b981';
-                document.getElementById('pwd_senior_label').innerHTML = 
-                    '<strong>' + data.verification_type.toUpperCase() + '</strong> Verified - ' + 
-                    data.discount_percentage + '% Discount & VAT Exempt';
-                document.getElementById('pwd_senior_status').querySelector('i').className = 'fas fa-check-circle';
-                document.getElementById('pwd_senior_status').querySelector('i').style.color = '#10b981';
-            } else {
-                document.getElementById('pwd_senior_status').style.display = 'block';
-                document.getElementById('pwd_senior_status').style.background = '#fef3c7';
-                document.getElementById('pwd_senior_status').style.border = '1px solid #f59e0b';
-                document.getElementById('pwd_senior_label').innerHTML = 
-                    '⚠️ No PWD/Senior verification found. Standard VAT (12%) will apply.';
-                document.getElementById('pwd_senior_status').querySelector('i').className = 'fas fa-exclamation-triangle';
-                document.getElementById('pwd_senior_status').querySelector('i').style.color = '#f59e0b';
-            }
-            calculateTotal();
-        })
-        .catch(function(err) {
-            console.error('Error checking PWD/Senior status:', err);
-        });
+    fetch('api/sales.php?action=check_pwd_senior_by_name&name=' + encodeURIComponent(name) + '&clinic_id=' + <?php echo $clinic_id; ?>, {
+        method: 'GET',
+        credentials: 'include',
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'application/json'
+        }
+    })
+    .then(function(res) { 
+        console.log('📡 API Response Status:', res.status);
+        return res.json(); 
+    })
+    .then(function(data) {
+        console.log('📦 API Response Data:', data);
+        
+        // ✅ Handle data inside data array
+        var responseData = data.data && data.data.length > 0 ? data.data[0] : data;
+        console.log('📦 Processed data:', responseData);
+        
+        var statusDiv = document.getElementById('pwd_senior_status');
+        var manualDiscountDiv = document.getElementById('walkin_manual_discount_section');
+        var discountInput = document.getElementById('walkin_manual_discount');
+        
+        if (responseData.success && responseData.is_pwd_senior) {
+            // ✅ FOUND: Existing verified patient
+            console.log('✅ Walk-in VERIFIED!');
+            statusDiv.style.display = 'block';
+            statusDiv.style.background = '#d1fae5';
+            statusDiv.style.border = '2px solid #10b981';
+            statusDiv.style.borderRadius = '8px';
+            statusDiv.style.padding = '12px';
+            statusDiv.innerHTML = 
+                '<div class="d-flex align-items-center">' +
+                    '<i class="fas fa-check-circle" style="color: #10b981; font-size: 20px;"></i>' +
+                    '<span class="ms-2 fw-bold" style="color: #065f46;">✅ VERIFIED ' + (responseData.verification_type || '').toUpperCase() + '</span>' +
+                    '<span class="ms-2 badge bg-success">' + (responseData.discount_percentage || 20) + '% Discount</span>' +
+                    '<span class="ms-2 badge bg-info">VAT Exempt</span>' +
+                    '<span class="ms-2 text-muted small">(Auto-applied - No manual override needed)</span>' +
+                '</div>';
+            
+            manualDiscountDiv.style.display = 'none';
+            discountInput.value = 0;
+            discountInput.disabled = true;
+            window.isWalkInPwdSenior = true;
+            
+        } else {
+            // ❌ NOT FOUND: Allow manual discount
+            console.log('❌ Walk-in NOT VERIFIED - Manual discount available');
+            statusDiv.style.display = 'block';
+            statusDiv.style.background = '#fef3c7';
+            statusDiv.style.border = '2px solid #f59e0b';
+            statusDiv.style.borderRadius = '8px';
+            statusDiv.style.padding = '12px';
+            statusDiv.innerHTML = 
+                '<div class="d-flex align-items-center">' +
+                    '<i class="fas fa-exclamation-triangle" style="color: #f59e0b; font-size: 20px;"></i>' +
+                    '<span class="ms-2 fw-bold" style="color: #92400e;">⚠️ NO RECORD FOUND</span>' +
+                    '<span class="ms-2 text-muted small">Manual discount available with physical ID</span>' +
+                '</div>';
+            
+            manualDiscountDiv.style.display = 'block';
+            discountInput.disabled = false;
+            discountInput.value = 0;
+            discountInput.placeholder = 'Enter discount % (e.g., 20)';
+            window.isWalkInPwdSenior = false;
+        }
+        calculateTotal();
+    })
+    .catch(function(err) {
+        console.error('Error checking PWD/Senior status:', err);
+        window.isWalkInPwdSenior = false;
+        calculateTotal();
+    });
 }
-
-// ============================================
-// ✅ CHECK PWD/SENIOR STATUS FOR REGISTERED PATIENT
-// ============================================
 function checkPwdSenior(patientId) {
     if (!patientId) {
         document.getElementById('pwd_senior_status').style.display = 'none';
+        document.getElementById('manual_discount_section').style.display = 'none';
+        document.getElementById('discount').disabled = false;
         return;
     }
     
-    fetch('api/sales.php?action=check_pwd_senior&patient_id=' + patientId + '&clinic_id=' + <?php echo $clinic_id; ?>)
-        .then(function(res) { return res.json(); })
-        .then(function(data) {
-            if (data.success && data.is_pwd_senior) {
-                document.getElementById('pwd_senior_status').style.display = 'block';
-                document.getElementById('pwd_senior_status').style.background = '#d1fae5';
-                document.getElementById('pwd_senior_status').style.border = '1px solid #10b981';
-                document.getElementById('pwd_senior_label').innerHTML = 
-                    '<strong>' + data.verification_type.toUpperCase() + '</strong> Verified - ' + 
-                    data.discount_percentage + '% Discount & VAT Exempt';
-                document.getElementById('pwd_senior_status').querySelector('i').className = 'fas fa-check-circle';
-                document.getElementById('pwd_senior_status').querySelector('i').style.color = '#10b981';
-            } else {
-                document.getElementById('pwd_senior_status').style.display = 'block';
-                document.getElementById('pwd_senior_status').style.background = '#fef3c7';
-                document.getElementById('pwd_senior_status').style.border = '1px solid #f59e0b';
-                document.getElementById('pwd_senior_label').innerHTML = 
-                    '⚠️ No PWD/Senior verification found. Standard VAT (12%) will apply.';
-                document.getElementById('pwd_senior_status').querySelector('i').className = 'fas fa-exclamation-triangle';
-                document.getElementById('pwd_senior_status').querySelector('i').style.color = '#f59e0b';
-            }
-            calculateTotal();
-        })
-        .catch(function(err) {
-            console.error('Error checking PWD/Senior status:', err);
-        });
+    var url = 'api/sales.php?action=check_pwd_senior&patient_id=' + patientId + '&clinic_id=' + <?php echo $clinic_id; ?>;
+    console.log('Checking PWD/Senior status:', url);
+    
+    fetch(url, {
+        method: 'GET',
+        credentials: 'include',
+        headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Accept': 'application/json'
+        }
+    })
+    .then(function(res) { 
+        console.log('Response status:', res.status);
+        if (!res.ok) {
+            throw new Error('HTTP ' + res.status);
+        }
+        return res.json(); 
+    })
+    .then(function(response) {
+        console.log('Full response:', response);
+        
+        // ✅ FIXED: Handle data inside data array
+        var data = response.data && response.data.length > 0 ? response.data[0] : response;
+        
+        console.log('Processed data:', data);
+        
+        if (data.is_pwd_senior) {
+            // ✅ VERIFIED
+            document.getElementById('pwd_senior_status').style.display = 'block';
+            document.getElementById('pwd_senior_status').style.background = '#d1fae5';
+            document.getElementById('pwd_senior_status').style.border = '2px solid #10b981';
+            document.getElementById('pwd_senior_status').style.borderRadius = '8px';
+            document.getElementById('pwd_senior_status').style.padding = '12px';
+            document.getElementById('pwd_senior_status').innerHTML = 
+                '<div class="d-flex align-items-center">' +
+                    '<i class="fas fa-check-circle" style="color: #10b981; font-size: 20px;"></i>' +
+                    '<span class="ms-2 fw-bold" style="color: #065f46;">✅ VERIFIED ' + (data.verification_type || '').toUpperCase() + '</span>' +
+                    '<span class="ms-2 badge bg-success">' + (data.discount_percentage || 20) + '% Discount</span>' +
+                    '<span class="ms-2 badge bg-info">VAT Exempt</span>' +
+                    '<span class="ms-2 text-muted small">(Auto-applied - No manual override needed)</span>' +
+                '</div>';
+            
+            document.getElementById('manual_discount_section').style.display = 'none';
+            document.getElementById('discount').value = 0;
+            document.getElementById('discount').disabled = true;
+            window.isPwdSeniorVerified = true;
+            
+        } else {
+            // ❌ NOT VERIFIED
+            document.getElementById('pwd_senior_status').style.display = 'block';
+            document.getElementById('pwd_senior_status').style.background = '#fef3c7';
+            document.getElementById('pwd_senior_status').style.border = '2px solid #f59e0b';
+            document.getElementById('pwd_senior_status').style.borderRadius = '8px';
+            document.getElementById('pwd_senior_status').style.padding = '12px';
+            document.getElementById('pwd_senior_status').innerHTML = 
+                '<div class="d-flex align-items-center">' +
+                    '<i class="fas fa-exclamation-triangle" style="color: #f59e0b; font-size: 20px;"></i>' +
+                    '<span class="ms-2 fw-bold" style="color: #92400e;">⚠️ NOT VERIFIED</span>' +
+                    '<span class="ms-2 text-muted small">No PWD/Senior verification found</span>' +
+                '</div>';
+            
+            document.getElementById('manual_discount_section').style.display = 'block';
+            document.getElementById('discount').disabled = false;
+            document.getElementById('discount').value = 0;
+            window.isPwdSeniorVerified = false;
+        }
+        calculateTotal();
+    })
+    .catch(function(err) {
+        console.error('Error:', err);
+        document.getElementById('pwd_senior_status').style.display = 'block';
+        document.getElementById('pwd_senior_status').style.background = '#fee2e2';
+        document.getElementById('pwd_senior_status').style.border = '2px solid #dc2626';
+        document.getElementById('pwd_senior_status').innerHTML = 
+            '<div class="d-flex align-items-center">' +
+                '<i class="fas fa-exclamation-circle" style="color: #dc2626; font-size: 20px;"></i>' +
+                '<span class="ms-2 text-danger">Error: ' + err.message + '</span>' +
+            '</div>';
+        document.getElementById('manual_discount_section').style.display = 'block';
+        document.getElementById('discount').disabled = false;
+        calculateTotal();
+    });
 }
 
-// Initialize
 calculateTotal();
 togglePaymentFields();
 </script>

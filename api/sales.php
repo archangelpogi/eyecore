@@ -1,4 +1,7 @@
 <?php
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
 if (session_status() === PHP_SESSION_NONE) {
     session_name('eyecore_admin');
     session_start();
@@ -1467,217 +1470,195 @@ if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'record_
     SalesPermission::check('edit');
 
     $data = json_decode(file_get_contents('php://input'), true);
+    
+    // ✅ Validate input
+    if (!$data) {
+        echo json_encode(['success' => false, 'message' => 'Invalid JSON data']);
+        exit;
+    }
+    
     $appointmentId = (int)($data['appointment_id'] ?? 0);
     $amount = floatval($data['amount'] ?? 0);
     $paymentMethod = $data['payment_method'] ?? 'cash';
     $referenceNumber = $data['reference_number'] ?? null;
     $notes = $data['notes'] ?? null;
     $sourceType = $data['source_type'] ?? 'appointment';
-
+    
+    // ✅ Validate required fields
     if (!$appointmentId || $amount <= 0) {
-        echo json_encode(['success' => false, 'message' => 'Invalid payment data']);
+        echo json_encode(['success' => false, 'message' => 'Invalid payment data: appointment_id and amount are required']);
         exit;
     }
 
     try {
         $pdo->beginTransaction();
 
-        if ($sourceType === 'walkin') {
-            // ... existing walkin code ...
-        } else {
-            // ✅ FIXED: SELECT with COALESCE to ensure items is never NULL
-            // ✅ PHASE 4 & 6: Added discount_type and discount_percentage to SELECT
+        // ============================================
+        // ✅ STEP 1: GET RECORD - TRY APPOINTMENT FIRST
+        // ============================================
+        $appointment = null;
+        $sale = null;
+        $recordType = 'appointment';
+        $recordId = $appointmentId;
+        
+        // ✅ Try to get from appointments
+        $stmt = $pdo->prepare("
+            SELECT 
+                a.id,
+                a.patient_id,
+                a.user_id,
+                a.subtotal,
+                a.discount_amount,
+                a.discount_type,
+                a.discount_percentage,
+                a.vat_amount,
+                a.total_amount as stored_total,
+                a.amount_paid,
+                a.status as appt_status,
+                COALESCE(NULLIF(a.total_amount, 0), (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0))) as computed_total,
+                COALESCE(a.items, '[]') as appointment_items,
+                a.product_id,
+                a.lens_type,
+                s.id as sale_id,
+                s.status as sale_status,
+                s.total_amount as sale_total,
+                NULL as walk_in_name,
+                NULL as walk_in_contact,
+                NULL as walk_in_email
+            FROM appointments a
+            LEFT JOIN sales s ON a.id = s.appointment_id AND s.clinic_id = a.clinic_id
+            WHERE a.id = ? AND a.clinic_id = ?
+        ");
+        $stmt->execute([$appointmentId, $clinic_id]);
+        $appointment = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        // ✅ If not found in appointments, try sales (walk-in)
+        if (!$appointment) {
             $stmt = $pdo->prepare("
                 SELECT 
-                    a.id,
-                    a.patient_id,
-                    a.subtotal,
-                    a.discount_amount,
-                    a.discount_type,
-                    a.discount_percentage,
-                    a.vat_amount,
-                    a.total_amount as stored_total,
-                    a.amount_paid,
-                    a.status as appt_status,
-                    " . TOTAL_AMOUNT_SQL . " as computed_total,
-                    COALESCE(a.items, '[]') as appointment_items,
-                    a.product_id,
-                    a.lens_type,
+                    s.id,
+                    s.patient_id,
+                    NULL as user_id,
+                    s.subtotal,
+                    s.discount as discount_amount,
+                    s.discount_type,
+                    s.discount_percentage,
+                    s.vat_amount,
+                    s.total_amount as stored_total,
+                    s.amount_paid,
+                    s.status as sale_status,
+                    s.total_amount as computed_total,
+                    s.items as appointment_items,
+                    NULL as product_id,
+                    NULL as lens_type,
                     s.id as sale_id,
                     s.status as sale_status,
-                    s.total_amount as sale_total
-                FROM appointments a
-                LEFT JOIN sales s ON a.id = s.appointment_id AND s.clinic_id = a.clinic_id
-                WHERE a.id = ? AND a.clinic_id = ?
+                    s.total_amount as sale_total,
+                    s.walk_in_name,
+                    s.walk_in_contact,
+                    s.walk_in_email,
+                    'walkin' as record_type
+                FROM sales s
+                WHERE s.id = ? AND s.clinic_id = ?
             ");
             $stmt->execute([$appointmentId, $clinic_id]);
-            $appointment = $stmt->fetch(PDO::FETCH_ASSOC);
-
-            if (!$appointment) {
-                throw new Exception('Appointment not found');
+            $sale = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$sale) {
+                throw new Exception('Record not found in appointments or sales');
             }
+            $recordType = 'walkin';
+            $appointment = $sale; // Use sale data as appointment data
+        }
 
-            // ✅ PHASE 4 & 6: Check for manual discount override
-            $manual_discount = isset($data['manual_discount']) ? floatval($data['manual_discount']) : 0;
-            $manual_discount_type = isset($data['manual_discount_type']) ? $data['manual_discount_type'] : 'senior';
-            $verified_by = $data['verified_by'] ?? null;
-            $id_number = $data['id_number'] ?? null;
-            $is_manual_discount = false;
+        // ============================================
+        // ✅ STEP 2: GET TOTAL AMOUNT AND PAYMENT INFO
+        // ============================================
+        $totalAmount = floatval($appointment['computed_total'] ?? $appointment['stored_total'] ?? 0);
+        $currentPaid = floatval($appointment['amount_paid'] ?? 0);
+        $newAmountPaid = $currentPaid + $amount;
+        $isFullyPaid = $newAmountPaid >= $totalAmount;
 
-            // ✅ Only apply manual discount if NOT already verified
-            $existing_discount_type = $appointment['discount_type'] ?? 'none';
-            $is_already_verified = ($existing_discount_type !== 'none' && $existing_discount_type !== 'manual');
+        $saleStatus = $isFullyPaid ? 'Paid' : 'Partial';
+        $paymentType = $isFullyPaid ? 'full' : 'partial';
 
-            if ($manual_discount > 0 && !$is_already_verified) {
-                $is_manual_discount = true;
-                $discount_amount = $appointment['subtotal'] * ($manual_discount / 100);
-                $discount_type = $manual_discount_type;
-                $discount_percentage = $manual_discount;
-                $is_vat_exempt = true;
-                $vat_amount = 0;
-                $totalAmount = $appointment['subtotal'] - $discount_amount;
-                
-                // ✅ Override the computed total
-                $appointment['computed_total'] = $totalAmount;
-                $appointment['discount_amount'] = $discount_amount;
-                $appointment['discount_type'] = $discount_type;
-                $appointment['discount_percentage'] = $discount_percentage;
-                $appointment['vat_amount'] = 0;
-            }
-
-            $totalAmount = floatval($appointment['computed_total']);
-            $currentPaid = floatval($appointment['amount_paid'] ?? 0);
-            $newAmountPaid = $currentPaid + $amount;
-            $isFullyPaid = $newAmountPaid >= $totalAmount;
-
-            $saleStatus = $isFullyPaid ? 'Paid' : 'Partial';
-            $appointmentStatus = $isFullyPaid ? 'completed' : 'waiting_payment';
-            $paymentType = $isFullyPaid ? 'full' : 'partial';
-
-            // ✅ Determine final discount type for saving
-            $discount_type_final = $appointment['discount_type'] ?? 'none';
-            $discount_percentage_final = $appointment['discount_percentage'] ?? 0;
-            $discount_amount_final = $appointment['discount_amount'] ?? 0;
-
-            // ✅ UPDATE APPOINTMENT
-            if ($is_manual_discount) {
-                $pdo->prepare("
-                    UPDATE appointments
-                    SET amount_paid = ?,
-                        payment_status = ?,
-                        status = ?,
-                        discount_amount = ?,
-                        discount_type = ?,
-                        discount_percentage = ?,
-                        vat_amount = ?,
-                        updated_at = NOW()
-                    WHERE id = ? AND clinic_id = ?
-                ")->execute([
-                    $newAmountPaid,
-                    $isFullyPaid ? 'paid' : 'partial',
-                    $appointmentStatus,
-                    $discount_amount_final,
-                    $discount_type_final,
-                    $discount_percentage_final,
-                    $appointment['vat_amount'] ?? 0,
-                    $appointmentId,
-                    $clinic_id
-                ]);
-            } else {
-                $pdo->prepare("
-                    UPDATE appointments
-                    SET amount_paid = ?,
-                        payment_status = ?,
-                        status = ?,
-                        updated_at = NOW()
-                    WHERE id = ? AND clinic_id = ?
-                ")->execute([
-                    $newAmountPaid,
-                    $isFullyPaid ? 'paid' : 'partial',
-                    $appointmentStatus,
-                    $appointmentId,
-                    $clinic_id
-                ]);
-            }
-
-            $saleId = $appointment['sale_id'];
-            
-            // ============================================
-            // ✅ FIXED: GET ITEMS FROM APPOINTMENT WITH VALIDATION
-            // ============================================
-            $items_json = $appointment['appointment_items'] ?? '[]';
-            
-            // ✅ Check if items_json is valid JSON
-            $items_data = json_decode($items_json, true);
-            
-            // ✅ Validate: must be array, not empty, and first item must have 'name' key
-            $is_valid_items = is_array($items_data) && !empty($items_data) && isset($items_data[0]['name']);
-            
-            // ✅ If items is invalid, rebuild from product + lens
-            if (!$is_valid_items || json_last_error() !== JSON_ERROR_NONE) {
-                $items_data = [];
-                
-                // Get product (frame)
-                $productStmt = $pdo->prepare("
-                    SELECT name, price FROM products WHERE id = ? AND clinic_id = ?
-                ");
-                $productStmt->execute([$appointment['product_id'] ?? 0, $clinic_id]);
+        // ============================================
+        // ✅ STEP 3: GET ITEMS
+        // ============================================
+        $items_json = $appointment['appointment_items'] ?? '[]';
+        $items_data = json_decode($items_json, true);
+        
+        if (!is_array($items_data) || empty($items_data)) {
+            $items_data = [];
+            // Try to get from product + lens for appointments
+            if ($recordType === 'appointment' && $appointment['product_id']) {
+                $productStmt = $pdo->prepare("SELECT name, price FROM products WHERE id = ? AND clinic_id = ?");
+                $productStmt->execute([$appointment['product_id'], $clinic_id]);
                 $product = $productStmt->fetch(PDO::FETCH_ASSOC);
-                
                 if ($product) {
                     $items_data[] = [
-                        'name' => $product['name'] . ' (Frame)',
+                        'name' => $product['name'],
                         'price' => floatval($product['price']),
                         'quantity' => 1,
-                        'type' => 'product',
-                        'product_id' => $appointment['product_id'] ?? null
+                        'type' => 'product'
                     ];
                 }
-                
-                // Get lens
-                $lensType = $appointment['lens_type'] ?? '';
-                $lensPrices = [
-                    'single_vision' => 500,
-                    'progressive' => 1500,
-                    'blue_cut' => 800,
-                    'contact_daily' => 0,
-                    'contact_monthly' => 0
-                ];
-                $lensPrice = $lensPrices[$lensType] ?? 0;
-                
-                if ($lensType && $lensType !== 'frame_only' && $lensPrice > 0) {
-                    $lensName = ucwords(str_replace('_', ' ', $lensType));
-                    $items_data[] = [
-                        'name' => $lensName . ' Lens',
-                        'price' => floatval($lensPrice),
-                        'quantity' => 1,
-                        'type' => 'service',
-                        'lens_type' => $lensType
-                    ];
-                }
-                
-                $items_json = json_encode($items_data);
             }
-            
-            // ✅ If we have valid items, make sure they're properly formatted
-            if (is_array($items_data) && !empty($items_data)) {
-                foreach ($items_data as &$item) {
-                    if (!isset($item['name'])) $item['name'] = 'Item';
-                    if (!isset($item['price'])) $item['price'] = 0;
-                    if (!isset($item['quantity'])) $item['quantity'] = 1;
-                    if (!isset($item['type'])) $item['type'] = 'product';
-                }
-                $items_json = json_encode($items_data);
-            }
-            
-            // ============================================
-            // ✅ PHASE 4 & 6: SAVE OR UPDATE SALES RECORD WITH DISCOUNT TYPE
-            // ============================================
-            $vat_amount_save = $appointment['vat_amount'] ?? 0;
-            $subtotal_save = $appointment['subtotal'] ?? 0;
+            $items_json = json_encode($items_data);
+        }
 
+        // ============================================
+        // ✅ STEP 4: GET DISCOUNT INFO
+        // ============================================
+        $discount_type_final = $appointment['discount_type'] ?? 'none';
+        $discount_percentage_final = $appointment['discount_percentage'] ?? 0;
+        $discount_amount_final = $appointment['discount_amount'] ?? 0;
+        $vat_amount_save = $appointment['vat_amount'] ?? 0;
+        $subtotal_save = $appointment['subtotal'] ?? 0;
+
+        // ============================================
+        // ✅ STEP 5: UPDATE RECORD (APPOINTMENT OR SALE)
+        // ============================================
+        $saleId = $appointment['sale_id'];
+
+        if ($recordType === 'walkin') {
+            // ✅ UPDATE SALE DIRECTLY (walk-in)
+            $updateSale = $pdo->prepare("
+                UPDATE sales
+                SET amount_paid = ?,
+                    status = ?,
+                    updated_at = NOW()
+                WHERE id = ? AND clinic_id = ?
+            ");
+            $updateSale->execute([
+                $newAmountPaid,
+                $saleStatus,
+                $appointmentId,
+                $clinic_id
+            ]);
+            
+            $saleId = $appointmentId;
+            
+        } else {
+            // ✅ UPDATE APPOINTMENT
+            $updateAppt = $pdo->prepare("
+                UPDATE appointments
+                SET amount_paid = ?,
+                    payment_status = ?,
+                    status = ?,
+                    updated_at = NOW()
+                WHERE id = ? AND clinic_id = ?
+            ");
+            $updateAppt->execute([
+                $newAmountPaid,
+                $isFullyPaid ? 'paid' : 'partial',
+                $isFullyPaid ? 'paid' : 'confirmed',
+                $appointmentId,
+                $clinic_id
+            ]);
+
+            // ✅ UPDATE OR CREATE SALE FOR APPOINTMENT
             if ($saleId) {
-                // ✅ UPDATE EXISTING SALE WITH DISCOUNT TYPE
                 $updateSale = $pdo->prepare("
                     UPDATE sales
                     SET amount_paid = ?,
@@ -1688,8 +1669,6 @@ if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'record_
                         discount_percentage = ?,
                         vat_amount = ?,
                         total_amount = ?,
-                        verified_by = ?,
-                        id_number = ?,
                         updated_at = NOW()
                     WHERE id = ? AND clinic_id = ?
                 ");
@@ -1702,23 +1681,21 @@ if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'record_
                     $discount_percentage_final,
                     $vat_amount_save,
                     $totalAmount,
-                    $verified_by,
-                    $id_number,
                     $saleId,
                     $clinic_id
                 ]);
             } else {
-                // ✅ CREATE NEW SALE WITH DISCOUNT TYPE
+                // ✅ CREATE NEW SALE FOR APPOINTMENT
                 $saleStmt = $pdo->prepare("
                     INSERT INTO sales
                     (clinic_id, sale_date, patient_id, appointment_id, 
                      items, subtotal, discount, discount_type, discount_percentage,
                      vat_percentage, vat_amount, total_amount, amount_paid,
-                     payment_method, status, created_by, verified_by, id_number, created_at)
+                     payment_method, status, created_by, created_at)
                     VALUES (?, CURDATE(), ?, ?, 
                             ?, ?, ?, ?, ?,
                             ?, ?, ?, ?,
-                            ?, ?, ?, ?, ?, NOW())
+                            ?, ?, ?, NOW())
                 ");
                 $saleStmt->execute([
                     $clinic_id,
@@ -1735,14 +1712,12 @@ if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'record_
                     $newAmountPaid,
                     $paymentMethod,
                     $saleStatus,
-                    $user_id,
-                    $verified_by,
-                    $id_number
+                    $user_id
                 ]);
                 $saleId = $pdo->lastInsertId();
 
                 // ✅ INSERT SALE ITEMS
-                if (is_array($items_data) && !empty($items_data)) {
+                if (!empty($items_data)) {
                     foreach ($items_data as $item) {
                         $itemStmt = $pdo->prepare("
                             INSERT INTO sale_items
@@ -1762,91 +1737,110 @@ if ($method === 'POST' && isset($_GET['action']) && $_GET['action'] === 'record_
                     }
                 }
             }
+        }
 
-            // ✅ INSERT PAYMENT
-            $paymentStmt = $pdo->prepare("
-                INSERT INTO payments
-                (sale_id, appointment_id, clinic_id, user_id, amount, payment_method,
-                 payment_status, payment_type, reference_number, notes, payment_date, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, NOW(), NOW())
+        // ============================================
+        // ✅ STEP 6: INSERT PAYMENT RECORD
+        // ============================================
+        $paymentStmt = $pdo->prepare("
+            INSERT INTO payments
+            (sale_id, appointment_id, clinic_id, user_id, amount, payment_method,
+             payment_status, payment_type, reference_number, notes, payment_date, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, NOW(), NOW())
+        ");
+        $paymentStmt->execute([
+            $saleId,
+            ($recordType === 'walkin' ? null : $appointmentId),
+            $clinic_id,
+            $user_id,
+            $amount,
+            $paymentMethod,
+            $paymentType,
+            $referenceNumber,
+            $notes
+        ]);
+
+        // ============================================
+        // ✅ STEP 7: UPDATE INVENTORY IF FULLY PAID
+        // ============================================
+        if ($isFullyPaid && $recordType === 'appointment') {
+            $itemsStmt = $pdo->prepare("
+                SELECT item_id, item_type, quantity
+                FROM sale_items
+                WHERE sale_id = ? AND clinic_id = ?
             ");
-            $paymentStmt->execute([
-                $saleId,
-                $appointmentId,
-                $clinic_id,
-                $user_id,
-                $amount,
-                $paymentMethod,
-                $paymentType,
-                $referenceNumber,
-                $notes
-            ]);
+            $itemsStmt->execute([$saleId, $clinic_id]);
+            $items = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
 
-            // ✅ UPDATE INVENTORY IF FULLY PAID
-            if ($isFullyPaid) {
-                $itemsStmt = $pdo->prepare("
-                    SELECT item_id, item_type, quantity
-                    FROM sale_items
-                    WHERE sale_id = ? AND clinic_id = ?
-                ");
-                $itemsStmt->execute([$saleId, $clinic_id]);
-                $items = $itemsStmt->fetchAll(PDO::FETCH_ASSOC);
-
-                foreach ($items as $item) {
-                    if ($item['item_type'] === 'product') {
-                        $updateStmt = $pdo->prepare("
-                            UPDATE inventory
-                            SET stock = stock - ?,
-                                item_status = CASE
-                                    WHEN (stock - ?) <= 0 THEN 'out-of-stock'
-                                    WHEN (stock - ?) <= min_stock THEN 'low-stock'
-                                    ELSE 'in-stock'
-                                END,
-                                updated_at = NOW()
-                            WHERE id = ? AND clinic_id = ? AND stock >= ?
-                        ");
-                        $updateStmt->execute([
-                            $item['quantity'],
-                            $item['quantity'],
-                            $item['quantity'],
-                            $item['item_id'],
-                            $clinic_id,
-                            $item['quantity']
-                        ]);
-                    }
+            foreach ($items as $item) {
+                if ($item['item_type'] === 'product') {
+                    $updateStmt = $pdo->prepare("
+                        UPDATE inventory
+                        SET stock = stock - ?,
+                            item_status = CASE
+                                WHEN (stock - ?) <= 0 THEN 'out-of-stock'
+                                WHEN (stock - ?) <= min_stock THEN 'low-stock'
+                                ELSE 'in-stock'
+                            END,
+                            updated_at = NOW()
+                        WHERE id = ? AND clinic_id = ? AND stock >= ?
+                    ");
+                    $updateStmt->execute([
+                        $item['quantity'],
+                        $item['quantity'],
+                        $item['quantity'],
+                        $item['item_id'],
+                        $clinic_id,
+                        $item['quantity']
+                    ]);
                 }
-
-                $pdo->prepare("
-                    UPDATE appointments
-                    SET inventory_deducted = 1, 
-                        inventory_deducted_at = NOW()
-                    WHERE id = ? AND clinic_id = ?
-                ")->execute([$appointmentId, $clinic_id]);
             }
 
-            $pdo->commit();
+            $pdo->prepare("
+                UPDATE appointments
+                SET inventory_deducted = 1, 
+                    inventory_deducted_at = NOW()
+                WHERE id = ? AND clinic_id = ?
+            ")->execute([$appointmentId, $clinic_id]);
+        }
 
-            echo json_encode([
-                'success' => true,
+        // ============================================
+        // ✅ STEP 8: COMMIT TRANSACTION
+        // ============================================
+        $pdo->commit();
+
+        // ============================================
+        // ✅ STEP 9: RETURN SUCCESS RESPONSE
+        // ============================================
+        $customerName = $appointment['walk_in_name'] ?? $appointment['patient_name'] ?? 'Customer';
+        
+        echo json_encode([
+            'success' => true,
+            'message' => $isFullyPaid ? 'Payment completed successfully!' : 'Partial payment recorded',
+            'data' => [
+                'record_type' => $recordType,
+                'record_id' => $recordId,
                 'sale_id' => $saleId,
                 'sale_status' => $saleStatus,
-                'appointment_status' => $appointmentStatus,
                 'amount_paid' => $newAmountPaid,
                 'balance' => max(0, $totalAmount - $newAmountPaid),
                 'fully_paid' => $isFullyPaid,
                 'discount_type' => $discount_type_final,
                 'discount_percentage' => $discount_percentage_final,
                 'discount_amount' => $discount_amount_final,
-                'is_manual_discount' => $is_manual_discount,
-                'message' => $isFullyPaid ? 'Payment completed. Appointment is now completed and inventory updated.' : 'Partial payment recorded',
-                'items' => $items_data ?? []
-            ]);
+                'customer_name' => $customerName,
+                'payment_method' => $paymentMethod,
+                'items' => $items_data
+            ]
+        ]);
 
-        }
     } catch (Exception $e) {
         $pdo->rollBack();
         http_response_code(500);
-        echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
+        echo json_encode([
+            'success' => false, 
+            'message' => 'Error: ' . $e->getMessage()
+        ]);
     }
     exit;
 }

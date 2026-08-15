@@ -204,6 +204,85 @@ try {
             echo json_encode($history);
             exit();
         }
+
+        // ============================================
+// GET NO-SHOW INFO (using clinic refund_policy)
+// ============================================
+if ($method === 'GET' && isset($_GET['action']) && $_GET['action'] === 'get_no_show_info') {
+    if (!canEditAppointments()) {
+        echo json_encode(['success' => false, 'message' => 'Permission denied']);
+        exit;
+    }
+    
+    $appointmentId = (int)($_GET['appointment_id'] ?? 0);
+    
+    if (!$appointmentId) {
+        echo json_encode(['success' => false, 'message' => 'Missing appointment ID']);
+        exit;
+    }
+    
+    $stmt = $pdo->prepare("
+        SELECT 
+            a.downpayment_amount,
+            a.amount_paid,
+            a.patient_id,
+            a.user_id,
+            c.refund_policy,
+            c.penalty_amount,
+            c.name as clinic_name
+        FROM appointments a
+        JOIN clinics c ON a.clinic_id = c.id
+        WHERE a.id = ? AND a.clinic_id = ?
+    ");
+    $stmt->execute([$appointmentId, $clinicId]);
+    $appointment = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$appointment) {
+        echo json_encode(['success' => false, 'message' => 'Appointment not found']);
+        exit;
+    }
+    
+    $downpayment = (float)($appointment['downpayment_amount'] ?? $appointment['amount_paid'] ?? 0);
+    $refund_policy = $appointment['refund_policy'] ?? '2:100|1:50|0:0';
+    $penaltyAmount = (float)($appointment['penalty_amount'] ?? 500);
+    
+    // ✅ NO-SHOW = same day = 0 days before
+    $days_until = 0;
+    $refund_percent = 0;
+    
+    // ✅ Parse policy
+    $policy_parts = explode('|', $refund_policy);
+    foreach ($policy_parts as $part) {
+        list($days, $percent) = explode(':', $part);
+        if ($days_until >= (int)$days) {
+            $refund_percent = (int)$percent;
+            break;
+        }
+    }
+    
+    // ✅ Compute forfeit amount
+    $forfeitAmount = $downpayment;
+    $refundAmount = 0;
+    if ($refund_percent > 0) {
+        $refundAmount = $downpayment * ($refund_percent / 100);
+        $forfeitAmount = $downpayment - $refundAmount;
+    }
+    
+    echo json_encode([
+        'success' => true,
+        'downpayment' => $downpayment,
+        'forfeit_amount' => $forfeitAmount,
+        'refund_amount' => $refundAmount,
+        'penalty_amount' => $penaltyAmount,
+        'refund_percent' => $refund_percent,
+        'refund_policy' => $refund_policy,
+        'refund_eligible' => ($refund_percent > 0),
+        'clinic_name' => $appointment['clinic_name'],
+        'patient_id' => $appointment['patient_id'],
+        'user_id' => $appointment['user_id']
+    ]);
+    exit;
+}
         
         $date = $_GET['date'] ?? date('Y-m-d');
 
@@ -679,95 +758,266 @@ try {
             exit;
         }
 
-        // ──────────────────────────────────────────────────────────
-        //  UPDATE STATUS (completed / no-show)
-        // ──────────────────────────────────────────────────────────
-        if ($action === 'update_status') {
-            if (!canEditAppointments()) {
-                echo json_encode(['success' => false, 'message' => 'You do not have permission to update appointment status']);
-                exit();
-            }
-            
-            $apptId    = (int)($data['appointment_id'] ?? 0);
-            $userId    = (int)($data['user_id'] ?? 0);
-            $newStatus = $data['status'] ?? '';
+// ──────────────────────────────────────────────────────────
+//  UPDATE STATUS (completed / no-show)
+// ──────────────────────────────────────────────────────────
+if ($action === 'update_status') {
+    if (!canEditAppointments()) {
+        echo json_encode(['success' => false, 'message' => 'You do not have permission to update appointment status']);
+        exit();
+    }
+    
+    $apptId    = (int)($data['appointment_id'] ?? 0);
+    $userId    = (int)($data['user_id'] ?? 0);
+    $newStatus = $data['status'] ?? '';
 
-            $allowed = ['completed', 'no-show', 'cancelled'];
-            if (!$apptId || !in_array($newStatus, $allowed)) {
-                echo json_encode(['success' => false, 'message' => 'Invalid request']);
-                exit;
-            }
+    $allowed = ['completed', 'no-show', 'cancelled'];
+    if (!$apptId || !in_array($newStatus, $allowed)) {
+        echo json_encode(['success' => false, 'message' => 'Invalid request']);
+        exit;
+    }
 
-            $check = $pdo->prepare("SELECT id, user_id, payment_status FROM appointments WHERE id = ? AND clinic_id = ?");
-            $check->execute([$apptId, $clinicId]);
-            $appt = $check->fetch();
-            
-            if (!$appt) {
-                echo json_encode(['success' => false, 'message' => 'Appointment not found']);
-                exit;
-            }
+    // ✅ Get appointment with clinic refund_policy
+    $check = $pdo->prepare("
+        SELECT a.*, 
+               c.refund_policy,
+               c.penalty_amount,
+               c.name as clinic_name
+        FROM appointments a
+        JOIN clinics c ON a.clinic_id = c.id
+        WHERE a.id = ? AND a.clinic_id = ?
+    ");
+    $check->execute([$apptId, $clinicId]);
+    $appt = $check->fetch();
+    
+    if (!$appt) {
+        echo json_encode(['success' => false, 'message' => 'Appointment not found']);
+        exit;
+    }
 
-            if (!$userId && $appt['user_id']) {
-                $userId = $appt['user_id'];
-            }
+    if (!$userId && $appt['user_id']) {
+        $userId = $appt['user_id'];
+    }
 
-            if ($newStatus === 'no-show') {
-                if ($appt['payment_status'] === 'paid') {
-                    $stmt = $pdo->prepare("UPDATE appointments SET status='paid', updated_at=NOW() WHERE id=? AND clinic_id=?");
-                    $stmt->execute([$apptId, $clinicId]);
-                    $message = "Appointment marked as no-show but kept as paid (refund available)";
-                } else {
-                    $stmt = $pdo->prepare("UPDATE appointments SET status='no-show', updated_at=NOW() WHERE id=? AND clinic_id=?");
-                    $stmt->execute([$apptId, $clinicId]);
-                    $message = "Appointment marked as no-show";
-                }
-            } else {
-                $stmt = $pdo->prepare("UPDATE appointments SET status=?, updated_at=NOW() WHERE id=? AND clinic_id=?");
-                $stmt->execute([$newStatus, $apptId, $clinicId]);
-                $message = "Appointment marked as $newStatus";
-            }
+// ==========================================
+// ✅ NO-SHOW - TAMA: Forfeit + Customer Request
+// ==========================================
+if ($newStatus === 'no-show') {
+    $downpayment = (float)($appt['downpayment_amount'] ?? $appt['amount_paid'] ?? 0);
+    $refund_policy = $appt['refund_policy'] ?? '2:100|1:50|0:0';
+    $penaltyAmount = (float)($appt['penalty_amount'] ?? 500);
+    
+    // ✅ NO-SHOW = same day = 0 days before
+    $days_until = 0;
+    $refund_percent = 0;
+    
+    // ✅ Parse policy
+    $policy_parts = explode('|', $refund_policy);
+    foreach ($policy_parts as $part) {
+        list($days, $percent) = explode(':', $part);
+        if ($days_until >= (int)$days) {
+            $refund_percent = (int)$percent;
+            break;
+        }
+    }
+    
+    // ✅ Determine what happens based on refund percent
+    if ($refund_percent == 0) {
+        // ❌ No refund - forfeit all
+        $forfeitedAmount = $downpayment;
+        $refundAmount = 0;
+        $paymentStatus = 'forfeited';
+        $apptStatus = 'no-show';
+        $refundEligible = false;
+        $eligibleRefund = 0;
+        $refundWindow = 0;
+        $message = "Downpayment of ₱" . number_format($forfeitedAmount, 2) . " forfeited due to no-show. No refund available.";
+    } else {
+        // ✅ May refund - pero customer ang magre-request!
+        $refundAmount = $downpayment * ($refund_percent / 100);
+        $forfeitedAmount = $downpayment - $refundAmount;
+        $paymentStatus = 'forfeited';     // ✅ Forfeited muna!
+        $apptStatus = 'no-show';          // ✅ No-show status!
+        $refundEligible = true;
+        $eligibleRefund = $refundAmount;
+        $refundWindow = 7; // Days to request refund
+        $message = "Downpayment of ₱" . number_format($forfeitedAmount, 2) . " forfeited. "
+                 . "You are eligible for {$refund_percent}% refund (₱" . number_format($refundAmount, 2) . "). "
+                 . "Please request a refund within {$refundWindow} days.";
+    }
 
-            if ($stmt->rowCount() === 0) {
-                echo json_encode(['success' => false, 'message' => 'No changes made']);
-                exit;
-            }
+    // ✅ Start transaction
+    $pdo->beginTransaction();
+    
+    // ✅ 1. Update appointment
+    $stmt = $pdo->prepare("
+        UPDATE appointments 
+        SET status = ?,
+            no_show_marked_by = 'staff',
+            no_show_marked_at = NOW(),
+            forfeited_amount = ?,
+            refund_eligible = ?,
+            eligible_refund_amount = ?,
+            refund_percentage = ?,
+            refund_eligible_until = DATE_ADD(NOW(), INTERVAL ? DAY),
+            updated_at = NOW()
+        WHERE id = ? AND clinic_id = ?
+    ");
+    $stmt->execute([
+        $apptStatus,
+        $forfeitedAmount,
+        $refundEligible ? 1 : 0,
+        $eligibleRefund,
+        $refund_percent,
+        $refundWindow,
+        $apptId,
+        $clinicId
+    ]);
 
-            if ($userId > 0) {
-                $apptDetails = $pdo->prepare("SELECT a.*, c.name AS clinic_name FROM appointments a LEFT JOIN clinics c ON a.clinic_id = c.id WHERE a.id = ?");
-                $apptDetails->execute([$apptId]);
-                $row = $apptDetails->fetch(PDO::FETCH_ASSOC);
+    // ✅ 2. Update payment status - FORFEITED muna!
+    if ($downpayment > 0) {
+        $pdo->prepare("
+            UPDATE payments 
+            SET payment_status = ?,
+                forfeited_amount = ?,
+                refunded_amount = ?,
+                updated_at = NOW()
+            WHERE appointment_id = ? AND clinic_id = ?
+        ")->execute([
+            $paymentStatus,      // 'forfeited'
+            $forfeitedAmount,
+            0,                   // Walang refunded amount yet
+            $apptId,
+            $clinicId
+        ]);
+    }
 
-                if ($row) {
-                    $formattedDate = date('F j, Y', strtotime($row['appointment_date']));
-                    $formattedTime = date('g:i A',  strtotime($row['appointment_time']));
+    // ✅ 3. Update sales status - CANCELLED muna!
+    $pdo->prepare("
+        UPDATE sales 
+        SET status = ?,
+            forfeited_amount = ?,
+            updated_at = NOW()
+        WHERE appointment_id = ? AND clinic_id = ?
+    ")->execute([
+        'Cancelled',
+        $forfeitedAmount,
+        $apptId,
+        $clinicId
+    ]);
 
-                    if ($newStatus === 'completed') {
-                        notifyUser($pdo, $userId,
-                            'Appointment Completed ✅',
-                            "Your appointment at {$row['clinic_name']} on {$formattedDate} at {$formattedTime} has been completed. Thank you!",
-                            'appointment', 'my-appointments.php', $apptId
-                        );
-                    } elseif ($newStatus === 'no-show') {
-                        if ($appt['payment_status'] === 'paid') {
-                            notifyUser($pdo, $userId,
-                                'Missed Appointment - Refund Available',
-                                "You missed your appointment at {$row['clinic_name']} on {$formattedDate} at {$formattedTime}. Since you already paid, you can request a refund or rebook.",
-                                'appointment', 'my-appointments.php', $apptId
-                            );
-                        } else {
-                            notifyUser($pdo, $userId,
-                                'Marked as No-show',
-                                "You were marked as no-show for your appointment at {$row['clinic_name']} on {$formattedDate} at {$formattedTime}.",
-                                'appointment', 'my-appointments.php', $apptId
-                            );
-                        }
-                    }
-                }
-            }
+    // ✅ 4. HUWAG gumawa ng refund request dito!
+    // Customer ang magre-request later
+    
+    // ✅ 5. Send notification to customer
+    if ($userId > 0) {
+        $formattedDate = date('F j, Y', strtotime($appt['appointment_date']));
+        $formattedTime = date('g:i A', strtotime($appt['appointment_time']));
+        
+        if ($refundEligible) {
+            $notifMessage = "You missed your appointment at {$appt['clinic_name']} on {$formattedDate} at {$formattedTime}. "
+                . "Your downpayment of ₱" . number_format($forfeitedAmount, 2) . " has been forfeited. "
+                . "You are eligible for a {$refund_percent}% refund (₱" . number_format($eligibleRefund, 2) . "). "
+                . "Please request a refund within {$refundWindow} days.";
+                
+            notifyUser($pdo, $userId,
+                'Missed Appointment - Refund Available 💰',
+                $notifMessage,
+                'refund',
+                'my-appointments.php',
+                $apptId
+            );
+        } else {
+            $notifMessage = "You missed your appointment at {$appt['clinic_name']} on {$formattedDate} at {$formattedTime}. "
+                . "Your downpayment of ₱" . number_format($forfeitedAmount, 2) . " has been forfeited. "
+                . "No refund is available per clinic policy.";
+                
+            notifyUser($pdo, $userId,
+                'Missed Appointment - No Refund ❌',
+                $notifMessage,
+                'appointment',
+                'my-appointments.php',
+                $apptId
+            );
+        }
+    }
 
-            echo json_encode(['success' => true, 'message' => $message]);
+    // ✅ 6. Log audit
+    $auditStmt = $pdo->prepare("
+        INSERT INTO audit_logs (user_id, clinic_id, action, table_name, record_id, old_values, new_values, ip_address, user_agent, created_at)
+        VALUES (?, ?, 'NO_SHOW', 'appointments', ?, NULL, ?, ?, ?, NOW())
+    ");
+    $auditStmt->execute([
+        $_SESSION['user_id'],
+        $clinicId,
+        $apptId,
+        json_encode([
+            'refund_percent' => $refund_percent,
+            'refund_policy' => $refund_policy,
+            'forfeited_amount' => $forfeitedAmount,
+            'refund_eligible' => $refundEligible,
+            'eligible_refund' => $eligibleRefund,
+            'payment_status' => $paymentStatus,
+            'appointment_status' => $apptStatus,
+            'refund_window' => $refundWindow
+        ]),
+        $_SERVER['REMOTE_ADDR'] ?? null,
+        $_SERVER['HTTP_USER_AGENT'] ?? null
+    ]);
+
+    // ✅ 7. Commit transaction
+    $pdo->commit();
+
+    echo json_encode([
+        'success' => true,
+        'message' => $message,
+        'data' => [
+            'appointment_status' => $apptStatus,
+            'payment_status' => $paymentStatus,
+            'forfeited_amount' => $forfeitedAmount,
+            'refund_amount' => $refundAmount,
+            'refund_percent' => $refund_percent,
+            'refund_eligible' => $refundEligible,
+            'eligible_refund' => $eligibleRefund,
+            'refund_window' => $refundWindow,
+            'refund_policy' => $refund_policy
+        ]
+    ]);
+    exit;
+}
+    
+    // ==========================================
+    // ✅ COMPLETED - Normal lang
+    // ==========================================
+    if ($newStatus === 'completed') {
+        $stmt = $pdo->prepare("UPDATE appointments SET status=?, completed_at=NOW(), updated_at=NOW() WHERE id=? AND clinic_id=?");
+        $stmt->execute([$newStatus, $apptId, $clinicId]);
+        
+        if ($stmt->rowCount() === 0) {
+            echo json_encode(['success' => false, 'message' => 'No changes made']);
             exit;
         }
+
+        if ($userId > 0) {
+            $apptDetails = $pdo->prepare("SELECT a.*, c.name AS clinic_name FROM appointments a LEFT JOIN clinics c ON a.clinic_id = c.id WHERE a.id = ?");
+            $apptDetails->execute([$apptId]);
+            $row = $apptDetails->fetch(PDO::FETCH_ASSOC);
+
+            if ($row) {
+                $formattedDate = date('F j, Y', strtotime($row['appointment_date']));
+                $formattedTime = date('g:i A', strtotime($row['appointment_time']));
+                notifyUser($pdo, $userId,
+                    'Appointment Completed ✅',
+                    "Your appointment at {$row['clinic_name']} on {$formattedDate} at {$formattedTime} has been completed. Thank you!",
+                    'appointment', 'my-appointments.php', $apptId
+                );
+            }
+        }
+
+        echo json_encode(['success' => true, 'message' => 'Appointment marked as completed']);
+        exit;
+    }
+}
 
         // ──────────────────────────────────────────────────────────
         //  MARK ARRIVED

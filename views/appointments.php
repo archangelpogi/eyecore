@@ -49,127 +49,16 @@ $stmtStats = $pdo->prepare("
 $stmtStats->execute([$today, $clinicId]);
 $stats = $stmtStats->fetch(PDO::FETCH_ASSOC);
 
-// ── PENDING APPROVAL (status = 'pending') ───────────────────────
-$stmtPending = $pdo->prepare("
-    SELECT a.*, 
-           a.id as appointment_id,
-           a.user_id, 
-           a.patient_id,
-           a.subtotal,
-           a.discount_type,
-           a.discount_percentage,
-           a.discount_amount,
-           a.vat_percentage,
-           a.vat_amount,
-           a.total_amount,
-           COALESCE(u.first_name, p.first_name) as first_name,
-           COALESCE(u.last_name, p.last_name) as last_name,
-           u.email AS user_email,
-           u.contact AS user_contact,
-           p.email AS patient_email,
-           p.contact AS patient_contact,
-           pr.name  AS product_name,
-           pr.price AS product_price,
-           srv.name AS service_name,
-           srv.price AS service_price,
-           d.name   AS doctor_name,
-           d.specialty AS doctor_specialty
-    FROM appointments a
-    LEFT JOIN users    u  ON a.user_id    = u.id
-    LEFT JOIN patients p  ON a.patient_id = p.id
-    LEFT JOIN products pr ON a.product_id = pr.id
-    LEFT JOIN services srv ON a.item_id = srv.id AND a.item_type = 'service'
-    LEFT JOIN doctors  d  ON a.doctor_id  = d.id
-    WHERE a.clinic_id = ? AND a.status = 'pending'
-      AND a.appointment_type = 'online'
-    ORDER BY a.created_at ASC
+// ── REFUND REQUESTS (for stats count) ──────────────────────────
+$stmtRefundsCount = $pdo->prepare("
+    SELECT COUNT(*) as total 
+    FROM refund_requests 
+    WHERE clinic_id = ? AND status = 'pending'
 ");
-$stmtPending->execute([$clinicId]);
-$pendingList = $stmtPending->fetchAll(PDO::FETCH_ASSOC);
+$stmtRefundsCount->execute([$clinicId]);
+$pendingRefunds = $stmtRefundsCount->fetch(PDO::FETCH_ASSOC)['total'] ?? 0;
 
-// ── CONFIRMED (status = 'confirmed') - waiting for payment ──────
-$stmtConfirmed = $pdo->prepare("
-    SELECT a.*,
-           a.id as appointment_id,
-           a.subtotal,
-           a.discount_type,
-           a.discount_percentage,
-           a.discount_amount,
-           a.vat_percentage,
-           a.vat_amount,
-           a.total_amount,
-           a.amount_paid,        -- ✅ ADD THIS
-           a.downpayment_amount,
-           a.balance_amount,
-           u.first_name, u.last_name,
-           COALESCE(p.first_name, u.first_name) as first_name,
-           COALESCE(p.last_name, u.last_name) as last_name,
-           u.email AS user_email,
-           u.contact AS user_contact,
-           pr.name  AS product_name,
-           pr.price AS product_price,
-           srv.name AS service_name,
-           srv.price AS service_price,
-           d.name   AS doctor_name,
-           d.specialty AS doctor_specialty,
-           pay.payment_status AS pay_status,
-           pay.payment_method,
-           pay.reference_number
-    FROM appointments a
-    LEFT JOIN users    u   ON a.user_id    = u.id
-    LEFT JOIN patients p   ON a.patient_id = p.id
-    LEFT JOIN products pr  ON a.product_id = pr.id
-    LEFT JOIN services srv ON a.item_id = srv.id AND a.item_type = 'service'
-    LEFT JOIN doctors  d   ON a.doctor_id  = d.id
-    LEFT JOIN payments pay ON a.id         = pay.appointment_id
-    WHERE a.clinic_id = ? AND a.status = 'confirmed'
-    ORDER BY a.appointment_date ASC, a.appointment_time ASC
-");
-$stmtConfirmed->execute([$clinicId]);
-$confirmedList = $stmtConfirmed->fetchAll(PDO::FETCH_ASSOC);
-
-// ── PAID (status = 'paid' or 'completed') - for display ──────────────
-$stmtPaid = $pdo->prepare("
-    SELECT a.*,
-           a.id as appointment_id,
-           a.subtotal,
-           a.discount_type,
-           a.discount_percentage,
-           a.discount_amount,
-           a.vat_percentage,
-           a.vat_amount,
-           a.total_amount,
-           a.amount_paid,        -- ✅ ADD THIS
-           a.downpayment_amount,
-           a.balance_amount,
-           u.first_name, u.last_name,
-           COALESCE(p.first_name, u.first_name) as first_name,
-           COALESCE(p.last_name, u.last_name) as last_name,
-           u.email AS user_email,
-           u.contact AS user_contact,
-           pr.name  AS product_name,
-           pr.price AS product_price,
-           srv.name AS service_name,
-           srv.price AS service_price,
-           d.name   AS doctor_name,
-           d.specialty AS doctor_specialty,
-           pay.payment_method,
-           pay.reference_number,
-           pay.payment_date
-    FROM appointments a
-    LEFT JOIN users    u   ON a.user_id    = u.id
-    LEFT JOIN patients p   ON a.patient_id = p.id
-    LEFT JOIN products pr  ON a.product_id = pr.id
-    LEFT JOIN services srv ON a.item_id = srv.id AND a.item_type = 'service'
-    LEFT JOIN doctors  d   ON a.doctor_id  = d.id
-    LEFT JOIN payments pay ON a.id         = pay.appointment_id
-    WHERE a.clinic_id = ? AND a.status IN ('paid', 'completed')
-    ORDER BY a.appointment_date ASC, a.appointment_time ASC
-");
-$stmtPaid->execute([$clinicId]);
-$paidList = $stmtPaid->fetchAll(PDO::FETCH_ASSOC);
-
-// ── REFUND REQUESTS (ALL - including failed, processing, completed) ──
+// ── REFUND REQUESTS (ALL) ──────────────────────────────────────
 $stmtRefunds = $pdo->prepare("
     SELECT rr.*,
            a.appointment_date, a.appointment_time,
@@ -194,8 +83,8 @@ $stmtRefunds = $pdo->prepare("
 $stmtRefunds->execute([$clinicId]);
 $refundList = $stmtRefunds->fetchAll(PDO::FETCH_ASSOC);
 
-// ── Today's schedule (all statuses) ─────────────────────────────
-$stmtToday = $pdo->prepare("
+// ── ALL APPOINTMENTS (Unified query for the table) ─────────────
+$stmtAll = $pdo->prepare("
     SELECT a.*,
            a.id as appointment_id,
            a.subtotal,
@@ -205,18 +94,28 @@ $stmtToday = $pdo->prepare("
            a.vat_percentage,
            a.vat_amount,
            a.total_amount,
+           a.amount_paid,
+           a.downpayment_amount,
+           a.balance_amount,
            COALESCE(
                CONCAT(u.first_name, ' ', u.last_name),
                CONCAT(p.first_name, ' ', p.last_name),
                a.service_type,
                'Walk-in Patient'
            ) AS patient_name,
+           u.email AS user_email,
+           u.contact AS user_contact,
            COALESCE(pr.name, srv.name, a.service_type, '—') AS item_display_name,
            pr.name AS product_name,
+           pr.price AS product_price,
            srv.name AS service_name,
+           srv.price AS service_price,
            d.name  AS doctor_name,
+           d.specialty AS doctor_specialty,
            pay.payment_status AS pay_status,
            pay.payment_method,
+           pay.reference_number,
+           pay.payment_date,
            a.status as appointment_status,
            a.arrived_at,
            a.consultation_started_at,
@@ -228,253 +127,16 @@ $stmtToday = $pdo->prepare("
     LEFT JOIN services srv ON a.item_id = srv.id AND a.item_type = 'service'
     LEFT JOIN doctors  d   ON a.doctor_id  = d.id
     LEFT JOIN payments pay ON a.id         = pay.appointment_id
-    WHERE a.appointment_date = ? AND a.clinic_id = ?
-    ORDER BY a.appointment_time ASC
+    WHERE a.clinic_id = ?
+    ORDER BY a.appointment_date DESC, a.appointment_time DESC
 ");
-$stmtToday->execute([$today, $clinicId]);
-$todayList = $stmtToday->fetchAll(PDO::FETCH_ASSOC);
-
-// ── Upcoming days ────────────────────────────────────────────────
-$stmtUpcoming = $pdo->prepare("
-    SELECT appointment_date, COUNT(*) AS cnt
-    FROM appointments
-    WHERE appointment_date > ? AND clinic_id = ?
-    GROUP BY appointment_date
-    ORDER BY appointment_date ASC
-    LIMIT 5
-");
-$stmtUpcoming->execute([$today, $clinicId]);
-$upcomingDays = $stmtUpcoming->fetchAll(PDO::FETCH_ASSOC);
+$stmtAll->execute([$clinicId]);
+$allAppointments = $stmtAll->fetchAll(PDO::FETCH_ASSOC);
 
 // ── Doctors list for modals ──────────────────────────────────────
 $stmtDoctors = $pdo->prepare("SELECT * FROM doctors WHERE clinic_id = ? AND is_active = 1 ORDER BY name ASC");
 $stmtDoctors->execute([$clinicId]);
 $doctorsList = $stmtDoctors->fetchAll(PDO::FETCH_ASSOC);
-
-function statusBadge(string $s): string {
-    return match($s) {
-        'pending'        => '<span class="badge bg-warning text-dark">Pending</span>',
-        'confirmed'      => '<span class="badge bg-info text-dark">Confirmed</span>',
-        'arrived'        => '<span class="badge bg-success">Arrived</span>',
-        'in_progress'    => '<span class="badge bg-primary">In Consultation</span>',
-        'waiting_payment'=> '<span class="badge bg-warning">Waiting Payment</span>',
-        'paid'           => '<span class="badge bg-primary">Paid</span>',
-        'completed'      => '<span class="badge bg-success">Completed</span>',
-        'cancelled'      => '<span class="badge bg-danger">Cancelled</span>',
-        'no-show'        => '<span class="badge bg-secondary">No-show</span>',
-        'refunded'       => '<span class="badge bg-dark">Refunded</span>',
-        default          => '<span class="badge bg-secondary">'.ucfirst($s).'</span>',
-    };
-}
-
-// ============================================
-// ✅ FIX: getItemTypeBadge with multiple services support
-// ============================================
-function getItemTypeBadge($appt) {
-    global $pdo;
-    
-    // Check if multiple services
-    $aptId = $appt['appointment_id'] ?? $appt['id'] ?? 0;
-    if ($aptId > 0) {
-        try {
-            $stmt = $pdo->prepare("SELECT COUNT(*) as cnt FROM appointment_services WHERE appointment_id = ?");
-            $stmt->execute([$aptId]);
-            $count = $stmt->fetch(PDO::FETCH_ASSOC)['cnt'] ?? 0;
-            
-            if ($count > 1) {
-                return '<span class="badge bg-success">' . $count . ' Services</span>';
-            } elseif ($count === 1) {
-                return '<span class="badge bg-success">Service</span>';
-            }
-        } catch (Exception $e) {
-            // Fallback to single item logic
-        }
-    }
-    
-    // Fallback
-    if(!empty($appt['product_name'])) {
-        return '<span class="badge bg-primary">Product</span>';
-    } elseif(!empty($appt['service_name']) || !empty($appt['service_type'])) {
-        return '<span class="badge bg-success">Service</span>';
-    }
-    return '<span class="badge bg-secondary">General</span>';
-}
-
-// ============================================
-// ✅ FIX: getItemDetails with multiple services support
-// ============================================
-function getItemDetails($appt) {
-    global $pdo;
-    
-    $html = '';
-    $aptId = $appt['appointment_id'] ?? $appt['id'] ?? 0;
-    
-    // Try to get services from appointment_services table
-    if ($aptId > 0) {
-        try {
-            $stmt = $pdo->prepare("
-                SELECT s.name, aps.price 
-                FROM appointment_services aps
-                JOIN services s ON aps.service_id = s.id
-                WHERE aps.appointment_id = ?
-            ");
-            $stmt->execute([$aptId]);
-            $services = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            if (count($services) > 1) {
-                $html .= '<div class="small mb-1">
-                            <i class="bi bi-list-ul text-primary me-1"></i>
-                            <strong>Services (' . count($services) . '):</strong>
-                          </div>';
-                $total = 0;
-                foreach ($services as $s) {
-                    $total += $s['price'];
-                    $html .= '<div class="small ms-3 text-muted">• ' . htmlspecialchars($s['name']) . ' - ₱' . number_format($s['price'], 2) . '</div>';
-                }
-                $html .= '<div class="small ms-3 fw-bold text-success">Total: ₱' . number_format($total, 2) . '</div>';
-                return $html;
-            } elseif (count($services) === 1) {
-                $s = $services[0];
-                $html = '<div class="small mb-1">
-                            <i class="bi bi-star text-warning me-1"></i>
-                            <strong>Service:</strong> ' . htmlspecialchars($s['name']) . '
-                            <br><span class="text-success ms-4">₱' . number_format($s['price'], 2) . '</span>
-                         </div>';
-                return $html;
-            }
-        } catch (Exception $e) {
-            // Fallback to single item logic
-        }
-    }
-    
-    // Fallback to existing logic (single item)
-    if(!empty($appt['product_name'])) {
-        $html = '<div class="small mb-1">
-                    <i class="bi bi-box text-primary me-1"></i>
-                    <strong>Product:</strong> ' . htmlspecialchars($appt['product_name']) . '
-                    <br><span class="text-success ms-4">₱' . number_format($appt['product_price'] ?? 0, 2) . '</span>
-                  </div>';
-    } 
-    elseif(!empty($appt['service_name'])) {
-        $html = '<div class="small mb-1">
-                    <i class="bi bi-star text-warning me-1"></i>
-                    <strong>Service:</strong> ' . htmlspecialchars($appt['service_name']) . '
-                    <br><span class="text-success ms-4">₱' . number_format($appt['service_price'] ?? 0, 2) . '</span>
-                  </div>';
-    }
-    elseif(!empty($appt['service_type'])) {
-        $html = '<div class="small mb-1">
-                    <i class="bi bi-star text-warning me-1"></i>
-                    <strong>Service:</strong> ' . htmlspecialchars($appt['service_type']) . '
-                  </div>';
-    } else {
-        $html = '<div class="small mb-1 text-muted">
-                    <i class="bi bi-question-circle me-1"></i>
-                    <em>No item specified</em>
-                  </div>';
-    }
-    
-    return $html;
-}
-
-// ============================================
-// ✅ NEW: Display discount badge
-// ============================================
-function getDiscountBadge($appt) {
-    $html = '';
-    if(!empty($appt['discount_type']) && $appt['discount_type'] !== 'none') {
-        $html .= '<div class="small mt-1">';
-        $html .= '<span class="badge bg-info">';
-        $html .= '<i class="bi bi-tag me-1"></i>';
-        $html .= strtoupper($appt['discount_type']) . ' ' . round($appt['discount_percentage'] ?? 0) . '% OFF';
-        $html .= '</span>';
-        if(($appt['vat_percentage'] ?? 0) == 0) {
-            $html .= '<span class="badge bg-success ms-1">VAT Exempt</span>';
-        }
-        $html .= '</div>';
-    }
-    return $html;
-}
-
-// ============================================
-// ✅ FIXED: Display price breakdown with TOTAL PAID
-// ============================================
-function getPriceBreakdown($appt) {
-    $html = '';
-    
-    $subtotal = $appt['subtotal'] ?? 0;
-    $discount_type = $appt['discount_type'] ?? 'none';
-    $discount_percentage = $appt['discount_percentage'] ?? 0;
-    $discount_amount = $appt['discount_amount'] ?? 0;
-    $vat_percentage = $appt['vat_percentage'] ?? 0;
-    $vat_amount = $appt['vat_amount'] ?? 0;
-    $total_amount = $appt['total_amount'] ?? 0;
-    $amount_paid = $appt['amount_paid'] ?? 0;
-    $status = $appt['status'] ?? '';
-    
-    // ✅ Determine what to show as TOTAL PAID
-    // For 'confirmed' - show total_amount (₱1,200.00)
-    // For 'paid' or 'completed' - show amount_paid (₱1,200.00)
-    if ($status === 'confirmed' || $status === 'waiting_payment') {
-        $display_total = $total_amount; // ₱1,200.00
-    } else {
-        $display_total = $amount_paid > 0 ? $amount_paid : $total_amount;
-    }
-    
-    $html .= '<div class="small mt-2 pt-2 border-top">';
-    
-    if ($discount_type !== 'none' && $discount_amount > 0) {
-        // PWD/Senior Customer
-        $html .= '<div class="d-flex justify-content-between">';
-        $html .= '<span class="text-muted">Subtotal:</span>';
-        $html .= '<span>₱' . number_format($subtotal, 2) . '</span>';
-        $html .= '</div>';
-        
-        $html .= '<div class="d-flex justify-content-between text-danger">';
-        $html .= '<span>' . strtoupper($discount_type) . ' Discount (' . round($discount_percentage) . '%):</span>';
-        $html .= '<span>-₱' . number_format($discount_amount, 2) . '</span>';
-        $html .= '</div>';
-        
-        $html .= '<div class="d-flex justify-content-between">';
-        $html .= '<span class="text-muted">Subtotal after discount:</span>';
-        $html .= '<span>₱' . number_format($subtotal - $discount_amount, 2) . '</span>';
-        $html .= '</div>';
-        
-        if ($vat_amount > 0) {
-            $html .= '<div class="d-flex justify-content-between text-warning">';
-            $html .= '<span>VAT (' . round($vat_percentage) . '%):</span>';
-            $html .= '<span>+₱' . number_format($vat_amount, 2) . '</span>';
-            $html .= '</div>';
-        } else {
-            $html .= '<div class="d-flex justify-content-between text-success">';
-            $html .= '<span>VAT:</span>';
-            $html .= '<span>Exempt</span>';
-            $html .= '</div>';
-        }
-    } else {
-        // Regular customer
-        $html .= '<div class="d-flex justify-content-between">';
-        $html .= '<span class="text-muted">Subtotal:</span>';
-        $html .= '<span>₱' . number_format($subtotal, 2) . '</span>';
-        $html .= '</div>';
-        
-        if ($vat_amount > 0) {
-            $html .= '<div class="d-flex justify-content-between text-warning">';
-            $html .= '<span>VAT (' . round($vat_percentage) . '%):</span>';
-            $html .= '<span>+₱' . number_format($vat_amount, 2) . '</span>';
-            $html .= '</div>';
-        }
-    }
-    
-    // ✅ Always show TOTAL PAID
-    $html .= '<div class="d-flex justify-content-between fw-bold">';
-    $html .= '<span>TOTAL PAID:</span>';
-    $html .= '<span style="color: var(--success);">₱' . number_format($display_total, 2) . '</span>';
-    $html .= '</div>';
-    $html .= '</div>';
-    
-    return $html;
-}
 
 // ── Services list for dropdown ────────────
 $stmtServices = $pdo->prepare("
@@ -513,6 +175,191 @@ $stmtWarranty = $pdo->prepare("
 ");
 $stmtWarranty->execute([$clinicId]);
 $warrantyClaims = $stmtWarranty->fetchAll(PDO::FETCH_ASSOC);
+
+// ============================================
+// EXISTING FUNCTIONS - HINDI GAGALAWIN
+// ============================================
+function statusBadge(string $s): string {
+    return match($s) {
+        'pending'        => '<span class="badge bg-warning text-dark">Pending</span>',
+        'confirmed'      => '<span class="badge bg-info text-dark">Confirmed</span>',
+        'arrived'        => '<span class="badge bg-success">Arrived</span>',
+        'in_progress'    => '<span class="badge bg-primary">In Consultation</span>',
+        'waiting_payment'=> '<span class="badge bg-warning">Waiting Payment</span>',
+        'paid'           => '<span class="badge bg-primary">Paid</span>',
+        'completed'      => '<span class="badge bg-success">Completed</span>',
+        'cancelled'      => '<span class="badge bg-danger">Cancelled</span>',
+        'no-show'        => '<span class="badge bg-secondary">No-show</span>',
+        'refunded'       => '<span class="badge bg-dark">Refunded</span>',
+        default          => '<span class="badge bg-secondary">'.ucfirst($s).'</span>',
+    };
+}
+
+function getItemTypeBadge($appt) {
+    global $pdo;
+    $aptId = $appt['appointment_id'] ?? $appt['id'] ?? 0;
+    if ($aptId > 0) {
+        try {
+            $stmt = $pdo->prepare("SELECT COUNT(*) as cnt FROM appointment_services WHERE appointment_id = ?");
+            $stmt->execute([$aptId]);
+            $count = $stmt->fetch(PDO::FETCH_ASSOC)['cnt'] ?? 0;
+            if ($count > 1) {
+                return '<span class="badge bg-success">' . $count . ' Services</span>';
+            } elseif ($count === 1) {
+                return '<span class="badge bg-success">Service</span>';
+            }
+        } catch (Exception $e) {}
+    }
+    if(!empty($appt['product_name'])) {
+        return '<span class="badge bg-primary">Product</span>';
+    } elseif(!empty($appt['service_name']) || !empty($appt['service_type'])) {
+        return '<span class="badge bg-success">Service</span>';
+    }
+    return '<span class="badge bg-secondary">General</span>';
+}
+
+function getItemDetails($appt) {
+    global $pdo;
+    $html = '';
+    $aptId = $appt['appointment_id'] ?? $appt['id'] ?? 0;
+    if ($aptId > 0) {
+        try {
+            $stmt = $pdo->prepare("SELECT s.name, aps.price FROM appointment_services aps JOIN services s ON aps.service_id = s.id WHERE aps.appointment_id = ?");
+            $stmt->execute([$aptId]);
+            $services = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            if (count($services) > 1) {
+                $html .= '<div class="small mb-1"><i class="bi bi-list-ul text-primary me-1"></i><strong>Services (' . count($services) . '):</strong></div>';
+                $total = 0;
+                foreach ($services as $s) {
+                    $total += $s['price'];
+                    $html .= '<div class="small ms-3 text-muted">• ' . htmlspecialchars($s['name']) . ' - ₱' . number_format($s['price'], 2) . '</div>';
+                }
+                $html .= '<div class="small ms-3 fw-bold text-success">Total: ₱' . number_format($total, 2) . '</div>';
+                return $html;
+            } elseif (count($services) === 1) {
+                $s = $services[0];
+                return '<div class="small mb-1"><i class="bi bi-star text-warning me-1"></i><strong>Service:</strong> ' . htmlspecialchars($s['name']) . '<br><span class="text-success ms-4">₱' . number_format($s['price'], 2) . '</span></div>';
+            }
+        } catch (Exception $e) {}
+    }
+    if(!empty($appt['product_name'])) {
+        return '<div class="small mb-1"><i class="bi bi-box text-primary me-1"></i><strong>Product:</strong> ' . htmlspecialchars($appt['product_name']) . '<br><span class="text-success ms-4">₱' . number_format($appt['product_price'] ?? 0, 2) . '</span></div>';
+    } 
+    elseif(!empty($appt['service_name'])) {
+        return '<div class="small mb-1"><i class="bi bi-star text-warning me-1"></i><strong>Service:</strong> ' . htmlspecialchars($appt['service_name']) . '<br><span class="text-success ms-4">₱' . number_format($appt['service_price'] ?? 0, 2) . '</span></div>';
+    }
+    elseif(!empty($appt['service_type'])) {
+        return '<div class="small mb-1"><i class="bi bi-star text-warning me-1"></i><strong>Service:</strong> ' . htmlspecialchars($appt['service_type']) . '</div>';
+    }
+    return '<div class="small mb-1 text-muted"><i class="bi bi-question-circle me-1"></i><em>No item specified</em></div>';
+}
+
+function getDiscountBadge($appt) {
+    $html = '';
+    if(!empty($appt['discount_type']) && $appt['discount_type'] !== 'none') {
+        $html .= '<div class="small mt-1">';
+        $html .= '<span class="badge bg-info">';
+        $html .= '<i class="bi bi-tag me-1"></i>';
+        $html .= strtoupper($appt['discount_type']) . ' ' . round($appt['discount_percentage'] ?? 0) . '% OFF';
+        $html .= '</span>';
+        if(($appt['vat_percentage'] ?? 0) == 0) {
+            $html .= '<span class="badge bg-success ms-1">VAT Exempt</span>';
+        }
+        $html .= '</div>';
+    }
+    return $html;
+}
+
+function getPriceBreakdown($appt) {
+    $html = '';
+    $subtotal = $appt['subtotal'] ?? 0;
+    $discount_type = $appt['discount_type'] ?? 'none';
+    $discount_percentage = $appt['discount_percentage'] ?? 0;
+    $discount_amount = $appt['discount_amount'] ?? 0;
+    $vat_percentage = $appt['vat_percentage'] ?? 0;
+    $vat_amount = $appt['vat_amount'] ?? 0;
+    $total_amount = $appt['total_amount'] ?? 0;
+    $amount_paid = $appt['amount_paid'] ?? 0;
+    $status = $appt['status'] ?? '';
+    
+    if ($status === 'confirmed' || $status === 'waiting_payment') {
+        $display_total = $total_amount;
+    } else {
+        $display_total = $amount_paid > 0 ? $amount_paid : $total_amount;
+    }
+    
+    $html .= '<div class="small mt-2 pt-2 border-top">';
+    
+    if ($discount_type !== 'none' && $discount_amount > 0) {
+        $html .= '<div class="d-flex justify-content-between"><span class="text-muted">Subtotal:</span><span>₱' . number_format($subtotal, 2) . '</span></div>';
+        $html .= '<div class="d-flex justify-content-between text-danger"><span>' . strtoupper($discount_type) . ' Discount (' . round($discount_percentage) . '%):</span><span>-₱' . number_format($discount_amount, 2) . '</span></div>';
+        $html .= '<div class="d-flex justify-content-between"><span class="text-muted">Subtotal after discount:</span><span>₱' . number_format($subtotal - $discount_amount, 2) . '</span></div>';
+        if ($vat_amount > 0) {
+            $html .= '<div class="d-flex justify-content-between text-warning"><span>VAT (' . round($vat_percentage) . '%):</span><span>+₱' . number_format($vat_amount, 2) . '</span></div>';
+        } else {
+            $html .= '<div class="d-flex justify-content-between text-success"><span>VAT:</span><span>Exempt</span></div>';
+        }
+    } else {
+        $html .= '<div class="d-flex justify-content-between"><span class="text-muted">Subtotal:</span><span>₱' . number_format($subtotal, 2) . '</span></div>';
+        if ($vat_amount > 0) {
+            $html .= '<div class="d-flex justify-content-between text-warning"><span>VAT (' . round($vat_percentage) . '%):</span><span>+₱' . number_format($vat_amount, 2) . '</span></div>';
+        }
+    }
+    
+    $html .= '<div class="d-flex justify-content-between fw-bold"><span>TOTAL PAID:</span><span style="color: var(--success);">₱' . number_format($display_total, 2) . '</span></div>';
+    $html .= '</div>';
+    return $html;
+}
+
+function getPaymentStatusBadge($appt) {
+    $status = $appt['status'] ?? '';
+    $payStatus = $appt['pay_status'] ?? '';
+    $amountPaid = floatval($appt['amount_paid'] ?? 0);
+    $totalAmount = floatval($appt['total_amount'] ?? 0);
+    
+    if ($status === 'paid' || $status === 'completed' || $payStatus === 'paid') {
+        return '<span class="badge bg-success">Paid</span>';
+    } elseif ($status === 'confirmed' || $status === 'waiting_payment') {
+        return '<span class="badge bg-warning text-dark">Awaiting Payment</span>';
+    } elseif ($status === 'no-show' && $amountPaid > 0) {
+        return '<span class="badge bg-secondary">Forfeited</span>';
+    } elseif ($status === 'refunded') {
+        return '<span class="badge bg-dark">Refunded</span>';
+    } elseif ($status === 'cancelled' && $amountPaid > 0) {
+        return '<span class="badge bg-danger">Refund Pending</span>';
+    }
+    return '<span class="text-muted small">—</span>';
+}
+
+function getActionButtons($a) {
+    $buttons = '';
+    $apptId = $a['id'] ?? 0;
+    $userId = $a['user_id'] ?? 0;
+    $patientId = $a['patient_id'] ?? 0;
+    $status = $a['status'] ?? '';
+    
+    $buttons .= '<a href="appointment-details.php?id=' . $apptId . '" class="btn btn-sm btn-outline-primary me-1" title="View Details"><i class="bi bi-eye"></i></a>';
+    
+    if ($status === 'pending') {
+        if (canApproveAppointments()) {
+            $buttons .= '<button class="btn btn-sm btn-success me-1" onclick="approveAppointment(' . $apptId . ', ' . $userId . ', ' . $patientId . ')" title="Approve"><i class="bi bi-check-lg"></i></button>';
+        }
+        if (canRejectAppointments()) {
+            $buttons .= '<button class="btn btn-sm btn-outline-danger me-1" onclick="rejectModal(' . $apptId . ', ' . $userId . ')" title="Reject"><i class="bi bi-x-lg"></i></button>';
+        }
+    }
+    
+    if ($status === 'confirmed' && canEditAppointments()) {
+        $buttons .= '<button class="btn btn-sm btn-success me-1" onclick="markArrived(' . $apptId . ', ' . $userId . ', ' . $patientId . ')" title="Mark Arrived"><i class="bi bi-door-open"></i></button>';
+        $buttons .= '<button class="btn btn-sm btn-outline-danger me-1" onclick="updateStatus(' . $apptId . ', ' . $userId . ', \'no-show\')" title="No-show"><i class="bi bi-person-x"></i></button>';
+    }
+    
+    if ($status === 'paid' && canEditAppointments()) {
+        $buttons .= '<button class="btn btn-sm btn-success me-1" onclick="updateStatus(' . $apptId . ', ' . $userId . ', \'completed\')" title="Complete"><i class="bi bi-patch-check"></i></button>';
+    }
+    
+    return $buttons;
+}
 ?>
 <!DOCTYPE html>
 <html>
@@ -566,7 +413,6 @@ $warrantyClaims = $stmtWarranty->fetchAll(PDO::FETCH_ASSOC);
         min-height:100vh;
     }
 
-    /* ── Header ───────────────────────────────── */
     .page-title{
         font-family:'Plus Jakarta Sans',sans-serif;
         font-weight:800;
@@ -595,21 +441,8 @@ $warrantyClaims = $stmtWarranty->fetchAll(PDO::FETCH_ASSOC);
         box-shadow:0 6px 16px rgba(15,110,95,.32);
         transform:translateY(-1px);
     }
-    .btn-outline-secondary{
-        border-color:var(--ec-border);
-        color:var(--ec-muted);
-        background:#fff;
-    }
-    .btn-outline-secondary:hover{ background:var(--ec-bg); color:var(--ec-ink); border-color:var(--ec-border); }
-    .btn-success{ background:linear-gradient(135deg,#1aa365,#0f8a54); border:none; }
-    .btn-danger, .btn-outline-danger:hover{ box-shadow:none; }
-    .btn-outline-danger{ border-color:#f3c6c7; color:var(--ec-danger); }
-    .btn-outline-danger:hover{ background:var(--ec-danger); border-color:var(--ec-danger); }
-    .btn-outline-primary{ border-color:var(--ec-primary); color:var(--ec-primary); }
-    .btn-outline-primary:hover{ background:var(--ec-primary); border-color:var(--ec-primary); }
-    .btn-warning{ color:#5c3d00; }
 
-    /* ── Stat cards (attendance-style: label+icon row, big number below) ── */
+    /* ── Stats Cards ───────────────────────────────── */
     .row.g-3.mb-4{ --bs-gutter-x: 1.5rem; --bs-gutter-y: 1.5rem; margin-bottom:2.25rem !important; }
     .row.g-3.mb-4 > div > .card{
         border-radius:16px;
@@ -625,7 +458,7 @@ $warrantyClaims = $stmtWarranty->fetchAll(PDO::FETCH_ASSOC);
         border-color:#d3e3df;
     }
     .row.g-3.mb-4 .card-body{
-        padding:2rem 1.9rem !important;
+        padding:1.5rem 1.9rem !important;
         display:grid;
         grid-template-columns:1fr auto;
         grid-template-rows:auto auto;
@@ -634,33 +467,30 @@ $warrantyClaims = $stmtWarranty->fetchAll(PDO::FETCH_ASSOC);
         row-gap:.9rem;
         text-align:left !important;
     }
-    /* icon: first element in DOM -> place top-right in a soft circle */
     .row.g-3.mb-4 .card-body > i.bi{
         grid-area:icon;
         color:var(--ec-muted) !important;
         background:var(--ec-bg);
         border:1px solid var(--ec-border);
-        width:60px;
-        height:60px;
+        width:50px;
+        height:50px;
         border-radius:50%;
         display:flex;
         align-items:center;
         justify-content:center;
-        font-size:1.65rem !important;
+        font-size:1.4rem !important;
     }
-    /* number: second element -> big bold colored figure, bottom-left */
     .row.g-3.mb-4 .card-body > .fw-bold.fs-4{
         grid-area:num;
-        font-size:2.9rem !important;
+        font-size:2.2rem !important;
         line-height:1;
         font-family:'Plus Jakarta Sans',sans-serif;
         font-weight:800;
         margin-top:0 !important;
     }
-    /* label: third element -> plain text, top-left */
     .row.g-3.mb-4 .card-body > .text-muted.small{
         grid-area:lbl;
-        font-size:1.08rem !important;
+        font-size:0.95rem !important;
         font-weight:600;
         text-transform:none;
         letter-spacing:0;
@@ -668,25 +498,26 @@ $warrantyClaims = $stmtWarranty->fetchAll(PDO::FETCH_ASSOC);
         opacity:.75;
     }
 
-    /* ── Tabs (attendance-style pill buttons) ─────────────────── */
+    /* ── Tabs ──────────────────────────────────────── */
     .nav-tabs{
         border:none !important;
-        border-bottom:1px solid var(--ec-border) !important;
-        padding-bottom:1.25rem;
-        margin-bottom:2.25rem !important;
-        gap:.6rem !important;
+        border-bottom:2px solid var(--ec-border) !important;
+        padding-bottom:0.5rem;
+        margin-bottom:2rem !important;
+        gap:0.5rem !important;
     }
     .nav-tabs .nav-link{
         border:none;
         border-radius:12px;
         color:var(--ec-muted);
         font-weight:600;
-        font-size:1.05rem;
-        padding:.85rem 1.5rem;
+        font-size:1rem;
+        padding:0.7rem 1.5rem;
         background:transparent;
         transition:all .15s ease;
+        position:relative;
     }
-    .nav-tabs .nav-link i.bi{ font-size:1.1rem; }
+    .nav-tabs .nav-link i.bi{ font-size:1.1rem; margin-right:0.4rem; }
     .nav-tabs .nav-link:hover{ background:var(--ec-primary-light); color:var(--ec-primary-dark); }
     .nav-tabs .nav-link.active{
         background:linear-gradient(135deg,var(--ec-primary),var(--ec-primary-dark));
@@ -697,84 +528,255 @@ $warrantyClaims = $stmtWarranty->fetchAll(PDO::FETCH_ASSOC);
         background:rgba(255,255,255,.25) !important;
         color:#fff;
     }
-    .nav-tabs .badge{ font-size:.85rem; padding:.45em .7em; }
+    .nav-tabs .badge{ font-size:0.75rem; padding:0.3em 0.6em; }
 
-    /* ── Generic cards ────────────────────────── */
-    .card{
-        border-radius:16px;
-        border:1px solid var(--ec-border);
-    }
-    .tab-pane .row.g-3 > div > .card{
-        box-shadow:var(--ec-shadow);
-        transition:transform .15s ease, box-shadow .15s ease;
+    /* ── Toolbar (Filters) - Parang Sales & Billing ── */
+    .toolbar{
         background:var(--ec-card);
-    }
-    .tab-pane .row.g-3 > div > .card:hover{
-        transform:translateY(-2px);
-        box-shadow:var(--ec-shadow-md);
-    }
-    .card.border-start{ border-left-width:5px !important; }
-    .card-body{ padding:1.6rem !important; }
-    .card-body h6.fw-bold{ font-family:'Plus Jakarta Sans',sans-serif; font-size:1.2rem; }
-    .card-footer{ border-top:1px solid var(--ec-border) !important; padding:1.1rem 1.6rem !important; }
-    .tab-pane .card .small{ font-size:.95rem; }
-
-    /* ── Tables (attendance-style: light plain header, roomy rows) ── */
-    .table-responsive{
-        border-radius:16px;
-        overflow:hidden;
+        border-radius:var(--ec-radius);
         border:1px solid var(--ec-border);
-        box-shadow:none;
-        background:var(--ec-card);
+        padding:1rem 1.25rem;
+        margin-bottom:1.5rem;
+        display:flex;
+        flex-wrap:wrap;
+        align-items:center;
+        justify-content:space-between;
+        gap:0.75rem;
     }
-    .table{ margin-bottom:0; font-size:1.05rem; }
-    .table thead.table-light th{
-        background:var(--ec-card) !important;
+    .toolbar-left{
+        display:flex;
+        align-items:center;
+        gap:0.75rem;
+        flex-wrap:wrap;
+    }
+    .toolbar-left .filter-group{
+        display:flex;
+        align-items:center;
+        gap:0.4rem;
+    }
+    .toolbar-left .filter-group label{
+        font-size:0.75rem;
+        font-weight:600;
         color:var(--ec-muted);
+        text-transform:uppercase;
+        letter-spacing:.03em;
+    }
+    .toolbar-left .filter-group select{
+        border:1px solid var(--ec-border);
+        border-radius:var(--ec-radius-sm);
+        padding:0.4rem 0.7rem;
+        font-size:0.85rem;
+        background:white;
+        color:var(--ec-ink);
+        transition:all .15s ease;
+    }
+    .toolbar-left .filter-group select:focus{
+        border-color:var(--ec-primary);
+        box-shadow:0 0 0 3px rgba(15,110,95,.12);
+        outline:none;
+    }
+    .btn-reset{
+        background:transparent;
+        border:1px solid var(--ec-border);
+        border-radius:var(--ec-radius-sm);
+        padding:0.4rem 1rem;
+        font-size:0.8rem;
+        color:var(--ec-muted);
+        transition:all .15s ease;
+        cursor:pointer;
+    }
+    .btn-reset:hover{
+        background:var(--ec-bg);
+        border-color:var(--ec-border);
+    }
+
+    .toolbar-right{
+        display:flex;
+        align-items:center;
+        gap:0.75rem;
+        flex-wrap:wrap;
+    }
+    .toolbar-right .entries-select{
+        display:flex;
+        align-items:center;
+        gap:0.4rem;
+        font-size:0.85rem;
+        color:var(--ec-muted);
+    }
+    .toolbar-right .entries-select select{
+        border:1px solid var(--ec-border);
+        border-radius:var(--ec-radius-sm);
+        padding:0.4rem 0.6rem;
+        font-size:0.85rem;
+        background:white;
+    }
+    .search-box{
+        display:flex;
+        align-items:center;
+        border:1px solid var(--ec-border);
+        border-radius:var(--ec-radius-sm);
+        padding:0 0.75rem;
+        background:white;
+        transition:all .15s ease;
+    }
+    .search-box:focus-within{
+        border-color:var(--ec-primary);
+        box-shadow:0 0 0 3px rgba(15,110,95,.12);
+    }
+    .search-box i{ color:var(--ec-muted); font-size:0.9rem; }
+    .search-box input{
+        border:none;
+        padding:0.45rem 0.6rem;
+        font-size:0.85rem;
+        background:transparent;
+        width:180px;
+        color:var(--ec-ink);
+    }
+    .search-box input:focus{ outline:none; }
+
+    /* ── Table Card ─────────────────────────────────── */
+    .table-card{
+        background:var(--ec-card);
+        border-radius:var(--ec-radius);
+        border:1px solid var(--ec-border);
+        overflow:hidden;
+    }
+    .table-wrapper{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
+    .table-custom{
+        width:100%;
+        border-collapse:collapse;
+        font-size:0.9rem;
+    }
+    .table-custom thead th{
+        background:var(--ec-bg);
+        padding:0.9rem 1.1rem;
+        text-align:left;
         font-weight:700;
-        font-size:.9rem;
+        font-size:0.75rem;
         text-transform:uppercase;
         letter-spacing:.04em;
-        border-bottom:2px solid var(--ec-border) !important;
-        padding:1.35rem 1.6rem;
+        color:var(--ec-muted);
+        border-bottom:2px solid var(--ec-border);
+        white-space:nowrap;
     }
-    .table tbody tr{ transition:background .12s ease; }
-    .table tbody tr:hover{ background:var(--ec-primary-light); }
-    .table tbody td{ border-bottom:1px solid var(--ec-border); }
-    .table td{ padding:1.35rem 1.6rem; vertical-align:middle; font-size:1.05rem; border-color:var(--ec-border); }
-    .table td strong{ font-size:1.05rem; }
-    .table .btn-sm{ padding:.5rem 1rem; font-size:.88rem; }
+    .table-custom tbody td{
+        padding:0.9rem 1.1rem;
+        border-bottom:1px solid var(--ec-border);
+        vertical-align:middle;
+        color:var(--ec-ink);
+    }
+    .table-custom tbody tr:hover{ background:var(--ec-primary-light); }
+    .table-custom tbody tr:last-child td{ border-bottom:none; }
 
-
-    /* ── Badges ───────────────────────────────── */
+    /* ── Badges ─────────────────────────────────────── */
     .badge{
         font-weight:600;
-        font-size:.72rem;
-        padding:.4em .65em;
-        border-radius:7px;
+        font-size:0.7rem;
+        padding:0.35em 0.65em;
+        border-radius:6px;
         letter-spacing:.01em;
     }
-    .badge.rounded-pill{ border-radius:50rem; }
+    .badge.bg-warning.text-dark{ color:#5c3d00 !important; }
 
-    /* ── Card header / search filters ─────────── */
+    /* ── Status Badge with dot ─────────────────────── */
+    .badge-status{
+        display:inline-flex;
+        align-items:center;
+        gap:0.35rem;
+        padding:0.25rem 0.65rem;
+        border-radius:20px;
+        font-size:0.7rem;
+        font-weight:600;
+    }
+    .badge-status .dot{
+        width:6px;
+        height:6px;
+        border-radius:50%;
+        display:inline-block;
+    }
+    .badge-status.pending{ background:#FEF3C7; color:#92400E; }
+    .badge-status.pending .dot{ background:#F59E0B; }
+    .badge-status.confirmed{ background:#DBEAFE; color:#1E40AF; }
+    .badge-status.confirmed .dot{ background:#3B82F6; }
+    .badge-status.paid{ background:#D1FAE5; color:#065F46; }
+    .badge-status.paid .dot{ background:#10B981; }
+    .badge-status.completed{ background:#D1FAE5; color:#065F46; }
+    .badge-status.completed .dot{ background:#10B981; }
+    .badge-status.cancelled{ background:#FEE2E2; color:#991B1B; }
+    .badge-status.cancelled .dot{ background:#EF4444; }
+    .badge-status.no-show{ background:#F3F4F6; color:#4B5563; }
+    .badge-status.no-show .dot{ background:#9CA3AF; }
+    .badge-status.refunded{ background:#F3F4F6; color:#1F2937; }
+    .badge-status.refunded .dot{ background:#6B7280; }
+
+    /* ── Table Footer ──────────────────────────────── */
+    .table-footer{
+        display:flex;
+        justify-content:space-between;
+        align-items:center;
+        padding:1rem 1.25rem;
+        border-top:1px solid var(--ec-border);
+        background:var(--ec-card);
+        flex-wrap:wrap;
+        gap:0.75rem;
+    }
+    .table-footer .info-text{
+        font-size:0.85rem;
+        color:var(--ec-muted);
+    }
+    .table-footer .info-text strong{ color:var(--ec-ink); }
+    .pagination-custom{
+        display:flex;
+        gap:0.25rem;
+        align-items:center;
+    }
+    .pagination-custom button{
+        padding:0.35rem 0.8rem;
+        border:1px solid var(--ec-border);
+        border-radius:var(--ec-radius-sm);
+        background:white;
+        font-size:0.8rem;
+        color:var(--ec-muted);
+        transition:all .15s ease;
+        cursor:pointer;
+    }
+    .pagination-custom button:hover:not(:disabled){
+        background:var(--ec-bg);
+        border-color:var(--ec-border);
+    }
+    .pagination-custom button:disabled{
+        opacity:0.5;
+        cursor:not-allowed;
+    }
+    .pagination-custom button.active{
+        background:var(--ec-primary);
+        color:white;
+        border-color:var(--ec-primary);
+    }
+
+    /* ── Action Buttons ────────────────────────────── */
+    .action-btns{
+        display:flex;
+        gap:0.2rem;
+        flex-wrap:wrap;
+    }
+    .action-btns .btn-sm{
+        padding:0.2rem 0.45rem;
+        font-size:0.75rem;
+        border-radius:6px;
+    }
+
+    /* ── Refund & Warranty Cards ──────────────────── */
     .card-header.bg-light{
         background:var(--ec-card) !important;
         border-bottom:1px solid var(--ec-border);
         border-radius:var(--ec-radius) var(--ec-radius) 0 0 !important;
         padding:1rem 1.25rem;
     }
-    .form-control, .form-select{
-        border-radius:9px;
-        border:1px solid var(--ec-border);
-        font-size:.88rem;
-        padding:.5rem .8rem;
-    }
-    .form-control:focus, .form-select:focus{
-        border-color:var(--ec-primary);
-        box-shadow:0 0 0 3px rgba(15,110,95,.12);
-    }
+    .refund-item .card{ transition:transform .15s ease; }
+    .refund-item .card:hover{ transform:translateY(-2px); box-shadow:var(--ec-shadow-md); }
 
-    /* ── Modals ───────────────────────────────── */
+    /* ── Modals ─────────────────────────────────────── */
     .modal-content{
         border-radius:var(--ec-radius);
         border:none;
@@ -790,24 +792,37 @@ $warrantyClaims = $stmtWarranty->fetchAll(PDO::FETCH_ASSOC);
     .modal-title{ font-family:'Plus Jakarta Sans',sans-serif; font-weight:700; }
     .modal-body{ padding:1.4rem; }
     .modal-footer{ border-top:1px solid var(--ec-border); padding:1rem 1.4rem; background:#fbfcfc; }
-    .modal-dialog:not(.modal-lg) .modal-content{ border-radius:16px; }
 
-    /* ── Empty states ─────────────────────────── */
-    .text-center.text-muted.py-5{
-        background:var(--ec-card);
-        border:1px dashed var(--ec-border);
-        border-radius:var(--ec-radius);
+    /* ── Responsive ─────────────────────────────────── */
+    @media(max-width:1024px){
+        .container-fluid.p-4{ padding:1.25rem !important; }
     }
-
-    /* ── Misc ─────────────────────────────────── */
-    hr{ border-color:var(--ec-border); opacity:1; }
-    ::-webkit-scrollbar{ height:8px; width:8px; }
-    ::-webkit-scrollbar-thumb{ background:#c9d6d2; border-radius:8px; }
-    ::-webkit-scrollbar-track{ background:transparent; }
+    @media(max-width:768px){
+        .container-fluid.p-4{ padding:1rem 0.75rem !important; }
+        .nav-tabs{ gap:0.3rem !important; }
+        .nav-tabs .nav-link{ font-size:0.85rem; padding:0.5rem 1rem; }
+        .toolbar{ flex-direction:column; align-items:stretch; }
+        .toolbar-left{ flex-wrap:wrap; }
+        .toolbar-right{ flex-wrap:wrap; justify-content:space-between; }
+        .search-box input{ width:120px; }
+        .row.g-3.mb-4 .card-body{ padding:1rem 1.25rem !important; }
+        .row.g-3.mb-4 .card-body > .fw-bold.fs-4{ font-size:1.6rem !important; }
+        .table-custom{ font-size:0.8rem; }
+        .table-custom thead th, .table-custom tbody td{ padding:0.5rem 0.6rem; }
+        .table-footer{ flex-direction:column; text-align:center; }
+        .action-btns .btn-sm{ padding:0.15rem 0.35rem; font-size:0.65rem; }
+    }
+    @media(max-width:480px){
+        .row.g-3.mb-4 .card-body{ grid-template-columns:1fr; grid-template-areas:"lbl" "num" "icon"; text-align:center !important; }
+        .row.g-3.mb-4 .card-body > i.bi{ margin:0 auto; width:44px; height:44px; font-size:1.2rem !important; }
+        .nav-tabs .nav-link{ font-size:0.75rem; padding:0.4rem 0.7rem; }
+        .nav-tabs .nav-link i.bi{ font-size:0.9rem; }
+    }
     </style>
 </head>
 <body>
 <div class="container-fluid p-4">
+    <!-- HEADER -->
     <div class="d-flex justify-content-between align-items-start mb-4 flex-wrap gap-2">
         <div>
             <h1 class="page-title mb-0">Appointment Scheduling</h1>
@@ -825,17 +840,17 @@ $warrantyClaims = $stmtWarranty->fetchAll(PDO::FETCH_ASSOC);
         </div>
     </div>
 
-    <!-- Stats Section -->
+    <!-- STATS -->
     <div class="row g-3 mb-4">
         <?php
         $statItems = [
-            ['label'=>"Today's Total",  'val'=>$stats['total'],     'color'=>'primary',   'icon'=>'bi-calendar2-week'],
-            ['label'=>'Pending',        'val'=>$stats['pending'],   'color'=>'warning',   'icon'=>'bi-hourglass-split'],
-            ['label'=>'Confirmed',      'val'=>$stats['confirmed'], 'color'=>'info',      'icon'=>'bi-check-circle'],
-            ['label'=>'Paid',           'val'=>$stats['paid'],      'color'=>'primary',   'icon'=>'bi-credit-card'],
-            ['label'=>'Completed',      'val'=>$stats['completed'], 'color'=>'success',   'icon'=>'bi-patch-check'],
-            ['label'=>'Refund Requests','val'=>count($refundList),  'color'=>'dark',      'icon'=>'bi-arrow-repeat'],
-            ['label'=>'Cancelled',      'val'=>$stats['cancelled'], 'color'=>'danger',    'icon'=>'bi-x-circle'],
+            ['label'=>"Today's Total",  'val'=>$stats['total'] ?? 0,     'color'=>'primary',   'icon'=>'bi-calendar2-week'],
+            ['label'=>'Pending',        'val'=>$stats['pending'] ?? 0,   'color'=>'warning',   'icon'=>'bi-hourglass-split'],
+            ['label'=>'Confirmed',      'val'=>$stats['confirmed'] ?? 0, 'color'=>'info',      'icon'=>'bi-check-circle'],
+            ['label'=>'Paid',           'val'=>$stats['paid'] ?? 0,      'color'=>'primary',   'icon'=>'bi-credit-card'],
+            ['label'=>'Completed',      'val'=>$stats['completed'] ?? 0, 'color'=>'success',   'icon'=>'bi-patch-check'],
+            ['label'=>'Refund Requests','val'=>$pendingRefunds,          'color'=>'dark',      'icon'=>'bi-arrow-repeat'],
+            ['label'=>'No-Show',        'val'=>$stats['noshow'] ?? 0,    'color'=>'secondary', 'icon'=>'bi-person-x'],
         ];
         foreach($statItems as $s): ?>
         <div class="col-6 col-sm-4 col-lg">
@@ -850,636 +865,479 @@ $warrantyClaims = $stmtWarranty->fetchAll(PDO::FETCH_ASSOC);
         <?php endforeach; ?>
     </div>
 
-    <!-- Tabs Navigation -->
- <ul class="nav nav-tabs mb-4 flex-wrap" id="apptTabs" role="tablist" style="gap: 4px; border-bottom: 2px solid var(--border-light);">
-    <!-- Today's Schedule -->
-    <li class="nav-item" role="presentation">
-        <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tabToday" role="tab">
-            <i class="bi bi-calendar-day me-1"></i>
-            Today's Schedule
-        </button>
-    </li>
-    
-    <!-- Pending Approval (with count badge) -->
-    <?php if (canApproveAppointments() || canRejectAppointments()): ?>
-    <li class="nav-item" role="presentation">
-        <button class="nav-link position-relative" data-bs-toggle="tab" data-bs-target="#tabPending" role="tab">
-            <i class="bi bi-hourglass-split me-1"></i>
-            Pending
-            <?php if(count($pendingList) > 0): ?>
-                <span class="badge rounded-pill bg-danger ms-1" style="font-size: 10px;"><?= count($pendingList) ?></span>
-            <?php endif; ?>
-        </button>
-    </li>
-    <?php endif; ?>
-    
-    <!-- Confirmed (awaiting payment) -->
-    <li class="nav-item" role="presentation">
-        <button class="nav-link position-relative" data-bs-toggle="tab" data-bs-target="#tabConfirmed" role="tab">
-            <i class="bi bi-check-circle me-1"></i>
-            Confirmed
-            <?php if(count($confirmedList) > 0): ?>
-                <span class="badge rounded-pill bg-info ms-1" style="font-size: 10px;"><?= count($confirmedList) ?></span>
-            <?php endif; ?>
-        </button>
-    </li>
-    
-    <!-- Paid -->
-    <li class="nav-item" role="presentation">
-        <button class="nav-link position-relative" data-bs-toggle="tab" data-bs-target="#tabPaid" role="tab">
-            <i class="bi bi-credit-card me-1"></i>
-            Paid
-            <?php if(count($paidList) > 0): ?>
-                <span class="badge rounded-pill bg-primary ms-1" style="font-size: 10px;"><?= count($paidList) ?></span>
-            <?php endif; ?>
-        </button>
-    </li>
-    
-    <!-- Refund Requests -->
-    <?php if (canEditAppointments()): ?>
-    <li class="nav-item" role="presentation">
-        <button class="nav-link position-relative" data-bs-toggle="tab" data-bs-target="#tabRefunds" role="tab">
-            <i class="bi bi-arrow-repeat me-1"></i>
-            Refunds
-            <?php if(count($refundList) > 0): ?>
-                <span class="badge rounded-pill bg-dark ms-1" style="font-size: 10px;"><?= count($refundList) ?></span>
-            <?php endif; ?>
-        </button>
-    </li>
-    <?php endif; ?>
-    
-    <!-- Warranty Claims -->
-    <li class="nav-item" role="presentation">
-        <button class="nav-link position-relative" data-bs-toggle="tab" data-bs-target="#tabWarrantyClaims" role="tab">
-            <i class="bi bi-shield-check me-1"></i>
-            Warranty
-            <span class="badge rounded-pill bg-warning ms-1" id="warrantyClaimsBadge" style="font-size: 10px;">0</span>
-        </button>
-    </li>
-    
-    <!-- Upcoming -->
-    <li class="nav-item" role="presentation">
-        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabUpcoming" role="tab">
-            <i class="bi bi-calendar-week me-1"></i>
-            Upcoming
-        </button>
-    </li>
-    
-    <!-- History -->
-    <li class="nav-item" role="presentation">
-        <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabHistory" role="tab">
-            <i class="bi bi-clock-history me-1"></i>
-            History
-        </button>
-    </li>
-</ul>
+    <!-- ============================================ -->
+    <!-- 3 TABS LANG: Appointments | Refunds | Warranty -->
+    <!-- ============================================ -->
+    <ul class="nav nav-tabs mb-4" id="apptTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="tabAppointments" data-bs-toggle="tab" data-bs-target="#tabAppointmentsContent" type="button" role="tab">
+                <i class="bi bi-calendar2-week"></i> Appointments
+                <span class="badge bg-secondary rounded-pill ms-1"><?= count($allAppointments) ?></span>
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="tabRefunds" data-bs-toggle="tab" data-bs-target="#tabRefundsContent" type="button" role="tab">
+                <i class="bi bi-arrow-repeat"></i> Refunds
+                <?php if($pendingRefunds > 0): ?>
+                <span class="badge bg-danger rounded-pill ms-1"><?= $pendingRefunds ?></span>
+                <?php endif; ?>
+            </button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="tabWarranty" data-bs-toggle="tab" data-bs-target="#tabWarrantyContent" type="button" role="tab">
+                <i class="bi bi-shield-check"></i> Warranty
+                <span class="badge bg-warning rounded-pill ms-1" id="warrantyTabBadge">0</span>
+            </button>
+        </li>
+    </ul>
 
     <div class="tab-content" id="apptTabsContent">
 
-        <!-- TODAY'S SCHEDULE TAB -->
-        <div class="tab-pane fade show active" id="tabToday">
-            <?php if(empty($todayList)): ?>
-                <div class="text-center text-muted py-5">
-                    <i class="bi bi-calendar-x fs-1 d-block mb-2"></i>
-                    No appointments scheduled for today.
+        <!-- ============================================ -->
+        <!-- TAB 1: APPOINTMENTS (Unified Table + Filters) -->
+        <!-- ============================================ -->
+        <div class="tab-pane fade show active" id="tabAppointmentsContent" role="tabpanel">
+            <!-- Toolbar -->
+            <div class="toolbar">
+                <div class="toolbar-left">
+                    <div class="filter-group">
+                        <label>Status</label>
+                        <select id="filterStatus">
+                            <option value="all">All Status</option>
+                            <option value="pending">Pending</option>
+                            <option value="confirmed">Confirmed</option>
+                            <option value="paid">Paid</option>
+                            <option value="completed">Completed</option>
+                            <option value="no-show">No-Show</option>
+                            <option value="cancelled">Cancelled</option>
+                            <option value="refunded">Refunded</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Payment</label>
+                        <select id="filterPayment">
+                            <option value="all">All Payment</option>
+                            <option value="paid">Paid</option>
+                            <option value="unpaid">Unpaid</option>
+                            <option value="partial">Partial</option>
+                            <option value="forfeited">Forfeited</option>
+                            <option value="refunded">Refunded</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Date</label>
+                        <select id="filterDate">
+                            <option value="all">All Dates</option>
+                            <option value="today">Today</option>
+                            <option value="week">This Week</option>
+                            <option value="month">This Month</option>
+                            <option value="past">Past</option>
+                            <option value="upcoming">Upcoming</option>
+                        </select>
+                    </div>
+                    <button class="btn-reset" onclick="resetFilters()">
+                        <i class="bi bi-arrow-counterclockwise"></i> Reset
+                    </button>
                 </div>
-            <?php else: ?>
-            <div class="table-responsive">
-                <table class="table table-hover align-middle">
-                    <thead class="table-light">
-                        <tr>
-                            <th>Time</th>
-                            <th>Patient</th>
-                            <th>Item</th>
-                            <th>Type</th>
-                            <th>Discount</th>
-                            <th>Doctor</th>
-                            <th>Status</th>
-                            <th>Payment</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                    <?php foreach($todayList as $a): ?>
-                        <tr>
-                            <td><strong><?= date('h:i A', strtotime($a['appointment_time'])) ?></strong></td>
-                            <td><?= htmlspecialchars($a['patient_name']) ?></td>
-                            <td>
-                                <?php if(!empty($a['product_name'])): ?>
-                                    <?= htmlspecialchars($a['product_name']) ?>
-                                <?php elseif(!empty($a['service_name'])): ?>
-                                    <?= htmlspecialchars($a['service_name']) ?>
-                                <?php elseif(!empty($a['service_type'])): ?>
-                                    <?= htmlspecialchars($a['service_type']) ?>
-                                <?php else: ?>
-                                    <span class="text-muted">—</span>
-                                <?php endif; ?>
-                            </td>
-                            <td><?= getItemTypeBadge($a) ?></td>
-                            <td>
-                                <?php if(!empty($a['discount_type']) && $a['discount_type'] !== 'none'): ?>
-                                    <span class="badge bg-info">
-                                        <?= strtoupper($a['discount_type']) ?> 
-                                        <?= round($a['discount_percentage'] ?? 0) ?>%
+                <div class="toolbar-right">
+                    <div class="entries-select">
+                        Show
+                        <select id="entriesPerPage">
+                            <option value="10">10</option>
+                            <option value="25">25</option>
+                            <option value="50">50</option>
+                            <option value="100">100</option>
+                        </select>
+                        entries
+                    </div>
+                    <div class="search-box">
+                        <i class="bi bi-search"></i>
+                        <input type="text" id="searchInput" placeholder="Search patient, ID..." onkeyup="filterTable()">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Unified Table -->
+            <div class="table-card">
+                <div class="table-wrapper">
+                    <table class="table-custom" id="appointmentsTable">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Patient</th>
+                                <th>Date/Time</th>
+                                <th>Item</th>
+                                <th>Type</th>
+                                <th>Discount</th>
+                                <th>Doctor</th>
+                                <th>Status</th>
+                                <th>Payment</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tableBody">
+                            <?php if(empty($allAppointments)): ?>
+                            <tr>
+                                <td colspan="10" class="text-center py-5 text-muted">
+                                    <i class="bi bi-inbox" style="font-size:32px;display:block;margin-bottom:8px;"></i>
+                                    No appointments found.
+                                </td>
+                            </tr>
+                            <?php else: ?>
+                            <?php foreach($allAppointments as $a): 
+                                $status = $a['status'] ?? '';
+                                $statusClass = match($status) {
+                                    'pending' => 'pending',
+                                    'confirmed' => 'confirmed',
+                                    'paid' => 'paid',
+                                    'completed' => 'completed',
+                                    'cancelled' => 'cancelled',
+                                    'no-show' => 'no-show',
+                                    'refunded' => 'refunded',
+                                    default => 'pending'
+                                };
+                                $paymentBadge = getPaymentStatusBadge($a);
+                            ?>
+                            <tr data-status="<?= $status ?>" data-payment="<?= $a['pay_status'] ?? '' ?>" data-date="<?= $a['appointment_date'] ?? '' ?>">
+                                <td><strong>#<?= str_pad($a['id'] ?? 0, 6, '0', STR_PAD_LEFT) ?></strong></td>
+                                <td>
+                                    <div class="fw-bold"><?= htmlspecialchars($a['patient_name'] ?? 'N/A') ?></div>
+                                    <div class="text-muted small"><?= htmlspecialchars($a['user_email'] ?? '') ?></div>
+                                </td>
+                                <td>
+                                    <div><?= date('M d, Y', strtotime($a['appointment_date'] ?? 'now')) ?></div>
+                                    <div class="text-muted small"><?= date('h:i A', strtotime($a['appointment_time'] ?? '00:00')) ?></div>
+                                </td>
+                                <td><?= getItemDetails($a) ?></td>
+                                <td><?= getItemTypeBadge($a) ?></td>
+                                <td><?= getDiscountBadge($a) ?></td>
+                                <td><?= htmlspecialchars($a['doctor_name'] ?? '—') ?></td>
+                                <td>
+                                    <span class="badge-status <?= $statusClass ?>">
+                                        <span class="dot"></span>
+                                        <?= ucfirst(str_replace('-', ' ', $status)) ?>
                                     </span>
-                                <?php else: ?>
-                                    <span class="text-muted small">—</span>
-                                <?php endif; ?>
-                            </td>
-                            <td><?= htmlspecialchars($a['doctor_name'] ?? '—') ?></td>
-                            <td><?= statusBadge($a['appointment_status'] ?? $a['status']) ?></td>
-                            <td>
-                                <?php if($a['pay_status'] === 'paid'): ?>
-                                    <span class="badge bg-success">Paid</span>
-                                <?php elseif($a['status'] === 'confirmed'): ?>
-                                    <span class="badge bg-warning text-dark">Awaiting Payment</span>
-                                <?php else: ?>
-                                    <span class="text-muted small">—</span>
-                                <?php endif; ?>
-                            </td>
-                            <td>
-                                <?php if($a['status'] === 'paid' && canEditAppointments()): ?>
-                                    <button class="btn btn-sm btn-success me-1"
-                                        onclick="updateStatus(<?= $a['id'] ?>, <?= (int)($a['user_id'] ?? 0) ?>, 'completed')">
-                                        <i class="bi bi-patch-check"></i> Complete
-                                    </button>
-                                <?php elseif($a['status'] === 'confirmed' && canEditAppointments()): ?>
-                                    <button class="btn btn-sm btn-success me-1"
-                                        onclick="markArrived(<?= $a['id'] ?>, <?= (int)($a['user_id'] ?? 0) ?>, <?= (int)($a['patient_id'] ?? 0) ?>)">
-                                        <i class="bi bi-door-open me-1"></i> Arrive
-                                    </button>
-                                    <button class="btn btn-sm btn-outline-danger"
-                                        onclick="updateStatus(<?= $a['id'] ?>, <?= (int)($a['user_id'] ?? 0) ?>, 'no-show')">
-                                        No-show
-                                    </button>
-                                <?php elseif($a['status'] === 'waiting_payment' && canEditAppointments()): ?>
-                                    <button class="btn btn-sm btn-warning me-1"
-                                        onclick="goToSalesBilling(<?= $a['id'] ?>)">
-                                        <i class="bi bi-credit-card"></i> Process Payment
-                                    </button>
-                                <?php elseif(in_array($a['status'], ['completed','cancelled','no-show','refunded'])): ?>
-                                    <span class="text-muted small">Done</span>
-                                <?php else: ?>
-                                    <span class="text-muted small">—</span>
-                                <?php endif; ?>
-                            </td>
-                        </tr>
-                    <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
+                                </td>
+                                <td><?= $paymentBadge ?></td>
+<td>
+    <div class="action-btns">
+        <?php 
+        $apptId = $a['id'] ?? 0;
+        $userId = $a['user_id'] ?? 0;
+        $patientId = $a['patient_id'] ?? 0;
+        $status = $a['status'] ?? '';
+        ?>
+        
+        <!-- ✅ View Button - Laging meron -->
+        <a href="appointment-details.php?id=<?= $apptId ?>" class="btn btn-sm btn-outline-primary me-1" title="View Details">
+            <i class="bi bi-eye"></i>
+        </a>
+        
+        <?php if($status === 'pending'): ?>
+            <?php if(canApproveAppointments()): ?>
+                <button class="btn btn-sm btn-success me-1" onclick="approveAppointment(<?= $apptId ?>, <?= $userId ?>, <?= $patientId ?>)" title="Approve">
+                    <i class="bi bi-check-lg"></i>
+                </button>
             <?php endif; ?>
-        </div>
-
-        <!-- PENDING APPROVAL TAB -->
-        <?php if (canApproveAppointments() || canRejectAppointments()): ?>
-        <div class="tab-pane fade" id="tabPending">
-            <?php if(empty($pendingList)): ?>
-                <div class="text-center text-muted py-5">
-                    <i class="bi bi-inbox fs-1 d-block mb-2"></i>
-                    No pending appointments.
-                </div>
-            <?php else: ?>
-            <div class="row g-3">
-            <?php foreach($pendingList as $a): ?>
-                <div class="col-12 col-md-6 col-xl-4">
-                    <div class="card shadow-sm border-start border-warning border-3 h-100">
-                        <div class="card-body">
-                            <div class="d-flex justify-content-between align-items-start mb-2">
-                                <div>
-                                    <h6 class="mb-0 fw-bold">
-                                        <?= htmlspecialchars($a['first_name'].' '.$a['last_name']) ?>
-                                    </h6>
-                                    <div class="text-muted small"><?= htmlspecialchars($a['user_email'] ?? '') ?></div>
-                                </div>
-                                <?= statusBadge($a['status']) ?>
-                            </div>
-                            <hr class="my-2">
-                            <div class="small mb-1">
-                                <i class="bi bi-calendar text-primary me-1"></i>
-                                <?= date('F j, Y', strtotime($a['appointment_date'])) ?>
-                                &nbsp;
-                                <i class="bi bi-clock text-primary ms-2 me-1"></i>
-                                <?= date('h:i A', strtotime($a['appointment_time'])) ?>
-                            </div>
-                            <?= getItemTypeBadge($a) ?>
-                            <?= getItemDetails($a) ?>
-                            <?= getDiscountBadge($a) ?>
-                            <div class="small mb-1">
-                                <i class="bi bi-person-badge text-primary me-1"></i>
-                                <strong>Doctor:</strong> 
-                                <?= $a['doctor_name'] ? 'Dr. '.htmlspecialchars($a['doctor_name']) : '<em>Any available doctor</em>' ?>
-                            </div>
-                        </div>
-                        <div class="card-footer bg-transparent d-flex gap-2">
-                            <?php if(canApproveAppointments()): ?>
-                                <button class="btn btn-success btn-sm flex-fill"
-                                    onclick="approveAppointment(<?= $a['id'] ?>, <?= (int)($a['user_id'] ?? 0) ?>, <?= (int)($a['patient_id'] ?? 0) ?>)">
-                                    <i class="bi bi-check-lg me-1"></i>Approve
-                                </button>
-                            <?php endif; ?>
-                            <?php if(canRejectAppointments()): ?>
-                                <button class="btn btn-outline-danger btn-sm flex-fill"
-                                    onclick="rejectModal(<?= $a['id'] ?>, <?= (int)$a['user_id'] ?>)">
-                                    <i class="bi bi-x-lg me-1"></i>Reject
-                                </button>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                </div>
-            <?php endforeach; ?>
-            </div>
+            <?php if(canRejectAppointments()): ?>
+                <button class="btn btn-sm btn-outline-danger me-1" onclick="rejectModal(<?= $apptId ?>, <?= $userId ?>)" title="Reject">
+                    <i class="bi bi-x-lg"></i>
+                </button>
             <?php endif; ?>
-        </div>
+            
+        <?php elseif($status === 'confirmed' && canEditAppointments()): ?>
+            <!-- ✅ Confirmed: Arrive + No-show -->
+            <button class="btn btn-sm btn-success me-1" onclick="markArrived(<?= $apptId ?>, <?= $userId ?>, <?= $patientId ?>)" title="Mark Arrived">
+                <i class="bi bi-door-open"></i>
+            </button>
+            <button class="btn btn-sm btn-outline-danger me-1" onclick="markNoShow(<?= $apptId ?>, <?= $userId ?>)" title="No-show">
+                <i class="bi bi-person-x"></i>
+            </button>
+            
+        <?php elseif($status === 'missed' && canEditAppointments()): ?>
+            <!-- ✅ Missed: No-show LANG (walang Arrive!) -->
+            <button class="btn btn-sm btn-outline-danger me-1" onclick="markNoShow(<?= $apptId ?>, <?= $userId ?>)" title="Convert to No-show">
+                <i class="bi bi-person-x me-1"></i> No-show
+            </button>
+            
+        <?php elseif($status === 'paid' && canEditAppointments()): ?>
+            <button class="btn btn-sm btn-success me-1" onclick="updateStatus(<?= $apptId ?>, <?= $userId ?>, 'completed')" title="Complete">
+                <i class="bi bi-patch-check"></i>
+            </button>
+            
+        <?php elseif($status === 'no-show'): ?>
+            <!-- ✅ No-show Status - WALANG ACTIONS! -->
+            <span class="badge bg-secondary">
+                <i class="bi bi-person-x me-1"></i> No-show
+            </span>
+            <?php if(($a['forfeited_amount'] ?? 0) > 0): ?>
+                <br><small class="text-muted">Forfeited: ₱<?= number_format($a['forfeited_amount'], 2) ?></small>
+            <?php endif; ?>
+            <?php if(($a['refund_eligible'] ?? 0) == 1): ?>
+                <br><small class="text-success">Refunded: <?= $a['refund_percentage'] ?? 0 ?>%</small>
+            <?php endif; ?>
+            
+        <?php elseif(in_array($status, ['completed','cancelled','refunded'])): ?>
+            <span class="text-muted small">Done</span>
+            
+        <?php else: ?>
+            <span class="text-muted small">—</span>
         <?php endif; ?>
-
-<!-- CONFIRMED TAB -->
-<div class="tab-pane fade" id="tabConfirmed">
-    <?php if(empty($confirmedList)): ?>
-        <div class="text-center text-muted py-5">
-            <i class="bi bi-check-circle fs-1 d-block mb-2"></i>
-            No confirmed appointments waiting for payment.
-        </div>
-    <?php else: ?>
-    <div class="row g-3">
-    <?php foreach($confirmedList as $a): ?>
-        <div class="col-12 col-md-6 col-xl-4">
-            <div class="card shadow-sm border-start border-info border-3 h-100">
-                <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-start mb-2">
-                        <div>
-                            <h6 class="mb-0 fw-bold">
-                                <?= htmlspecialchars($a['first_name'].' '.$a['last_name']) ?>
-                            </h6>
-                            <div class="text-muted small"><?= htmlspecialchars($a['user_email'] ?? '') ?></div>
-                        </div>
-                        <span class="badge bg-info text-dark">Confirmed</span>
+    </div>
+</td>
+                            </tr>
+                            <?php endforeach; ?>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="table-footer">
+                    <div class="info-text" id="tableInfo">
+                        Showing <strong id="startCount">0</strong> to <strong id="endCount">0</strong> of <strong id="totalCount">0</strong> entries
                     </div>
-                    <hr class="my-2">
-                    <div class="small mb-2">
-                        <i class="bi bi-calendar text-primary me-1"></i>
-                        <strong><?= date('F j, Y', strtotime($a['appointment_date'])) ?></strong>
-                        &nbsp;
-                        <i class="bi bi-clock text-primary ms-2 me-1"></i>
-                        <?= date('h:i A', strtotime($a['appointment_time'])) ?>
+                    <div class="pagination-custom" id="paginationControls">
+                        <button onclick="changePage('prev')" id="prevBtn" disabled>Previous</button>
+                        <button class="active" id="pageBtn1">1</button>
+                        <button onclick="changePage('next')" id="nextBtn" disabled>Next</button>
                     </div>
-                    <?= getItemTypeBadge($a) ?>
-                    <?= getItemDetails($a) ?>
-                    <?= getDiscountBadge($a) ?>
-                    
-                    <!-- ✅ ADD PRICE BREAKDOWN - para same sa Paid tab -->
-                    <?= getPriceBreakdown($a) ?>
                 </div>
             </div>
         </div>
-    <?php endforeach; ?>
-    </div>
-    <?php endif; ?>
-</div>
 
-        <!-- PAID TAB -->
-        <div class="tab-pane fade" id="tabPaid">
-            <?php if(empty($paidList)): ?>
-                <div class="text-center text-muted py-5">
-                    <i class="bi bi-credit-card fs-1 d-block mb-2"></i>
-                    No paid appointments.
-                </div>
-            <?php else: ?>
-            <div class="row g-3">
-            <?php foreach($paidList as $a): ?>
-                <div class="col-12 col-md-6 col-xl-4">
-                    <div class="card shadow-sm border-start border-success border-3 h-100">
-                        <div class="card-body">
-                            <div class="d-flex justify-content-between align-items-start mb-2">
-                                <div>
-                                    <h6 class="mb-0 fw-bold">
-                                        <?= htmlspecialchars($a['first_name'].' '.$a['last_name']) ?>
-                                    </h6>
-                                    <div class="text-muted small"><?= htmlspecialchars($a['user_email'] ?? '') ?></div>
+        <!-- ============================================ -->
+        <!-- TAB 2: REFUNDS (Preserved)                    -->
+        <!-- ============================================ -->
+        <div class="tab-pane fade" id="tabRefundsContent" role="tabpanel">
+            <?php if (canEditAppointments()): ?>
+                <?php if(empty($refundList)): ?>
+                    <div class="text-center text-muted py-5">
+                        <i class="bi bi-arrow-repeat fs-1 d-block mb-2"></i>
+                        No refund requests.
+                    </div>
+                <?php else: ?>
+                    <!-- Filter tabs for refund status -->
+                    <div class="mb-3">
+                        <div class="btn-group btn-group-sm" role="group">
+                            <button class="btn btn-outline-secondary active" onclick="filterRefunds('all')">All</button>
+                            <button class="btn btn-outline-warning" onclick="filterRefunds('pending')">Pending</button>
+                            <button class="btn btn-outline-info" onclick="filterRefunds('processing')">Processing</button>
+                            <button class="btn btn-outline-danger" onclick="filterRefunds('failed')">Failed</button>
+                            <button class="btn btn-outline-success" onclick="filterRefunds('completed')">Completed</button>
+                            <button class="btn btn-outline-secondary" onclick="filterRefunds('rejected')">Rejected</button>
+                        </div>
+                    </div>
+                    
+                    <div class="row g-3" id="refundListContainer">
+                        <?php foreach($refundList as $r): 
+                            $statusClass = match($r['refund_status'] ?? $r['status']) {
+                                'completed' => 'success',
+                                'processing' => 'warning',
+                                'failed' => 'danger',
+                                'rejected' => 'secondary',
+                                default => 'dark'
+                            };
+                            $statusIcon = match($r['refund_status'] ?? $r['status']) {
+                                'completed' => '✅ Refunded',
+                                'processing' => '⏳ Processing',
+                                'failed' => '❌ Failed',
+                                'rejected' => 'Rejected',
+                                default => 'Pending'
+                            };
+                        ?>
+                        <div class="col-12 col-md-6 refund-item" data-status="<?= $r['refund_status'] ?? $r['status'] ?>">
+                            <div class="card shadow-sm border-start border-<?= $statusClass ?> border-3">
+                                <div class="card-body">
+                                    <div class="d-flex justify-content-between align-items-start mb-2">
+                                        <div>
+                                            <h6 class="mb-0 fw-bold">
+                                                <?= htmlspecialchars($r['first_name'].' '.$r['last_name']) ?>
+                                            </h6>
+                                            <div class="text-muted small"><?= htmlspecialchars($r['email']) ?></div>
+                                        </div>
+                                        <div class="text-end">
+                                            <span class="badge bg-<?= $statusClass ?>">
+                                                <?= $statusIcon ?>
+                                            </span>
+                                        </div>
+                                    </div>
+                                    <hr>
+                                    <div class="small mb-2">
+                                        <i class="bi bi-calendar-x text-danger me-1"></i>
+                                        Missed: <?= date('F j, Y', strtotime($r['appointment_date'])) ?> at <?= date('g:i A', strtotime($r['appointment_time'])) ?>
+                                    </div>
+                                    <div class="small mb-2">
+                                        <i class="bi bi-box text-primary me-1"></i>
+                                        <?= htmlspecialchars($r['product_name']) ?> - ₱<?= number_format($r['product_price'], 2) ?>
+                                    </div>
+                                    <div class="small mb-2">
+                                        <i class="bi bi-currency-dollar text-success me-1"></i>
+                                        <strong>Refund Amount:</strong> ₱<?= number_format($r['amount'] ?? 0, 2) ?>
+                                        <?php if ($r['refund_percentage'] ?? 0 > 0): ?>
+                                            <span class="badge bg-info"><?= $r['refund_percentage'] ?>%</span>
+                                        <?php endif; ?>
+                                    </div>
+                                    
+                                    <?php if (!empty($r['paymongo_refund_id'])): ?>
+                                    <div class="small mb-2">
+                                        <i class="bi bi-qr-code text-secondary me-1"></i>
+                                        <strong>Refund ID:</strong> <?= htmlspecialchars($r['paymongo_refund_id']) ?>
+                                    </div>
+                                    <?php endif; ?>
+                                    
+                                    <?php if (!empty($r['error_message'])): ?>
+                                    <div class="alert alert-danger small py-1 mb-2">
+                                        <i class="bi bi-exclamation-triangle me-1"></i>
+                                        <strong>Error:</strong> <?= htmlspecialchars($r['error_message']) ?>
+                                    </div>
+                                    <?php endif; ?>
+                                    
+                                    <div class="small mb-2">
+                                        <i class="bi bi-chat-left-text text-info me-1"></i>
+                                        <strong>Reason:</strong> <?= htmlspecialchars($r['reason']) ?>
+                                    </div>
+                                    
+                                    <!-- ACTION BUTTONS BASED ON STATUS -->
+                                    <?php if ($r['status'] === 'pending'): ?>
+                                        <div class="mt-3">
+                                            <textarea class="form-control form-control-sm mb-2" id="adminNotes-<?= $r['id'] ?>" 
+                                                      placeholder="Admin notes (optional)" rows="2"></textarea>
+                                            <div class="d-flex gap-2 flex-wrap">
+                                                <button class="btn btn-success btn-sm flex-fill" 
+                                                    onclick="processRefundRedirect(<?= $r['id'] ?>, <?= $r['user_id'] ?>, 'approve', document.getElementById('adminNotes-<?= $r['id'] ?>').value)">
+                                                    <i class="bi bi-box-arrow-up-right me-1"></i> Process on PayMongo
+                                                </button>
+                                                <button class="btn btn-outline-danger btn-sm flex-fill" 
+                                                    onclick="processRefund(<?= $r['id'] ?>, <?= $r['user_id'] ?>, 'reject', document.getElementById('adminNotes-<?= $r['id'] ?>').value)">
+                                                    <i class="bi bi-x-circle me-1"></i> Reject
+                                                </button>
+                                            </div>
+                                            <small class="text-muted d-block mt-1">
+                                                <i class="bi bi-info-circle me-1"></i>
+                                                You will be redirected to PayMongo to process this refund.
+                                            </small>
+                                        </div>
+                                        
+                                    <?php elseif ($r['refund_status'] === 'processing'): ?>
+                                        <div class="mt-3">
+                                            <div class="alert alert-info small py-1 mb-2">
+                                                <i class="bi bi-hourglass-split me-1"></i>
+                                                <strong>Refund being processed on PayMongo.</strong>
+                                                <br>Once completed on PayMongo, click "Mark as Done".
+                                            </div>
+                                            <div class="d-flex gap-2 flex-wrap">
+                                                <button class="btn btn-success btn-sm flex-fill" 
+                                                    onclick="markRefundManual(<?= $r['id'] ?>, <?= $r['user_id'] ?>)">
+                                                    <i class="bi bi-check-circle me-1"></i> Mark as Done
+                                                </button>
+                                                <button class="btn btn-outline-secondary btn-sm flex-fill" 
+                                                    onclick="location.reload()">
+                                                    <i class="bi bi-arrow-clockwise me-1"></i> Refresh
+                                                </button>
+                                            </div>
+                                        </div>
+                                        
+                                    <?php elseif ($r['refund_status'] === 'failed'): ?>
+                                        <div class="mt-3">
+                                            <div class="alert alert-warning small py-1 mb-2">
+                                                <i class="bi bi-exclamation-triangle me-1"></i>
+                                                <strong>Auto-refund failed.</strong> Please process manually.
+                                            </div>
+                                            <div class="d-flex gap-2 flex-wrap">
+                                                <button class="btn btn-outline-danger btn-sm flex-fill" 
+                                                    onclick="retryRefund(<?= $r['id'] ?>, <?= $r['user_id'] ?>)">
+                                                    <i class="bi bi-arrow-clockwise me-1"></i> Retry Auto
+                                                </button>
+                                                <button class="btn btn-primary btn-sm flex-fill" 
+                                                    onclick="processRefundRedirect(<?= $r['id'] ?>, <?= $r['user_id'] ?>, 'approve', '')">
+                                                    <i class="bi bi-box-arrow-up-right me-1"></i> PayMongo
+                                                </button>
+                                                <button class="btn btn-outline-success btn-sm flex-fill" 
+                                                    onclick="markRefundManual(<?= $r['id'] ?>, <?= $r['user_id'] ?>)">
+                                                    <i class="bi bi-check-circle me-1"></i> Mark Done
+                                                </button>
+                                            </div>
+                                            <?php if (!empty($r['paymongo_refund_id'])): ?>
+                                                <small class="text-muted d-block mt-1">
+                                                    <i class="bi bi-info-circle me-1"></i>
+                                                    Refund ID: <?= htmlspecialchars($r['paymongo_refund_id']) ?>
+                                                </small>
+                                            <?php endif; ?>
+                                        </div>
+                                        
+                                    <?php elseif ($r['refund_status'] === 'completed'): ?>
+                                        <div class="mt-3 text-success small">
+                                            <i class="bi bi-check-circle me-1"></i>
+                                            Refunded on <?= date('F j, Y g:i A', strtotime($r['refund_date'] ?? $r['updated_at'])) ?>
+                                            <?php if (!empty($r['paymongo_refund_id'])): ?>
+                                                <br><small class="text-muted">Refund ID: <?= htmlspecialchars($r['paymongo_refund_id']) ?></small>
+                                            <?php endif; ?>
+                                        </div>
+                                        
+                                    <?php elseif ($r['status'] === 'rejected'): ?>
+                                        <div class="mt-3 text-muted small">
+                                            <i class="bi bi-info-circle me-1"></i>
+                                            Rejected on <?= date('F j, Y', strtotime($r['updated_at'] ?? $r['created_at'])) ?>
+                                        </div>
+                                    <?php endif; ?>
                                 </div>
-                                <span class="badge bg-success">Paid</span>
-                            </div>
-                            <hr class="my-2">
-                            <div class="small mb-2">
-                                <i class="bi bi-calendar text-primary me-1"></i>
-                                <strong><?= date('F j, Y', strtotime($a['appointment_date'])) ?></strong>
-                            </div>
-                            <?= getItemTypeBadge($a) ?>
-                            <?= getItemDetails($a) ?>
-                            <?= getDiscountBadge($a) ?>
-                            <?= getPriceBreakdown($a) ?>
-                        </div>
-                    </div>
-                </div>
-            <?php endforeach; ?>
-            </div>
-            <?php endif; ?>
-        </div>
-
-<!-- REFUND REQUESTS TAB -->
-<?php if (canEditAppointments()): ?>
-<div class="tab-pane fade" id="tabRefunds">
-    <?php if(empty($refundList)): ?>
-        <div class="text-center text-muted py-5">
-            <i class="bi bi-arrow-repeat fs-1 d-block mb-2"></i>
-            No refund requests.
-        </div>
-    <?php else: ?>
-    
-    <!-- Filter tabs for refund status -->
-    <div class="mb-3">
-        <div class="btn-group btn-group-sm" role="group">
-            <button class="btn btn-outline-secondary active" onclick="filterRefunds('all')">All</button>
-            <button class="btn btn-outline-warning" onclick="filterRefunds('pending')">Pending</button>
-            <button class="btn btn-outline-info" onclick="filterRefunds('processing')">Processing</button>
-            <button class="btn btn-outline-danger" onclick="filterRefunds('failed')">Failed</button>
-            <button class="btn btn-outline-success" onclick="filterRefunds('completed')">Completed</button>
-            <button class="btn btn-outline-secondary" onclick="filterRefunds('rejected')">Rejected</button>
-        </div>
-    </div>
-    
-    <div class="row g-3" id="refundListContainer">
-    <?php foreach($refundList as $r): 
-        $statusClass = match($r['refund_status'] ?? $r['status']) {
-            'completed' => 'success',
-            'processing' => 'warning',
-            'failed' => 'danger',
-            'rejected' => 'secondary',
-            default => 'dark'
-        };
-        $statusIcon = match($r['refund_status'] ?? $r['status']) {
-            'completed' => '✅ Refunded',
-            'processing' => '⏳ Processing',
-            'failed' => '❌ Failed',
-            'rejected' => 'Rejected',
-            default => 'Pending'
-        };
-    ?>
-        <div class="col-12 col-md-6 refund-item" data-status="<?= $r['refund_status'] ?? $r['status'] ?>">
-            <div class="card shadow-sm border-start border-<?= $statusClass ?> border-3">
-                <div class="card-body">
-                    <div class="d-flex justify-content-between align-items-start mb-2">
-                        <div>
-                            <h6 class="mb-0 fw-bold">
-                                <?= htmlspecialchars($r['first_name'].' '.$r['last_name']) ?>
-                            </h6>
-                            <div class="text-muted small"><?= htmlspecialchars($r['email']) ?></div>
-                        </div>
-                        <div class="text-end">
-                            <span class="badge bg-<?= $statusClass ?>">
-                                <?= $statusIcon ?>
-                            </span>
-                        </div>
-                    </div>
-                    <hr>
-                    <div class="small mb-2">
-                        <i class="bi bi-calendar-x text-danger me-1"></i>
-                        Missed: <?= date('F j, Y', strtotime($r['appointment_date'])) ?> at <?= date('g:i A', strtotime($r['appointment_time'])) ?>
-                    </div>
-                    <div class="small mb-2">
-                        <i class="bi bi-box text-primary me-1"></i>
-                        <?= htmlspecialchars($r['product_name']) ?> - ₱<?= number_format($r['product_price'], 2) ?>
-                    </div>
-                    <div class="small mb-2">
-                        <i class="bi bi-currency-dollar text-success me-1"></i>
-                        <strong>Refund Amount:</strong> ₱<?= number_format($r['amount'] ?? 0, 2) ?>
-                        <?php if ($r['refund_percentage'] ?? 0 > 0): ?>
-                            <span class="badge bg-info"><?= $r['refund_percentage'] ?>%</span>
-                        <?php endif; ?>
-                    </div>
-                    
-                    <?php if (!empty($r['paymongo_refund_id'])): ?>
-                    <div class="small mb-2">
-                        <i class="bi bi-qr-code text-secondary me-1"></i>
-                        <strong>Refund ID:</strong> <?= htmlspecialchars($r['paymongo_refund_id']) ?>
-                    </div>
-                    <?php endif; ?>
-                    
-                    <?php if (!empty($r['error_message'])): ?>
-                    <div class="alert alert-danger small py-1 mb-2">
-                        <i class="bi bi-exclamation-triangle me-1"></i>
-                        <strong>Error:</strong> <?= htmlspecialchars($r['error_message']) ?>
-                    </div>
-                    <?php endif; ?>
-                    
-                    <div class="small mb-2">
-                        <i class="bi bi-chat-left-text text-info me-1"></i>
-                        <strong>Reason:</strong> <?= htmlspecialchars($r['reason']) ?>
-                    </div>
-                    
-                    <!-- ============================================ -->
-                    <!-- ACTION BUTTONS BASED ON STATUS                -->
-                    <!-- ============================================ -->
-                    
-                    <?php if ($r['status'] === 'pending'): ?>
-                        <div class="mt-3">
-                            <textarea class="form-control form-control-sm mb-2" id="adminNotes-<?= $r['id'] ?>" 
-                                      placeholder="Admin notes (optional)" rows="2"></textarea>
-                            <div class="d-flex gap-2 flex-wrap">
-                                <!-- ✅ APPROVE & REDIRECT TO PAYMONGO -->
-                                <button class="btn btn-success btn-sm flex-fill" 
-                                    onclick="processRefundRedirect(<?= $r['id'] ?>, <?= $r['user_id'] ?>, 'approve', document.getElementById('adminNotes-<?= $r['id'] ?>').value)">
-                                    <i class="bi bi-box-arrow-up-right me-1"></i> Process on PayMongo
-                                </button>
-                                <button class="btn btn-outline-danger btn-sm flex-fill" 
-                                    onclick="processRefund(<?= $r['id'] ?>, <?= $r['user_id'] ?>, 'reject', document.getElementById('adminNotes-<?= $r['id'] ?>').value)">
-                                    <i class="bi bi-x-circle me-1"></i> Reject
-                                </button>
-                            </div>
-                            <small class="text-muted d-block mt-1">
-                                <i class="bi bi-info-circle me-1"></i>
-                                You will be redirected to PayMongo to process this refund.
-                            </small>
-                        </div>
-                        
-                    <?php elseif ($r['refund_status'] === 'processing'): ?>
-                        <div class="mt-3">
-                            <div class="alert alert-info small py-1 mb-2">
-                                <i class="bi bi-hourglass-split me-1"></i>
-                                <strong>Refund being processed on PayMongo.</strong>
-                                <br>Once completed on PayMongo, click "Mark as Done".
-                            </div>
-                            <div class="d-flex gap-2 flex-wrap">
-                                <button class="btn btn-success btn-sm flex-fill" 
-                                    onclick="markRefundManual(<?= $r['id'] ?>, <?= $r['user_id'] ?>)">
-                                    <i class="bi bi-check-circle me-1"></i> Mark as Done
-                                </button>
-                                <button class="btn btn-outline-secondary btn-sm flex-fill" 
-                                    onclick="location.reload()">
-                                    <i class="bi bi-arrow-clockwise me-1"></i> Refresh
-                                </button>
                             </div>
                         </div>
-                        
-                    <?php elseif ($r['refund_status'] === 'failed'): ?>
-                        <div class="mt-3">
-                            <div class="alert alert-warning small py-1 mb-2">
-                                <i class="bi bi-exclamation-triangle me-1"></i>
-                                <strong>Auto-refund failed.</strong> Please process manually.
-                            </div>
-                            <div class="d-flex gap-2 flex-wrap">
-                                <button class="btn btn-outline-danger btn-sm flex-fill" 
-                                    onclick="retryRefund(<?= $r['id'] ?>, <?= $r['user_id'] ?>)">
-                                    <i class="bi bi-arrow-clockwise me-1"></i> Retry Auto
-                                </button>
-                                <button class="btn btn-primary btn-sm flex-fill" 
-                                    onclick="processRefundRedirect(<?= $r['id'] ?>, <?= $r['user_id'] ?>, 'approve', '')">
-                                    <i class="bi bi-box-arrow-up-right me-1"></i> PayMongo
-                                </button>
-                                <button class="btn btn-outline-success btn-sm flex-fill" 
-                                    onclick="markRefundManual(<?= $r['id'] ?>, <?= $r['user_id'] ?>)">
-                                    <i class="bi bi-check-circle me-1"></i> Mark Done
-                                </button>
-                            </div>
-                            <?php if (!empty($r['paymongo_refund_id'])): ?>
-                                <small class="text-muted d-block mt-1">
-                                    <i class="bi bi-info-circle me-1"></i>
-                                    Refund ID: <?= htmlspecialchars($r['paymongo_refund_id']) ?>
-                                </small>
-                            <?php endif; ?>
-                        </div>
-                        
-                    <?php elseif ($r['refund_status'] === 'completed'): ?>
-                        <div class="mt-3 text-success small">
-                            <i class="bi bi-check-circle me-1"></i>
-                            Refunded on <?= date('F j, Y g:i A', strtotime($r['refund_date'] ?? $r['updated_at'])) ?>
-                            <?php if (!empty($r['paymongo_refund_id'])): ?>
-                                <br><small class="text-muted">Refund ID: <?= htmlspecialchars($r['paymongo_refund_id']) ?></small>
-                            <?php endif; ?>
-                        </div>
-                        
-                    <?php elseif ($r['status'] === 'rejected'): ?>
-                        <div class="mt-3 text-muted small">
-                            <i class="bi bi-info-circle me-1"></i>
-                            Rejected on <?= date('F j, Y', strtotime($r['updated_at'] ?? $r['created_at'])) ?>
-                        </div>
-                    <?php endif; ?>
-                </div>
-            </div>
-        </div>
-    <?php endforeach; ?>
-    </div>
-    <?php endif; ?>
-</div>
-<?php endif; ?>
-
-        <!-- WARRANTY CLAIMS TAB -->
-<div class="tab-pane fade" id="tabWarrantyClaims">
-    <div class="card">
-        <div class="card-header bg-light">
-            <div class="row g-2">
-                <div class="col-md-4">
-                    <input type="text" class="form-control" id="warrantySearch" placeholder="Search by claim #, customer, product...">
-                </div>
-                <div class="col-md-3">
-                    <select class="form-select" id="warrantyStatusFilter">
-                        <option value="">All Status</option>
-                        <option value="pending">Pending</option>
-                        <option value="reviewing">Reviewing</option>
-                        <option value="approved">Approved</option>
-                        <option value="rejected">Rejected</option>
-                        <option value="completed">Completed</option>
-                    </select>
-                </div>
-                <div class="col-md-3">
-                    <input type="date" class="form-control" id="warrantyDateFrom" placeholder="From Date">
-                </div>
-                <div class="col-md-2">
-                    <input type="date" class="form-control" id="warrantyDateTo" placeholder="To Date">
-                </div>
-            </div>
-        </div>
-        <div class="card-body p-0">
-            <div class="table-responsive">
-                <table class="table table-hover mb-0">
-                    <thead class="table-light">
-                        <tr>
-                            <th>Claim #</th>
-                            <th>Customer</th>
-                            <th>Product</th>
-                            <th>Issue</th>
-                            <th>Schedule</th>
-                            <th>Status</th>
-                            <th>Submitted</th>
-                            <th>Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody id="warrantyClaimsTableBody">
-                        <tr><td colspan="8" class="text-center py-4">Loading warranty claims...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-</div>
-
-        <!-- UPCOMING DAYS TAB -->
-        <div class="tab-pane fade" id="tabUpcoming">
-            <?php if(empty($upcomingDays)): ?>
-                <div class="text-center text-muted py-5">
-                    <i class="bi bi-calendar-x fs-1 d-block mb-2"></i>
-                    No upcoming appointments.
-                </div>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
             <?php else: ?>
-            <div class="row g-3">
-            <?php foreach($upcomingDays as $day): ?>
-                <div class="col-12 col-sm-6 col-lg-4">
-                    <div class="card shadow-sm">
-                        <div class="card-body d-flex justify-content-between align-items-center">
-                            <div>
-                                <div class="fw-bold"><?= date('F j, Y', strtotime($day['appointment_date'])) ?></div>
-                                <div class="text-muted small"><?= date('l', strtotime($day['appointment_date'])) ?></div>
-                            </div>
-                            <span class="badge bg-primary rounded-pill fs-6"><?= $day['cnt'] ?></span>
-                        </div>
-                    </div>
+                <div class="text-center text-muted py-5">
+                    <i class="bi bi-lock fs-1 d-block mb-2"></i>
+                    You don't have permission to view refund requests.
                 </div>
-            <?php endforeach; ?>
-            </div>
             <?php endif; ?>
         </div>
 
-        <!-- HISTORY TAB -->
-        <div class="tab-pane fade" id="tabHistory">
+        <!-- ============================================ -->
+        <!-- TAB 3: WARRANTY (Preserved)                   -->
+        <!-- ============================================ -->
+        <div class="tab-pane fade" id="tabWarrantyContent" role="tabpanel">
             <div class="card">
                 <div class="card-header bg-light">
                     <div class="row g-2">
-                        <div class="col-md-3">
-                            <input type="text" class="form-control" id="historySearch" placeholder="Search patient...">
+                        <div class="col-md-4">
+                            <input type="text" class="form-control" id="warrantySearch" placeholder="Search by claim #, customer, product...">
                         </div>
                         <div class="col-md-3">
-                            <input type="date" class="form-control" id="historyDateFrom" placeholder="From Date">
-                        </div>
-                        <div class="col-md-3">
-                            <input type="date" class="form-control" id="historyDateTo" placeholder="To Date">
-                        </div>
-                        <div class="col-md-3">
-                            <select class="form-select" id="historyStatus">
+                            <select class="form-select" id="warrantyStatusFilter">
                                 <option value="">All Status</option>
+                                <option value="pending">Pending</option>
+                                <option value="reviewing">Reviewing</option>
+                                <option value="approved">Approved</option>
+                                <option value="rejected">Rejected</option>
                                 <option value="completed">Completed</option>
-                                <option value="cancelled">Cancelled</option>
-                                <option value="no-show">No-show</option>
-                                <option value="refunded">Refunded</option>
                             </select>
+                        </div>
+                        <div class="col-md-3">
+                            <input type="date" class="form-control" id="warrantyDateFrom" placeholder="From Date">
+                        </div>
+                        <div class="col-md-2">
+                            <input type="date" class="form-control" id="warrantyDateTo" placeholder="To Date">
                         </div>
                     </div>
                 </div>
                 <div class="card-body p-0">
                     <div class="table-responsive">
-                        <table class="table table-hover mb-0" id="historyTable">
+                        <table class="table table-hover mb-0">
                             <thead class="table-light">
                                 <tr>
-                                    <th>Date</th>
-                                    <th>Time</th>
-                                    <th>Patient</th>
-                                    <th>Service/Product</th>
-                                    <th>Doctor</th>
+                                    <th>Claim #</th>
+                                    <th>Customer</th>
+                                    <th>Product</th>
+                                    <th>Issue</th>
+                                    <th>Schedule</th>
                                     <th>Status</th>
-                                    <th>Amount</th>
+                                    <th>Submitted</th>
+                                    <th>Actions</th>
                                 </tr>
                             </thead>
-                            <tbody id="historyTableBody">
-                                <tr><td colspan="7" class="text-center py-4">Loading history...</td></tr>
+                            <tbody id="warrantyClaimsTableBody">
+                                <tr><td colspan="8" class="text-center py-4">Loading warranty claims...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -1488,7 +1346,10 @@ $warrantyClaims = $stmtWarranty->fetchAll(PDO::FETCH_ASSOC);
         </div>
     </div>
 
-    <!-- Modals -->
+    <!-- ============================================ -->
+    <!-- MODALS (PRESERVED)                           -->
+    <!-- ============================================ -->
+    <!-- Reject Modal -->
     <div class="modal fade" id="rejectModal" tabindex="-1">
         <div class="modal-dialog">
             <div class="modal-content">
@@ -1514,6 +1375,7 @@ $warrantyClaims = $stmtWarranty->fetchAll(PDO::FETCH_ASSOC);
         </div>
     </div>
 
+    <!-- New Appointment Modal -->
     <div class="modal fade" id="newAppointmentModal" tabindex="-1">
         <div class="modal-dialog">
             <div class="modal-content">
@@ -1599,121 +1461,126 @@ $warrantyClaims = $stmtWarranty->fetchAll(PDO::FETCH_ASSOC);
             </div>
         </div>
     </div>
+
     <!-- Review Warranty Claim Modal -->
-<div class="modal fade" id="reviewWarrantyModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-            <div class="modal-header" style="background: linear-gradient(135deg, #00B761, #00A86B); color: white;">
-                <h5 class="modal-title"><i class="bi bi-shield-check me-2"></i>Warranty Claim</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <!-- INFO SECTION -->
-                <div class="row mb-3">
-                    <div class="col-md-6">
-                        <p><strong>Claim #:</strong> <span id="review_claim_number"></span></p>
-                        <p><strong>Customer:</strong> <span id="review_customer_name"></span></p>
-                        <p><strong>Contact:</strong> <span id="review_customer_contact"></span></p>
-                        <p><strong>Email:</strong> <span id="review_customer_email"></span></p>
-                    </div>
-                    <div class="col-md-6">
-                        <p><strong>Product:</strong> <span id="review_product_name"></span></p>
-                        <p><strong>Reservation #:</strong> <span id="review_reservation_id"></span></p>
-                        <p><strong>Submitted:</strong> <span id="review_submitted_date"></span></p>
-                        <p><strong>Status:</strong> <span id="review_current_status"></span></p>
-                    </div>
+    <div class="modal fade" id="reviewWarrantyModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header" style="background: linear-gradient(135deg, #00B761, #00A86B); color: white;">
+                    <h5 class="modal-title"><i class="bi bi-shield-check me-2"></i>Warranty Claim</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
-
-                <div class="alert alert-info">
-                    <strong>Schedule:</strong> <span id="review_schedule"></span>
-                </div>
-
-                <div class="card mb-3">
-                    <div class="card-header bg-light">
-                        <strong><i class="bi bi-chat-text"></i> Issue Description</strong>
-                    </div>
-                    <div class="card-body">
-                        <p id="review_description"></p>
-                        <div id="review_photos" class="d-flex gap-2 flex-wrap mt-2"></div>
-                    </div>
-                </div>
-
-                <!-- PENDING FORM — approve or reject -->
-                <div id="form_pending" style="display:none;">
-                    <hr>
-                    <h6 class="fw-bold mb-3">Clinic Decision</h6>
-                    <div class="row g-3">
+                <div class="modal-body">
+                    <!-- INFO SECTION -->
+                    <div class="row mb-3">
                         <div class="col-md-6">
-                            <label class="form-label fw-semibold">Offer Type <span class="text-danger">*</span></label>
-                            <select class="form-select" id="claim_resolution">
-                                <option value="repair">🔧 Repair</option>
-                                <option value="replacement">📦 Replacement</option>
-                                <option value="store_credit">💳 Store Credit</option>
-                            </select>
+                            <p><strong>Claim #:</strong> <span id="review_claim_number"></span></p>
+                            <p><strong>Customer:</strong> <span id="review_customer_name"></span></p>
+                            <p><strong>Contact:</strong> <span id="review_customer_contact"></span></p>
+                            <p><strong>Email:</strong> <span id="review_customer_email"></span></p>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label fw-semibold">Visit Date <span class="text-danger">*</span></label>
-                            <input type="date" class="form-control" id="claim_schedule_date" 
-                                   min="<?= date('Y-m-d') ?>">
-                        </div>
-                        <div class="col-12">
-                            <label class="form-label fw-semibold">Notes (optional)</label>
-                            <textarea class="form-control" id="claim_resolution_notes" rows="2" 
-                                      placeholder="Additional notes for the customer..."></textarea>
+                            <p><strong>Product:</strong> <span id="review_product_name"></span></p>
+                            <p><strong>Reservation #:</strong> <span id="review_reservation_id"></span></p>
+                            <p><strong>Submitted:</strong> <span id="review_submitted_date"></span></p>
+                            <p><strong>Status:</strong> <span id="review_current_status"></span></p>
                         </div>
                     </div>
 
-                    <!-- REJECT REASON — hidden by default -->
-                    <div id="reject_reason_box" class="mt-3" style="display:none;">
-                        <label class="form-label fw-semibold">Rejection Reason <span class="text-danger">*</span></label>
-                        <textarea class="form-control" id="claim_rejection_reason" rows="2" 
-                                  placeholder="Bakit hindi ma-approve ang claim?"></textarea>
+                    <div class="alert alert-info">
+                        <strong>Schedule:</strong> <span id="review_schedule"></span>
                     </div>
-                </div>
 
-                <!-- APPROVED INFO — show schedule -->
-                <div id="form_approved" style="display:none;">
-                    <div class="alert alert-success">
-                        <i class="bi bi-check-circle me-2"></i>
-                        This claim is <strong>approved</strong>. Waiting for patient to arrive on 
-                        <strong><span id="approved_schedule_display"></span></strong>.
+                    <div class="card mb-3">
+                        <div class="card-header bg-light">
+                            <strong><i class="bi bi-chat-text"></i> Issue Description</strong>
+                        </div>
+                        <div class="card-body">
+                            <p id="review_description"></p>
+                            <div id="review_photos" class="d-flex gap-2 flex-wrap mt-2"></div>
+                        </div>
                     </div>
-                </div>
 
-                <!-- ARRIVED INFO -->
-                <div id="form_arrived" style="display:none;">
-                    <div class="alert alert-primary">
-                        <i class="bi bi-person-check me-2"></i>
-                        Patient has <strong>arrived</strong>. Mark as completed once done.
+                    <!-- PENDING FORM — approve or reject -->
+                    <div id="form_pending" style="display:none;">
+                        <hr>
+                        <h6 class="fw-bold mb-3">Clinic Decision</h6>
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label class="form-label fw-semibold">Offer Type <span class="text-danger">*</span></label>
+                                <select class="form-select" id="claim_resolution">
+                                    <option value="repair">🔧 Repair</option>
+                                    <option value="replacement">📦 Replacement</option>
+                                    <option value="store_credit">💳 Store Credit</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label fw-semibold">Visit Date <span class="text-danger">*</span></label>
+                                <input type="date" class="form-control" id="claim_schedule_date" 
+                                       min="<?= date('Y-m-d') ?>">
+                            </div>
+                            <div class="col-12">
+                                <label class="form-label fw-semibold">Notes (optional)</label>
+                                <textarea class="form-control" id="claim_resolution_notes" rows="2" 
+                                          placeholder="Additional notes for the customer..."></textarea>
+                            </div>
+                        </div>
+
+                        <!-- REJECT REASON — hidden by default -->
+                        <div id="reject_reason_box" class="mt-3" style="display:none;">
+                            <label class="form-label fw-semibold">Rejection Reason <span class="text-danger">*</span></label>
+                            <textarea class="form-control" id="claim_rejection_reason" rows="2" 
+                                      placeholder="Bakit hindi ma-approve ang claim?"></textarea>
+                        </div>
                     </div>
-                </div>
 
-                <!-- COMPLETED INFO -->
-                <div id="form_completed" style="display:none;">
-                    <div class="alert alert-success">
-                        <i class="bi bi-patch-check me-2"></i>
-                        This warranty claim has been <strong>completed</strong>.
+                    <!-- APPROVED INFO — show schedule -->
+                    <div id="form_approved" style="display:none;">
+                        <div class="alert alert-success">
+                            <i class="bi bi-check-circle me-2"></i>
+                            This claim is <strong>approved</strong>. Waiting for patient to arrive on 
+                            <strong><span id="approved_schedule_display"></span></strong>.
+                        </div>
                     </div>
-                </div>
 
-                <!-- REJECTED INFO -->
-                <div id="form_rejected" style="display:none;">
-                    <div class="alert alert-danger">
-                        <i class="bi bi-x-circle me-2"></i>
-                        This claim was <strong>rejected</strong>.
-                        <div class="mt-2"><strong>Reason:</strong> <span id="rejected_reason_display"></span></div>
+                    <!-- ARRIVED INFO -->
+                    <div id="form_arrived" style="display:none;">
+                        <div class="alert alert-primary">
+                            <i class="bi bi-person-check me-2"></i>
+                            Patient has <strong>arrived</strong>. Mark as completed once done.
+                        </div>
                     </div>
-                </div>
 
-            </div>
-            <div class="modal-footer" id="modal_footer_buttons">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                <!-- Buttons inserted dynamically based on status -->
+                    <!-- COMPLETED INFO -->
+                    <div id="form_completed" style="display:none;">
+                        <div class="alert alert-success">
+                            <i class="bi bi-patch-check me-2"></i>
+                            This warranty claim has been <strong>completed</strong>.
+                        </div>
+                    </div>
+
+                    <!-- REJECTED INFO -->
+                    <div id="form_rejected" style="display:none;">
+                        <div class="alert alert-danger">
+                            <i class="bi bi-x-circle me-2"></i>
+                            This claim was <strong>rejected</strong>.
+                            <div class="mt-2"><strong>Reason:</strong> <span id="rejected_reason_display"></span></div>
+                        </div>
+                    </div>
+
+                </div>
+                <div class="modal-footer" id="modal_footer_buttons">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <!-- Buttons inserted dynamically based on status -->
+                </div>
             </div>
         </div>
     </div>
 </div>
 
+<!-- ============================================ -->
+<!-- SCRIPTS - LAHAT PRESERVED                    -->
+<!-- ============================================ -->
 <script>
 // Pass permissions to JavaScript
 const userPermissions = {
@@ -1736,7 +1603,75 @@ const api = (url, opts) => fetch(url, opts).then(r => r.json());
 
 function refreshPage() { location.reload(); }
 
-// MARK ARRIVED FUNCTION - FIXED
+// ============================================
+// FILTER FUNCTIONS - UI LANG
+// ============================================
+function filterTable() {
+    const status = document.getElementById('filterStatus').value;
+    const payment = document.getElementById('filterPayment').value;
+    const date = document.getElementById('filterDate').value;
+    const search = document.getElementById('searchInput').value.toLowerCase();
+    const rows = document.querySelectorAll('#tableBody tr');
+    let visibleCount = 0;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    rows.forEach(row => {
+        let show = true;
+        const rowStatus = row.getAttribute('data-status') || '';
+        const rowPayment = row.getAttribute('data-payment') || '';
+        const rowDate = row.getAttribute('data-date') || '';
+        const rowText = row.textContent.toLowerCase();
+
+        if (status !== 'all' && rowStatus !== status) show = false;
+        if (payment !== 'all' && rowPayment !== payment) show = false;
+
+        if (date !== 'all' && rowDate) {
+            const apptDate = new Date(rowDate);
+            apptDate.setHours(0, 0, 0, 0);
+            const weekAgo = new Date(today);
+            weekAgo.setDate(weekAgo.getDate() - 7);
+            const monthAgo = new Date(today);
+            monthAgo.setMonth(monthAgo.getMonth() - 1);
+
+            if (date === 'today' && apptDate.getTime() !== today.getTime()) show = false;
+            else if (date === 'week' && apptDate < weekAgo) show = false;
+            else if (date === 'month' && apptDate < monthAgo) show = false;
+            else if (date === 'past' && apptDate >= today) show = false;
+            else if (date === 'upcoming' && apptDate < today) show = false;
+        }
+
+        if (search && !rowText.includes(search)) show = false;
+
+        row.style.display = show ? '' : 'none';
+        if (show) visibleCount++;
+    });
+
+    updatePaginationInfo(visibleCount);
+}
+
+function resetFilters() {
+    document.getElementById('filterStatus').value = 'all';
+    document.getElementById('filterPayment').value = 'all';
+    document.getElementById('filterDate').value = 'all';
+    document.getElementById('searchInput').value = '';
+    filterTable();
+}
+
+function updatePaginationInfo(count) {
+    const total = document.querySelectorAll('#tableBody tr').length;
+    document.getElementById('totalCount').textContent = total;
+    document.getElementById('startCount').textContent = count > 0 ? 1 : 0;
+    document.getElementById('endCount').textContent = count;
+}
+
+function changePage(direction) {
+    Swal.fire('Info', 'All entries are shown. Use filters to narrow down results.', 'info');
+}
+
+// ============================================
+// MARK ARRIVED - PRESERVED
+// ============================================
 function markArrived(appointmentId, userId, patientId) {
     console.log('markArrived called:', {appointmentId, userId, patientId});
     
@@ -1807,6 +1742,9 @@ function markArrived(appointmentId, userId, patientId) {
     });
 }
 
+// ============================================
+// APPROVE APPOINTMENT - PRESERVED
+// ============================================
 function approveAppointment(appointmentId, userId, patientId) {
     if (!canApprove()) {
         Swal.fire('Access Denied', 'You do not have permission to approve appointments', 'error');
@@ -1847,6 +1785,9 @@ function approveAppointment(appointmentId, userId, patientId) {
     });
 }
 
+// ============================================
+// REJECT MODAL - PRESERVED
+// ============================================
 let _rejectId = null, _rejectUserId = null;
 
 function rejectModal(appointmentId, userId) {
@@ -1889,6 +1830,9 @@ function confirmReject() {
     });
 }
 
+// ============================================
+// UPDATE STATUS - PRESERVED
+// ============================================
 function updateStatus(appointmentId, userId, newStatus) {
     if (!canEdit()) {
         Swal.fire('Access Denied', 'You do not have permission to update appointment status', 'error');
@@ -1926,43 +1870,168 @@ function updateStatus(appointmentId, userId, newStatus) {
     });
 }
 
+
+// ============================================
+// MARK NO-SHOW - WITH CONFIRMATION
+// ============================================
+function markNoShow(appointmentId, userId) {
+    if (!canEdit()) {
+        Swal.fire('Access Denied', 'You do not have permission to mark no-show', 'error');
+        return;
+    }
+    
+    if (!appointmentId || appointmentId === 0) {
+        Swal.fire('Error', 'Missing appointment ID', 'error');
+        return;
+    }
+    
+    // ✅ Get no-show policy info first
+    Swal.fire({
+        title: 'Checking No-Show Policy...',
+        didOpen: () => Swal.showLoading(),
+        allowOutsideClick: false
+    });
+    
+    fetch(`api/appointments.php?action=get_no_show_info&appointment_id=${appointmentId}`)
+        .then(r => r.json())
+        .then(data => {
+            Swal.close();
+            
+            if (!data.success) {
+                Swal.fire('Error', data.message || 'Cannot get no-show policy', 'error');
+                return;
+            }
+            
+            const forfeitAmount = data.forfeit_amount || 0;
+            const downpayment = data.downpayment || 0;
+            const refundPercent = data.refund_percent || 0;
+            const refundPolicy = data.refund_policy || '2:100|1:50|0:0';
+            const refundEligible = data.refund_eligible || false;
+            
+            // ✅ Build policy display
+            let policyDisplay = '';
+            if (refundEligible && refundPercent > 0) {
+                const refundAmount = (downpayment * refundPercent / 100);
+                policyDisplay = `
+                    <div style="background:#D1FAE5;padding:10px;border-radius:8px;margin:10px 0;">
+                        <strong style="color:#065F46;">✅ Refund Available</strong>
+                        <div style="color:#065F46;">${refundPercent}% refund (₱${refundAmount.toFixed(2)})</div>
+                        <div style="color:#065F46;">Forfeited: ₱${forfeitAmount.toFixed(2)}</div>
+                    </div>
+                `;
+            } else {
+                policyDisplay = `
+                    <div style="background:#FEE2E2;padding:10px;border-radius:8px;margin:10px 0;">
+                        <strong style="color:#991B1B;">❌ No Refund</strong>
+                        <div style="color:#991B1B;">100% forfeited (₱${forfeitAmount.toFixed(2)})</div>
+                    </div>
+                `;
+            }
+            
+            // ✅ Show confirmation
+            Swal.fire({
+                title: '⚠️ Mark as No-Show?',
+                html: `
+                    <div style="text-align:left;">
+                        <p class="text-danger"><strong>This patient did not show up for their appointment.</strong></p>
+                        <div style="background:#FEF3C7;padding:15px;border-radius:10px;margin:15px 0;">
+                            <strong style="color:#92400E;">📋 Clinic Refund Policy:</strong>
+                            <ul style="margin:10px 0 0 0;padding-left:20px;color:#78350F;list-style:none;">
+                                <li>💰 Amount Paid: <strong>₱${downpayment.toFixed(2)}</strong></li>
+                                <li>📜 Policy: <strong>${refundPolicy}</strong></li>
+                            </ul>
+                        </div>
+                        ${policyDisplay}
+                        <p style="color:#6B7280;font-size:13px;">
+                            <i class="bi bi-info-circle me-1"></i>
+                            Patient will be notified.
+                        </p>
+                    </div>
+                `,
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#DC2626',
+                cancelButtonColor: '#6B7280',
+                confirmButtonText: 'Yes, Mark as No-Show',
+                cancelButtonText: 'Cancel'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    Swal.fire({ 
+                        title: 'Processing...', 
+                        didOpen: () => Swal.showLoading(), 
+                        allowOutsideClick: false 
+                    });
+                    
+                    fetch('api/appointments.php', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            action: 'update_status',
+                            appointment_id: parseInt(appointmentId),
+                            user_id: parseInt(userId || 0),
+                            status: 'no-show'
+                        })
+                    })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.success) {
+                            let msg = 'Patient marked as no-show.';
+                            if (data.data) {
+                                if (data.data.forfeited_amount > 0) {
+                                    msg += ` Forfeited: ₱${data.data.forfeited_amount.toFixed(2)}`;
+                                }
+                                if (data.data.refund_eligible && data.data.refund_amount > 0) {
+                                    msg += ` Refund: ${data.data.refund_percent}% (₱${data.data.refund_amount.toFixed(2)})`;
+                                }
+                            }
+                            Swal.fire({ 
+                                icon: 'warning', 
+                                title: 'No-Show Marked!', 
+                                text: msg,
+                                timer: 3000,
+                                showConfirmButton: false
+                            }).then(() => {
+                                location.reload();
+                            });
+                        } else {
+                            Swal.fire({ 
+                                icon: 'error', 
+                                title: 'Error', 
+                                text: data.message || 'Failed to mark no-show' 
+                            });
+                        }
+                    })
+                    .catch(err => {
+                        console.error('Error:', err);
+                        Swal.fire({ 
+                            icon: 'error', 
+                            title: 'Network Error', 
+                            text: 'Please try again.' 
+                        });
+                    });
+                }
+            });
+        })
+        .catch(err => {
+            console.error('Error:', err);
+            Swal.close();
+            Swal.fire({ 
+                icon: 'error', 
+                title: 'Error', 
+                text: 'Could not retrieve no-show policy.' 
+            });
+        });
+}
+// ============================================
+// PROCESS REFUND - PRESERVED
+// ============================================
 function processRefund(refundId, userId, action, adminNotes) {
     if (!canEdit()) {
         Swal.fire('Access Denied', 'You do not have permission to process refunds', 'error');
         return;
     }
     
-    const isApprove = action === 'approve';
-    const isReject = action === 'reject';
-    
-    if (isApprove) {
-        Swal.fire({
-            title: 'Process Refund via PayMongo?',
-            html: `
-                <div style="text-align:left;">
-                    <p>You will be redirected to <strong>PayMongo</strong> to process this refund.</p>
-                    <div style="background:#FFF3E0;padding:12px;border-radius:8px;margin:10px 0;">
-                        <i class="fas fa-credit-card me-2"></i>
-                        <strong>Amount:</strong> The refund will be processed on PayMongo.
-                    </div>
-                    <p class="text-muted small">
-                        <i class="fas fa-info-circle me-1"></i>
-                        After completing the refund on PayMongo, come back and click <strong>"Mark as Done"</strong> to update the status.
-                    </p>
-                </div>
-            `,
-            icon: 'question',
-            showCancelButton: true,
-            confirmButtonColor: '#198754',
-            confirmButtonText: 'Yes, Go to PayMongo',
-            cancelButtonText: 'Cancel'
-        }).then((result) => {
-            if (result.isConfirmed) {
-                executeRefundRedirect(refundId, userId, 'approve', adminNotes);
-            }
-        });
-    } else if (isReject) {
-        // ... reject logic stays the same
+    if (action === 'reject') {
         Swal.fire({
             title: 'Reject Refund Request?',
             html: `
@@ -1994,229 +2063,223 @@ function processRefund(refundId, userId, action, adminNotes) {
     }
 }
 
-
-function goToSalesBilling(appointmentId) {
-    window.location.href = `main.php?view=sales&appointment_id=${appointmentId}`;
-}
-
-function loadAppointmentHistory() {
-    const search = document.getElementById('historySearch')?.value || '';
-    const fromDate = document.getElementById('historyDateFrom')?.value || '';
-    const toDate = document.getElementById('historyDateTo')?.value || '';
-    const status = document.getElementById('historyStatus')?.value || '';
+function processRefundRedirect(refundId, userId, action, adminNotes) {
+    if (!canEdit()) {
+        Swal.fire('Access Denied', 'You do not have permission to process refunds', 'error');
+        return;
+    }
     
-    const tbody = document.getElementById('historyTableBody');
-    tbody.innerHTML = '<tr><td colspan="7" class="text-center py-4">Loading...</td></tr>';
+    Swal.fire({
+        title: 'Process Refund on PayMongo?',
+        html: `
+            <div style="text-align:left;">
+                <p>You will be redirected to <strong>PayMongo</strong> to process this refund.</p>
+                <p class="text-muted small">
+                    <i class="fas fa-info-circle me-1"></i>
+                    After completing the refund on PayMongo, come back and click <strong>"Mark as Done"</strong>.
+                </p>
+            </div>
+        `,
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonColor: '#198754',
+        confirmButtonText: 'Yes, Go to PayMongo',
+        cancelButtonText: 'Cancel'
+    }).then((result) => {
+        if (result.isConfirmed) {
+            executeRefundRedirect(refundId, userId, 'approve', adminNotes);
+        }
+    });
+}
+
+function executeRefundRedirect(refundId, userId, action, adminNotes) {
+    Swal.fire({ 
+        title: 'Getting PayMongo link...', 
+        allowOutsideClick: false, 
+        didOpen: () => Swal.showLoading() 
+    });
     
-    fetch(`api/appointments.php?action=history&search=${encodeURIComponent(search)}&from=${fromDate}&to=${toDate}&status=${status}`)
-        .then(r => r.json())
-        .then(data => {
-            if (!data || data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="7" class="text-center py-4">No appointment history found</td></tr>';
-                return;
-            }
-            tbody.innerHTML = data.map(a => `
-                <tr>
-                    <td>${new Date(a.appointment_date).toLocaleDateString()}</td>
-                    <td>${a.appointment_time || '—'}</td>
-                    <td><strong>${escapeHtml(a.patient_name)}</strong></td>
-                    <td>${escapeHtml(a.item_name || '—')}</td>
-                    <td>${escapeHtml(a.doctor_name || '—')}</td>
-                    <td>${getStatusBadge(a.status)}</td>
-                    <td class="text-end">₱${parseFloat(a.total_amount || 0).toLocaleString()}</td>
-                </tr>
-            `).join('');
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            tbody.innerHTML = '<tr><td colspan="7" class="text-center py-4 text-danger">Error loading history</td></tr>';
-        });
-}
-
-function escapeHtml(text) {
-    if (!text) return '';
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-function getStatusBadge(status) {
-    const badges = {
-        'pending': '<span class="badge bg-warning text-dark">Pending</span>',
-        'confirmed': '<span class="badge bg-info text-dark">Confirmed</span>',
-        'paid': '<span class="badge bg-primary">Paid</span>',
-        'completed': '<span class="badge bg-success">Completed</span>',
-        'cancelled': '<span class="badge bg-danger">Cancelled</span>',
-        'no-show': '<span class="badge bg-secondary">No-show</span>',
-        'refunded': '<span class="badge bg-dark">Refunded</span>'
+    const payload = {
+        action: 'process_refund',
+        refund_id: refundId,
+        user_id: userId,
+        refund_action: action,
+        admin_notes: adminNotes || ''
     };
-    return badges[status] || '<span class="badge bg-secondary">' + status + '</span>';
+    
+    fetch('api/appointments.php', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    })
+    .then(res => res.json())
+    .then(data => {
+        Swal.close();
+        
+        if (data.success && data.redirect && data.checkout_url) {
+            window.open(data.checkout_url, '_blank');
+            Swal.fire({
+                title: 'PayMongo Opened! ✅',
+                html: `
+                    <p>After processing the refund on PayMongo:</p>
+                    <ol class="text-start mt-2" style="font-size:14px;">
+                        <li>Complete the refund on PayMongo</li>
+                        <li>Come back to this page</li>
+                        <li>Click <strong>"Mark as Done"</strong> on the refund request</li>
+                    </ol>
+                `,
+                icon: 'success',
+                confirmButtonText: 'Okay, I\'ll do that'
+            });
+        } else {
+            Swal.fire({
+                icon: 'error',
+                title: 'Error',
+                text: data.message || 'Failed to get PayMongo link.',
+                confirmButtonColor: '#dc3545'
+            });
+        }
+    })
+    .catch(error => {
+        Swal.close();
+        Swal.fire({
+            icon: 'error',
+            title: 'Network Error',
+            text: 'Please try again.',
+            confirmButtonColor: '#dc3545'
+        });
+    });
 }
 
-document.addEventListener('DOMContentLoaded', function() {
-    
-    // ========================================
-    // 1. HISTORY TAB LISTENER
-    // ========================================
-    const historyTabBtn = document.querySelector('button[data-bs-target="#tabHistory"]');
-    if (historyTabBtn) {
-        historyTabBtn.addEventListener('shown.bs.tab', function() {
-            loadAppointmentHistory();
-        });
+function markRefundManual(refundId, userId) {
+    if (!canEdit()) {
+        Swal.fire('Access Denied', 'You do not have permission to mark refunds as done', 'error');
+        return;
     }
     
-    // ========================================
-    // 2. HISTORY FILTER LISTENERS
-    // ========================================
-    const historySearch = document.getElementById('historySearch');
-    const historyDateFrom = document.getElementById('historyDateFrom');
-    const historyDateTo = document.getElementById('historyDateTo');
-    const historyStatus = document.getElementById('historyStatus');
-    
-    if (historySearch) historySearch.addEventListener('keyup', loadAppointmentHistory);
-    if (historyDateFrom) historyDateFrom.addEventListener('change', loadAppointmentHistory);
-    if (historyDateTo) historyDateTo.addEventListener('change', loadAppointmentHistory);
-    if (historyStatus) historyStatus.addEventListener('change', loadAppointmentHistory);
-    
-    // ========================================
-    // 3. WARRANTY CLAIMS TAB LISTENER
-    // ========================================
-    const warrantyTabBtn = document.querySelector('button[data-bs-target="#tabWarrantyClaims"]');
-    if (warrantyTabBtn) {
-        warrantyTabBtn.addEventListener('shown.bs.tab', function() {
-            loadWarrantyClaims();
-        });
-    }
-    
-    // ========================================
-    // 4. WARRANTY CLAIMS FILTER LISTENERS
-    // ========================================
-    const warrantySearch = document.getElementById('warrantySearch');
-    const warrantyStatusFilter = document.getElementById('warrantyStatusFilter');
-    const warrantyDateFrom = document.getElementById('warrantyDateFrom');
-    const warrantyDateTo = document.getElementById('warrantyDateTo');
-    
-    if (warrantySearch) warrantySearch.addEventListener('keyup', loadWarrantyClaims);
-    if (warrantyStatusFilter) warrantyStatusFilter.addEventListener('change', loadWarrantyClaims);
-    if (warrantyDateFrom) warrantyDateFrom.addEventListener('change', loadWarrantyClaims);
-    if (warrantyDateTo) warrantyDateTo.addEventListener('change', loadWarrantyClaims);
-    
-    // ========================================
-    // 5. CLAIM DECISION CHANGE LISTENER
-    // ========================================
-    const claimDecision = document.getElementById('claim_decision');
-    if (claimDecision) {
-        claimDecision.addEventListener('change', function() {
-            const resolutionBox = document.getElementById('resolution_box');
-            const rejectionBox = document.getElementById('rejection_box');
-            
-            if (this.value === 'rejected') {
-                if (resolutionBox) resolutionBox.style.display = 'none';
-                if (rejectionBox) rejectionBox.style.display = 'block';
-            } else if (this.value === 'approved' || this.value === 'repair') {
-                if (resolutionBox) resolutionBox.style.display = 'block';
-                if (rejectionBox) rejectionBox.style.display = 'none';
-            } else {
-                if (resolutionBox) resolutionBox.style.display = 'none';
-                if (rejectionBox) rejectionBox.style.display = 'none';
-            }
-        });
-    }
-    
-    // ========================================
-    // 6. NEW APPOINTMENT FORM SUBMIT
-    // ========================================
-    const newAppointmentForm = document.getElementById('newAppointmentForm');
-    if (newAppointmentForm) {
-        newAppointmentForm.addEventListener('submit', function(e) {
-            if (!canCreate()) {
-                Swal.fire('Access Denied', 'You do not have permission to create appointments', 'error');
-                e.preventDefault();
-                return;
-            }
-            e.preventDefault();
-            
-            const formData = new FormData(e.target);
-            const itemId = formData.get('item_id');
-            const itemType = formData.get('item_type');
-            
-            if (!itemId) {
-                Swal.fire('Error', 'Please select a service or product', 'error');
-                return;
-            }
-            
-            const data = {
-                patient_id: formData.get('patient_id'),
-                doctor_id: formData.get('doctor_id'),
-                item_id: itemId,
-                item_type: itemType,
-                service_type: formData.get('service_type'),
-                appointment_date: formData.get('appointment_date'),
-                appointment_time: formData.get('appointment_time'),
-                notes: formData.get('notes'),
-                walk_in: true
-            };
-            
-            console.log('Creating appointment:', data);
-            
+    Swal.fire({
+        title: 'Mark as Manually Refunded?',
+        html: `
+            <p>This will mark the refund as <strong>completed</strong> without calling PayMongo API.</p>
+            <div class="alert alert-warning mt-2">
+                <i class="bi bi-exclamation-triangle me-1"></i>
+                Make sure you have already processed the refund on PayMongo.
+            </div>
+        `,
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonText: 'Yes, mark as refunded'
+    }).then((result) => {
+        if (result.isConfirmed) {
             Swal.fire({ 
-                title: 'Saving…', 
+                title: 'Processing...', 
                 didOpen: () => Swal.showLoading(), 
                 allowOutsideClick: false 
             });
             
-            api('api/appointments.php', {
-                method: 'POST',
+            fetch('api/appointments.php', {
+                method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            }).then(d => {
-                if (d.success) {
-                    Swal.fire({ 
-                        icon: 'success', 
-                        title: 'Appointment Added!', 
-                        timer: 2000, 
-                        showConfirmButton: false 
-                    }).then(() => location.reload());
+                body: JSON.stringify({
+                    action: 'mark_refund_manual',
+                    refund_id: refundId,
+                    user_id: userId
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                Swal.close();
+                if (data.success) {
+                    Swal.fire('Success!', data.message, 'success').then(() => location.reload());
                 } else {
-                    Swal.fire({ icon: 'error', title: 'Error', text: d.message });
+                    Swal.fire('Error', data.message, 'error');
                 }
-            }).catch(error => {
-                console.error('Fetch error:', error);
-                Swal.fire({ icon: 'error', title: 'Network Error', text: 'Please try again.' });
+            })
+            .catch(err => {
+                Swal.close();
+                Swal.fire('Error', 'Network error', 'error');
             });
-        });
-    }
-    
-    // ========================================
-    // 7. ITEM SELECT HANDLER
-    // ========================================
-    const itemSelect = document.getElementById('itemSelect');
-    const itemTypeInput = document.getElementById('itemType');
-    const serviceTypeNameInput = document.getElementById('serviceTypeName');
-    
-    if (itemSelect) {
-        itemSelect.addEventListener('change', function() {
-            const selectedOption = this.options[this.selectedIndex];
-            const itemType = selectedOption.getAttribute('data-type');
-            const itemName = selectedOption.getAttribute('data-name');
-            
-            if (itemTypeInput) itemTypeInput.value = itemType;
-            if (serviceTypeNameInput) serviceTypeNameInput.value = itemName;
-        });
-    }
-    
-    // ========================================
-    // 8. THEME CHECK (kung may theme switcher)
-    // ========================================
-    const savedTheme = localStorage.getItem('theme') || 'light';
-    if (savedTheme === 'dark') {
-        document.documentElement.classList.add('theme-dark');
-    }
-});
-// ============================================
-// WARRANTY CLAIMS FUNCTIONS - FIXED
-// ============================================
+        }
+    });
+}
 
+function retryRefund(refundId, userId) {
+    if (!canEdit()) {
+        Swal.fire('Access Denied', 'You do not have permission to retry refunds', 'error');
+        return;
+    }
+    
+    Swal.fire({
+        title: 'Retry Refund?',
+        text: 'This will attempt to process the refund again via PayMongo API.',
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonText: 'Yes, Retry'
+    }).then((result) => {
+        if (result.isConfirmed) {
+            Swal.fire({ 
+                title: 'Processing...', 
+                didOpen: () => Swal.showLoading(), 
+                allowOutsideClick: false 
+            });
+            
+            fetch('api/appointments.php', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'process_refund',
+                    refund_id: refundId,
+                    user_id: userId,
+                    refund_action: 'approve',
+                    admin_notes: 'Retry after failed attempt'
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                Swal.close();
+                if (data.success) {
+                    if (data.redirect && data.checkout_url) {
+                        window.open(data.checkout_url, '_blank');
+                        Swal.fire({
+                            title: 'PayMongo Opened!',
+                            text: 'Complete the refund on PayMongo, then click "Mark as Done".',
+                            icon: 'success',
+                            confirmButtonText: 'Okay'
+                        });
+                    } else {
+                        Swal.fire('Success!', data.message, 'success').then(() => location.reload());
+                    }
+                } else {
+                    Swal.fire('Error', data.message, 'error');
+                }
+            })
+            .catch(err => {
+                Swal.close();
+                Swal.fire('Error', 'Network error', 'error');
+            });
+        }
+    });
+}
+
+function filterRefunds(status) {
+    document.querySelectorAll('.btn-group .btn').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    document.querySelector(`.btn-group .btn[onclick="filterRefunds('${status}')"]`)?.classList.add('active');
+    
+    document.querySelectorAll('.refund-item').forEach(item => {
+        const itemStatus = item.getAttribute('data-status') || 'pending';
+        if (status === 'all' || itemStatus === status) {
+            item.style.display = 'block';
+        } else {
+            item.style.display = 'none';
+        }
+    });
+}
+
+// ============================================
+// WARRANTY CLAIMS FUNCTIONS - PRESERVED
+// ============================================
 let currentClaimId = null;
 let currentUserId = null;
 
@@ -2234,7 +2297,6 @@ function loadWarrantyClaims() {
     fetch(`api/warranty.php?action=get_claims&search=${encodeURIComponent(search)}&status=${status}&from=${fromDate}&to=${toDate}`)
         .then(r => r.json())
         .then(data => {
-            // ✅ Check if data is array or object with success/data structure
             let claims = [];
             if (Array.isArray(data)) {
                 claims = data;
@@ -2249,8 +2311,7 @@ function loadWarrantyClaims() {
             
             updateWarrantyTable(claims);
             
-            // Update badge count
-            const badge = document.getElementById('warrantyClaimsBadge');
+            const badge = document.getElementById('warrantyTabBadge');
             if (badge) {
                 const pendingCount = claims.filter(c => c.status === 'pending').length;
                 badge.textContent = pendingCount;
@@ -2318,12 +2379,10 @@ function openReviewModal(claimId, userId) {
     document.getElementById('reviewWarrantyModal').addEventListener('shown.bs.modal', function handler() {
         this.removeEventListener('shown.bs.modal', handler);
 
-        // Reset all sections
         ['form_pending','form_approved','form_arrived','form_completed','form_rejected'].forEach(id => {
             document.getElementById(id).style.display = 'none';
         });
 
-        // Loading placeholders
         ['review_claim_number','review_customer_name','review_customer_contact',
          'review_customer_email','review_product_name','review_reservation_id',
          'review_submitted_date','review_schedule','review_current_status'].forEach(id => {
@@ -2340,7 +2399,6 @@ function openReviewModal(claimId, userId) {
                     return;
                 }
 
-                // Fill info
                 const set = (id, val) => {
                     const el = document.getElementById(id);
                     if (el) el.textContent = val || '—';
@@ -2354,7 +2412,6 @@ function openReviewModal(claimId, userId) {
                 set('review_reservation_id', claim.reservation_code || claim.reservation_id);
                 set('review_submitted_date', claim.created_at ? new Date(claim.created_at).toLocaleString() : '—');
 
-                // Schedule
                 let sched = 'No schedule set';
                 if (claim.schedule_date) {
                     sched = new Date(claim.schedule_date).toLocaleDateString('en-PH', {
@@ -2364,15 +2421,12 @@ function openReviewModal(claimId, userId) {
                 }
                 set('review_schedule', sched);
 
-                // Status badge
                 const statusEl = document.getElementById('review_current_status');
                 if (statusEl) statusEl.innerHTML = getStatusBadge(claim.status);
 
-                // Description
                 const descEl = document.getElementById('review_description');
                 if (descEl) descEl.innerHTML = claim.issue_description || '<em>No description</em>';
 
-                // Photos
                 const photosDiv = document.getElementById('review_photos');
                 if (photosDiv) {
                     try {
@@ -2390,7 +2444,6 @@ function openReviewModal(claimId, userId) {
                     }
                 }
 
-                // Show correct section + footer buttons based on status
                 renderModalByStatus(claim);
             })
             .catch(err => {
@@ -2402,12 +2455,10 @@ function openReviewModal(claimId, userId) {
 function renderModalByStatus(claim) {
     const footer = document.getElementById('modal_footer_buttons');
 
-    // Hide all forms first
     ['form_pending','form_approved','form_arrived','form_completed','form_rejected'].forEach(id => {
         document.getElementById(id).style.display = 'none';
     });
 
-    // Default footer
     footer.innerHTML = `<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>`;
 
     switch(claim.status) {
@@ -2465,7 +2516,6 @@ function renderModalByStatus(claim) {
 }
 
 function submitWarrantyClaim(newStatus) {
-    // Validation for PENDING → APPROVED
     if (newStatus === 'approved') {
         const schedDate = document.getElementById('claim_schedule_date')?.value;
         const resolution = document.getElementById('claim_resolution')?.value;
@@ -2480,16 +2530,14 @@ function submitWarrantyClaim(newStatus) {
         }
     }
 
-    // Validation for PENDING → REJECTED
     if (newStatus === 'rejected') {
-        // Show rejection reason box first if hidden
         const rejectBox = document.getElementById('reject_reason_box');
         const rejectReason = document.getElementById('claim_rejection_reason')?.value?.trim();
 
         if (rejectBox.style.display === 'none') {
             rejectBox.style.display = 'block';
             document.getElementById('claim_rejection_reason').focus();
-            return; // Wait for user to type reason then click Reject again
+            return;
         }
 
         if (!rejectReason) {
@@ -2547,56 +2595,6 @@ function getStatusTitle(status) {
     };
     return titles[status] || 'Updated!';
 }
-function submitWarrantyDecision() {
-    const decision = document.getElementById('claim_decision')?.value || 'pending';
-    const resolution = document.getElementById('claim_resolution')?.value || 'repaired';
-    const rejectionReason = document.getElementById('claim_rejection_reason')?.value || '';
-    const adminNotes = document.getElementById('claim_admin_notes')?.value || '';
-    
-    if (decision === 'rejected' && !rejectionReason) {
-        Swal.fire('Error', 'Please provide a rejection reason', 'error');
-        return;
-    }
-    
-    Swal.fire({
-        title: 'Processing...',
-        allowOutsideClick: false,
-        didOpen: () => Swal.showLoading()
-    });
-    
-    fetch('api/warranty.php', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            action: 'update_claim',
-            claim_id: currentClaimId,
-            user_id: currentUserId,
-            status: decision,
-            resolution: resolution,
-            rejection_reason: rejectionReason,
-            admin_notes: adminNotes
-        })
-    })
-    .then(r => r.json())
-    .then(data => {
-        Swal.close();
-        if (data.success) {
-            const modal = bootstrap.Modal.getInstance(document.getElementById('reviewWarrantyModal'));
-            if (modal) modal.hide();
-            
-            Swal.fire('Success!', data.message || 'Claim updated successfully', 'success').then(() => {
-                loadWarrantyClaims();
-            });
-        } else {
-            Swal.fire('Error!', data.message || 'Failed to update claim', 'error');
-        }
-    })
-    .catch(err => {
-        Swal.close();
-        console.error('Error:', err);
-        Swal.fire('Error!', 'Network error. Please try again.', 'error');
-    });
-}
 
 function escapeHtml(text) {
     if (!text) return '';
@@ -2619,253 +2617,88 @@ function getStatusBadge(status) {
 }
 
 // ============================================
-// PROCESS REFUND - REDIRECT TO PAYMONGO
+// DOM READY
 // ============================================
-function processRefundRedirect(refundId, userId, action, adminNotes) {
-    if (!canEdit()) {
-        Swal.fire('Access Denied', 'You do not have permission to process refunds', 'error');
-        return;
-    }
-    
-    // Get the refund amount from the card
-    let refundAmount = '0.00';
-    const card = document.querySelector(`.refund-item [data-refund-id="${refundId}"]`)?.closest('.refund-item');
-    if (card) {
-        const amountEl = card.querySelector('.refund-amount-text');
-        if (amountEl) refundAmount = amountEl.textContent;
-    }
-    
-    Swal.fire({
-        title: 'Process Refund on PayMongo?',
-        html: `
-            <div style="text-align:left;">
-                <p>You will be redirected to <strong>PayMongo</strong> to process this refund.</p>
-                <div style="background:#FFF3E0;padding:12px;border-radius:8px;margin:10px 0;">
-                    <i class="fas fa-credit-card me-2"></i>
-                    <strong>Amount:</strong> ₱${refundAmount}
-                </div>
-                <p class="text-muted small">
-                    <i class="fas fa-info-circle me-1"></i>
-                    After completing the refund on PayMongo, come back and click <strong>"Mark as Done"</strong>.
-                </p>
-            </div>
-        `,
-        icon: 'question',
-        showCancelButton: true,
-        confirmButtonColor: '#198754',
-        confirmButtonText: 'Yes, Go to PayMongo',
-        cancelButtonText: 'Cancel'
-    }).then((result) => {
-        if (result.isConfirmed) {
-            executeRefundRedirect(refundId, userId, action, adminNotes);
-        }
-    });
-}
+document.addEventListener('DOMContentLoaded', function() {
+    // ✅ Attach event listeners to filters
+    document.getElementById('filterStatus').addEventListener('change', filterTable);
+    document.getElementById('filterPayment').addEventListener('change', filterTable);
+    document.getElementById('filterDate').addEventListener('change', filterTable);
+    document.getElementById('searchInput').addEventListener('keyup', filterTable);
+    document.getElementById('entriesPerPage').addEventListener('change', filterTable);
 
-function executeRefundRedirect(refundId, userId, action, adminNotes) {
-    Swal.fire({ 
-        title: 'Getting PayMongo link...', 
-        allowOutsideClick: false, 
-        didOpen: () => Swal.showLoading() 
-    });
-    
-    const payload = {
-        action: 'process_refund',
-        refund_id: refundId,
-        user_id: userId,
-        refund_action: action,
-        admin_notes: adminNotes || ''
-    };
-    
-    fetch('api/appointments.php', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-    })
-    .then(res => res.json())
-    .then(data => {
-        Swal.close();
-        
-        if (data.success && data.redirect && data.checkout_url) {
-            // ✅ Open PayMongo checkout page in new tab
-            window.open(data.checkout_url, '_blank');
-            
-            // Show reminder
-            Swal.fire({
-                title: 'PayMongo Opened! ✅',
-                html: `
-                    <p>After processing the refund on PayMongo:</p>
-                    <ol class="text-start mt-2" style="font-size:14px;">
-                        <li>Complete the refund on PayMongo</li>
-                        <li>Come back to this page</li>
-                        <li>Click <strong>"Mark as Done"</strong> on the refund request</li>
-                    </ol>
-                    <div class="mt-3">
-                        <button class="btn btn-success" onclick="location.reload()">
-                            <i class="bi bi-arrow-clockwise me-1"></i> Refresh
-                        </button>
-                    </div>
-                `,
-                icon: 'success',
-                confirmButtonText: 'Okay, I\'ll do that'
-            });
-        } else {
-            Swal.fire({
-                icon: 'error',
-                title: 'Error',
-                text: data.message || 'Failed to get PayMongo link. Please process manually via PayMongo dashboard.',
-                confirmButtonColor: '#dc3545'
-            });
-        }
-    })
-    .catch(error => {
-        Swal.close();
-        console.error('Error:', error);
-        Swal.fire({
-            icon: 'error',
-            title: 'Network Error',
-            text: 'Please try again or process manually via PayMongo dashboard.',
-            confirmButtonColor: '#dc3545'
+    // ✅ Initial filter
+    filterTable();
+
+    // ✅ Item select handler
+    const itemSelect = document.getElementById('itemSelect');
+    const itemTypeInput = document.getElementById('itemType');
+    const serviceTypeNameInput = document.getElementById('serviceTypeName');
+    if (itemSelect) {
+        itemSelect.addEventListener('change', function() {
+            const selectedOption = this.options[this.selectedIndex];
+            const itemType = selectedOption.getAttribute('data-type');
+            const itemName = selectedOption.getAttribute('data-name');
+            if (itemTypeInput) itemTypeInput.value = itemType;
+            if (serviceTypeNameInput) serviceTypeNameInput.value = itemName;
         });
-    });
-}
-
-// ============================================
-// MARK REFUND AS MANUALLY COMPLETED
-// ============================================
-function markRefundManual(refundId, userId) {
-    if (!canEdit()) {
-        Swal.fire('Access Denied', 'You do not have permission to mark refunds as done', 'error');
-        return;
     }
-    
-    Swal.fire({
-        title: 'Mark as Manually Refunded?',
-        html: `
-            <p>This will mark the refund as <strong>completed</strong> without calling PayMongo API.</p>
-            <div class="alert alert-warning mt-2">
-                <i class="bi bi-exclamation-triangle me-1"></i>
-                Make sure you have already processed the refund on PayMongo.
-            </div>
-        `,
-        icon: 'question',
-        showCancelButton: true,
-        confirmButtonText: 'Yes, mark as refunded'
-    }).then((result) => {
-        if (result.isConfirmed) {
-            Swal.fire({ 
-                title: 'Processing...', 
-                didOpen: () => Swal.showLoading(), 
-                allowOutsideClick: false 
-            });
-            
-            fetch('api/appointments.php', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    action: 'mark_refund_manual',
-                    refund_id: refundId,
-                    user_id: userId
-                })
-            })
-            .then(r => r.json())
-            .then(data => {
-                Swal.close();
-                if (data.success) {
-                    Swal.fire('Success!', data.message, 'success').then(() => location.reload());
-                } else {
-                    Swal.fire('Error', data.message, 'error');
-                }
-            })
-            .catch(err => {
-                Swal.close();
-                Swal.fire('Error', 'Network error', 'error');
-            });
-        }
-    });
-}
 
-// ============================================
-// RETRY REFUND
-// ============================================
-function retryRefund(refundId, userId) {
-    if (!canEdit()) {
-        Swal.fire('Access Denied', 'You do not have permission to retry refunds', 'error');
-        return;
+    // ✅ New appointment form
+    const newAppointmentForm = document.getElementById('newAppointmentForm');
+    if (newAppointmentForm) {
+        newAppointmentForm.addEventListener('submit', function(e) {
+            if (!canCreate()) {
+                Swal.fire('Access Denied', 'You do not have permission to create appointments', 'error');
+                e.preventDefault();
+                return;
+            }
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const itemId = formData.get('item_id');
+            if (!itemId) {
+                Swal.fire('Error', 'Please select a service or product', 'error');
+                return;
+            }
+            const data = {
+                patient_id: formData.get('patient_id'),
+                doctor_id: formData.get('doctor_id'),
+                item_id: itemId,
+                item_type: formData.get('item_type'),
+                service_type: formData.get('service_type'),
+                appointment_date: formData.get('appointment_date'),
+                appointment_time: formData.get('appointment_time'),
+                notes: formData.get('notes'),
+                walk_in: true
+            };
+            Swal.fire({ title: 'Saving…', didOpen: () => Swal.showLoading(), allowOutsideClick: false });
+            api('api/appointments.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            }).then(d => {
+                if (d.success) {
+                    Swal.fire({ icon: 'success', title: 'Appointment Added!', timer: 2000, showConfirmButton: false })
+                        .then(() => location.reload());
+                } else {
+                    Swal.fire({ icon: 'error', title: 'Error', text: d.message });
+                }
+            });
+        });
     }
-    
-    Swal.fire({
-        title: 'Retry Refund?',
-        text: 'This will attempt to process the refund again via PayMongo API.',
-        icon: 'question',
-        showCancelButton: true,
-        confirmButtonText: 'Yes, Retry'
-    }).then((result) => {
-        if (result.isConfirmed) {
-            Swal.fire({ 
-                title: 'Processing...', 
-                didOpen: () => Swal.showLoading(), 
-                allowOutsideClick: false 
-            });
-            
-            fetch('api/appointments.php', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    action: 'process_refund',
-                    refund_id: refundId,
-                    user_id: userId,
-                    refund_action: 'approve',
-                    admin_notes: 'Retry after failed attempt'
-                })
-            })
-            .then(r => r.json())
-            .then(data => {
-                Swal.close();
-                if (data.success) {
-                    if (data.redirect && data.checkout_url) {
-                        window.open(data.checkout_url, '_blank');
-                        Swal.fire({
-                            title: 'PayMongo Opened!',
-                            text: 'Complete the refund on PayMongo, then click "Mark as Done".',
-                            icon: 'success',
-                            confirmButtonText: 'Okay'
-                        });
-                    } else {
-                        Swal.fire('Success!', data.message, 'success').then(() => location.reload());
-                    }
-                } else {
-                    Swal.fire('Error', data.message, 'error');
-                }
-            })
-            .catch(err => {
-                Swal.close();
-                Swal.fire('Error', 'Network error', 'error');
-            });
-        }
-    });
-}
 
-// ============================================
-// FILTER REFUNDS
-// ============================================
-function filterRefunds(status) {
-    // Update active button
-    document.querySelectorAll('.btn-group .btn').forEach(btn => {
-        btn.classList.remove('active');
-    });
-    document.querySelector(`.btn-group .btn[onclick="filterRefunds('${status}')"]`)?.classList.add('active');
-    
-    // Filter items
-    document.querySelectorAll('.refund-item').forEach(item => {
-        const itemStatus = item.getAttribute('data-status') || 'pending';
-        if (status === 'all' || itemStatus === status) {
-            item.style.display = 'block';
-        } else {
-            item.style.display = 'none';
-        }
-    });
-}
+    // ✅ Reset button
+    document.querySelector('.btn-reset')?.addEventListener('click', resetFilters);
+
+    // ✅ Load warranty claims
+    loadWarrantyClaims();
+
+    // ✅ Theme check
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    if (savedTheme === 'dark') {
+        document.documentElement.classList.add('theme-dark');
+    }
+});
 </script>
 </body>
 </html>

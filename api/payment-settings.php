@@ -76,7 +76,6 @@ function logAudit($pdo, $user_id, $clinic_id, $action, $table_name, $record_id =
 
 // ============= GET PERMISSIONS ENDPOINT =============
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['get_permissions'])) {
-    // ✅ RBAC Check
     PaymentConfigPermission::check('view');
     
     $hasHR = false;
@@ -109,7 +108,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['get_permissions'])) {
 
 // ============= GET PAYMENT SETTINGS =============
 if ($_SERVER['REQUEST_METHOD'] === 'GET') {
-    // ✅ RBAC Check
     PaymentConfigPermission::check('view');
     
     try {
@@ -120,6 +118,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                 payment_method_online,
                 payment_method_onsite,
                 booking_flow,
+                cancellation_deadline,
+                refund_policy,
                 created_at,
                 updated_at
             FROM clinics 
@@ -129,13 +129,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
         $settings = $stmt->fetch(PDO::FETCH_ASSOC);
         
         if (!$settings) {
-            // Return default settings if none found
             $settings = [
                 'payment_policy' => 'full_payment',
                 'downpayment_percentage' => 30,
                 'payment_method_online' => 1,
                 'payment_method_onsite' => 1,
                 'booking_flow' => 'approve_first',
+                'cancellation_deadline' => 2,
+                'refund_policy' => '2:100|1:50|0:0',
                 'created_at' => null,
                 'updated_at' => null
             ];
@@ -161,39 +162,66 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $data = $input['data'] ?? [];
         
         if ($type === 'save_payment_settings') {
-            // ✅ CHECK EDIT PERMISSION
             PaymentConfigPermission::check('edit');
             
-            // Validate payment policy
+            // ✅ VALIDATE PAYMENT POLICY
             $validPolicies = ['full_payment', 'downpayment_30', 'downpayment_custom', 'no_payment', 'pay_on_site'];
             if (!in_array($data['payment_policy'], $validPolicies)) {
                 echo json_encode(['error' => 'Invalid payment policy']);
                 exit;
             }
             
-            // Validate booking flow
+            // ✅ VALIDATE BOOKING FLOW
             $validFlows = ['approve_first', 'pay_first'];
             if (!in_array($data['booking_flow'], $validFlows)) {
                 echo json_encode(['error' => 'Invalid booking flow']);
                 exit;
             }
             
-            // Validate downpayment percentage
+            // ✅ VALIDATE DOWNPAYMENT PERCENTAGE
             $downpayment = isset($data['downpayment_percentage']) ? intval($data['downpayment_percentage']) : 30;
             if ($downpayment < 10 || $downpayment > 90) {
                 echo json_encode(['error' => 'Downpayment percentage must be between 10% and 90%']);
                 exit;
             }
             
+            // ✅ VALIDATE CANCELLATION DEADLINE
+            $cancellation_deadline = isset($data['cancellation_deadline']) ? intval($data['cancellation_deadline']) : 2;
+            if ($cancellation_deadline < 0 || $cancellation_deadline > 30) {
+                echo json_encode(['error' => 'Cancellation deadline must be between 0 and 30 days']);
+                exit;
+            }
+            
+            // ✅ VALIDATE REFUND POLICY
+            $refund_policy = $data['refund_policy'] ?? '2:100|1:50|0:0';
+            $policy_parts = explode('|', $refund_policy);
+            $validPolicy = true;
+            foreach ($policy_parts as $part) {
+                if (!preg_match('/^\d+:\d+$/', $part)) {
+                    $validPolicy = false;
+                    break;
+                }
+                list($days, $percent) = explode(':', $part);
+                if ($percent < 0 || $percent > 100) {
+                    $validPolicy = false;
+                    break;
+                }
+            }
+            if (!$validPolicy || count($policy_parts) !== 3) {
+                echo json_encode(['error' => 'Invalid refund policy format. Use "days:percent|days:percent|days:percent"']);
+                exit;
+            }
+            
             // ✅ GET OLD VALUES FOR AUDIT
             $oldStmt = $pdo->prepare("
-                SELECT payment_policy, downpayment_percentage, payment_method_online, payment_method_onsite, booking_flow
+                SELECT payment_policy, downpayment_percentage, payment_method_online, 
+                       payment_method_onsite, booking_flow, cancellation_deadline, refund_policy
                 FROM clinics WHERE id = ?
             ");
             $oldStmt->execute([$clinic_id]);
             $old_values = $oldStmt->fetch(PDO::FETCH_ASSOC);
             
-            // Update clinic with booking_flow included
+            // ✅ UPDATE ALL SETTINGS
             $stmt = $pdo->prepare("
                 UPDATE clinics SET 
                     payment_policy = ?,
@@ -201,6 +229,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     payment_method_online = ?,
                     payment_method_onsite = ?,
                     booking_flow = ?,
+                    cancellation_deadline = ?,
+                    refund_policy = ?,
                     updated_at = NOW()
                 WHERE id = ?
             ");
@@ -208,22 +238,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $result = $stmt->execute([
                 $data['payment_policy'],
                 $downpayment,
-                $data['payment_method_online'] ? 1 : 0,
-                $data['payment_method_onsite'] ? 1 : 0,
+                isset($data['payment_method_online']) ? (int)$data['payment_method_online'] : 1,
+                isset($data['payment_method_onsite']) ? (int)$data['payment_method_onsite'] : 1,
                 $data['booking_flow'],
+                $cancellation_deadline,
+                $refund_policy,
                 $clinic_id
             ]);
             
             if ($result) {
                 // ✅ GET NEW VALUES FOR AUDIT
                 $newStmt = $pdo->prepare("
-                    SELECT payment_policy, downpayment_percentage, payment_method_online, payment_method_onsite, booking_flow
+                    SELECT payment_policy, downpayment_percentage, payment_method_online, 
+                           payment_method_onsite, booking_flow, cancellation_deadline, refund_policy
                     FROM clinics WHERE id = ?
                 ");
                 $newStmt->execute([$clinic_id]);
                 $new_values = $newStmt->fetch(PDO::FETCH_ASSOC);
                 
-                // Log audit
                 logAudit($pdo, $user_id, $clinic_id, 'UPDATE', 'clinics', $clinic_id, $old_values, $new_values);
                 
                 echo json_encode([
@@ -237,9 +269,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
         
-        // Handle other POST actions (create, delete, etc.)
+        // ============= CREATE PAYMENT METHOD =============
         if ($type === 'create_payment_method') {
-            // ✅ CHECK CREATE PERMISSION
             PaymentConfigPermission::check('create');
             
             // Implementation for creating new payment methods
@@ -249,8 +280,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
         
+        // ============= DELETE PAYMENT METHOD =============
         if ($type === 'delete_payment_method') {
-            // ✅ CHECK DELETE PERMISSION
             PaymentConfigPermission::check('delete');
             
             // Implementation for deleting payment methods
@@ -271,7 +302,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 // ============= APPROVE PAYMENT CONFIGURATION =============
 if ($_SERVER['REQUEST_METHOD'] === 'PUT' && isset($_GET['action']) && $_GET['action'] === 'approve') {
-    // ✅ CHECK APPROVE PERMISSION
     PaymentConfigPermission::check('approve');
     
     try {
@@ -283,7 +313,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'PUT' && isset($_GET['action']) && $_GET['act
             exit;
         }
         
-        // Get old values for audit
         $oldStmt = $pdo->prepare("SELECT * FROM payment_config_approvals WHERE id = ? AND clinic_id = ?");
         $oldStmt->execute([$config_id, $clinic_id]);
         $old_config = $oldStmt->fetch(PDO::FETCH_ASSOC);
@@ -295,7 +324,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'PUT' && isset($_GET['action']) && $_GET['act
         
         $pdo->beginTransaction();
         
-        // Update approval status
         $updateStmt = $pdo->prepare("
             UPDATE payment_config_approvals 
             SET status = 'approved', 
@@ -306,7 +334,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'PUT' && isset($_GET['action']) && $_GET['act
         ");
         $updateStmt->execute([$user_id, $config_id, $clinic_id]);
         
-        // Apply the approved settings to clinic
         $applyStmt = $pdo->prepare("
             UPDATE clinics 
             SET payment_policy = ?,
@@ -314,6 +341,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'PUT' && isset($_GET['action']) && $_GET['act
                 payment_method_online = ?,
                 payment_method_onsite = ?,
                 booking_flow = ?,
+                cancellation_deadline = ?,
+                refund_policy = ?,
                 updated_at = NOW()
             WHERE id = ?
         ");
@@ -323,10 +352,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'PUT' && isset($_GET['action']) && $_GET['act
             $old_config['payment_method_online'],
             $old_config['payment_method_onsite'],
             $old_config['booking_flow'],
+            $old_config['cancellation_deadline'] ?? 2,
+            $old_config['refund_policy'] ?? '2:100|1:50|0:0',
             $clinic_id
         ]);
         
-        // Log audit
         logAudit($pdo, $user_id, $clinic_id, 'APPROVE', 'payment_config_approvals', $config_id, $old_config, ['status' => 'approved']);
         
         $pdo->commit();
@@ -343,7 +373,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'PUT' && isset($_GET['action']) && $_GET['act
 
 // ============= REJECT PAYMENT CONFIGURATION =============
 if ($_SERVER['REQUEST_METHOD'] === 'PUT' && isset($_GET['action']) && $_GET['action'] === 'reject') {
-    // ✅ CHECK REJECT PERMISSION
     PaymentConfigPermission::check('reject');
     
     try {
@@ -361,7 +390,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'PUT' && isset($_GET['action']) && $_GET['act
             exit;
         }
         
-        // Get old values for audit
         $oldStmt = $pdo->prepare("SELECT * FROM payment_config_approvals WHERE id = ? AND clinic_id = ?");
         $oldStmt->execute([$config_id, $clinic_id]);
         $old_config = $oldStmt->fetch(PDO::FETCH_ASSOC);
@@ -371,7 +399,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'PUT' && isset($_GET['action']) && $_GET['act
             exit;
         }
         
-        // Update rejection status
         $updateStmt = $pdo->prepare("
             UPDATE payment_config_approvals 
             SET status = 'rejected', 
@@ -383,7 +410,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'PUT' && isset($_GET['action']) && $_GET['act
         ");
         $updateStmt->execute([$user_id, $reason, $config_id, $clinic_id]);
         
-        // Log audit
         logAudit($pdo, $user_id, $clinic_id, 'REJECT', 'payment_config_approvals', $config_id, $old_config, ['status' => 'rejected', 'reason' => $reason]);
         
         echo json_encode(['success' => true, 'message' => 'Payment configuration rejected']);
@@ -397,7 +423,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'PUT' && isset($_GET['action']) && $_GET['act
 
 // ============= GET PAYMENT CONFIGURATION HISTORY =============
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['action']) && $_GET['action'] === 'history') {
-    // ✅ CHECK VIEW PERMISSION
     PaymentConfigPermission::check('view');
     
     try {

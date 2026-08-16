@@ -611,7 +611,6 @@ if ($action === 'start_exam') {
 }
 
 if ($action === 'get_patient_data') {
-    // ✅ No permission check - view is already checked at top
     $patientId = (int)($_GET['patient_id'] ?? 0);
     $appointmentId = (int)($_GET['appointment_id'] ?? 0);
     
@@ -621,6 +620,28 @@ if ($action === 'get_patient_data') {
     }
     
     try {
+        // ✅ GET APPOINTMENT SERVICES
+        $appointmentServices = [];
+        $totalAmount = 0;
+        $serviceName = '—';
+        
+        if ($appointmentId) {
+            $stmt = $pdo->prepare("
+                SELECT s.id, s.name, aps.price
+                FROM appointment_services aps
+                JOIN services s ON aps.service_id = s.id
+                WHERE aps.appointment_id = ?
+            ");
+            $stmt->execute([$appointmentId]);
+            $appointmentServices = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            if (!empty($appointmentServices)) {
+                $serviceNames = array_column($appointmentServices, 'name');
+                $serviceName = implode(', ', $serviceNames);
+                $totalAmount = array_sum(array_column($appointmentServices, 'price'));
+            }
+        }
+        
         // Get history from clinical_notes
         $stmt = $pdo->prepare("
             SELECT cn.*, 
@@ -675,7 +696,10 @@ if ($action === 'get_patient_data') {
             'success' => true,
             'latest_notes' => $latestNotes,
             'latest_rx' => $latestRx,
-            'history' => $history
+            'history' => $history,
+            'appointment_services' => $appointmentServices,  // ✅ Added
+            'service_name' => $serviceName,                  // ✅ Added
+            'total_amount' => $totalAmount                   // ✅ Added
         ]);
         
     } catch (Exception $e) {
@@ -2051,20 +2075,27 @@ if ($action === 'complete_consultation') {
     try {
         $pdo->beginTransaction();
         
-        // ✅ STEP 1: Get appointment details with price
+        // ✅ STEP 1: Get appointment details with all price fields
         $stmt = $pdo->prepare("
             SELECT a.*, 
-                   COALESCE(pr.name, srv.name, a.service_type, 'Consultation') as item_name,
-                   COALESCE(pr.price, srv.price, 0) as item_price,
-                   a.patient_id,
-                   a.user_id,
-                   a.product_id,
-                   a.item_id,
-                   a.item_type,
                    a.total_amount as appointment_total,
                    a.downpayment_amount,
                    a.balance_amount,
-                   a.payment_type as appointment_payment_type
+                   a.payment_type as appointment_payment_type,
+                   a.discount_type,
+                   a.discount_percentage,
+                   a.discount_amount,
+                   a.vat_percentage,
+                   a.vat_amount,
+                   a.subtotal,
+                   a.patient_id,
+                   a.user_id,
+                   a.items as appointment_items,
+                   a.product_id,
+                   a.item_id,
+                   a.item_type,
+                   COALESCE(pr.name, srv.name, a.service_type, 'Consultation') as item_name,
+                   COALESCE(pr.price, srv.price, 0) as item_price
             FROM appointments a
             LEFT JOIN products pr ON a.product_id = pr.id
             LEFT JOIN services srv ON a.item_id = srv.id AND a.item_type = 'service'
@@ -2077,7 +2108,132 @@ if ($action === 'complete_consultation') {
             throw new Exception('Appointment not found');
         }
         
-        // ✅ STEP 2: GET EXISTING ONLINE PAYMENTS FROM payments TABLE
+        // ✅ STEP 2: GET ALL SERVICES from appointment_services table
+        $servicesStmt = $pdo->prepare("
+            SELECT s.id, s.name, s.price, aps.price as service_price
+            FROM appointment_services aps
+            JOIN services s ON aps.service_id = s.id
+            WHERE aps.appointment_id = ?
+        ");
+        $servicesStmt->execute([$appointmentId]);
+        $services = $servicesStmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // ✅ STEP 3: BUILD ITEMS LIST - INCLUDE ALL SERVICES
+        $items = [];
+        $totalAmount = 0;
+        
+        // Add all services from appointment_services
+        if (!empty($services)) {
+            foreach ($services as $service) {
+                $price = floatval($service['service_price'] ?? $service['price'] ?? 0);
+                $items[] = [
+                    'id' => $service['id'],
+                    'name' => $service['name'],
+                    'price' => $price,
+                    'type' => 'service',
+                    'quantity' => 1
+                ];
+                $totalAmount += $price;
+            }
+        }
+        
+        // ✅ If appointment_services is empty, try appointment_items JSON
+        if (empty($items) && !empty($appointment['appointment_items'])) {
+            $decoded = json_decode($appointment['appointment_items'], true);
+            if (is_array($decoded) && !empty($decoded)) {
+                foreach ($decoded as $item) {
+                    $items[] = [
+                        'id' => $item['id'] ?? null,
+                        'name' => $item['name'] ?? 'Service',
+                        'price' => floatval($item['price'] ?? 0),
+                        'type' => $item['type'] ?? 'service',
+                        'quantity' => intval($item['quantity'] ?? 1)
+                    ];
+                    $totalAmount += floatval($item['price'] ?? 0) * intval($item['quantity'] ?? 1);
+                }
+            }
+        }
+        
+        // ✅ If still empty, check product_id and lens_type (for glasses)
+        if (empty($items) && !empty($appointment['product_id'])) {
+            $productStmt = $pdo->prepare("SELECT id, name, price FROM products WHERE id = ? AND clinic_id = ?");
+            $productStmt->execute([$appointment['product_id'], $clinicId]);
+            $product = $productStmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($product) {
+                $items[] = [
+                    'id' => $product['id'],
+                    'name' => $product['name'] . ' (Frame)',
+                    'price' => floatval($product['price']),
+                    'type' => 'product',
+                    'quantity' => 1
+                ];
+                $totalAmount += floatval($product['price']);
+            }
+            
+            if (!empty($appointment['lens_type']) && $appointment['lens_type'] !== 'frame_only') {
+                $lensPrice = match($appointment['lens_type']) {
+                    'single_vision' => 500,
+                    'progressive' => 1500,
+                    'blue_cut' => 800,
+                    default => 0
+                };
+                if ($lensPrice > 0) {
+                    $lensName = ucwords(str_replace('_', ' ', $appointment['lens_type'])) . ' Lens';
+                    $items[] = [
+                        'id' => null,
+                        'name' => $lensName,
+                        'price' => $lensPrice,
+                        'type' => 'service',
+                        'quantity' => 1
+                    ];
+                    $totalAmount += $lensPrice;
+                }
+            }
+        }
+        
+        // ✅ Fallback to single item if still empty
+        if (empty($items)) {
+            // Use item_price from appointment or default
+            $itemPrice = floatval($appointment['item_price'] ?? 0);
+            if ($itemPrice <= 0) {
+                $itemPrice = floatval($appointment['appointment_total'] ?? 500.00);
+            }
+            if ($itemPrice <= 0) {
+                $itemPrice = 500.00; // Default consultation fee
+            }
+            
+            $resolvedItemId = $appointment['product_id'] ?? $appointment['item_id'] ?? null;
+            $resolvedItemType = !empty($appointment['product_id']) ? 'product'
+                              : ($appointment['item_type'] ?? 'service');
+            $resolvedItemName = $appointment['item_name'] ?? $appointment['service_type'] ?? 'Consultation';
+            
+            $items[] = [
+                'id' => $resolvedItemId,
+                'name' => $resolvedItemName,
+                'price' => $itemPrice,
+                'type' => $resolvedItemType,
+                'quantity' => 1
+            ];
+            $totalAmount = $itemPrice;
+        }
+        
+        // ✅ STEP 4: GET DISCOUNT INFO (preserve from appointment)
+        $discount_type = $appointment['discount_type'] ?? 'none';
+        $discount_percentage = floatval($appointment['discount_percentage'] ?? 0);
+        $discount_amount = floatval($appointment['discount_amount'] ?? 0);
+        $vat_percentage = floatval($appointment['vat_percentage'] ?? 0);
+        $vat_amount = floatval($appointment['vat_amount'] ?? 0);
+        
+        // If no discount amount but has discount type, compute it
+        if ($discount_type !== 'none' && $discount_amount == 0 && $discount_percentage > 0) {
+            $discount_amount = $totalAmount * ($discount_percentage / 100);
+        }
+        
+        // Compute final total
+        $finalTotal = $totalAmount - $discount_amount + $vat_amount;
+        
+        // ✅ STEP 5: GET EXISTING ONLINE PAYMENTS FROM payments TABLE
         $paymentsStmt = $pdo->prepare("
             SELECT id, amount, payment_method, payment_type, payment_status, 
                    reference_number, created_at
@@ -2090,7 +2246,6 @@ if ($action === 'complete_consultation') {
         
         $totalPaidOnline = 0;
         $downpaymentPaid = 0;
-        $isFullyPaidOnline = false;
         
         foreach ($existingPayments as $payment) {
             $totalPaidOnline += floatval($payment['amount']);
@@ -2098,6 +2253,9 @@ if ($action === 'complete_consultation') {
                 $downpaymentPaid += floatval($payment['amount']);
             }
         }
+        
+        $remainingBalance = $finalTotal - $totalPaidOnline;
+        $isFullyPaid = $remainingBalance <= 0;
         
         // ── Determine patient ID for sales ─────────────────────────────
         $finalPatientId = null;
@@ -2157,55 +2315,10 @@ if ($action === 'complete_consultation') {
             }
         }
         
-        // ── Calculate total amount ─────────────────────────────────────
-        $totalAmount = floatval($appointment['item_price']);
-        if ($totalAmount <= 0) {
-            $totalAmount = floatval($appointment['appointment_total'] ?? 500.00);
-        }
-        if ($totalAmount <= 0) {
-            $totalAmount = 500.00; // Default consultation fee
-        }
+        // ✅ STEP 6: UPDATE APPOINTMENT
+        $appointmentStatus = $isFullyPaid ? 'completed' : 'waiting_payment';
+        $paymentStatus = $isFullyPaid ? 'paid' : ($totalPaidOnline > 0 ? 'partial' : 'pending');
         
-        // ✅ STEP 3: Calculate remaining balance after online payments
-        $remainingBalance = $totalAmount - $totalPaidOnline;
-        $isFullyPaid = $remainingBalance <= 0;
-        
-        // ── Build items array ──────────────────────────────────────────
-        $resolvedItemId = $appointment['product_id'] ?? $appointment['item_id'] ?? null;
-        $resolvedItemType = !empty($appointment['product_id']) ? 'product'
-                          : ($appointment['item_type'] ?? 'service');
-        $resolvedItemName = $appointment['item_name'] ?? $appointment['service_type'] ?? 'Consultation';
-        
-        $items = [[
-            'id' => $resolvedItemId,
-            'name' => $resolvedItemName,
-            'price' => $totalAmount,
-            'type' => $resolvedItemType,
-            'quantity' => 1,
-        ]];
-        
-        // ── Update appointment to appropriate status ────────────────────
-        if ($isFullyPaid) {
-            // ✅ FULLY PAID ONLINE - COMPLETED AGAD
-            $appointmentStatus = 'completed';
-            $paymentStatus = 'paid';
-            $saleStatus = 'Paid';
-            $saleAmountPaid = $totalAmount;
-        } else if ($totalPaidOnline > 0) {
-            // May downpayment/partial payment online - waiting for balance
-            $appointmentStatus = 'waiting_payment';
-            $paymentStatus = 'partial';
-            $saleStatus = 'Partial';
-            $saleAmountPaid = $totalPaidOnline;
-        } else {
-            // No payment yet - waiting for payment
-            $appointmentStatus = 'waiting_payment';
-            $paymentStatus = 'pending';
-            $saleStatus = 'pending_payment';
-            $saleAmountPaid = 0;
-        }
-        
-        // Update appointment status
         $pdo->prepare("
             UPDATE appointments SET 
                 status = ?,
@@ -2213,68 +2326,130 @@ if ($action === 'complete_consultation') {
                 consultation_completed_at = NOW(),
                 total_amount = ?,
                 amount_paid = ?,
+                subtotal = ?,
+                discount_amount = ?,
+                vat_amount = ?,
                 updated_at = NOW() 
             WHERE id = ? AND clinic_id = ?
         ")->execute([
             $appointmentStatus, 
             $paymentStatus, 
-            $totalAmount, 
+            $finalTotal, 
             $totalPaidOnline,
+            $totalAmount,
+            $discount_amount,
+            $vat_amount,
             $appointmentId, 
             $clinicId
         ]);
         
-        // ── Create bill in sales table with existing payment info ────────
+        // ✅ STEP 7: CREATE/UPDATE SALES RECORD WITH ALL ITEMS
+        $saleStatus = $isFullyPaid ? 'Paid' : ($totalPaidOnline > 0 ? 'Partial' : 'pending_payment');
         $billNumber = 'BILL-' . date('Ymd') . '-' . str_pad($appointmentId, 5, '0', STR_PAD_LEFT);
         $itemsJson = json_encode($items);
+        $saleAmountPaid = $isFullyPaid ? $finalTotal : $totalPaidOnline;
         
-        if ($finalPatientId) {
-            $stmt = $pdo->prepare("
-                INSERT INTO sales 
-                    (clinic_id, sale_date, patient_id, appointment_id, items, 
-                     subtotal, total_amount, amount_paid, status, created_by, created_at)
-                VALUES (?, CURDATE(), ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        // Check if sales already exists
+        $checkSale = $pdo->prepare("SELECT id FROM sales WHERE appointment_id = ?");
+        $checkSale->execute([$appointmentId]);
+        $existingSale = $checkSale->fetch();
+        
+        if ($existingSale) {
+            // ✅ UPDATE EXISTING SALE
+            $updateSale = $pdo->prepare("
+                UPDATE sales SET
+                    items = ?,
+                    subtotal = ?,
+                    discount = ?,
+                    discount_type = ?,
+                    discount_percentage = ?,
+                    vat_percentage = ?,
+                    vat_amount = ?,
+                    total_amount = ?,
+                    amount_paid = ?,
+                    status = ?,
+                    updated_at = NOW()
+                WHERE id = ? AND clinic_id = ?
             ");
-            $stmt->execute([
-                $clinicId,
-                $finalPatientId,
-                $appointmentId,
+            $updateSale->execute([
                 $itemsJson,
                 $totalAmount,
-                $totalAmount,
+                $discount_amount,
+                $discount_type,
+                $discount_percentage,
+                $vat_percentage,
+                $vat_amount,
+                $finalTotal,
                 $saleAmountPaid,
                 $saleStatus,
-                $userId
+                $existingSale['id'],
+                $clinicId
             ]);
+            $saleId = $existingSale['id'];
+            
+            // Delete old sale_items
+            $pdo->prepare("DELETE FROM sale_items WHERE sale_id = ? AND clinic_id = ?")
+                ->execute([$saleId, $clinicId]);
         } else {
-            $stmt = $pdo->prepare("
-                INSERT INTO sales 
-                    (clinic_id, sale_date, walk_in_name, walk_in_contact, walk_in_email, appointment_id,
-                     items, subtotal, total_amount, amount_paid, status, created_by, created_at)
-                VALUES (?, CURDATE(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
-            ");
-            $stmt->execute([
-                $clinicId,
-                $walkInName,
-                $walkInContact,
-                $walkInEmail,
-                $appointmentId,
-                $itemsJson,
-                $totalAmount,
-                $totalAmount,
-                $saleAmountPaid,
-                $saleStatus,
-                $userId
-            ]);
+            // ✅ CREATE NEW SALE
+            if ($finalPatientId) {
+                $stmt = $pdo->prepare("
+                    INSERT INTO sales 
+                        (clinic_id, sale_date, patient_id, appointment_id, items, 
+                         subtotal, discount, discount_type, discount_percentage,
+                         vat_percentage, vat_amount, total_amount, amount_paid, 
+                         status, created_by, created_at)
+                    VALUES (?, CURDATE(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                ");
+                $stmt->execute([
+                    $clinicId,
+                    $finalPatientId,
+                    $appointmentId,
+                    $itemsJson,
+                    $totalAmount,
+                    $discount_amount,
+                    $discount_type,
+                    $discount_percentage,
+                    $vat_percentage,
+                    $vat_amount,
+                    $finalTotal,
+                    $saleAmountPaid,
+                    $saleStatus,
+                    $userId
+                ]);
+            } else {
+                $stmt = $pdo->prepare("
+                    INSERT INTO sales 
+                        (clinic_id, sale_date, walk_in_name, walk_in_contact, walk_in_email, appointment_id,
+                         items, subtotal, discount, discount_type, discount_percentage,
+                         vat_percentage, vat_amount, total_amount, amount_paid, 
+                         status, created_by, created_at)
+                    VALUES (?, CURDATE(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+                ");
+                $stmt->execute([
+                    $clinicId,
+                    $walkInName,
+                    $walkInContact,
+                    $walkInEmail,
+                    $appointmentId,
+                    $itemsJson,
+                    $totalAmount,
+                    $discount_amount,
+                    $discount_type,
+                    $discount_percentage,
+                    $vat_percentage,
+                    $vat_amount,
+                    $finalTotal,
+                    $saleAmountPaid,
+                    $saleStatus,
+                    $userId
+                ]);
+            }
+            $saleId = (int)$pdo->lastInsertId();
         }
         
-        $saleId = (int)$pdo->lastInsertId();
-        
-        // ── Insert sale items ──────────────────────────────────────────
+        // ✅ STEP 8: INSERT SALE ITEMS
         foreach ($items as $item) {
-            $itemId = $item['id'];
-            $itemType = $item['type'];
-            
             $pdo->prepare("
                 INSERT INTO sale_items 
                     (sale_id, clinic_id, item_id, item_type, item_name, quantity, unit_price, total_price)
@@ -2282,16 +2457,16 @@ if ($action === 'complete_consultation') {
             ")->execute([
                 $saleId,
                 $clinicId,
-                $itemId,
-                $itemType,
-                $item['name'],
-                $item['quantity'],
-                $item['price'],
-                $item['price'] * $item['quantity']
+                $item['id'] ?? null,
+                $item['type'] ?? 'service',
+                $item['name'] ?? 'Item',
+                $item['quantity'] ?? 1,
+                $item['price'] ?? 0,
+                ($item['price'] ?? 0) * ($item['quantity'] ?? 1)
             ]);
         }
         
-        // ✅ STEP 4: If fully paid online, update inventory stock
+        // ✅ STEP 9: If fully paid, update inventory stock
         if ($isFullyPaid) {
             foreach ($items as $item) {
                 if ($item['type'] === 'product' && $item['id']) {
@@ -2312,22 +2487,30 @@ if ($action === 'complete_consultation') {
             'success' => true,
             'sale_id' => $saleId,
             'bill_number' => $billNumber,
-            'total_amount' => $totalAmount,
+            'total_amount' => $finalTotal,
+            'subtotal' => $totalAmount,
+            'discount_amount' => $discount_amount,
+            'discount_type' => $discount_type,
+            'discount_percentage' => $discount_percentage,
+            'vat_amount' => $vat_amount,
+            'vat_percentage' => $vat_percentage,
             'amount_paid' => $saleAmountPaid,
             'remaining_balance' => $remainingBalance,
             'status' => $saleStatus,
             'appointment_status' => $appointmentStatus,
             'fully_paid' => $isFullyPaid,
+            'items' => $items,
+            'item_count' => count($items),
             'online_payments' => [
                 'total' => $totalPaidOnline,
                 'count' => count($existingPayments),
                 'payments' => $existingPayments
             ],
             'message' => $isFullyPaid 
-                ? 'Consultation completed. Appointment is FULLY PAID and COMPLETED.' 
+                ? 'Consultation completed. All ' . count($items) . ' services included. FULLY PAID and COMPLETED.' 
                 : ($totalPaidOnline > 0 
-                    ? 'Consultation completed. Bill created with existing payment. Remaining balance: ₱' . number_format($remainingBalance, 2)
-                    : 'Consultation completed. Bill created. Waiting for payment.')
+                    ? 'Consultation completed. Bill created with ' . count($items) . ' services. Remaining balance: ₱' . number_format($remainingBalance, 2)
+                    : 'Consultation completed. Bill created with ' . count($items) . ' services. Waiting for payment.')
         ]);
         
     } catch (Exception $e) {

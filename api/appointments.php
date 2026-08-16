@@ -1149,71 +1149,59 @@ if ($newStatus === 'no-show') {
                 exit;
             }
             
-            // ==========================================
-            // APPROVE: Create NEW PayMongo Checkout Session for Refund
-            // ==========================================
-            if ($refundAction === 'approve') {
-                
-                // ✅ Load PayMongoRefund class
-                require_once __DIR__ . '/paymongos.php';
-                $paymongo = new PayMongoRefund($pdo);
-                
-                // ✅ Determine refund amount
-                $refundAmount = $refund['amount'] ?? $refund['downpayment_amount'] ?? 0;
-                
-                if ($refundAmount <= 0) {
-                    echo json_encode(['success' => false, 'message' => 'Invalid refund amount']);
-                    exit;
-                }
-                
-                // ✅ Create NEW checkout session for refund
-                $result = $paymongo->createRefundCheckout(
-                    $refundId,
-                    $refund['appointment_id'],
-                    $refundAmount,
-                    $refund['reason'] ?? 'Customer requested refund'
-                );
-                
-                if ($result['success']) {
-                    // ✅ Update refund status to 'processing'
-                    $pdo->prepare("
-                        UPDATE refund_requests 
-                        SET refund_status = 'processing', 
-                            status = 'processing',
-                            paymongo_refund_id = ?,
-                            updated_at = NOW()
-                        WHERE id = ?
-                    ")->execute([$result['checkout_id'], $refundId]);
-                    
-                    // ✅ Update admin notes if provided
-                    if (!empty($adminNotes)) {
-                        $pdo->prepare("
-                            UPDATE refund_requests 
-                            SET admin_notes = CONCAT(IFNULL(admin_notes, ''), ' Admin note: ', ?),
-                                updated_at = NOW()
-                            WHERE id = ?
-                        ")->execute([$adminNotes, $refundId]);
-                    }
-                    
-                    // ✅ Return the NEW redirect URL
-                    echo json_encode([
-                        'success' => true,
-                        'redirect' => true,
-                        'checkout_url' => $result['checkout_url'],
-                        'checkout_id' => $result['checkout_id'],
-                        'ref_no' => $result['ref_no'],
-                        'message' => 'Redirecting to PayMongo to process refund...'
-                    ]);
-                    exit;
-                } else {
-                    echo json_encode([
-                        'success' => false,
-                        'message' => $result['message'],
-                        'requires_manual' => true
-                    ]);
-                    exit;
-                }
-            }
+if ($refundAction === 'approve') {
+    
+    require_once __DIR__ . '/../api/paymongos.php';
+    $paymongo = new PayMongoRefund($pdo);
+    
+    $refundAmount = $refund['amount'] ?? $refund['downpayment_amount'] ?? 0;
+    
+    if ($refundAmount <= 0) {
+        echo json_encode(['success' => false, 'message' => 'Invalid refund amount']);
+        exit;
+    }
+    
+    // ✅ Create checkout session
+    $result = $paymongo->createRefundCheckout(
+        $refundId,
+        $refund['appointment_id'],
+        $refundAmount,
+        $refund['reason'] ?? 'Customer requested refund'
+    );
+    
+    if ($result['success']) {
+        // Update refund status
+        $pdo->prepare("
+            UPDATE refund_requests 
+            SET refund_status = 'processing', 
+                status = 'processing',
+                paymongo_refund_id = ?,
+                updated_at = NOW()
+            WHERE id = ?
+        ")->execute([$result['checkout_id'], $refundId]);
+        
+        // ✅ ✅ ✅ SEND EMAIL NOTIFICATION TO CUSTOMER (optional - or wait until fully processed)
+        // You can either send now or wait for webhook/processRefundWithRetry
+        
+        echo json_encode([
+            'success' => true,
+            'redirect' => true,
+            'checkout_url' => $result['checkout_url'],
+            'checkout_id' => $result['checkout_id'],
+            'ref_no' => $result['ref_no'],
+            'customer' => $result['customer'] ?? null,
+            'message' => 'Redirecting to PayMongo to process refund...'
+        ]);
+        exit;
+    } else {
+        echo json_encode([
+            'success' => false,
+            'message' => $result['message'],
+            'requires_manual' => true
+        ]);
+        exit;
+    }
+}
             
             echo json_encode(['success' => false, 'message' => 'Invalid action']);
             exit;

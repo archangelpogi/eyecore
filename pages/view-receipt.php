@@ -17,13 +17,36 @@ if (!$input_id) {
     exit();
 }
 
-// Query
+// ============================================
+// ✅ UPDATED QUERY - WITH DISCOUNT AND VAT
+// ============================================
 $query = "
     SELECT s.*, 
            p.first_name, p.last_name, p.email, p.phone, p.address as patient_address,
            c.clinic_name, c.address as clinic_address, c.contact as clinic_contact, c.clinic_email, c.logo, c.cover_photo,
            DATE_FORMAT(s.sale_date, '%Y%m%d') as invoice_code,
-           a.user_id as appointment_user_id, a.appointment_date, a.appointment_time, a.ref_no
+           a.user_id as appointment_user_id, 
+           a.appointment_date, 
+           a.appointment_time, 
+           a.ref_no,
+           -- ✅ DISCOUNT AND VAT FIELDS
+           s.subtotal,
+           s.discount,
+           s.discount_type,
+           s.discount_percentage,
+           s.vat_percentage,
+           s.vat_amount,
+           s.forfeited_amount,
+           s.refunded_amount,
+           s.status as sale_status,
+           a.discount_type as appt_discount_type,
+           a.discount_percentage as appt_discount_percentage,
+           a.discount_amount as appt_discount_amount,
+           a.vat_percentage as appt_vat_percentage,
+           a.vat_amount as appt_vat_amount,
+           a.subtotal as appt_subtotal,
+           a.forfeited_amount as appt_forfeited_amount,
+           a.status as appt_status
     FROM sales s
     INNER JOIN patients p ON s.patient_id = p.id
     INNER JOIN clinics c ON s.clinic_id = c.id
@@ -86,6 +109,20 @@ if ($payments_result) {
 $total_paid = array_sum(array_column($payments, 'amount'));
 $balance = floatval($invoice['total_amount']) - $total_paid;
 
+// ✅ Get discount and VAT info
+$discount_type = $invoice['discount_type'] ?? $invoice['appt_discount_type'] ?? 'none';
+$discount_amount = (float)($invoice['discount'] ?? $invoice['appt_discount_amount'] ?? 0);
+$discount_percentage = (float)($invoice['discount_percentage'] ?? $invoice['appt_discount_percentage'] ?? 0);
+$vat_amount = (float)($invoice['vat_amount'] ?? $invoice['appt_vat_amount'] ?? 0);
+$vat_percentage = (float)($invoice['vat_percentage'] ?? $invoice['appt_vat_percentage'] ?? 0);
+$subtotal = (float)($invoice['subtotal'] ?? $invoice['appt_subtotal'] ?? $invoice['total_amount'] ?? 0);
+$forfeited = (float)($invoice['forfeited_amount'] ?? $invoice['appt_forfeited_amount'] ?? 0);
+$refunded = (float)($invoice['refunded_amount'] ?? 0);
+$status = $invoice['sale_status'] ?? $invoice['appt_status'] ?? 'Unpaid';
+
+// Check if refunded
+$is_refunded = ($status === 'Refunded' || $status === 'refunded');
+
 // Helper functions
 if (!function_exists('getThemeClass')) {
     function getThemeClass() {
@@ -97,7 +134,9 @@ function getStatusBadge($status) {
     $badges = [
         'Paid' => '<span class="badge-paid"><i class="fas fa-check-circle"></i> PAID</span>',
         'Unpaid' => '<span class="badge-unpaid"><i class="fas fa-clock"></i> UNPAID</span>',
-        'Partial' => '<span class="badge-partial"><i class="fas fa-adjust"></i> PARTIAL</span>'
+        'Partial' => '<span class="badge-partial"><i class="fas fa-adjust"></i> PARTIAL</span>',
+        'Refunded' => '<span class="badge-refunded"><i class="fas fa-arrow-return-left"></i> REFUNDED</span>',
+        'refunded' => '<span class="badge-refunded"><i class="fas fa-arrow-return-left"></i> REFUNDED</span>'
     ];
     return $badges[$status] ?? '<span class="badge-unpaid">' . htmlspecialchars($status) . '</span>';
 }
@@ -119,7 +158,6 @@ function getClinicImg($c) {
     return null;
 }
 ?>
-
 <!DOCTYPE html>
 <html lang="en" class="<?php echo getThemeClass(); ?>">
 <head>
@@ -349,7 +387,7 @@ function getClinicImg($c) {
         }
 
         /* Badges */
-        .badge-paid, .badge-unpaid, .badge-partial {
+        .badge-paid, .badge-unpaid, .badge-partial, .badge-refunded {
             display: inline-flex;
             align-items: center;
             gap: 6px;
@@ -361,10 +399,12 @@ function getClinicImg($c) {
         .badge-paid { background: #d1fae5; color: #065f46; }
         .badge-unpaid { background: #fee2e2; color: #991b1b; }
         .badge-partial { background: #fed7aa; color: #92400e; }
+        .badge-refunded { background: #f3e8ff; color: #6d28d9; }
 
         .theme-dark .badge-paid { background: #064e3b; color: #a7f3d0; }
         .theme-dark .badge-unpaid { background: #7f1d1d; color: #fecaca; }
         .theme-dark .badge-partial { background: #78350f; color: #fed7aa; }
+        .theme-dark .badge-refunded { background: #4c1d95; color: #c4b5fd; }
 
         /* Items Table */
         .items-table {
@@ -400,6 +440,16 @@ function getClinicImg($c) {
             font-weight: 800;
             color: var(--primary);
         }
+
+        .discount-row { color: #dc2626; }
+        .vat-row { color: #d97706; }
+        .vat-exempt-row { color: #065f46; }
+        .refunded-row { color: #6d28d9; }
+
+        .theme-dark .discount-row { color: #fca5a5; }
+        .theme-dark .vat-row { color: #fcd34d; }
+        .theme-dark .vat-exempt-row { color: #6ee7b7; }
+        .theme-dark .refunded-row { color: #a78bfa; }
 
         /* Payment History */
         .payment-history {
@@ -602,7 +652,7 @@ function getClinicImg($c) {
             color: white;
         }
 
-        /* Theme Toggle Button (simple) */
+        /* Theme Toggle Button */
         .theme-toggle {
             position: fixed;
             bottom: 20px;
@@ -708,11 +758,14 @@ function getClinicImg($c) {
                         </div>
                         <div class="info-row">
                             <div class="info-label">Status:</div>
-                            <div class="info-value"><?php echo getStatusBadge($invoice['status']); ?></div>
+                            <div class="info-value"><?php echo getStatusBadge($invoice['sale_status'] ?? $invoice['appt_status'] ?? 'Unpaid'); ?></div>
                         </div>
                     </div>
                 </div>
 
+                <!-- ============================================ -->
+                <!-- ITEMS TABLE WITH DISCOUNT AND VAT           -->
+                <!-- ============================================ -->
                 <table class="items-table">
                     <thead>
                         <tr>
@@ -734,11 +787,68 @@ function getClinicImg($c) {
                             <td style="text-align:right">₱<?php echo number_format($item['total_price'], 2); ?></td>
                         </tr>
                         <?php endforeach; ?>
-                        <tr style="font-weight:700">
-                            <td colspan="3" style="text-align:right">TOTAL:</td>
-                            <td style="text-align:right" class="grand-total">₱<?php echo number_format($invoice['total_amount'], 2); ?></td>
-                        </tr>
                     </tbody>
+                    <tfoot>
+                        <!-- ✅ SUBTOTAL -->
+                        <tr>
+                            <td colspan="3" style="text-align:right; font-weight:600; padding-top:12px;">Subtotal:</td>
+                            <td style="text-align:right; font-weight:700; padding-top:12px;">₱<?php echo number_format($subtotal, 2); ?></td>
+                        </tr>
+                        
+                        <!-- ✅ DISCOUNT (if any) -->
+                        <?php if ($discount_type !== 'none' && $discount_amount > 0): ?>
+                        <tr class="discount-row">
+                            <td colspan="3" style="text-align:right; font-weight:600;">
+                                <?php echo strtoupper($discount_type); ?> Discount (<?php echo round($discount_percentage); ?>%):
+                            </td>
+                            <td style="text-align:right; font-weight:700;">-₱<?php echo number_format($discount_amount, 2); ?></td>
+                        </tr>
+                        <tr>
+                            <td colspan="3" style="text-align:right; font-weight:600; color: var(--text-muted);">
+                                Subtotal after discount:
+                            </td>
+                            <td style="text-align:right; font-weight:600;">
+                                ₱<?php echo number_format($subtotal - $discount_amount, 2); ?>
+                            </td>
+                        </tr>
+                        <?php endif; ?>
+                        
+                        <!-- ✅ VAT -->
+                        <?php if ($vat_amount > 0): ?>
+                        <tr class="vat-row">
+                            <td colspan="3" style="text-align:right; font-weight:600;">
+                                VAT (<?php echo round($vat_percentage); ?>%):
+                            </td>
+                            <td style="text-align:right; font-weight:700;">+₱<?php echo number_format($vat_amount, 2); ?></td>
+                        </tr>
+                        <?php else: ?>
+                        <tr class="vat-exempt-row">
+                            <td colspan="3" style="text-align:right; font-weight:600;">VAT:</td>
+                            <td style="text-align:right; font-weight:700;">Exempt</td>
+                        </tr>
+                        <?php endif; ?>
+                        
+                        <!-- ✅ GRAND TOTAL -->
+                        <tr style="font-weight:700; border-top: 2px solid var(--primary);">
+                            <td colspan="3" style="text-align:right; font-size:18px; color: var(--primary);">TOTAL:</td>
+                            <td style="text-align:right; font-size:18px; color: var(--primary);">
+                                ₱<?php echo number_format($invoice['total_amount'], 2); ?>
+                            </td>
+                        </tr>
+                        
+                        <!-- ✅ FORFEITED / REFUNDED (if any) -->
+                        <?php if ($is_refunded && $refunded > 0): ?>
+                        <tr class="refunded-row">
+                            <td colspan="3" style="text-align:right; font-weight:600;">Refunded Amount:</td>
+                            <td style="text-align:right; font-weight:700;">₱<?php echo number_format($refunded, 2); ?></td>
+                        </tr>
+                        <?php elseif ($forfeited > 0 && ($status === 'Cancelled' || $status === 'no-show')): ?>
+                        <tr style="color: #dc2626;">
+                            <td colspan="3" style="text-align:right; font-weight:600;">Forfeited Amount:</td>
+                            <td style="text-align:right; font-weight:700;">₱<?php echo number_format($forfeited, 2); ?></td>
+                        </tr>
+                        <?php endif; ?>
+                    </tfoot>
                 </table>
 
                 <?php if (!empty($payments)): ?>
@@ -864,27 +974,93 @@ function getClinicImg($c) {
                         <span>Receipt #:</span>
                         <strong><?php echo htmlspecialchars($invoice['invoice_code'] ?? $sale_id); ?></strong>
                     </div>
+
+                    <?php if ($is_refunded): ?>
+                    <div class="apt-ref-row" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-light);">
+                        <i class="fas fa-arrow-return-left" style="color: #6d28d9;"></i>
+                        <span>Status:</span>
+                        <strong style="color: #6d28d9;">Refunded</strong>
+                    </div>
+                    <?php if ($refunded > 0): ?>
+                    <div class="apt-ref-row">
+                        <i class="fas fa-money-bill-wave" style="color: #6d28d9;"></i>
+                        <span>Refund Amount:</span>
+                        <strong style="color: #6d28d9;">₱<?php echo number_format($refunded, 2); ?></strong>
+                    </div>
+                    <?php endif; ?>
+                    <?php endif; ?>
                 </div>
             </div>
 
+            <!-- ============================================ -->
+            <!-- PAYMENT SUMMARY WITH DISCOUNT BREAKDOWN     -->
+            <!-- ============================================ -->
             <div class="card">
                 <div class="card-header">
                     <i class="fas fa-chart-line"></i>
                     <h2>Payment Summary</h2>
                 </div>
                 <div class="card-body">
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
-                        <span style="font-size: 13px; color: var(--text-muted);">Total Amount:</span>
-                        <span style="font-weight: 700;">₱<?php echo number_format($invoice['total_amount'], 2); ?></span>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+                        <span style="font-size: 13px; color: var(--text-muted);">Subtotal:</span>
+                        <span style="font-weight: 600;">₱<?php echo number_format($subtotal, 2); ?></span>
                     </div>
-                    <div style="display: flex; justify-content: space-between; margin-bottom: 12px;">
-                        <span style="font-size: 13px; color: var(--text-muted);">Total Paid:</span>
+                    
+                    <?php if ($discount_type !== 'none' && $discount_amount > 0): ?>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px; color: #dc2626;">
+                        <span style="font-size: 13px;">Discount (<?php echo round($discount_percentage); ?>%):</span>
+                        <span style="font-weight: 600;">-₱<?php echo number_format($discount_amount, 2); ?></span>
+                    </div>
+                    <?php endif; ?>
+                    
+                    <?php if ($vat_amount > 0): ?>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px; color: #d97706;">
+                        <span style="font-size: 13px;">VAT (<?php echo round($vat_percentage); ?>%):</span>
+                        <span style="font-weight: 600;">+₱<?php echo number_format($vat_amount, 2); ?></span>
+                    </div>
+                    <?php else: ?>
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 8px; color: #065f46;">
+                        <span style="font-size: 13px;">VAT:</span>
+                        <span style="font-weight: 600;">Exempt</span>
+                    </div>
+                    <?php endif; ?>
+                    
+                    <div style="display: flex; justify-content: space-between; padding-top: 12px; border-top: 2px solid var(--primary); margin-top: 8px;">
+                        <span style="font-weight: 700; font-size: 16px;">Total:</span>
+                        <span style="font-weight: 800; font-size: 16px; color: var(--primary);">
+                            ₱<?php echo number_format($invoice['total_amount'], 2); ?>
+                        </span>
+                    </div>
+                    
+                    <div style="display: flex; justify-content: space-between; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-light);">
+                        <span style="font-size: 13px; color: var(--text-muted);">Amount Paid:</span>
                         <span style="font-weight: 700; color: var(--success);">₱<?php echo number_format($total_paid, 2); ?></span>
                     </div>
-                    <div style="display: flex; justify-content: space-between; padding-top: 12px; border-top: 1px solid var(--border-light);">
+                    
+                    <div style="display: flex; justify-content: space-between; padding-top: 8px;">
                         <span style="font-weight: 600;">Balance:</span>
-                        <span style="font-weight: 800; color: <?php echo $balance > 0 ? 'var(--danger)' : 'var(--success)'; ?>;">₱<?php echo number_format($balance, 2); ?></span>
+                        <span style="font-weight: 800; color: <?php echo $balance > 0 ? 'var(--danger)' : 'var(--success)'; ?>;">
+                            ₱<?php echo number_format($balance, 2); ?>
+                        </span>
                     </div>
+                    
+                    <?php if ($is_refunded && $refunded > 0): ?>
+                    <div style="display: flex; justify-content: space-between; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-light);">
+                        <span style="font-size: 13px; color: #6d28d9; font-weight: 600;">Refunded:</span>
+                        <span style="font-weight: 700; color: #6d28d9;">
+                            ₱<?php echo number_format($refunded, 2); ?>
+                        </span>
+                    </div>
+                    <?php endif; ?>
+                    
+                    <?php if ($forfeited > 0 && ($status === 'Cancelled' || $status === 'no-show')): ?>
+                    <div style="display: flex; justify-content: space-between; margin-top: 8px;">
+                        <span style="font-size: 13px; color: #dc2626; font-weight: 600;">Forfeited:</span>
+                        <span style="font-weight: 700; color: #dc2626;">
+                            ₱<?php echo number_format($forfeited, 2); ?>
+                        </span>
+                    </div>
+                    <?php endif; ?>
                 </div>
             </div>
 

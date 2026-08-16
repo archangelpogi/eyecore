@@ -362,4 +362,177 @@ function getPaymentDisplayInfo($conn, $clinic_id, $total_amount, $is_pwd_senior 
         'display_message' => $message
     ]);
 }
+
+// ============================================
+// ✅ ✅ ✅ NEW: CHECK PWD/SENIOR VALIDITY
+// ============================================
+
+/**
+ * Check if user's PWD/Senior verification is still valid
+ * 
+ * @param mysqli|PDO $conn Database connection
+ * @param int $user_id User ID
+ * @param int $clinic_id Clinic ID
+ * @return array {
+ *     @type bool $is_valid      Whether the verification is valid
+ *     @type bool $is_expired    Whether the verification is expired
+ *     @type string $status      'verified', 'expired', 'pending', 'rejected', 'none'
+ *     @type string $type        'pwd' or 'senior'
+ *     @type string $valid_until Expiry date
+ *     @type string $date_issued Date issued
+ *     @type string $id_number   ID number
+ *     @type string $message     User-friendly message
+ * }
+ */
+function checkPwdSeniorValidity($conn, $user_id, $clinic_id) {
+    $user_id = (int)$user_id;
+    $clinic_id = (int)$clinic_id;
+    
+    $isPDO = ($conn instanceof PDO);
+    
+    try {
+        if ($isPDO) {
+            $stmt = $conn->prepare("
+                SELECT 
+                    status as pwd_senior_status,
+                    verification_type as pwd_senior_type,
+                    valid_until,
+                    date_issued,
+                    id_number
+                FROM user_verifications
+                WHERE user_id = ? AND clinic_id = ?
+                AND status IN ('verified', 'pending', 'rejected')
+                ORDER BY created_at DESC
+                LIMIT 1
+            ");
+            $stmt->execute([$user_id, $clinic_id]);
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        } else {
+            $result = mysqli_query($conn, "
+                SELECT 
+                    status as pwd_senior_status,
+                    verification_type as pwd_senior_type,
+                    valid_until,
+                    date_issued,
+                    id_number
+                FROM user_verifications
+                WHERE user_id = $user_id AND clinic_id = $clinic_id
+                AND status IN ('verified', 'pending', 'rejected')
+                ORDER BY created_at DESC
+                LIMIT 1
+            ");
+            $result = $result ? mysqli_fetch_assoc($result) : null;
+        }
+        
+        // Default response
+        $response = [
+            'is_valid' => false,
+            'is_expired' => false,
+            'status' => 'none',
+            'type' => '',
+            'valid_until' => null,
+            'date_issued' => null,
+            'id_number' => null,
+            'message' => 'No PWD/Senior verification found.'
+        ];
+        
+        if (!$result) {
+            $response['message'] = 'No PWD/Senior verification found for this clinic.';
+            return $response;
+        }
+        
+        $response['status'] = $result['pwd_senior_status'] ?? 'none';
+        $response['type'] = $result['pwd_senior_type'] ?? '';
+        $response['valid_until'] = $result['valid_until'] ?? null;
+        $response['date_issued'] = $result['date_issued'] ?? null;
+        $response['id_number'] = $result['id_number'] ?? null;
+        
+        // Check if verified
+        if ($response['status'] !== 'verified') {
+            $response['message'] = 'Your PWD/Senior verification is ' . $response['status'] . '.';
+            return $response;
+        }
+        
+        // Check expiry
+        $valid_until = $response['valid_until'];
+        if (!$valid_until) {
+            // No expiry date set - assume valid
+            $response['is_valid'] = true;
+            $response['message'] = 'PWD/Senior ID is verified (no expiry date set).';
+            return $response;
+        }
+        
+        $today = new DateTime();
+        $today->setTime(0, 0, 0);
+        $expiry = new DateTime($valid_until);
+        $expiry->setTime(0, 0, 0);
+        
+        if ($expiry >= $today) {
+            $response['is_valid'] = true;
+            $response['is_expired'] = false;
+            
+            // Calculate days remaining
+            $diff = $today->diff($expiry);
+            $days_remaining = $diff->days;
+            
+            if ($days_remaining <= 30) {
+                $response['message'] = "PWD/Senior ID is valid but will expire in {$days_remaining} days. Please renew soon.";
+            } else {
+                $response['message'] = 'PWD/Senior ID is valid.';
+            }
+        } else {
+            $response['is_valid'] = false;
+            $response['is_expired'] = true;
+            
+            $diff = $expiry->diff($today);
+            $days_overdue = $diff->days;
+            $response['message'] = "PWD/Senior ID expired {$days_overdue} days ago. Please renew to continue enjoying discounts.";
+        }
+        
+        return $response;
+        
+    } catch (Exception $e) {
+        error_log("checkPwdSeniorValidity error: " . $e->getMessage());
+        return [
+            'is_valid' => false,
+            'is_expired' => false,
+            'status' => 'error',
+            'type' => '',
+            'valid_until' => null,
+            'date_issued' => null,
+            'id_number' => null,
+            'message' => 'Error checking verification status: ' . $e->getMessage()
+        ];
+    }
+}
+
+/**
+ * Get PWD/Senior discount status with expiry check
+ * 
+ * @param mysqli|PDO $conn Database connection
+ * @param int $user_id User ID
+ * @param int $clinic_id Clinic ID
+ * @return array {
+ *     @type bool $eligible     Whether user is eligible for discount
+ *     @type string $type       'pwd' or 'senior'
+ *     @type bool $is_expired   Whether the ID is expired
+ *     @type string $status     'verified', 'expired', 'pending', 'rejected', 'none'
+ *     @type string $valid_until Expiry date
+ *     @type string $message    User-friendly message
+ * }
+ */
+function getPwdSeniorDiscountStatus($conn, $user_id, $clinic_id) {
+    $result = checkPwdSeniorValidity($conn, $user_id, $clinic_id);
+    
+    return [
+        'eligible' => $result['is_valid'] && $result['status'] === 'verified',
+        'type' => $result['type'],
+        'is_expired' => $result['is_expired'],
+        'status' => $result['status'],
+        'valid_until' => $result['valid_until'],
+        'date_issued' => $result['date_issued'],
+        'id_number' => $result['id_number'],
+        'message' => $result['message']
+    ];
+}
 ?>

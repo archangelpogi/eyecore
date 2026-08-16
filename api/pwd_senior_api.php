@@ -1,6 +1,8 @@
 <?php
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
+ini_set('max_execution_time', 60); // ✅ Increase execution time
+ini_set('memory_limit', '256M');   // ✅ Increase memory limit
 
 if (session_status() === PHP_SESSION_NONE) {
     session_name('eyecore_admin');
@@ -64,26 +66,30 @@ echo json_encode($response);
 exit;
 
 // ============================================
-// FUNCTIONS WITH CLINIC_ID FILTER
+// FUNCTIONS USING user_verifications TABLE
 // ============================================
 
 function getVerificationRequests($pdo, $clinicId, $status = 'all') {
     try {
+        // ✅ SIMPLIFIED QUERY - LIMIT results to prevent timeout
         $sql = "
             SELECT 
                 uv.user_id,
+                uv.clinic_id,
+                uv.verification_type,
+                uv.id_number,
+                uv.id_image,
+                uv.date_issued,
+                uv.valid_until,
+                uv.status,
+                uv.rejection_reason,
+                uv.verified_by,
+                uv.verified_at,
+                uv.created_at,
+                uv.updated_at,
                 u.fullname as patient_name,
                 u.email as patient_email,
-                u.contact as patient_phone,
-                uv.status as pwd_senior_status,
-                uv.verification_type as pwd_senior_type,
-                uv.id_number as pwd_senior_id_number,
-                uv.id_image as pwd_senior_id_image,
-                uv.verified_at as pwd_senior_verified_at,
-                uv.rejection_reason as pwd_senior_rejection_reason,
-                uv.created_at as submitted_at,
-                uv.verified_by as pwd_senior_verified_by,
-                NULL as verified_by_name
+                u.contact as patient_phone
             FROM user_verifications uv
             INNER JOIN users u ON uv.user_id = u.id
             WHERE uv.clinic_id = ?
@@ -98,11 +104,23 @@ function getVerificationRequests($pdo, $clinicId, $status = 'all') {
             $sql .= " AND uv.status IN ('pending', 'verified', 'rejected')";
         }
         
-        $sql .= " ORDER BY uv.created_at DESC";
+        $sql .= " ORDER BY uv.created_at DESC LIMIT 50"; // ✅ LIMIT to 50 records
         
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
         $requests = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // ✅ Get verified by names in separate query (if needed)
+        foreach ($requests as &$request) {
+            if ($request['verified_by']) {
+                $stmt2 = $pdo->prepare("SELECT CONCAT(first_name, ' ', last_name) as name FROM users WHERE id = ?");
+                $stmt2->execute([$request['verified_by']]);
+                $verifier = $stmt2->fetch(PDO::FETCH_ASSOC);
+                $request['verified_by_name'] = $verifier['name'] ?? null;
+            } else {
+                $request['verified_by_name'] = null;
+            }
+        }
         
         return ['success' => true, 'requests' => $requests];
     } catch (Exception $e) {
@@ -110,30 +128,41 @@ function getVerificationRequests($pdo, $clinicId, $status = 'all') {
     }
 }
 
-function getVerificationRequest($pdo, $clinicId, $id) {
+function getVerificationRequest($pdo, $clinicId, $userId) {
     try {
         $stmt = $pdo->prepare("
             SELECT 
-                u.id as user_id,
+                uv.user_id,
+                uv.clinic_id,
+                uv.verification_type,
+                uv.id_number,
+                uv.id_image,
+                uv.date_issued,
+                uv.valid_until,
+                uv.status,
+                uv.rejection_reason,
+                uv.verified_by,
+                uv.verified_at,
+                uv.created_at,
+                uv.updated_at,
                 u.fullname as patient_name,
                 u.email as patient_email,
-                u.contact as patient_phone,
-                u.pwd_senior_status,
-                u.pwd_senior_type,
-                u.pwd_senior_id_number,
-                u.pwd_senior_id_image,
-                u.pwd_senior_verified_at,
-                u.pwd_senior_rejection_reason,
-                u.created_at as submitted_at,
-                u.pwd_senior_verified_by,
-                NULL as verified_by_name
-            FROM users u
-            WHERE u.id = ? AND u.pwd_senior_clinic_id = ?
+                u.contact as patient_phone
+            FROM user_verifications uv
+            INNER JOIN users u ON uv.user_id = u.id
+            WHERE uv.user_id = ? AND uv.clinic_id = ?
         ");
-        $stmt->execute([$id, $clinicId]);
+        $stmt->execute([$userId, $clinicId]);
         $request = $stmt->fetch(PDO::FETCH_ASSOC);
         
         if ($request) {
+            // Get verified by name
+            if ($request['verified_by']) {
+                $stmt2 = $pdo->prepare("SELECT CONCAT(first_name, ' ', last_name) as name FROM users WHERE id = ?");
+                $stmt2->execute([$request['verified_by']]);
+                $verifier = $stmt2->fetch(PDO::FETCH_ASSOC);
+                $request['verified_by_name'] = $verifier['name'] ?? null;
+            }
             return ['success' => true, 'request' => $request];
         } else {
             return ['success' => false, 'message' => 'Request not found or not assigned to your clinic'];
@@ -154,7 +183,8 @@ function approveRequest($pdo, $userId, $adminId, $clinicId, $notes = '') {
                 status = 'verified',
                 verified_by = ?,
                 verified_at = NOW(),
-                rejection_reason = NULL
+                rejection_reason = NULL,
+                updated_at = NOW()
             WHERE user_id = ? AND clinic_id = ?
         ");
         $stmt->execute([$adminId, $userId, $clinicId]);
@@ -162,6 +192,19 @@ function approveRequest($pdo, $userId, $adminId, $clinicId, $notes = '') {
         if ($stmt->rowCount() === 0) {
             throw new Exception('Verification request not found');
         }
+        
+        // ✅ Also update the user's pwd_senior fields for easy lookup
+        $stmt = $pdo->prepare("
+            UPDATE users 
+            SET 
+                pwd_senior_status = 'verified',
+                pwd_senior_verified_at = NOW(),
+                pwd_senior_verified_by = ?,
+                pwd_senior_rejection_reason = NULL,
+                pwd_senior_type = (SELECT verification_type FROM user_verifications WHERE user_id = ? AND clinic_id = ?)
+            WHERE id = ?
+        ");
+        $stmt->execute([$adminId, $userId, $clinicId, $userId]);
         
         // Log the action
         $log = $pdo->prepare("
@@ -192,7 +235,8 @@ function rejectRequest($pdo, $userId, $adminId, $clinicId, $reason = '') {
                 status = 'rejected',
                 rejection_reason = ?,
                 verified_by = ?,
-                verified_at = NOW()
+                verified_at = NOW(),
+                updated_at = NOW()
             WHERE user_id = ? AND clinic_id = ?
         ");
         $stmt->execute([$reason, $adminId, $userId, $clinicId]);
@@ -200,6 +244,19 @@ function rejectRequest($pdo, $userId, $adminId, $clinicId, $reason = '') {
         if ($stmt->rowCount() === 0) {
             throw new Exception('Verification request not found');
         }
+        
+        // ✅ Also update the user's pwd_senior fields
+        $stmt = $pdo->prepare("
+            UPDATE users 
+            SET 
+                pwd_senior_status = 'rejected',
+                pwd_senior_rejection_reason = ?,
+                pwd_senior_verified_by = ?,
+                pwd_senior_verified_at = NOW(),
+                pwd_senior_type = (SELECT verification_type FROM user_verifications WHERE user_id = ? AND clinic_id = ?)
+            WHERE id = ?
+        ");
+        $stmt->execute([$reason, $adminId, $userId, $clinicId, $userId]);
         
         // Log the action
         $log = $pdo->prepare("
@@ -218,8 +275,17 @@ function rejectRequest($pdo, $userId, $adminId, $clinicId, $reason = '') {
         return ['success' => false, 'message' => $e->getMessage()];
     }
 }
+
 function deleteRequest($pdo, $userId) {
     try {
+        // ✅ Delete from user_verifications
+        $stmt = $pdo->prepare("
+            DELETE FROM user_verifications 
+            WHERE user_id = ?
+        ");
+        $stmt->execute([$userId]);
+        
+        // ✅ Reset user's pwd_senior fields
         $stmt = $pdo->prepare("
             UPDATE users 
             SET 
@@ -241,12 +307,18 @@ function deleteRequest($pdo, $userId) {
     }
 }
 
-function sendVerificationNotification($pdo, $userId, $status, $message = '') {
+function sendVerificationNotification($pdo, $userId, $status, $clinicId, $message = '') {
     try {
-        $title = $status === 'approved' ? 'PWD/Senior Verification Approved ✅' : 'PWD/Senior Verification Update ❌';
+        // Get clinic name
+        $stmt = $pdo->prepare("SELECT name FROM clinics WHERE id = ?");
+        $stmt->execute([$clinicId]);
+        $clinic = $stmt->fetch(PDO::FETCH_ASSOC);
+        $clinicName = $clinic['name'] ?? 'the clinic';
+        
+        $title = $status === 'approved' ? '✅ PWD/Senior Verification Approved!' : '❌ PWD/Senior Verification Update';
         $body = $status === 'approved' 
-            ? 'Your PWD/Senior verification has been approved! You now get 20% discount on all bookings at the clinic.'
-            : 'Your PWD/Senior verification was not approved. Reason: ' . $message;
+            ? "Your PWD/Senior verification for {$clinicName} has been approved! You now get 20% discount on all bookings."
+            : "Your PWD/Senior verification for {$clinicName} was not approved. Reason: " . $message;
         
         $stmt = $pdo->prepare("
             INSERT INTO notifications (user_id, title, message, type, link, is_read, created_at)
@@ -259,4 +331,3 @@ function sendVerificationNotification($pdo, $userId, $status, $message = '') {
         return false;
     }
 }
-?>

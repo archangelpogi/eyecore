@@ -1,4 +1,7 @@
 <?php
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
 if (session_status() === PHP_SESSION_NONE) {
     session_name('eyecore_admin');
     session_start();
@@ -82,6 +85,7 @@ $query = "
         a.amount_paid,
         a.status,
         a.ref_no,
+        a.forfeited_amount,
         CONCAT('INV-', DATE_FORMAT(a.appointment_date, '%Y%m'), '-', LPAD(a.id, 4, '0')) AS invoice_id,
         CASE 
             WHEN a.patient_id IS NOT NULL THEN CONCAT(p.first_name, ' ', p.last_name)
@@ -95,6 +99,7 @@ $query = "
         END AS customer_code,
         a.amount_paid,
         CASE 
+            WHEN a.status = 'refunded' THEN 'Refunded'
             WHEN a.amount_paid >= COALESCE(NULLIF(a.total_amount, 0), (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0))) 
                 AND COALESCE(NULLIF(a.total_amount, 0), (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0))) > 0 
             THEN 'Paid'
@@ -129,7 +134,7 @@ $query = "
     LEFT JOIN users u ON a.user_id = u.id
     LEFT JOIN doctors d ON a.doctor_id = d.id
     WHERE a.clinic_id = ?
-    AND a.status IN ('paid', 'completed', 'confirmed', 'pending')
+    AND a.status IN ('paid', 'completed', 'confirmed', 'pending', 'refunded', 'no-show')
     
     UNION ALL
     
@@ -148,11 +153,13 @@ $query = "
         s.amount_paid,
         s.status,
         NULL AS ref_no,
+        s.forfeited_amount,  -- ✅ IDAGDAG ITO
         CONCAT('INV-', DATE_FORMAT(s.sale_date, '%Y%m'), '-', LPAD(s.id, 4, '0')) AS invoice_id,
         COALESCE(s.walk_in_name, CONCAT(p2.first_name, ' ', p2.last_name), 'Walk-in') AS customer_name,
         COALESCE(s.patient_id, 'WALK-IN') AS customer_code,
         s.amount_paid,
         CASE 
+            WHEN s.status = 'Refunded' THEN 'Refunded'
             WHEN s.amount_paid >= s.total_amount THEN 'Paid'
             WHEN s.amount_paid > 0 AND s.amount_paid < s.total_amount THEN 'Partial'
             ELSE 'Unpaid'
@@ -167,7 +174,7 @@ $query = "
     LEFT JOIN patients p2 ON s.patient_id = p2.id
     WHERE s.clinic_id = ?
     AND s.appointment_id IS NULL
-    AND s.status IN ('Paid', 'Partial', 'Unpaid')
+    AND s.status IN ('Paid', 'Partial', 'Unpaid', 'Refunded')
 ";
 
 $params = [$clinic_id, $clinic_id];
@@ -190,7 +197,7 @@ $stmt->execute($params);
 $invoices = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // ============================================
-// ✅ FETCH STATS FROM BOTH APPOINTMENTS AND SALES
+// ✅ FETCH STATS - KASAMA ANG REFUNDED
 // ============================================
 $statsStmt = $pdo->prepare("
     SELECT 
@@ -198,11 +205,14 @@ $statsStmt = $pdo->prepare("
         COUNT(CASE WHEN sale_date = ? AND status = 'Paid' THEN 1 END) as today_count,
         COALESCE(SUM(CASE WHEN status = 'Paid' THEN total_amount END), 0) as paid_amount,
         COALESCE(SUM(CASE WHEN status = 'Partial' THEN total_amount END), 0) as partial_amount,
-        COALESCE(SUM(CASE WHEN status = 'Unpaid' THEN total_amount END), 0) as unpaid_amount
+        COALESCE(SUM(CASE WHEN status = 'Unpaid' THEN total_amount END), 0) as unpaid_amount,
+        COALESCE(SUM(CASE WHEN status = 'Refunded' THEN total_amount END), 0) as refunded_amount,
+        COUNT(CASE WHEN status = 'Refunded' THEN 1 END) as refunded_count
     FROM (
         SELECT 
             appointment_date as sale_date,
             CASE 
+                WHEN a.status = 'refunded' THEN 'Refunded'
                 WHEN a.amount_paid >= (CASE WHEN a.subtotal > 0 THEN (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0)) ELSE a.total_amount END) THEN 'Paid'
                 WHEN a.amount_paid > 0 THEN 'Partial'
                 ELSE 'Unpaid'
@@ -213,13 +223,14 @@ $statsStmt = $pdo->prepare("
             END as total_amount
         FROM appointments a
         WHERE a.clinic_id = ?
-        AND a.status IN ('paid', 'completed', 'confirmed', 'pending')
+        AND a.status IN ('paid', 'completed', 'confirmed', 'pending', 'refunded', 'no-show')
         
         UNION ALL
         
         SELECT 
             sale_date,
             CASE 
+                WHEN status = 'Refunded' THEN 'Refunded'
                 WHEN amount_paid >= total_amount THEN 'Paid'
                 WHEN amount_paid > 0 THEN 'Partial'
                 ELSE 'Unpaid'
@@ -228,7 +239,7 @@ $statsStmt = $pdo->prepare("
         FROM sales s
         WHERE s.clinic_id = ?
         AND s.appointment_id IS NULL
-        AND s.status IN ('Paid', 'Partial', 'Unpaid')
+        AND s.status IN ('Paid', 'Partial', 'Unpaid', 'Refunded')
     ) combined
 ");
 $statsStmt->execute([$today, $today, $clinic_id, $clinic_id]);
@@ -239,6 +250,8 @@ $stats['today_count'] = $stats['today_count'] ?? 0;
 $stats['paid_amount'] = $stats['paid_amount'] ?? 0;
 $stats['partial_amount'] = $stats['partial_amount'] ?? 0;
 $stats['unpaid_amount'] = $stats['unpaid_amount'] ?? 0;
+$stats['refunded_amount'] = $stats['refunded_amount'] ?? 0;
+$stats['refunded_count'] = $stats['refunded_count'] ?? 0;
 
 // ============================================
 // ✅ FIXED: Fetch patients for dropdown
@@ -264,7 +277,6 @@ $patients = $patientsStmt->fetchAll(PDO::FETCH_ASSOC);
 // ✅ Debug: Log results
 if (empty($patients)) {
     error_log("⚠️ WARNING: No patients found for clinic_id = " . $clinic_id);
-    // Try a direct query without user_verifications join
     $checkStmt = $pdo->prepare("
         SELECT id, CONCAT(first_name, ' ', last_name) as full_name, email, phone, user_id
         FROM patients 
@@ -297,7 +309,7 @@ $services = $servicesStmt->fetchAll(PDO::FETCH_ASSOC);
 
 $allItems = array_merge($products, $services);
 
-// Process invoices with correct balance
+// Process invoices with correct balance and subtotal
 foreach ($invoices as &$invoice) {
     $total_amount = $invoice['total_amount'] ?? 0;
     $amount_paid = $invoice['amount_paid'] ?? 0;
@@ -307,7 +319,31 @@ foreach ($invoices as &$invoice) {
     }
     $invoice['balance'] = $balance;
     
-    if ($amount_paid >= $total_amount && $total_amount > 0) {
+    // ✅ COMPUTE SUBTOTAL FROM ITEMS
+    $items_raw = trim($invoice['items'] ?? '[]');
+    $items = json_decode($items_raw, true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        $items_raw = preg_replace('/[\x00-\x1F\x80-\xFF]/', '', $items_raw);
+        $items = json_decode($items_raw, true);
+    }
+    
+    // ✅ Calculate subtotal from items
+    $computed_subtotal = 0;
+    if (is_array($items) && !empty($items)) {
+        foreach ($items as $item) {
+            $price = floatval($item['price'] ?? 0);
+            $qty = intval($item['quantity'] ?? 1);
+            $computed_subtotal += $price * $qty;
+        }
+    }
+    
+    // ✅ Use computed subtotal if available, otherwise use stored
+    $invoice['display_subtotal'] = ($computed_subtotal > 0) ? $computed_subtotal : ($invoice['subtotal'] ?? $total_amount);
+    
+    // ✅ Determine status display
+    if ($invoice['status'] === 'refunded') {
+        $invoice['payment_status'] = 'Refunded';
+    } elseif ($amount_paid >= $total_amount && $total_amount > 0) {
         $invoice['payment_status'] = 'Paid';
     } elseif ($amount_paid > 0 && $amount_paid < $total_amount) {
         $invoice['payment_status'] = 'Partial';
@@ -317,7 +353,6 @@ foreach ($invoices as &$invoice) {
 }
 unset($invoice);
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -354,11 +389,7 @@ unset($invoice);
             --radius-sm: 8px;
         }
 
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
 
         body {
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
@@ -367,11 +398,7 @@ unset($invoice);
             padding: 24px;
         }
 
-        /* Layout */
-        .container {
-            max-width: 1440px;
-            margin: 0 auto;
-        }
+        .container { max-width: 1440px; margin: 0 auto; }
 
         /* Header */
         .page-header {
@@ -506,7 +533,7 @@ unset($invoice);
         .stat-card .stat-change.up { color: #059669; }
         .stat-card .stat-change.down { color: #dc2626; }
 
-        /* Toolbar - parang sa image */
+        /* Toolbar */
         .toolbar {
             background: white;
             border-radius: var(--radius);
@@ -694,17 +721,16 @@ unset($invoice);
 
         .badge-status.paid { background: #d1fae5; color: #065f46; }
         .badge-status.paid .dot { background: #10b981; }
-
         .badge-status.partial { background: #fef3c7; color: #92400e; }
         .badge-status.partial .dot { background: #f59e0b; }
-
         .badge-status.unpaid { background: #fee2e2; color: #991b1b; }
         .badge-status.unpaid .dot { background: #ef4444; }
-
         .badge-status.cancelled { background: #f1f5f9; color: #475569; }
         .badge-status.cancelled .dot { background: #94a3b8; }
+        .badge-status.refunded { background: #f3e8ff; color: #6d28d9; }
+        .badge-status.refunded .dot { background: #8b5cf6; }
 
-        /* Table Footer - parang sa image */
+        /* Table Footer */
         .table-footer {
             display: flex;
             justify-content: space-between;
@@ -788,60 +814,24 @@ unset($invoice);
 
         /* Responsive */
         @media (max-width: 1024px) {
-            .stats-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
         }
 
         @media (max-width: 768px) {
             body { padding: 16px; }
-            
-            .page-header {
-                flex-direction: column;
-                align-items: flex-start;
-            }
-            
-            .page-header-actions {
-                width: 100%;
-                flex-wrap: wrap;
-            }
-            
-            .stats-grid {
-                grid-template-columns: 1fr 1fr;
-            }
-            
-            .toolbar {
-                flex-direction: column;
-                align-items: stretch;
-            }
-            
-            .toolbar-left {
-                flex-wrap: wrap;
-            }
-            
-            .toolbar-right {
-                flex-wrap: wrap;
-                justify-content: space-between;
-            }
-            
-            .toolbar-right .search-box input {
-                width: 140px;
-            }
-            
-            .table-footer {
-                flex-direction: column;
-                text-align: center;
-            }
+            .page-header { flex-direction: column; align-items: flex-start; }
+            .page-header-actions { width: 100%; flex-wrap: wrap; }
+            .stats-grid { grid-template-columns: 1fr 1fr; }
+            .toolbar { flex-direction: column; align-items: stretch; }
+            .toolbar-left { flex-wrap: wrap; }
+            .toolbar-right { flex-wrap: wrap; justify-content: space-between; }
+            .toolbar-right .search-box input { width: 140px; }
+            .table-footer { flex-direction: column; text-align: center; }
         }
 
         @media (max-width: 480px) {
-            .stats-grid {
-                grid-template-columns: 1fr;
-            }
-            
-            .toolbar-left .filter-group {
-                flex-wrap: wrap;
-            }
+            .stats-grid { grid-template-columns: 1fr; }
+            .toolbar-left .filter-group { flex-wrap: wrap; }
         }
     </style>
 </head>
@@ -891,32 +881,31 @@ unset($invoice);
             <div class="stat-change" style="color: #d97706;">Awaiting payment</div>
         </div>
         <div class="stat-card">
-            <div class="stat-label">Unpaid</div>
-            <div class="stat-value" style="color: #dc2626;">₱<?php echo number_format($stats['unpaid_amount'] ?? 0); ?></div>
-            <div class="stat-change down">Overdue appointments</div>
+            <div class="stat-label">Refunded</div>
+            <div class="stat-value" style="color: #6d28d9;">₱<?php echo number_format($stats['refunded_amount'] ?? 0); ?></div>
+            <div class="stat-change" style="color: #6d28d9;"><?php echo $stats['refunded_count'] ?? 0; ?> refunded</div>
         </div>
     </div>
 
     <!-- ============================================ -->
-    <!-- TOOLBAR - PARANG SA IMAGE -->
+    <!-- TOOLBAR -->
     <!-- ============================================ -->
     <div class="toolbar">
         <div class="toolbar-left">
-            <!-- Filter: All Status -->
             <div class="filter-group">
-                <label>All Status</label>
-                <select id="filterStatus">
+                <label>Status</label>
+                <select id="filterStatus" onchange="filterTable()">
                     <option value="all">All Status</option>
                     <option value="paid">Paid</option>
                     <option value="partial">Partial</option>
                     <option value="unpaid">Unpaid</option>
+                    <option value="refunded">Refunded</option>
+                    <option value="cancelled">Cancelled</option>
                 </select>
             </div>
-
-            <!-- Filter: All Payment Method -->
             <div class="filter-group">
-                <label>All Payment</label>
-                <select id="filterPayment">
+                <label>Payment</label>
+                <select id="filterPayment" onchange="filterTable()">
                     <option value="all">All Payment</option>
                     <option value="cash">Cash</option>
                     <option value="gcash">GCash</option>
@@ -924,18 +913,14 @@ unset($invoice);
                     <option value="credit_card">Credit Card</option>
                 </select>
             </div>
-
-            <!-- Reset Button -->
             <button class="btn-reset" onclick="resetFilters()">
                 <i class="bi bi-arrow-counterclockwise"></i> Reset
             </button>
         </div>
-
         <div class="toolbar-right">
-            <!-- Show Entries -->
             <div class="entries-select">
                 Show
-                <select id="entriesPerPage">
+                <select id="entriesPerPage" onchange="filterTable()">
                     <option value="10">10</option>
                     <option value="25">25</option>
                     <option value="50">50</option>
@@ -943,8 +928,6 @@ unset($invoice);
                 </select>
                 entries
             </div>
-
-            <!-- Search Box -->
             <div class="search-box">
                 <i class="bi bi-search"></i>
                 <input type="text" id="searchInput" placeholder="Search..." onkeyup="handleSearch()">
@@ -953,130 +936,137 @@ unset($invoice);
     </div>
 
     <!-- ============================================ -->
-    <!-- TABLE - PARANG SA IMAGE -->
+    <!-- TABLE -->
     <!-- ============================================ -->
-<div class="table-card">
-    <div class="table-wrapper">
-        <table class="table-custom" id="salesTable">
-            <thead>
-                <tr>
-                    <th>INVOICE</th>
-                    <th>PATIENT</th>
-                    <th>DATE</th>
-                    <th>ITEMS</th>
-                    <th>SUBTOTAL</th>  <!-- ✅ PINALITAN: TOTAL -> SUBTOTAL -->
-                    <th>PAID</th>
-                    <th>BALANCE</th>
-                    <th>STATUS</th>
-                    <th>ACTIONS</th>
-                </tr>
-            </thead>
-            <tbody id="tableBody">
-                <?php if (empty($invoices)): ?>
-                <tr>
-                    <td colspan="9" style="text-align: center; padding: 40px; color: var(--gray-400);">
-                        <i class="bi bi-inbox" style="font-size: 32px; display: block; margin-bottom: 8px;"></i>
-                        <?php echo empty($search) ? 'No invoices found.' : 'No invoices match your search.'; ?>
-                    </td>
-                </tr>
-                <?php else: ?>
-                <?php foreach ($invoices as $invoice): 
-                    $total_amount = $invoice['total_amount'] ?? 0;
-                    $amount_paid = $invoice['amount_paid'] ?? 0;
-                    $balance = $invoice['balance'] ?? 0;
-                    $payment_status = $invoice['payment_status'] ?? 'Unpaid';
-                    $statusClass = strtolower($payment_status);
-                    
-                    // ✅ Get subtotal from invoice
-                    $subtotal = $invoice['subtotal'] ?? $total_amount;  // If subtotal is empty, use total_amount as fallback
-                    
-                    // Get items count
-                    $items_raw = trim($invoice['items'] ?? '[]');
-                    $items = json_decode($items_raw, true);
-                    if (json_last_error() !== JSON_ERROR_NONE) {
-                        $items_raw = preg_replace('/[\x00-\x1F\x80-\xFF]/', '', $items_raw);
+    <div class="table-card">
+        <div class="table-wrapper">
+            <table class="table-custom" id="salesTable">
+                <thead>
+                    <tr>
+                        <th>INVOICE</th>
+                        <th>PATIENT</th>
+                        <th>DATE</th>
+                        <th>ITEMS</th>
+                        <th>SUBTOTAL</th>
+                        <th>PAID</th>
+                        <th>BALANCE</th>
+                        <th>STATUS</th>
+                        <th>ACTIONS</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody">
+                    <?php if (empty($invoices)): ?>
+                    <tr>
+                        <td colspan="9" style="text-align: center; padding: 40px; color: var(--gray-400);">
+                            <i class="bi bi-inbox" style="font-size: 32px; display: block; margin-bottom: 8px;"></i>
+                            <?php echo empty($search) ? 'No invoices found.' : 'No invoices match your search.'; ?>
+                        </td>
+                    </tr>
+                    <?php else: ?>
+                    <?php foreach ($invoices as $invoice): 
+                        $total_amount = $invoice['total_amount'] ?? 0;
+                        $amount_paid = $invoice['amount_paid'] ?? 0;
+                        $balance = $invoice['balance'] ?? 0;
+                        $payment_status = $invoice['payment_status'] ?? 'Unpaid';
+                        $display_subtotal = $invoice['display_subtotal'] ?? $total_amount;
+                        $statusClass = match($payment_status) {
+                            'Paid' => 'paid',
+                            'Partial' => 'partial',
+                            'Unpaid' => 'unpaid',
+                            'Refunded' => 'refunded',
+                            default => 'unpaid'
+                        };
+                        
+                        // Get items count
+                        $items_raw = trim($invoice['items'] ?? '[]');
                         $items = json_decode($items_raw, true);
-                    }
-                    $itemCount = is_array($items) ? count($items) : 0;
-                    $itemNames = [];
-                    if (is_array($items) && !empty($items)) {
-                        foreach ($items as $item) {
-                            $itemNames[] = $item['name'] ?? $item['item_name'] ?? 'Item';
+                        if (json_last_error() !== JSON_ERROR_NONE) {
+                            $items_raw = preg_replace('/[\x00-\x1F\x80-\xFF]/', '', $items_raw);
+                            $items = json_decode($items_raw, true);
                         }
-                    }
-                ?>
-                <tr>
-                    <td>
-                        <strong style="color: var(--primary);"><?php echo $invoice['invoice_id']; ?></strong>
-                    </td>
-                    <td>
-                        <div style="font-weight: 500;"><?php echo htmlspecialchars($invoice['customer_name']); ?></div>
-                        <div style="font-size: 12px; color: var(--gray-400);"><?php echo $invoice['customer_code']; ?></div>
-                    </td>
-                    <td><?php echo date('M d, Y', strtotime($invoice['sale_date'])); ?></td>
-                    <td>
-                        <div><?php echo $itemCount; ?> item<?php echo $itemCount > 1 ? 's' : ''; ?></div>
-                        <?php if (!empty($itemNames)): ?>
-                            <div style="font-size: 12px; color: var(--gray-400); max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                <?php echo htmlspecialchars(implode(', ', array_slice($itemNames, 0, 2))); ?>
-                                <?php echo count($itemNames) > 2 ? '...' : ''; ?>
-                            </div>
-                        <?php endif; ?>
-                    </td>
-                    <td style="font-weight: 600;">₱<?php echo number_format($subtotal, 2); ?></td>  <!-- ✅ SUBTOTAL -->
-                    <td style="color: #059669;">₱<?php echo number_format($amount_paid, 2); ?></td>
-                    <td style="font-weight: 500; <?php echo $balance > 0 ? 'color: #dc2626;' : 'color: #059669;'; ?>">
-                        ₱<?php echo number_format($balance, 2); ?>
-                    </td>
-                    <td>
-                        <span class="badge-status <?php echo $statusClass; ?>">
-                            <span class="dot"></span>
-                            <?php echo $payment_status; ?>
-                        </span>
-                    </td>
-                    <td>
-                        <div class="action-btns">
-                            <button class="btn-icon view" onclick="viewInvoice(<?php echo $invoice['id']; ?>, '<?php echo $invoice['source_type']; ?>')" title="View">
-                                <i class="bi bi-eye"></i>
-                            </button>
-                            <button class="btn-icon print" onclick="printInvoice(<?php echo $invoice['id']; ?>, '<?php echo $invoice['source_type']; ?>')" title="Print">
-                                <i class="bi bi-printer"></i>
-                            </button>
-                            <?php if ($canEdit && $payment_status !== 'Paid'): ?>
-                            <button class="btn-icon pay" onclick="recordPayment(<?php echo $invoice['id']; ?>, <?php echo $total_amount; ?>, <?php echo $amount_paid; ?>, '<?php echo $invoice['source_type']; ?>')" title="Record Payment">
-                                <i class="bi bi-cash"></i>
-                            </button>
+                        $itemCount = is_array($items) ? count($items) : 0;
+                        $itemNames = [];
+                        if (is_array($items) && !empty($items)) {
+                            foreach ($items as $item) {
+                                $itemNames[] = $item['name'] ?? $item['item_name'] ?? 'Item';
+                            }
+                        }
+                    ?>
+                    <tr>
+                        <td>
+                            <strong style="color: var(--primary);"><?php echo $invoice['invoice_id']; ?></strong>
+                        </td>
+                        <td>
+                            <div style="font-weight: 500;"><?php echo htmlspecialchars($invoice['customer_name']); ?></div>
+                            <div style="font-size: 12px; color: var(--gray-400);"><?php echo $invoice['customer_code']; ?></div>
+                        </td>
+                        <td><?php echo date('M d, Y', strtotime($invoice['sale_date'])); ?></td>
+                        <td>
+                            <div><?php echo $itemCount; ?> item<?php echo $itemCount > 1 ? 's' : ''; ?></div>
+                            <?php if (!empty($itemNames)): ?>
+                                <div style="font-size: 12px; color: var(--gray-400); max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                                    <?php echo htmlspecialchars(implode(', ', array_slice($itemNames, 0, 2))); ?>
+                                    <?php echo count($itemNames) > 2 ? '...' : ''; ?>
+                                </div>
                             <?php endif; ?>
-                        </div>
-                    </td>
-                </tr>
-                <?php endforeach; ?>
-                <?php endif; ?>
-            </tbody>
-        </table>
+                        </td>
+                        <td style="font-weight: 600;">₱<?php echo number_format($display_subtotal, 2); ?></td>
+                        <td style="color: #059669;">₱<?php echo number_format($amount_paid, 2); ?></td>
+                        <td style="font-weight: 500; <?php echo $balance > 0 ? 'color: #dc2626;' : 'color: #059669;'; ?>">
+                            ₱<?php echo number_format($balance, 2); ?>
+                        </td>
+                        <td>
+                            <span class="badge-status <?php echo $statusClass; ?>">
+                                <span class="dot"></span>
+                                <?php echo $payment_status; ?>
+                            </span>
+                        </td>
+                        <td>
+                            <div class="action-btns">
+                                <button class="btn-icon view" onclick="viewInvoice(<?php echo $invoice['id']; ?>, '<?php echo $invoice['source_type']; ?>')" title="View">
+                                    <i class="bi bi-eye"></i>
+                                </button>
+                                <button class="btn-icon print" onclick="printInvoice(<?php echo $invoice['id']; ?>, '<?php echo $invoice['source_type']; ?>')" title="Print">
+                                    <i class="bi bi-printer"></i>
+                                </button>
+                                <?php if ($canEdit && $payment_status !== 'Paid' && $payment_status !== 'Refunded'): ?>
+                                <button class="btn-icon pay" onclick="recordPayment(<?php echo $invoice['id']; ?>, <?php echo $total_amount; ?>, <?php echo $amount_paid; ?>, '<?php echo $invoice['source_type']; ?>')" title="Record Payment">
+                                    <i class="bi bi-cash"></i>
+                                </button>
+                                <?php endif; ?>
+                            </div>
+                        </td>
+                    </tr>
+                    <?php endforeach; ?>
+                    <?php endif; ?>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Table Footer -->
+        <div class="table-footer">
+            <div class="info-text">
+                Showing <strong>1</strong> to <strong>1</strong> of <strong>1</strong> entries
+            </div>
+            <div class="pagination-custom">
+                <button disabled>Previous</button>
+                <button class="active">1</button>
+                <button disabled>Next</button>
+            </div>
+        </div>
     </div>
 
-    <!-- Table Footer -->
-    <div class="table-footer">
-        <div class="info-text">
-            Showing <strong>1</strong> to <strong>1</strong> of <strong>1</strong> entries
-        </div>
-        <div class="pagination-custom">
-            <button disabled>Previous</button>
-            <button class="active">1</button>
-            <button disabled>Next</button>
-        </div>
-    </div>
 </div>
 
-</div>
+<!-- ============================================ -->
+<!-- MODALS -->
+<!-- ============================================ -->
 
-<!-- New Sale Modal - SCROLLABLE VERSION -->
+<!-- New Sale Modal -->
 <div class="modal fade" id="newSaleModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <div class="modal-content" style="border-radius: 20px; max-height: 95vh;">
             <form id="newSaleForm">
-                <!-- FIXED HEADER -->
                 <div class="modal-header" style="background: linear-gradient(135deg, var(--primary), var(--primary-dark)); color: white; border-radius: 20px 20px 0 0; flex-shrink: 0;">
                     <h5 class="modal-title fw-bold">
                         <i class="bi bi-receipt me-2"></i>New Sale / Invoice
@@ -1084,7 +1074,6 @@ unset($invoice);
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 
-                <!-- SCROLLABLE BODY -->
                 <div class="modal-body p-4" style="overflow-y: auto; max-height: calc(95vh - 180px);">
                     <!-- Customer Type -->
                     <div class="mb-4">
@@ -1092,16 +1081,13 @@ unset($invoice);
                         <div class="btn-group w-100" role="group">
                             <input type="radio" class="btn-check" name="customer_type" id="registered_patient" value="registered" checked>
                             <label class="btn btn-outline-primary" for="registered_patient">Registered Patient</label>
-                            
                             <input type="radio" class="btn-check" name="customer_type" id="walk_in_customer" value="walkin">
                             <label class="btn btn-outline-primary" for="walk_in_customer">Walk-in Customer</label>
                         </div>
                     </div>
 
-                    <!-- PWD/SENIOR VERIFICATION DISPLAY -->
                     <div id="pwd_senior_status" style="display: none; padding: 10px; border-radius: 8px; margin-bottom: 15px;"></div>
 
-                    <!-- Registered Patient Section -->
                     <div id="registered_section">
                         <div class="mb-3">
                             <label class="form-label fw-semibold">Select Patient</label>
@@ -1125,7 +1111,6 @@ unset($invoice);
                             </select>
                         </div>
                         
-                        <!-- Manual Discount for Registered -->
                         <div id="manual_discount_section" style="display: none;" class="mt-3 p-3 border border-warning rounded">
                             <div class="d-flex align-items-center mb-2">
                                 <i class="fas fa-id-card text-warning me-2"></i>
@@ -1156,7 +1141,6 @@ unset($invoice);
                         </div>
                     </div>
 
-                    <!-- Walk-in Customer Section -->
                     <div id="walkin_section" style="display: none;">
                         <div class="row">
                             <div class="col-md-6 mb-3">
@@ -1173,7 +1157,6 @@ unset($invoice);
                             </div>
                         </div>
                         
-                        <!-- Manual Discount for Walk-in -->
                         <div id="walkin_manual_discount_section" style="display: none;" class="mt-3 p-3 border border-warning rounded">
                             <div class="d-flex align-items-center mb-2">
                                 <i class="fas fa-id-card text-warning me-2"></i>
@@ -1225,7 +1208,7 @@ unset($invoice);
                                         <option value="<?php echo $service['id']; ?>" 
                                                 data-price="<?php echo $service['price']; ?>"
                                                 data-type="service">
-                                            <?php echo htmlspecialchars($service['name']); ?> (₱<?php echo number_format($service['price'], 2); ?>)
+                                            <?php echo htmlspecialchars($service['name']); ?> (₱<?php echo number_format($service['price'], 2); ?>) 
                                         </option>
                                     <?php endforeach; ?>
                                 </optgroup>
@@ -1234,7 +1217,7 @@ unset($invoice);
                         </div>
                     </div>
 
-                    <!-- Items Table - SCROLLABLE -->
+                    <!-- Items Table -->
                     <div class="mb-3">
                         <div class="table-responsive" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--gray-200); border-radius: var(--radius-sm);">
                             <table class="table table-sm mb-0" id="itemsTable">
@@ -1299,7 +1282,6 @@ unset($invoice);
                         </div>
                     </div>
 
-                    <!-- Hidden Inputs -->
                     <input type="hidden" name="items" id="itemsInput">
                     <input type="hidden" name="subtotal" id="subtotalInput">
                     <input type="hidden" name="discount" id="discountInput">
@@ -1309,7 +1291,6 @@ unset($invoice);
                     <input type="hidden" name="payment_type" id="paymentTypeInput" value="full">
                 </div>
                 
-                <!-- FIXED FOOTER -->
                 <div class="modal-footer border-0 pb-4" style="flex-shrink: 0; background: white; border-radius: 0 0 20px 20px;">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                     <button type="submit" class="btn btn-primary">Create Invoice</button>
@@ -1428,9 +1409,6 @@ unset($invoice);
                     <p class="mt-2 text-muted">Loading invoice details...</p>
                 </div>
             </div>
-            <div class="modal-footer border-0 pb-4">
-                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-            </div>
         </div>
     </div>
 </div>
@@ -1498,7 +1476,6 @@ function filterTable() {
         }
         
         if (payment !== 'all') {
-            // Check payment method if available
             const invPayment = inv.payment_method || 'cash';
             if (invPayment.toLowerCase() !== payment) {
                 match = false;
@@ -1520,16 +1497,14 @@ function filterTable() {
         return match;
     });
     
-    // Pagination
     const total = filtered.length;
     const totalPages = Math.ceil(total / entries);
-    const currentPage = 1; // Start at page 1
+    const currentPage = 1;
     
     const start = 0;
     const end = Math.min(entries, total);
     const paged = filtered.slice(start, end);
     
-    // Render table
     renderTableRows(paged);
     renderPagination(currentPage, totalPages, total);
 }
@@ -1567,9 +1542,9 @@ function renderTableRows(rows) {
         const amount_paid = invoice.amount_paid || 0;
         const balance = invoice.balance || 0;
         const payment_status = invoice.payment_status || 'Unpaid';
+        const display_subtotal = invoice.display_subtotal || total_amount;
         const statusClass = payment_status.toLowerCase();
         
-        // Parse items
         let items = [];
         try {
             const itemsRaw = invoice.items || '[]';
@@ -1579,6 +1554,8 @@ function renderTableRows(rows) {
         }
         const itemCount = Array.isArray(items) ? items.length : 0;
         const itemNames = Array.isArray(items) ? items.map(function(item) { return item.name || item.item_name || 'Item'; }) : [];
+        
+        const isRefunded = payment_status === 'Refunded';
         
         html += `
             <tr>
@@ -1594,7 +1571,7 @@ function renderTableRows(rows) {
                     <div>${itemCount} item${itemCount > 1 ? 's' : ''}</div>
                     ${itemNames.length > 0 ? `<div style="font-size: 12px; color: var(--gray-400); max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(itemNames.slice(0, 2).join(', '))}${itemNames.length > 2 ? '...' : ''}</div>` : ''}
                 </td>
-                <td style="font-weight: 600;">₱${Number(total_amount).toFixed(2)}</td>
+                <td style="font-weight: 600;">₱${Number(display_subtotal).toFixed(2)}</td>
                 <td style="color: #059669;">₱${Number(amount_paid).toFixed(2)}</td>
                 <td style="font-weight: 500; ${balance > 0 ? 'color: #dc2626;' : 'color: #059669;'}">
                     ₱${Number(balance).toFixed(2)}
@@ -1613,11 +1590,12 @@ function renderTableRows(rows) {
                         <button class="btn-icon print" onclick="printInvoice(${invoice.id}, '${invoice.source_type || 'appointment'}')" title="Print">
                             <i class="bi bi-printer"></i>
                         </button>
-                        ${permissions.canEdit && payment_status !== 'Paid' ? `
+                        ${permissions.canEdit && payment_status !== 'Paid' && payment_status !== 'Refunded' ? `
                         <button class="btn-icon pay" onclick="recordPayment(${invoice.id}, ${Number(total_amount)}, ${Number(amount_paid)}, '${invoice.source_type || 'appointment'}')" title="Record Payment">
                             <i class="bi bi-cash"></i>
                         </button>
                         ` : ''}
+                        ${isRefunded ? `<span class="badge" style="background: #f3e8ff; color: #6d28d9; padding: 2px 8px; border-radius: 12px; font-size: 10px;"><i class="bi bi-arrow-return-left me-1"></i>Refunded</span>` : ''}
                     </div>
                 </td>
             </tr>
@@ -1631,13 +1609,11 @@ function renderPagination(currentPage, totalPages, total) {
     const start = (currentPage - 1) * parseInt($('#entriesPerPage').val()) + 1;
     const end = Math.min(currentPage * parseInt($('#entriesPerPage').val()), total);
     
-    // Update info text
     const infoText = document.querySelector('.table-footer .info-text');
     if (infoText) {
         infoText.innerHTML = `Showing <strong>${total > 0 ? start : 0}</strong> to <strong>${end}</strong> of <strong>${total}</strong> entries`;
     }
     
-    // Update pagination buttons
     const paginationDiv = document.querySelector('.table-footer .pagination-custom');
     if (paginationDiv) {
         let html = `
@@ -1662,13 +1638,11 @@ function renderPagination(currentPage, totalPages, total) {
 }
 
 function goToPage(page) {
-    // This would implement full pagination
-    // For now, just filter again
     filterTable();
 }
 
 // ============================================
-// MODAL FUNCTIONS (same as original)
+// MODAL FUNCTIONS
 // ============================================
 
 // Toggle customer type
@@ -1684,7 +1658,6 @@ document.querySelectorAll('input[name="customer_type"]').forEach(function(radio)
     });
 });
 
-// Toggle payment fields
 function togglePaymentFields() {
     var method = document.getElementById('payment_method').value;
     document.getElementById('reference_field').style.display = method === 'cash' ? 'none' : 'block';
@@ -1741,7 +1714,6 @@ function addItem() {
     $('#itemSelect').val(null).trigger('change');
 }
 
-// Update items list
 function updateItemsList() {
     var tbody = document.getElementById('itemsList');
     tbody.innerHTML = '';
@@ -1803,7 +1775,6 @@ function calculateTotal() {
         subtotal += item.price * item.quantity;
     });
     
-    // Check manual discounts
     var manualDiscountPercentRegistered = parseFloat(document.getElementById('manual_discount').value) || 0;
     var manualDiscountPercentWalkin = parseFloat(document.getElementById('walkin_manual_discount').value) || 0;
     var manualDiscountPercent = manualDiscountPercentRegistered || manualDiscountPercentWalkin;
@@ -1842,7 +1813,6 @@ function calculateTotal() {
         total = subtotal + vat;
     }
     
-    // Build discount label
     var discountLabelText = '';
     var isWalkInSelected = document.querySelector('input[name="customer_type"]:checked')?.value === 'walkin';
     var isRegisteredSelected = document.querySelector('input[name="customer_type"]:checked')?.value === 'registered';
@@ -1889,7 +1859,6 @@ function calculateTotal() {
         discountLabelText = 'Discount';
     }
     
-    // Update UI
     document.getElementById('subtotal').textContent = '₱' + subtotal.toFixed(2);
     document.getElementById('totalAmount').textContent = '₱' + total.toFixed(2);
     document.getElementById('vatDisplay').textContent = '₱' + vat.toFixed(2);
@@ -2126,6 +2095,7 @@ function viewInvoice(id, sourceType) {
 }
 
 function showBillFromAppointment(bill) {
+    // ✅ Get values with proper parsing
     var totalAmount = parseFloat(bill.total_amount || 0);
     var totalPaid = parseFloat(bill.amount_paid || bill.total_paid || 0);
     var subtotal = parseFloat(bill.subtotal || 0);
@@ -2137,22 +2107,46 @@ function showBillFromAppointment(bill) {
     var balanceAmount = totalAmount - totalPaid;
     if (balanceAmount < 0) balanceAmount = 0;
     
+    // ✅ Check if refunded
+    var isRefunded = (bill.status === 'refunded' || bill.payment_status === 'Refunded');
+    var forfeitedAmount = parseFloat(bill.forfeited_amount || 0);
+    var refundedAmount = parseFloat(bill.refunded_amount || 0);
+    
+    // ✅ Parse items
     var items = bill.items || [];
     if (typeof items === 'string') {
         try { items = JSON.parse(items); } catch(e) { items = []; }
     }
     if (!Array.isArray(items)) items = [];
     
+    // ✅ COMPUTE SUBTOTAL FROM ITEMS (mas accurate)
+    var computedSubtotal = 0;
+    if (items.length > 0) {
+        items.forEach(function(item) {
+            var price = parseFloat(item.unit_price || item.price || 0);
+            var qty = parseInt(item.quantity || 1);
+            computedSubtotal += price * qty;
+        });
+    }
+    // ✅ Use computed subtotal if available, otherwise use stored
+    var displaySubtotal = (computedSubtotal > 0) ? computedSubtotal : subtotal;
+    
+    // ✅ Determine status
     var status = 'Unpaid';
-    if (totalPaid >= totalAmount && totalAmount > 0) {
+    var statusClass = 'danger';
+    
+    if (isRefunded) {
+        status = 'Refunded';
+        statusClass = 'secondary';
+    } else if (totalPaid >= totalAmount && totalAmount > 0) {
         status = 'Paid';
+        statusClass = 'success';
     } else if (totalPaid > 0 && totalPaid < totalAmount) {
         status = 'Partial';
+        statusClass = 'warning';
     }
     
-    var statusClass = status === 'Paid' ? 'success' : status === 'Partial' ? 'warning' : 'danger';
-    
-    // Build items HTML
+    // ✅ Build items HTML
     var itemsHtml = '';
     if (items.length === 0) {
         itemsHtml = '<tr><td colspan="5" class="text-center text-muted">No items found</td></tr>';
@@ -2176,7 +2170,7 @@ function showBillFromAppointment(bill) {
         });
     }
     
-    // Build discount display
+    // ✅ Build discount display
     var discountDisplay = '';
     if (discountType !== 'none' && discountAmount > 0) {
         var discountLabel = discountType.toUpperCase() + ' Discount';
@@ -2193,12 +2187,30 @@ function showBillFromAppointment(bill) {
         `;
     }
     
+    // ✅ Build VAT display
     var vatDisplay = vatAmount > 0 ? 
         `<div class="d-flex justify-content-between text-warning"><span>VAT (${vatPercentage}%):</span><span>+₱${vatAmount.toFixed(2)}</span></div>` :
         `<div class="d-flex justify-content-between text-success"><span>VAT:</span><span>Exempt</span></div>`;
     
+    // ✅ Build payment display
     var paymentDisplay = '';
-    if (totalPaid > 0) {
+    if (isRefunded) {
+        // ✅ REFUNDED DISPLAY
+        paymentDisplay = `
+            <div class="d-flex justify-content-between text-danger">
+                <span>Forfeited Amount:</span>
+                <span class="fw-bold">₱${forfeitedAmount.toFixed(2)}</span>
+            </div>
+            <div class="d-flex justify-content-between text-purple" style="color: #6d28d9;">
+                <span>Refunded Amount:</span>
+                <span class="fw-bold">₱${refundedAmount.toFixed(2)}</span>
+            </div>
+            <div class="d-flex justify-content-between text-muted">
+                <span>Status:</span>
+                <span class="badge bg-secondary">Refunded</span>
+            </div>
+        `;
+    } else if (totalPaid > 0) {
         paymentDisplay = `
             <div class="d-flex justify-content-between text-success">
                 <span>Amount Paid:</span>
@@ -2211,6 +2223,7 @@ function showBillFromAppointment(bill) {
         `;
     }
     
+    // ✅ Build the modal content
     var modalBody = document.getElementById('invoiceDetails');
     modalBody.innerHTML = `
         <div class="row mb-4">
@@ -2218,6 +2231,7 @@ function showBillFromAppointment(bill) {
                 <h4 class="fw-bold" style="color: var(--primary);">INVOICE</h4>
                 <p class="text-muted small mb-0">${escapeHtml(bill.invoice_id || 'N/A')}</p>
                 <p class="text-muted small">${bill.source_type === 'walkin' ? 'Walk-in Sale' : 'Appointment'}</p>
+                ${isRefunded ? `<p class="text-muted small"><span class="badge bg-secondary">Refunded</span></p>` : ''}
             </div>
             <div class="col-6 text-end">
                 <p class="mb-1"><strong>Date:</strong> ${bill.sale_date || 'N/A'}</p>
@@ -2235,6 +2249,7 @@ function showBillFromAppointment(bill) {
                     <div class="col-md-6">
                         ${bill.doctor_name ? `<p><strong>Doctor:</strong> Dr. ${escapeHtml(bill.doctor_name)}</p>` : ''}
                         ${bill.reference_number ? `<p><strong>Reference:</strong> ${escapeHtml(bill.reference_number)}</p>` : ''}
+                        ${isRefunded ? `<p><strong>Refund Date:</strong> ${bill.refund_date || 'N/A'}</p>` : ''}
                     </div>
                 </div>
             </div>
@@ -2249,7 +2264,7 @@ function showBillFromAppointment(bill) {
                         </thead>
                         <tbody>${itemsHtml}</tbody>
                         <tfoot>
-                            <tr><td colspan="4" class="text-end fw-semibold">Subtotal:</td><td class="text-end fw-bold">₱${subtotal.toFixed(2)}</td></tr>
+                            <tr><td colspan="4" class="text-end fw-semibold">Subtotal:</td><td class="text-end fw-bold">₱${displaySubtotal.toFixed(2)}</td></tr>
                             ${discountDisplay}
                             ${vatDisplay}
                             <tr class="table-primary"><td colspan="4" class="text-end fw-bold fs-5">TOTAL:</td><td class="text-end fw-bold fs-5" style="color: var(--primary);">₱${totalAmount.toFixed(2)}</td></tr>
@@ -2261,7 +2276,7 @@ function showBillFromAppointment(bill) {
         </div>
         <div class="row mt-3">
             <div class="col-12 text-end">
-                ${balanceAmount > 0 ? `
+                ${balanceAmount > 0 && !isRefunded ? `
                     <button class="btn btn-warning me-2" onclick="recordPayment(${bill.id}, ${totalAmount}, ${totalPaid}, '${bill.source_type || 'appointment'}')">
                         <i class="bi bi-credit-card me-2"></i>Record Payment
                     </button>
@@ -2480,7 +2495,6 @@ function recordPayment(id, totalAmount, alreadyPaid, sourceType) {
     var invoiceId = 'INV-' + new Date().toISOString().slice(0,7).replace('-','') + '-' + String(id).padStart(4, '0');
     document.getElementById('payment_invoice_id').value = invoiceId;
     
-    // Check verification for manual discount
     checkAppointmentVerification(id);
     
     new bootstrap.Modal(document.getElementById('recordPaymentModal')).show();

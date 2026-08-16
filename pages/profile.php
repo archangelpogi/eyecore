@@ -62,6 +62,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_pwd_senior'])) 
     $pwd_senior_id_number = mysqli_real_escape_string($conn, trim($_POST['pwd_senior_id_number'] ?? ''));
     $clinic_id = intval($_POST['clinic_id'] ?? 0);
     
+    // ✅ NEW: Get date_issued and valid_until
+    $date_issued = $_POST['date_issued'] ?? '';
+    $valid_until = $_POST['valid_until'] ?? '';
+    
     // Validate clinic selection
     if (empty($clinic_id) || $clinic_id <= 0) {
         $_SESSION['error_message'] = 'Please select a clinic first.';
@@ -79,6 +83,25 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_pwd_senior'])) 
     // Validate ID number
     if (empty($pwd_senior_id_number)) {
         $_SESSION['error_message'] = 'Please enter your ID number.';
+        header('Location: profile.php');
+        exit();
+    }
+    
+    // ✅ NEW: Validate date_issued and valid_until
+    if (empty($date_issued)) {
+        $_SESSION['error_message'] = 'Please select the date issued.';
+        header('Location: profile.php');
+        exit();
+    }
+    
+    if (empty($valid_until)) {
+        $_SESSION['error_message'] = 'Please select the valid until date.';
+        header('Location: profile.php');
+        exit();
+    }
+    
+    if (strtotime($valid_until) < strtotime($date_issued)) {
+        $_SESSION['error_message'] = 'Valid Until must be after Date Issued.';
         header('Location: profile.php');
         exit();
     }
@@ -123,7 +146,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_pwd_senior'])) 
         exit();
     }
     
-    // ✅ INSERT INTO user_verifications table (NOT users table)
+    // ✅ INSERT INTO user_verifications with date_issued and valid_until
     $insert_query = mysqli_query($conn, "
         INSERT INTO user_verifications (
             user_id, 
@@ -131,6 +154,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_pwd_senior'])) 
             verification_type, 
             id_number, 
             id_image, 
+            date_issued,
+            valid_until,
             status, 
             created_at
         ) VALUES (
@@ -138,13 +163,17 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['submit_pwd_senior'])) 
             $clinic_id, 
             '$pwd_senior_type', 
             '$pwd_senior_id_number', 
-            '$uploaded_image', 
+            '$uploaded_image',
+            '$date_issued',
+            '$valid_until',
             'pending', 
             NOW()
         ) ON DUPLICATE KEY UPDATE
             verification_type = '$pwd_senior_type',
             id_number = '$pwd_senior_id_number',
             id_image = '$uploaded_image',
+            date_issued = '$date_issued',
+            valid_until = '$valid_until',
             status = 'pending',
             rejection_reason = NULL,
             verified_by = NULL,

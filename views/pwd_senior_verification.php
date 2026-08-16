@@ -41,17 +41,17 @@ $canDelete = RBACHelper::hasPermission('pwd_senior_delete');
 $canApprove = RBACHelper::hasPermission('pwd_senior_approve');
 $canReject = RBACHelper::hasPermission('pwd_senior_reject');
 
-// Get statistics - FILTERED BY CLINIC
+// Get statistics - FROM user_verifications TABLE
 $stats = ['total' => 0, 'pending' => 0, 'verified' => 0, 'rejected' => 0];
 try {
     $stmt = $pdo->prepare("
         SELECT 
             COUNT(*) as total,
-            SUM(CASE WHEN pwd_senior_status = 'pending' THEN 1 ELSE 0 END) as pending,
-            SUM(CASE WHEN pwd_senior_status = 'verified' THEN 1 ELSE 0 END) as verified,
-            SUM(CASE WHEN pwd_senior_status = 'rejected' THEN 1 ELSE 0 END) as rejected
-        FROM users
-        WHERE pwd_senior_clinic_id = ? AND pwd_senior_status IN ('pending', 'verified', 'rejected')
+            SUM(CASE WHEN uv.status = 'pending' THEN 1 ELSE 0 END) as pending,
+            SUM(CASE WHEN uv.status = 'verified' THEN 1 ELSE 0 END) as verified,
+            SUM(CASE WHEN uv.status = 'rejected' THEN 1 ELSE 0 END) as rejected
+        FROM user_verifications uv
+        WHERE uv.clinic_id = ?
     ");
     $stmt->execute([$clinicId]);
     $statsResult = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -256,6 +256,14 @@ try {
             border-radius: 12px;
             border: 1px solid #e2e8f0;
         }
+        
+        .date-info {
+            font-size: 12px;
+            color: #64748b;
+        }
+        .date-info i {
+            margin-right: 3px;
+        }
     </style>
 </head>
 <body>
@@ -437,10 +445,12 @@ function renderRequests(requests) {
     
     let html = '';
     requests.forEach(request => {
-        const status = request.pwd_senior_status || 'pending';
-        const type = request.pwd_senior_type || 'N/A';
-        const idNumber = request.pwd_senior_id_number || 'N/A';
-        const hasImage = request.pwd_senior_id_image ? true : false;
+        const status = request.status || 'pending';
+        const type = request.verification_type || 'N/A';
+        const idNumber = request.id_number || 'N/A';
+        const hasImage = request.id_image ? true : false;
+        const dateIssued = request.date_issued ? new Date(request.date_issued).toLocaleDateString('en-PH') : 'N/A';
+        const validUntil = request.valid_until ? new Date(request.valid_until).toLocaleDateString('en-PH') : 'N/A';
         
         const statusLabel = {
             'pending': '<span class="status-badge status-pending"><i class="bi bi-hourglass-split me-1"></i>Pending</span>',
@@ -454,7 +464,7 @@ function renderRequests(requests) {
         };
         
         const imageHtml = hasImage 
-            ? `<img src="../assets/images/pwd_ids/${request.pwd_senior_id_image}" alt="ID Image" style="width:80px;height:60px;object-fit:cover;border-radius:8px;cursor:pointer;" onclick="viewImage('${request.pwd_senior_id_image}')">`
+            ? `<img src="../assets/images/pwd_ids/${request.id_image}" alt="ID Image" style="width:80px;height:60px;object-fit:cover;border-radius:8px;cursor:pointer;" onclick="event.stopPropagation();viewImage('${request.id_image}')">`
             : '<span class="text-muted">No image</span>';
         
         let actionButtons = '';
@@ -499,31 +509,36 @@ function renderRequests(requests) {
                 </div>
                 <div class="request-body">
                     <div class="row g-3">
-                        <div class="col-md-4">
+                        <div class="col-md-3">
                             <small class="text-muted d-block">ID Number</small>
                             <strong>${escapeHtml(idNumber)}</strong>
                         </div>
-                        <div class="col-md-4">
-                            <small class="text-muted d-block">Submitted</small>
-                            <span class="small">${new Date(request.submitted_at).toLocaleString()}</span>
+                        <div class="col-md-3">
+                            <small class="text-muted d-block">Date Issued</small>
+                            <span class="small">${dateIssued}</span>
                         </div>
-                        <div class="col-md-4">
+                        <div class="col-md-3">
+                            <small class="text-muted d-block">Valid Until</small>
+                            <span class="small">${validUntil}</span>
+                        </div>
+                        <div class="col-md-3">
                             <small class="text-muted d-block">ID Image</small>
                             ${imageHtml}
                         </div>
                     </div>
-                    ${request.pwd_senior_rejection_reason ? `
+                    ${request.rejection_reason ? `
                     <div class="mt-2">
                         <small class="text-danger d-block">Rejection Reason:</small>
-                        <span class="small text-danger">${escapeHtml(request.pwd_senior_rejection_reason)}</span>
+                        <span class="small text-danger">${escapeHtml(request.rejection_reason)}</span>
                     </div>
                     ` : ''}
                 </div>
                 <div class="request-footer">
                     <div class="d-flex justify-content-between align-items-center">
                         <small class="text-muted">
-                            ${request.pwd_senior_verified_at ? 
-                                `<i class="bi bi-check-circle text-success me-1"></i>Verified on ${new Date(request.pwd_senior_verified_at).toLocaleString()}` : 
+                            ${request.verified_at ? 
+                                `<i class="bi bi-check-circle text-success me-1"></i>Verified on ${new Date(request.verified_at).toLocaleString()}` : 
+                                request.created_at ? `Submitted: ${new Date(request.created_at).toLocaleString()}` :
                                 'Waiting for verification'}
                         </small>
                         <div class="d-flex gap-1">
@@ -580,9 +595,11 @@ function viewRequest(id) {
 }
 
 function renderRequestDetails(request) {
-    const status = request.pwd_senior_status || 'pending';
-    const type = request.pwd_senior_type || 'N/A';
-    const hasImage = request.pwd_senior_id_image ? true : false;
+    const status = request.status || 'pending';
+    const type = request.verification_type || 'N/A';
+    const hasImage = request.id_image ? true : false;
+    const dateIssued = request.date_issued ? new Date(request.date_issued).toLocaleDateString('en-PH') : 'N/A';
+    const validUntil = request.valid_until ? new Date(request.valid_until).toLocaleDateString('en-PH') : 'N/A';
     
     const statusMap = {
         'pending': 'warning',
@@ -627,11 +644,19 @@ function renderRequestDetails(request) {
                             </div>
                             <div class="col-sm-6">
                                 <small class="text-muted d-block">ID Number</small>
-                                <span class="fw-semibold">${escapeHtml(request.pwd_senior_id_number)}</span>
+                                <span class="fw-semibold">${escapeHtml(request.id_number)}</span>
+                            </div>
+                            <div class="col-sm-6">
+                                <small class="text-muted d-block">Date Issued</small>
+                                <span>${dateIssued}</span>
+                            </div>
+                            <div class="col-sm-6">
+                                <small class="text-muted d-block">Valid Until</small>
+                                <span>${validUntil}</span>
                             </div>
                             <div class="col-sm-6">
                                 <small class="text-muted d-block">Submitted On</small>
-                                <span>${new Date(request.submitted_at).toLocaleString()}</span>
+                                <span>${new Date(request.created_at).toLocaleString()}</span>
                             </div>
                             <div class="col-sm-6">
                                 <small class="text-muted d-block">Status</small>
@@ -639,17 +664,17 @@ function renderRequestDetails(request) {
                             </div>
                         </div>
                         
-                        ${request.pwd_senior_rejection_reason ? `
+                        ${request.rejection_reason ? `
                         <div class="mt-3 p-3 bg-danger bg-opacity-10 rounded">
                             <small class="text-danger fw-semibold d-block">Rejection Reason:</small>
-                            <span class="small text-danger">${escapeHtml(request.pwd_senior_rejection_reason)}</span>
+                            <span class="small text-danger">${escapeHtml(request.rejection_reason)}</span>
                         </div>
                         ` : ''}
                         
-                        ${request.pwd_senior_verified_at ? `
+                        ${request.verified_at ? `
                         <div class="mt-3 p-3 bg-success bg-opacity-10 rounded">
                             <small class="text-success fw-semibold d-block">Verified On:</small>
-                            <span class="small">${new Date(request.pwd_senior_verified_at).toLocaleString()}</span>
+                            <span class="small">${new Date(request.verified_at).toLocaleString()}</span>
                             ${request.verified_by_name ? `<br><small class="text-muted">Verified by: ${escapeHtml(request.verified_by_name)}</small>` : ''}
                         </div>
                         ` : ''}
@@ -661,10 +686,10 @@ function renderRequestDetails(request) {
                     <div class="card-body p-0">
                         <small class="text-muted d-block mb-2">Uploaded ID Image</small>
                         ${hasImage ? `
-                            <img src="../assets/images/pwd_ids/${request.pwd_senior_id_image}" 
+                            <img src="../assets/images/pwd_ids/${request.id_image}" 
                                  alt="ID Image" 
                                  class="modal-id-image w-100"
-                                 onclick="window.open('../assets/images/pwd_ids/${request.pwd_senior_id_image}', '_blank')"
+                                 onclick="window.open('../assets/images/pwd_ids/${request.id_image}', '_blank')"
                                  style="cursor:pointer;">
                             <small class="text-muted d-block mt-1">Click image to enlarge</small>
                         ` : '<span class="text-muted">No image uploaded</span>'}

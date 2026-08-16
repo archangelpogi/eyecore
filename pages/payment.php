@@ -176,10 +176,15 @@ if (!$appointment) {
 $clinic_id = $appointment['clinic_id'] ?? 0;
 
 // ============================================
-// CHECK USER PWD/SENIOR STATUS PER CLINIC
+// ✅ CHECK USER PWD/SENIOR STATUS PER CLINIC WITH EXPIRY
 // ============================================
 $user_status_query = mysqli_query($conn, "
-    SELECT status as pwd_senior_status, verification_type as pwd_senior_type
+    SELECT 
+        status as pwd_senior_status, 
+        verification_type as pwd_senior_type,
+        valid_until,
+        date_issued,
+        id_number
     FROM user_verifications
     WHERE user_id = $user_id 
     AND clinic_id = $clinic_id
@@ -187,7 +192,46 @@ $user_status_query = mysqli_query($conn, "
     LIMIT 1
 ");
 $user_status = mysqli_fetch_assoc($user_status_query);
-$is_pwd_senior = ($user_status && $user_status['pwd_senior_status'] === 'verified');
+
+// ✅ Initialize variables
+$is_pwd_senior = false;
+$pwd_senior_expired = false;
+$pwd_senior_expiry_date = null;
+$pwd_senior_type = '';
+$pwd_senior_date_issued = null;
+$pwd_senior_id_number = '';
+
+// ✅ Check if user has verified PWD/Senior status
+if ($user_status && isset($user_status['pwd_senior_status']) && $user_status['pwd_senior_status'] === 'verified') {
+    $valid_until = $user_status['valid_until'] ?? null;
+    $pwd_senior_expiry_date = $valid_until;
+    $pwd_senior_type = $user_status['pwd_senior_type'] ?? 'pwd';
+    $pwd_senior_date_issued = $user_status['date_issued'] ?? null;
+    $pwd_senior_id_number = $user_status['id_number'] ?? '';
+    
+    if ($valid_until) {
+        $today = new DateTime();
+        $today->setTime(0, 0, 0);
+        $expiry = new DateTime($valid_until);
+        $expiry->setTime(0, 0, 0);
+        
+        if ($expiry >= $today) {
+            // ✅ Still valid
+            $is_pwd_senior = true;
+            $pwd_senior_expired = false;
+        } else {
+            // ❌ Expired
+            $is_pwd_senior = false;
+            $pwd_senior_expired = true;
+        }
+    } else {
+        // No expiry date set - assume valid (fallback)
+        $is_pwd_senior = true;
+        $pwd_senior_expired = false;
+    }
+}
+
+// ✅ Now proceed with rest of the code...
 
 // ============================================
 // GET ALL SERVICES FOR THIS APPOINTMENT
@@ -262,9 +306,17 @@ if ($lens_price > 0) {
 }
 
 // ============================================
-// APPLY TAX AND DISCOUNT USING HELPER
+// APPLY TAX AND DISCOUNT USING HELPER - WITH EXPIRY CHECK
 // ============================================
 $tax_calc = applyTaxAndDiscount($conn, $subtotal, $is_pwd_senior);
+
+// ✅ If expired, override discount
+if ($pwd_senior_expired) {
+    $tax_calc['discount_amount'] = 0;
+    $tax_calc['discount_rate'] = 0;
+    $tax_calc['final_total'] = $subtotal + $tax_calc['vat_amount'];
+    $tax_calc['is_pwd_senior'] = false;
+}
 
 $total_amount = $tax_calc['final_total'];
 $discount_amount = $tax_calc['discount_amount'];
@@ -274,13 +326,13 @@ $vat_rate = $tax_calc['vat_rate'];
 $subtotal_after_discount = $subtotal - $discount_amount;
 
 // ============================================
-// CALCULATE PAYMENT USING HELPER
+// CALCULATE PAYMENT USING HELPER - WITH EXPIRY CHECK
 // ============================================
 $payment_info = calculatePaymentAmounts(
     $conn,
     $appointment['clinic_id'],
     $subtotal,
-    $is_pwd_senior
+    $is_pwd_senior  // ✅ This will be false if expired
 );
 
 $downpayment_amount = $payment_info['downpayment_amount'];
@@ -468,31 +520,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($error)) {
                     )
                 ");
                 
-                $discount_type = $is_pwd_senior ? ($user_status['pwd_senior_type'] ?? 'pwd') : 'none';
-                $discount_percentage = $is_pwd_senior ? ($discount_rate * 100) : 0;
-                $discount_clinic_id = $is_pwd_senior ? $clinic_id : 'NULL';
-                
-                // ✅ FIXED: Updated UPDATE query with amount_paid and payment_status
-                $update_sql = "
-                    UPDATE appointments
-                    SET 
-                        payment_status = 'downpayment_pending',
-                        downpayment_amount = $downpayment_amount,
-                        downpayment_ref = '$ref_no',
-                        balance_amount = $balance_amount,
-                        total_amount = $total_amount_display,
-                        subtotal = $subtotal_display,
-                        discount_type = '$discount_type',
-                        discount_percentage = $discount_percentage,
-                        discount_amount = $discount_amount_display,
-                        vat_percentage = " . ($vat_rate * 100) . ",
-                        vat_amount = $vat_amount_display,
-                        discount_clinic_id = $discount_clinic_id,
-                        amount_paid = $downpayment_amount,
-                        payment_status = 'downpayment_pending'
-                    WHERE id = $appointment_id
-                ";
-                mysqli_query($conn, $update_sql);
+// ✅ FIXED: Use $pwd_senior_type instead of $user_status['pwd_senior_type']
+$discount_type = $is_pwd_senior ? ($pwd_senior_type ?: 'pwd') : 'none';
+$discount_percentage = $is_pwd_senior ? ($discount_rate * 100) : 0;
+$discount_clinic_id = $is_pwd_senior ? $clinic_id : 'NULL';
+
+$update_sql = "
+    UPDATE appointments
+    SET 
+        payment_status = 'downpayment_pending',
+        downpayment_amount = $downpayment_amount,
+        downpayment_ref = '$ref_no',
+        balance_amount = $balance_amount,
+        total_amount = $total_amount_display,
+        subtotal = $subtotal_display,
+        discount_type = '$discount_type',
+        discount_percentage = $discount_percentage,
+        discount_amount = $discount_amount_display,
+        vat_percentage = " . ($vat_rate * 100) . ",
+        vat_amount = $vat_amount_display,
+        discount_clinic_id = $discount_clinic_id,
+        amount_paid = $downpayment_amount,
+        payment_status = 'downpayment_pending'
+    WHERE id = $appointment_id
+";
+mysqli_query($conn, $update_sql);
             }
 
             header("Location: $checkout_url");
@@ -841,6 +893,25 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
         .alert-info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
         .theme-dark .alert-info { background: #1e4a5a; color: #7ac9e0; }
         .alert-success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+
+        /* ✅ ADDED: PWD/Senior Alert Styles */
+        .alert-warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffc107;
+        }
+        .theme-dark .alert-warning {
+            background: #4d3d2d;
+            color: #ffd966;
+            border: 1px solid #b8860b;
+        }
+        .alert-warning a {
+            color: #d97706;
+            font-weight: 600;
+        }
+        .theme-dark .alert-warning a {
+            color: #ffb347;
+        }
 
         .loading-spinner { display: inline-block; width: 20px; height: 20px; border: 3px solid rgba(255,255,255,0.3); border-top: 3px solid white; border-radius: 50%; animation: spin 1s linear infinite; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
@@ -1220,6 +1291,37 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
                 </div>
             <?php endif; ?>
 
+            <!-- ============================================ -->
+            <!-- ✅ ADDED: PWD/SENIOR EXPIRY WARNING -->
+            <!-- ============================================ -->
+            <?php if ($pwd_senior_expired): ?>
+            <div class="alert alert-warning" style="display: flex; align-items: flex-start; gap: 12px;">
+                <i class="fas fa-exclamation-triangle" style="color: #d97706; font-size: 24px; margin-top: 2px;"></i>
+                <div>
+                    <strong>⚠️ Your PWD/Senior ID has Expired!</strong>
+                    <p style="margin: 5px 0 0; font-size: 14px;">
+                        Your <?php echo ucfirst($pwd_senior_type); ?> ID expired on 
+                        <strong><?php echo date('F j, Y', strtotime($pwd_senior_expiry_date)); ?></strong>.
+                        The 20% discount will <strong>NOT</strong> be applied to this booking.
+                    </p>
+                    <p style="margin: 8px 0 0; font-size: 13px;">
+                        <i class="fas fa-info-circle"></i>
+                        Please <a href="profile.php#pwdSeniorForm">update your ID</a> 
+                        to continue enjoying the 20% discount.
+                    </p>
+                </div>
+            </div>
+            <?php elseif ($is_pwd_senior && $pwd_senior_expiry_date): ?>
+            <div class="alert alert-success" style="display: flex; align-items: center; gap: 10px;">
+                <i class="fas fa-check-circle" style="color: #059669; font-size: 18px;"></i>
+                <div style="font-size: 13px;">
+                    <strong>✅ <?php echo ucfirst($pwd_senior_type); ?> ID Verified!</strong>
+                    Valid until <strong><?php echo date('F j, Y', strtotime($pwd_senior_expiry_date)); ?></strong>
+                    <span style="margin-left: 10px; background: #059669; color: white; padding: 2px 10px; border-radius: 20px; font-size: 11px;">20% Discount Applied</span>
+                </div>
+            </div>
+            <?php endif; ?>
+
             <!-- Payment Grid -->
             <div class="payment-grid">
                 <!-- Order Summary -->
@@ -1295,10 +1397,25 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
                         <?php if ($is_pwd_senior && $discount_amount_display > 0): ?>
                         <div class="breakdown-item">
                             <span class="breakdown-label">
-                                <?php echo strtoupper($user_status['pwd_senior_type'] ?? 'PWD'); ?> Discount 
+                                <?php echo ucfirst($pwd_senior_type); ?> Discount 
                                 <span class="discount-badge"><?php echo $discount_rate * 100; ?>%</span>
+                                <?php if ($pwd_senior_expiry_date): ?>
+                                <span style="font-size: 10px; color: #059669; margin-left: 5px;">
+                                    (Valid until <?php echo date('M j, Y', strtotime($pwd_senior_expiry_date)); ?>)
+                                </span>
+                                <?php endif; ?>
                             </span>
                             <span class="breakdown-value discount">-₱<?php echo number_format($discount_amount_display, 2); ?></span>
+                        </div>
+                        <?php elseif ($pwd_senior_expired): ?>
+                        <div class="breakdown-item" style="background: #fff3cd; padding: 8px 10px; border-radius: 6px;">
+                            <span class="breakdown-label" style="color: #92400e;">
+                                <i class="fas fa-exclamation-triangle" style="color: #d97706;"></i>
+                                PWD/Senior Discount (EXPIRED)
+                            </span>
+                            <span class="breakdown-value" style="color: #dc2626; font-size: 13px;">
+                                <span class="discount-badge" style="background: #dc2626;">Expired</span>
+                            </span>
                         </div>
                         <?php endif; ?>
                         

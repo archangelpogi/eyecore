@@ -449,10 +449,15 @@ foreach ($allDoctors as $doc) {
     </div>
 
     <div class="pt-detail-row">
-        <div class="pt-di">
-            <div class="dl">Service</div>
-            <div class="dv" id="serviceName">—</div>
-        </div>
+<!-- Sa header area ng patient card -->
+<div class="pt-di">
+    <div class="dl">Services</div>
+    <div class="dv" id="serviceName">—</div>
+    <div id="billItemsList" class="mt-1" style="font-size:.75rem; display:none;"></div>
+    <div id="billTotal" class="mt-1 fw-700" style="font-size:.8rem; display:none;">
+        Total: <span id="billTotalAmount">₱0.00</span>
+    </div>
+</div>
         <div class="pt-di">
             <div class="dl">Doctor</div>
             <div class="dv" id="doctorName">—</div>
@@ -1387,14 +1392,47 @@ function selectPatient(appointmentId, patientId, userId, name, age, gender, type
 function goToSalesBilling(appointmentId) {
     window.location.href = `main.php?view=sales&appointment_id=${appointmentId}`;
 }
-// ==================== LOAD PATIENT DATA ====================
+
 function loadPatientData(patientId, appointmentId) {
     if (!patientId) return;
+    
     $.ajax({
-        url: 'api/doctor_dashboard.php?action=get_patient_data', method: 'GET',
+        url: 'api/doctor_dashboard.php?action=get_patient_data',
+        method: 'GET',
         data: { patient_id: patientId, appointment_id: appointmentId },
         success: function(r) {
             if (!r.success) return;
+            
+            // ✅ Check if appointment has multiple services
+            if (r.appointment_services && r.appointment_services.length > 0) {
+                // Build service list
+                let serviceList = r.appointment_services.map(s => s.name).join(', ');
+                
+                // ✅ Display ALL services in the service name field
+                $('#serviceName').html(`
+                    <span class="fw-700">${serviceList}</span>
+                    <span class="badge bg-info ms-1" style="font-size:.6rem;">${r.appointment_services.length} services</span>
+                `);
+                
+                // ✅ Also show in the items list if we have a bill preview area
+                if ($('#billItemsList').length) {
+                    let itemsHtml = '';
+                    r.appointment_services.forEach((s, index) => {
+                        itemsHtml += `
+                            <div class="d-flex justify-content-between align-items-center small py-1 ${index > 0 ? 'border-top' : ''}">
+                                <span><i class="bi bi-dot me-1"></i>${s.name}</span>
+                                <span class="fw-600">₱${parseFloat(s.price || 0).toLocaleString('en-PH', {minimumFractionDigits:2})}</span>
+                            </div>
+                        `;
+                    });
+                    $('#billItemsList').html(itemsHtml);
+                    $('#billTotalAmount').text('₱' + parseFloat(r.total_amount || 0).toLocaleString('en-PH', {minimumFractionDigits:2}));
+                }
+            } else {
+                // Fallback to single service
+                $('#serviceName').text(r.service_name || '—');
+            }
+            
             if (r.latest_notes) {
                 const n=r.latest_notes;
                 $('#chiefComplaint').val(n.chief_complaint||''); $('#vaLeft').val(n.va_left||'');
@@ -1417,7 +1455,6 @@ function loadPatientData(patientId, appointmentId) {
         }
     });
 }
-
 // ==================== HISTORY SIDEBAR ====================
 function renderHistorySidebar(history) {
     if (!history||history.length===0) {

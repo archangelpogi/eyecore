@@ -25,6 +25,101 @@ $user_data = mysqli_fetch_assoc($avatar_query);
 $unread_count = getUnreadNotificationCount($user_id);
 $recent_notifications = getRecentNotifications($user_id);
 
+// ============================================
+// ✅ FIXED: GET CLINIC IMAGE FUNCTION
+// ============================================
+function getClinicImage($clinic) {
+    if (empty($clinic)) return null;
+    
+    $imageFields = [
+        'cover_photo' => '/assets/images/clinic-covers/',
+        'clinic_image' => '/assets/images/clinic-images/',
+        'logo' => '/assets/images/clinic-logos/',
+        'clinic_logo' => '/assets/images/clinic-logos/'
+    ];
+    
+    foreach ($imageFields as $field => $path) {
+        if (!empty($clinic[$field])) {
+            $filename = trim($clinic[$field]);
+            
+            // Already a full URL
+            if (strpos($filename, 'http') === 0 || strpos($filename, '//') === 0) {
+                return $filename;
+            }
+            
+            // Already in uploads folder
+            if (strpos($filename, 'uploads/') === 0) {
+                return '/' . $filename;
+            }
+            if (strpos($filename, '/uploads/') === 0) {
+                return $filename;
+            }
+            
+            // Already has a path
+            if (strpos($filename, '/') === 0) {
+                return $filename;
+            }
+            
+            // If it's just a filename, build the path
+            return $path . $filename;
+        }
+    }
+    
+    return null;
+}
+
+// ============================================
+// ✅ FIXED: CHECK IF CLINIC IS OPEN
+// ============================================
+function isClinicOpen($hours) {
+    if (empty($hours) || strtolower(trim($hours)) === 'hours not set') {
+        return false;
+    }
+    
+    // Check for 24/7
+    if (stripos($hours, '24/7') !== false || stripos($hours, '24 hours') !== false) {
+        return true;
+    }
+    
+    $hours = strtolower(trim($hours));
+    
+    // Try to match time range pattern like "9:00 AM - 5:00 PM" or "9am-5pm"
+    if (preg_match('/(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*[-–to]+\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))/i', $hours, $matches)) {
+        $open_time = strtotime($matches[1]);
+        $close_time = strtotime($matches[2]);
+        
+        // If close time is before open time, it means it crosses midnight
+        if ($close_time < $open_time) {
+            $close_time = strtotime('+1 day', $close_time);
+        }
+        
+        $current_time = time();
+        $today_start = strtotime('today');
+        $current_seconds = $current_time - $today_start;
+        $open_seconds = $open_time - $today_start;
+        $close_seconds = $close_time - $today_start;
+        
+        // Handle times that cross midnight
+        if ($close_seconds < $open_seconds) {
+            // If current time is before close time (early morning), it's still open from yesterday
+            if ($current_seconds < $close_seconds) {
+                return true;
+            }
+            // If current time is after open time (regular day), it's open
+            if ($current_seconds >= $open_seconds) {
+                return true;
+            }
+            return false;
+        }
+        
+        // Normal times (close time > open time)
+        return ($current_seconds >= $open_seconds && $current_seconds < $close_seconds);
+    }
+    
+    // Default: assume closed if we can't parse
+    return false;
+}
+
 // Get all clinics with coordinates
 $clinics_query = mysqli_query($conn, "SELECT * FROM clinics WHERE latitude IS NOT NULL AND longitude IS NOT NULL ORDER BY name");
 $clinics = [];
@@ -52,43 +147,13 @@ while($clinic = mysqli_fetch_assoc($clinics_query)) {
         $clinic['type_color'] = '#C850C0';
     }
     
-    // Get clinic image path
+    // Get clinic image path - FIXED
     $clinic['image_path'] = getClinicImage($clinic);
     
     $clinics[] = $clinic;
 }
 
-function getClinicImage($clinic) {
-    $basePath = '/eyecore';
-    $imagePath = null;
-    
-    // Check each possible image source
-    if (!empty($clinic['cover_photo'])) {
-        $imagePath = $basePath . '/assets/images/clinic-covers/' . $clinic['cover_photo'];
-    } elseif (!empty($clinic['clinic_image'])) {
-        $imagePath = $basePath . '/assets/images/clinic-images/' . $clinic['clinic_image'];
-    } elseif (!empty($clinic['logo'])) {
-        $imagePath = $basePath . '/assets/images/clinic-logos/' . $clinic['logo'];
-    } elseif (!empty($clinic['clinic_logo'])) {
-        $logo = $clinic['clinic_logo'];
-        if (strpos($logo, 'uploads/') !== false) {
-            $imagePath = $basePath . '/' . $logo;
-        } else {
-            $imagePath = $basePath . '/assets/images/clinic-logos/' . $logo;
-        }
-    }
-    
-    // If we have a potential path, check if file exists
-    if ($imagePath) {
-        $fullPath = $_SERVER['DOCUMENT_ROOT'] . $imagePath;
-        if (file_exists($fullPath)) {
-            return $imagePath;
-        }
-    }
-    
-    // No image found - return null (placeholder will be shown)
-    return null;
-}
+// Get unique cities for filter
 $cities_query = mysqli_query($conn, "SELECT DISTINCT city FROM clinics WHERE latitude IS NOT NULL AND longitude IS NOT NULL ORDER BY city");
 $cities = [];
 while($city = mysqli_fetch_assoc($cities_query)) {
@@ -117,125 +182,6 @@ $total_bookings = $bookings_row['total'] ?: 0;
 // Get sale count for badge
 $sale_count_query = mysqli_query($conn, "SELECT COUNT(*) as total FROM products WHERE is_on_sale = 1 AND sale_end >= CURDATE()");
 $sale_count = mysqli_fetch_assoc($sale_count_query)['total'] ?? 0;
-
-// Function to check if clinic is open
-function isClinicOpen($hours) {
-    // FOR DEVELOPMENT: Always show as open
-    // Remove this line in production
-    return true;
-    
-    // Original logic below (commented out)
-    /*
-    $current_time = date('H:i');
-    $current_day = date('D');
-    
-    if (stripos($hours, '24/7') !== false || stripos($hours, '24 hours') !== false) {
-        return true;
-    }
-    
-    $hours = strtolower($hours);
-    $hours = str_replace([' ', ':', 'am', 'pm'], ['', '', ' am', ' pm'], $hours);
-    $schedules = explode(',', $hours);
-    
-    foreach ($schedules as $schedule) {
-        $schedule = trim($schedule);
-        
-        if (strpos($schedule, 'closed') !== false) {
-            continue;
-        }
-        
-        if (preg_match('/([a-z]{3})-([a-z]{3})?\s*([0-9]+[amp\s]+-[0-9]+[amp\s]+)/i', $schedule, $matches)) {
-            $start_day = $matches[1];
-            $end_day = $matches[2];
-            $time_range = $matches[3];
-            
-            if (isDayInRange($current_day, $start_day, $end_day)) {
-                if (isTimeInRange($time_range, $current_time)) {
-                    return true;
-                }
-            }
-        }
-        else if (preg_match('/([a-z]{3})\s+([0-9]+[amp\s]+-[0-9]+[amp\s]+)/i', $schedule, $matches)) {
-            $day = $matches[1];
-            $time_range = $matches[2];
-            
-            if (strcasecmp($day, $current_day) == 0) {
-                if (isTimeInRange($time_range, $current_time)) {
-                    return true;
-                }
-            }
-        }
-        else if (preg_match('/(mon-sun|daily|everyday)\s+([0-9]+[amp\s]+-[0-9]+[amp\s]+)/i', $schedule, $matches)) {
-            $time_range = $matches[2];
-            if (isTimeInRange($time_range, $current_time)) {
-                return true;
-            }
-        }
-        else if (preg_match('/([0-9]+[amp\s]+)-([0-9]+[amp\s]+)/i', $schedule, $matches)) {
-            $time_range = $matches[1] . '-' . $matches[2];
-            if (isTimeInRange($time_range, $current_time)) {
-                return true;
-            }
-        }
-    }
-    
-    return false;
-    */
-}
-function isDayInRange($current_day, $start_day, $end_day) {
-    $days = ['mon' => 1, 'tue' => 2, 'wed' => 3, 'thu' => 4, 'fri' => 5, 'sat' => 6, 'sun' => 7];
-    
-    $current = $days[strtolower(substr($current_day, 0, 3))];
-    $start = $days[strtolower(substr($start_day, 0, 3))];
-    $end = $days[strtolower(substr($end_day, 0, 3))];
-    
-    if ($start <= $end) {
-        return ($current >= $start && $current <= $end);
-    } else {
-        return ($current >= $start || $current <= $end);
-    }
-}
-
-function isTimeInRange($time_range, $current_time) {
-    if (preg_match('/([0-9]+[amp\s]+)-([0-9]+[amp\s]+)/i', $time_range, $matches)) {
-        $start_str = trim($matches[1]);
-        $end_str = trim($matches[2]);
-        
-        $start_24 = convertTo24Hour($start_str);
-        $end_24 = convertTo24Hour($end_str);
-        
-        if ($end_24 < $start_24) {
-            if ($current_time >= $start_24 || $current_time <= $end_24) {
-                return true;
-            }
-        } else {
-            if ($current_time >= $start_24 && $current_time <= $end_24) {
-                return true;
-            }
-        }
-    }
-    
-    return false;
-}
-
-function convertTo24Hour($time_str) {
-    $time_str = strtolower(trim($time_str));
-    
-    if (preg_match('/([0-9]+)([amp]+)?/i', $time_str, $matches)) {
-        $hour = (int)$matches[1];
-        $ampm = $matches[2] ?? '';
-        
-        if ($ampm == 'pm' && $hour < 12) {
-            $hour += 12;
-        } else if ($ampm == 'am' && $hour == 12) {
-            $hour = 0;
-        }
-        
-        return sprintf('%02d:00', $hour);
-    }
-    
-    return '00:00';
-}
 
 // ============================================
 // HELPER FUNCTIONS

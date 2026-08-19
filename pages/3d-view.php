@@ -25,20 +25,6 @@ $product_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 if (!$product_id) { header('Location: dashboard.php'); exit(); }
 
 // ============================================
-// STORE REFERRER FOR BACK BUTTON
-// ============================================
-if (isset($_SERVER['HTTP_REFERER']) && strpos($_SERVER['HTTP_REFERER'], $_SERVER['HTTP_HOST']) !== false) {
-    $referrer = $_SERVER['HTTP_REFERER'];
-    $referrer_parts = parse_url($referrer);
-    $referrer_path = isset($referrer_parts['path']) ? $referrer_parts['path'] : '';
-    
-    // Only store if it's not the current page
-    if ($referrer_path !== $_SERVER['SCRIPT_NAME']) {
-        $_SESSION['last_page'] = $referrer;
-    }
-}
-
-// ============================================
 // GET PRODUCT + CLINIC DETAILS
 // ============================================
 $product_query = mysqli_query($conn, "
@@ -426,14 +412,6 @@ $lens_prices_display = [
     'contact_daily'   => 0,
     'contact_monthly' => 0,
 ];
-
-// ============================================
-// DETERMINE BACK URL
-// ============================================
-$back_url = 'product-view.php?id=' . $product_id;
-if (isset($_SESSION['last_page'])) {
-    $back_url = $_SESSION['last_page'];
-}
 ?>
 <!DOCTYPE html>
 <html lang="en" class="<?php echo getThemeClass(); ?>">
@@ -448,7 +426,7 @@ if (isset($_SESSION['last_page'])) {
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
     <style>
-    /* ===== ALL STYLES FROM PREVIOUS VERSION PLUS SIZE SELECTOR AND PAYMENT POLICY ===== */
+    /* ===== ALL STYLES ===== */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { width: 100%; overflow-x: hidden; background: var(--bg-primary); min-height: 100vh; }
     body { font-family: 'DM Sans', -apple-system, sans-serif; transition: background 0.3s, color 0.3s; }
@@ -1179,7 +1157,7 @@ if (isset($_SESSION['last_page'])) {
 
     <!-- Breadcrumb -->
     <div class="breadcrumb">
-        <a href="<?php echo htmlspecialchars($back_url); ?>">
+        <a href="#" onclick="goBack(); return false;" id="backButton">
             <i class="fas fa-arrow-left"></i> <?php echo htmlspecialchars($product['name']); ?>
         </a>
         <span class="sep">/</span>
@@ -1269,7 +1247,7 @@ if (isset($_SESSION['last_page'])) {
                     <p class="product-desc"><?php echo nl2br(htmlspecialchars($product['description'])); ?></p>
                     <?php endif; ?>
 
-                    <!-- ===== PAYMENT POLICY CARD (like product-view.php) ===== -->
+                    <!-- ===== PAYMENT POLICY CARD ===== -->
                     <div class="payment-policy-card">
                         <div class="policy-title">
                             <i class="fas fa-credit-card"></i> Payment Policy: <?php echo $clinic_payment_policy_display; ?>
@@ -1340,7 +1318,7 @@ if (isset($_SESSION['last_page'])) {
                     </div>
                     <?php endif; ?>
 
-                    <!-- ===== SIZE SELECTOR (like product-view.php) ===== -->
+                    <!-- ===== SIZE SELECTOR ===== -->
                     <?php if ($has_sizes): ?>
                     <div class="size-selector-box">
                         <div class="cs-title">
@@ -1562,7 +1540,7 @@ if (isset($_SESSION['last_page'])) {
 </div><!-- /main-content -->
 
 <!-- ============================================ -->
-<!-- MODAL (same as before) -->
+<!-- MODAL -->
 <!-- ============================================ -->
 <div class="modal-overlay" id="scheduleModal">
     <div class="modal-box">
@@ -1727,6 +1705,20 @@ if (isset($_SESSION['last_page'])) {
 </div>
 
 <script>
+// ============================================
+// GO BACK FUNCTION - FIXED!
+// ============================================
+function goBack() {
+    // Check if user came from our website
+    if (document.referrer && document.referrer.indexOf(window.location.hostname) !== -1) {
+        // Go back naturally using browser history
+        window.history.back();
+    } else {
+        // Fallback: go to product view
+        window.location.href = 'product-view.php?id=<?php echo $product_id; ?>';
+    }
+}
+
 // ============================================
 // VARIABLES
 // ============================================

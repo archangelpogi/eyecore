@@ -24,6 +24,101 @@ $user_data = mysqli_fetch_assoc($avatar_query);
 $unread_count = getUnreadNotificationCount($user_id);
 $recent_notifications = getRecentNotifications($user_id);
 
+// ============================================
+// ✅ FIXED: GET CLINIC IMAGE FUNCTION
+// ============================================
+function getClinicImage($clinic) {
+    if (empty($clinic)) return null;
+    
+    $imageFields = [
+        'cover_photo' => '/assets/images/clinic-covers/',
+        'clinic_image' => '/assets/images/clinic-images/',
+        'logo' => '/assets/images/clinic-logos/',
+        'clinic_logo' => '/assets/images/clinic-logos/'
+    ];
+    
+    foreach ($imageFields as $field => $path) {
+        if (!empty($clinic[$field])) {
+            $filename = trim($clinic[$field]);
+            
+            // Already a full URL
+            if (strpos($filename, 'http') === 0 || strpos($filename, '//') === 0) {
+                return $filename;
+            }
+            
+            // Already in uploads folder
+            if (strpos($filename, 'uploads/') === 0) {
+                return '/' . $filename;
+            }
+            if (strpos($filename, '/uploads/') === 0) {
+                return $filename;
+            }
+            
+            // Already has a path
+            if (strpos($filename, '/') === 0) {
+                return $filename;
+            }
+            
+            // If it's just a filename, build the path
+            return $path . $filename;
+        }
+    }
+    
+    return null;
+}
+
+// ============================================
+// ✅ FIXED: CHECK IF CLINIC IS OPEN
+// ============================================
+function isClinicOpen($hours) {
+    if (empty($hours) || strtolower(trim($hours)) === 'hours not set') {
+        return false;
+    }
+    
+    // Check for 24/7
+    if (stripos($hours, '24/7') !== false || stripos($hours, '24 hours') !== false) {
+        return true;
+    }
+    
+    $hours = strtolower(trim($hours));
+    
+    // Try to match time range pattern like "9:00 AM - 5:00 PM" or "9am-5pm"
+    if (preg_match('/(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*[-–to]+\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))/i', $hours, $matches)) {
+        $open_time = strtotime($matches[1]);
+        $close_time = strtotime($matches[2]);
+        
+        // If close time is before open time, it means it crosses midnight
+        if ($close_time < $open_time) {
+            $close_time = strtotime('+1 day', $close_time);
+        }
+        
+        $current_time = time();
+        $today_start = strtotime('today');
+        $current_seconds = $current_time - $today_start;
+        $open_seconds = $open_time - $today_start;
+        $close_seconds = $close_time - $today_start;
+        
+        // Handle times that cross midnight
+        if ($close_seconds < $open_seconds) {
+            // If current time is before close time (early morning), it's still open from yesterday
+            if ($current_seconds < $close_seconds) {
+                return true;
+            }
+            // If current time is after open time (regular day), it's open
+            if ($current_seconds >= $open_seconds) {
+                return true;
+            }
+            return false;
+        }
+        
+        // Normal times (close time > open time)
+        return ($current_seconds >= $open_seconds && $current_seconds < $close_seconds);
+    }
+    
+    // Default: assume closed if we can't parse
+    return false;
+}
+
 // Get all clinics with coordinates
 $clinics_query = mysqli_query($conn, "SELECT * FROM clinics WHERE latitude IS NOT NULL AND longitude IS NOT NULL ORDER BY name");
 $clinics = [];
@@ -51,40 +146,12 @@ while($clinic = mysqli_fetch_assoc($clinics_query)) {
         $clinic['type_color'] = '#C850C0';
     }
     
-    // Get clinic image path
+    // Get clinic image path - FIXED
     $clinic['image_path'] = getClinicImage($clinic);
     
     $clinics[] = $clinic;
 }
 
-function getClinicImage($clinic) {
-    $basePath = '/eyecore';
-    
-    if (!empty($clinic['cover_photo'])) {
-        $path = $basePath . '/assets/images/clinic-covers/' . $clinic['cover_photo'];
-    } elseif (!empty($clinic['clinic_image'])) {
-        $path = $basePath . '/assets/images/clinic-images/' . $clinic['clinic_image'];
-    } elseif (!empty($clinic['logo'])) {
-        $path = $basePath . '/assets/images/clinic-logos/' . $clinic['logo'];
-    } elseif (!empty($clinic['clinic_logo'])) {
-        $logo = $clinic['clinic_logo'];
-        if (strpos($logo, 'uploads/') !== false) {
-            $path = $basePath . '/' . $logo;
-        } else {
-            $path = $basePath . '/assets/images/clinic-logos/' . $logo;
-        }
-    } else {
-        return null;
-    }
-    
-    // Check if file exists before returning path
-    $fullPath = $_SERVER['DOCUMENT_ROOT'] . $path;
-    if (file_exists($fullPath)) {
-        return $path;
-    }
-    
-    return null;
-}
 // Get unique cities for filter
 $cities_query = mysqli_query($conn, "SELECT DISTINCT city FROM clinics WHERE latitude IS NOT NULL AND longitude IS NOT NULL ORDER BY city");
 $cities = [];
@@ -114,65 +181,6 @@ $total_bookings = $bookings_row['total'] ?: 0;
 // Get sale count for badge
 $sale_count_query = mysqli_query($conn, "SELECT COUNT(*) as total FROM products WHERE is_on_sale = 1 AND sale_end >= CURDATE()");
 $sale_count = mysqli_fetch_assoc($sale_count_query)['total'] ?? 0;
-
-function isClinicOpen($hours) {
-    // Always return true - clinic is always open
-    return true;
-}
-function isDayInRange($current_day, $start_day, $end_day) {
-    $days = ['mon' => 1, 'tue' => 2, 'wed' => 3, 'thu' => 4, 'fri' => 5, 'sat' => 6, 'sun' => 7];
-    
-    $current = $days[strtolower(substr($current_day, 0, 3))];
-    $start = $days[strtolower(substr($start_day, 0, 3))];
-    $end = $days[strtolower(substr($end_day, 0, 3))];
-    
-    if ($start <= $end) {
-        return ($current >= $start && $current <= $end);
-    } else {
-        return ($current >= $start || $current <= $end);
-    }
-}
-
-function isTimeInRange($time_range, $current_time) {
-    if (preg_match('/([0-9]+[amp\s]+)-([0-9]+[amp\s]+)/i', $time_range, $matches)) {
-        $start_str = trim($matches[1]);
-        $end_str = trim($matches[2]);
-        
-        $start_24 = convertTo24Hour($start_str);
-        $end_24 = convertTo24Hour($end_str);
-        
-        if ($end_24 < $start_24) {
-            if ($current_time >= $start_24 || $current_time <= $end_24) {
-                return true;
-            }
-        } else {
-            if ($current_time >= $start_24 && $current_time <= $end_24) {
-                return true;
-            }
-        }
-    }
-    
-    return false;
-}
-
-function convertTo24Hour($time_str) {
-    $time_str = strtolower(trim($time_str));
-    
-    if (preg_match('/([0-9]+)([amp]+)?/i', $time_str, $matches)) {
-        $hour = (int)$matches[1];
-        $ampm = $matches[2] ?? '';
-        
-        if ($ampm == 'pm' && $hour < 12) {
-            $hour += 12;
-        } else if ($ampm == 'am' && $hour == 12) {
-            $hour = 0;
-        }
-        
-        return sprintf('%02d:00', $hour);
-    }
-    
-    return '00:00';
-}
 
 // ============================================
 // HELPER FUNCTIONS
@@ -389,7 +397,7 @@ include '../includes/navbar.php';
             margin-right: 4px;
         }
 
-        /* ===== MAP CONTAINER ===== */
+        /* ===== MAP WRAPPER ===== */
         .map-wrapper {
             display: grid;
             grid-template-columns: 1fr 380px;
@@ -666,6 +674,11 @@ include '../includes/navbar.php';
             background: var(--success);
             color: white;
             border-color: var(--success);
+        }
+
+        .sort-chip.active::after {
+            content: ' ✓';
+            font-weight: 700;
         }
 
         /* Active Filters */
@@ -1175,23 +1188,24 @@ include '../includes/navbar.php';
             to { transform: rotate(360deg); }
         }
 
-
-
         /* ===== RESPONSIVE ===== */
         @media (max-width: 768px) {
             .map-wrapper {
                 grid-template-columns: 1fr;
-                grid-template-rows: 1fr 450px;
-                height: calc(100vh - 140px);
+                grid-template-rows: 350px 1fr;
+                height: auto;
+                min-height: calc(100vh - 140px);
             }
             
             .map-section {
-                height: 100%;
+                height: 350px;
             }
             
             .map-sidebar {
                 border-left: none;
                 border-top: 1px solid var(--border-light);
+                height: auto;
+                max-height: 500px;
             }
             
             .map-controls {
@@ -1248,6 +1262,10 @@ include '../includes/navbar.php';
             .total-badge {
                 padding: 8px 16px;
                 font-size: 12px;
+            }
+
+            .clinics-list {
+                max-height: 300px;
             }
         }
 
@@ -1416,7 +1434,6 @@ include '../includes/navbar.php';
     </div>
 
 
-
     <script>
         // ============================================
         // GLOBAL VARIABLES
@@ -1486,24 +1503,6 @@ include '../includes/navbar.php';
                 return m;
             });
         }
-        
-        // ============================================
-        // FAB MENU
-        // ============================================
-        function toggleFabMenu() {
-            document.getElementById('fabMenu').classList.toggle('show');
-            document.getElementById('fab').classList.toggle('active');
-        }
-        
-        document.addEventListener('click', function(event) {
-            const fab = document.getElementById('fab');
-            const fabMenu = document.getElementById('fabMenu');
-            
-            if (fab && fabMenu && !fab.contains(event.target) && !fabMenu.contains(event.target)) {
-                fabMenu.classList.remove('show');
-                fab.classList.remove('active');
-            }
-        });
         
         // ============================================
         // MAP INITIALIZATION
@@ -1590,9 +1589,9 @@ include '../includes/navbar.php';
                     const marker = L.marker(position, { icon: markerIcon, title: clinic.name });
                     
                     const hasImage = clinic.image_path && clinic.image_path !== null && clinic.image_path !== '';
-const imageHtml = hasImage ? 
-    `<img src="${clinic.image_path}" alt="${escapeHtml(clinic.name)}" onerror="this.parentElement.innerHTML = '<div class=\'popup-image-placeholder\'><i class=\'fas fa-clinic-medical\'></i></div>'; this.style.display='none';">` :
-    `<div class="popup-image-placeholder"><i class="fas fa-clinic-medical"></i></div>`;
+                    const imageHtml = hasImage ? 
+                        `<img src="${clinic.image_path}" alt="${escapeHtml(clinic.name)}" onerror="this.parentElement.innerHTML = '<div class=\'popup-image-placeholder\'><i class=\'fas fa-clinic-medical\'></i></div>'">` :
+                        `<div class="popup-image-placeholder"><i class="fas fa-clinic-medical"></i></div>`;
                     
                     const popupContent = `
                         <div class="clinic-popup">
@@ -1708,6 +1707,9 @@ const imageHtml = hasImage ?
                         <button class="btn-reset" onclick="resetAllFilters()">
                             <i class="fas fa-undo"></i> Reset Filters
                         </button>
+                        <div style="margin-top: 16px; font-size: 13px; color: var(--text-muted);">
+                            💡 Tip: Try searching by city name or clinic type
+                        </div>
                     </div>
                 `;
                 return;
@@ -1719,10 +1721,9 @@ const imageHtml = hasImage ?
                 const distanceText = clinic.distance ? `${clinic.distance.toFixed(1)} km away` : 'Calculating...';
                 const hasImage = clinic.image_path && clinic.image_path !== null && clinic.image_path !== '';
                 
-
-const imageHtml = hasImage ? 
-    `<img src="${clinic.image_path}" alt="${escapeHtml(clinic.name)}" onerror="this.parentElement.innerHTML = '<div class=\'popup-image-placeholder\'><i class=\'fas fa-clinic-medical\'></i></div>'">` :
-    `<div class="popup-image-placeholder"><i class="fas fa-clinic-medical"></i></div>`;
+                const imageHtml = hasImage ? 
+                    `<img src="${clinic.image_path}" alt="${escapeHtml(clinic.name)}" onerror="this.parentElement.innerHTML = '<div class=\'clinic-item-image-placeholder\'><i class=\'fas fa-clinic-medical\'></i></div>'">` :
+                    `<div class="clinic-item-image-placeholder"><i class="fas fa-clinic-medical"></i></div>`;
                 
                 html += `
                     <div class="clinic-item" 
@@ -1737,7 +1738,7 @@ const imageHtml = hasImage ?
                         
                         <div class="clinic-item-content">
                             <span class="clinic-type-badge" style="background: ${clinic.type_color}">
-                                ${clinic.type}
+                                ${escapeHtml(clinic.type)}
                             </span>
                             
                             <div class="clinic-item-header">
@@ -1807,10 +1808,6 @@ const imageHtml = hasImage ?
             if (filterType === 'status') {
                 currentStatusFilter = 'all';
                 document.getElementById('statusFilter').value = 'all';
-                document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
-                if (document.querySelector('.filter-btn[data-status="all"]')) {
-                    document.querySelector('.filter-btn[data-status="all"]').classList.add('active');
-                }
             } else if (filterType === 'city') {
                 currentCityFilter = 'all';
                 document.getElementById('cityFilter').value = 'all';
@@ -1961,6 +1958,22 @@ const imageHtml = hasImage ?
             }
         }
         
+        function centerMap() {
+            if (userMarker) {
+                map.setView(userMarker.getLatLng(), 14);
+            } else {
+                getUserLocation();
+            }
+        }
+        
+        function zoomIn() {
+            map.setZoom(map.getZoom() + 1);
+        }
+        
+        function zoomOut() {
+            map.setZoom(map.getZoom() - 1);
+        }
+        
         function calculateDistances(userPos) {
             if (!userPos) return;
             
@@ -1996,24 +2009,8 @@ const imageHtml = hasImage ?
         }
         
         // ============================================
-        // MAP CONTROL FUNCTIONS
+        // FOCUS CLINIC
         // ============================================
-        function centerMap() {
-            if (userMarker) {
-                map.setView(userMarker.getLatLng(), 14);
-            } else {
-                getUserLocation();
-            }
-        }
-        
-        function zoomIn() {
-            map.setZoom(map.getZoom() + 1);
-        }
-        
-        function zoomOut() {
-            map.setZoom(map.getZoom() - 1);
-        }
-        
         function focusClinic(id, lat, lng) {
             const position = [parseFloat(lat), parseFloat(lng)];
             map.setView(position, 16);

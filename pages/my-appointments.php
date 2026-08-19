@@ -48,7 +48,8 @@ $appointments_query = mysqli_query($conn, "
            p.name as product_name, p.price as product_price,
            p.image as product_image, p.images as product_images_old, p.images_json as product_images_json,
            p.category as product_category,
-           d.name as doctor_name, d.specialty as doctor_specialty
+           d.name as doctor_name, d.specialty as doctor_specialty,
+           c.id as clinic_id
     FROM appointments a
     JOIN clinics c ON a.clinic_id=c.id
     LEFT JOIN products p ON a.product_id=p.id
@@ -59,7 +60,7 @@ $appointments_query = mysqli_query($conn, "
 ");
 $filtered_count = mysqli_num_rows($appointments_query);
 
-// ── Image helpers (no duplicates with theme.php) ─────────────────────────────
+// ── Image helpers ─────────────────────────────────────────────
 function resolveImgPathForAppointment($path) {
     if (empty($path)) return '';
     $path = str_replace(['uploads/uploads/','uploads//uploads/'], 'uploads/', $path);
@@ -104,14 +105,42 @@ function getClinicImgForAppointment($c) {
 }
 
 function getStatusBadgeClass($s) {
-    return ['pending'=>'pending','confirmed'=>'confirmed','paid'=>'paid','completed'=>'completed',
-            'cancelled'=>'cancelled','missed'=>'missed','no-show'=>'cancelled'][$s]??'pending';
+    $map = [
+        'pending' => 'pending',
+        'confirmed' => 'confirmed',
+        'paid' => 'paid',
+        'completed' => 'completed',
+        'cancelled' => 'cancelled',
+        'missed' => 'missed',
+        'no-show' => 'cancelled'
+    ];
+    return $map[$s] ?? 'pending';
 }
 
 function getStatusIcon($s) {
-    return ['pending'=>'fa-clock','confirmed'=>'fa-check-circle','paid'=>'fa-credit-card',
-            'completed'=>'fa-check-double','cancelled'=>'fa-times-circle','missed'=>'fa-calendar-times',
-            'no-show'=>'fa-user-slash'][$s]??'fa-clock';
+    $map = [
+        'pending' => 'fa-clock',
+        'confirmed' => 'fa-check-circle',
+        'paid' => 'fa-credit-card',
+        'completed' => 'fa-check-double',
+        'cancelled' => 'fa-times-circle',
+        'missed' => 'fa-calendar-times',
+        'no-show' => 'fa-user-slash'
+    ];
+    return $map[$s] ?? 'fa-clock';
+}
+
+function getStatusLabel($s) {
+    $map = [
+        'pending' => 'Pending',
+        'confirmed' => 'Confirmed',
+        'paid' => 'Paid',
+        'completed' => 'Completed',
+        'cancelled' => 'Cancelled',
+        'missed' => 'Missed',
+        'no-show' => 'No Show'
+    ];
+    return $map[$s] ?? ucfirst($s);
 }
 
 include '../includes/navbar.php';
@@ -185,27 +214,27 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
         .results-count{background:var(--bg-secondary);padding:6px 14px;border-radius:var(--radius-full);font-size:13px;border:1px solid var(--border-light);color:var(--text-secondary);}
         .results-count span{font-weight:700;color:var(--primary);}
 
-        /* Grid / List layouts */
+        /* ===== GRID & LIST LAYOUTS ===== */
         .appointments-grid{display:grid;grid-template-columns:repeat(1,1fr);gap:20px;}
         @media(min-width:768px){.appointments-grid{grid-template-columns:repeat(2,1fr);}}
         @media(min-width:1200px){.appointments-grid{grid-template-columns:repeat(3,1fr);}}
         .appointments-list{display:flex;flex-direction:column;gap:12px;}
 
-        /* Card */
-        .appointment-card{background:var(--bg-secondary);border-radius:var(--radius-lg);border:1px solid var(--border-light);overflow:hidden;transition:all 0.2s;cursor:pointer;text-decoration:none;display:block;position:relative;}
-        .appointment-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-md);border-color:var(--primary);}
+        /* ===== APPOINTMENT CARD ===== */
+        .appointment-card{background:var(--bg-secondary);border-radius:var(--radius-lg);border:1px solid var(--border-light);overflow:hidden;transition:all 0.25s;cursor:pointer;text-decoration:none;display:block;position:relative;}
+        .appointment-card:hover{transform:translateY(-4px);box-shadow:var(--shadow-md);border-color:var(--primary);}
         .card-content-grid{display:flex;flex-direction:column;}
 
-        /* ══════════════════════════════════════════════
-           PRODUCT IMAGE SLIDER (same as clinic-details.php)
-           ══════════════════════════════════════════════ */
+        /* ===== PRODUCT IMAGE SLIDER ===== */
         .product-image-section {
             position: relative;
-            height: 180px;
+            height: 160px;
             overflow: hidden;
             background: var(--bg-primary);
             flex-shrink: 0;
         }
+        @media(min-width:768px){.product-image-section{height:140px;}}
+        @media(max-width:480px){.product-image-section{height:150px;}}
 
         .pc-slider-track {
             display: flex;
@@ -225,71 +254,67 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
             width: 100%;
             height: 100%;
             object-fit: contain;
-            padding: 8px;
+            padding: 6px;
             display: block;
         }
 
         .pc-dots {
-            position: absolute; bottom: 7px; left: 0; right: 0;
+            position: absolute; bottom: 6px; left: 0; right: 0;
             display: flex; justify-content: center; gap: 5px;
             z-index: 15; pointer-events: none;
         }
 
         .pc-dot {
             width: 6px; height: 6px; border-radius: 50%;
-            background: rgba(255,255,255,0.75);
-            border: none; padding: 0; cursor: pointer;
-            pointer-events: all; transition: all 0.2s;
+            background: rgba(0,0,0,0.6);
+            border: 1px solid rgba(255,255,255,0.5);
+            padding: 0; cursor: pointer;
+            pointer-events: all; transition: all 0.25s;
         }
-
-        .pc-dot.active { background: var(--primary); width: 14px; border-radius: 4px; }
+        .pc-dot.active { background: var(--primary); width: 18px; border-radius: 4px; border-color: var(--primary); }
 
         .pc-arrow {
             position: absolute; top: 50%; transform: translateY(-50%);
             width: 26px; height: 26px;
-            background: rgba(0,0,0,0.42);
+            background: rgba(0,0,0,0.45);
             border: none; border-radius: 50%;
             color: white; font-size: 11px;
             display: flex; align-items: center; justify-content: center;
             cursor: pointer; z-index: 20;
-            opacity: 0; transition: opacity 0.2s;
+            opacity: 0; transition: opacity 0.25s;
             backdrop-filter: blur(3px);
         }
-
         .product-image-section:hover .pc-arrow { opacity: 1; }
+        .pc-arrow:hover { background: var(--primary); }
         .pc-arrow.prev { left: 6px; }
         .pc-arrow.next { right: 6px; }
-        .pc-arrow:hover { background: var(--primary); }
 
         .pc-counter {
-            position: absolute; bottom: 8px; right: 8px;
+            position: absolute; bottom: 6px; right: 8px;
             background: rgba(0,0,0,0.55); color: white;
-            padding: 2px 7px; border-radius: var(--radius-full);
+            padding: 2px 8px; border-radius: var(--radius-full);
             font-size: 10px; font-weight: 500; z-index: 15;
             backdrop-filter: blur(2px);
         }
 
         /* Placeholder */
-        .product-placeholder{width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:var(--bg-primary);}
-        .product-placeholder i{font-size:48px;color:var(--primary);opacity:0.6;}
-        .product-placeholder span{font-size:12px;color:var(--text-muted);}
+        .product-placeholder{width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:var(--bg-primary);}
+        .product-placeholder i{font-size:40px;color:var(--primary);opacity:0.5;}
+        .product-placeholder span{font-size:12px;color:var(--text-muted);font-weight:500;}
 
-        /* List view small image */
-        .list-image{width:70px;height:70px;border-radius:var(--radius-md);overflow:hidden;flex-shrink:0;background:var(--bg-primary);position:relative;}
-        .list-image .pc-slider-track img{object-fit:cover;}
-        .list-image-placeholder{width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:var(--primary-light);color:var(--primary);font-size:24px;}
-
-        /* Card elements */
-        .card-body{padding:16px;display:flex;flex-direction:column;gap:12px;}
+        /* ===== CARD BODY ===== */
+        .card-body{padding:16px 18px 18px;display:flex;flex-direction:column;gap:12px;}
+        
         .clinic-header{display:flex;align-items:center;gap:12px;}
         .clinic-avatar{width:44px;height:44px;border-radius:var(--radius-md);overflow:hidden;flex-shrink:0;background:var(--bg-primary);display:flex;align-items:center;justify-content:center;}
         .clinic-avatar img{width:100%;height:100%;object-fit:cover;}
         .clinic-avatar-placeholder{width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:var(--primary-light);color:var(--primary);font-size:20px;}
-        .clinic-info{flex:1;}
+        
+        .clinic-info{flex:1;min-width:0;}
         .clinic-name{font-size:14px;font-weight:700;color:var(--text-primary);margin-bottom:4px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
-        .ref-no{font-size:10px;color:var(--text-muted);font-weight:500;background:var(--bg-primary);padding:2px 6px;border-radius:var(--radius-full);}
+        .ref-no{font-size:10px;color:var(--text-muted);font-weight:500;background:var(--bg-primary);padding:2px 8px;border-radius:var(--radius-full);white-space:nowrap;}
 
-        .status-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:var(--radius-full);font-size:11px;font-weight:600;}
+        .status-badge{display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:var(--radius-full);font-size:11px;font-weight:600;}
         .status-badge.pending{background:#FEF3C7;color:#92400E;}
         .status-badge.confirmed{background:#D1FAE5;color:#065F46;}
         .status-badge.paid{background:#DBEAFE;color:#1E40AF;}
@@ -297,51 +322,65 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
         .status-badge.cancelled{background:#FEE2E2;color:#991B1B;}
         .status-badge.missed{background:#F3E8FF;color:#7C3AED;}
 
-        .appointment-details{display:flex;flex-direction:column;gap:8px;}
-        .detail-row{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--text-secondary);}
-        .detail-row i{width:16px;color:var(--primary);font-size:12px;}
-        .detail-row .value{flex:1;}
-
-        .product-badge{background:var(--bg-primary);border-radius:var(--radius-md);padding:8px 10px;margin-top:4px;}
-        .product-badge-content{display:flex;align-items:center;gap:10px;}
-        .product-badge-content i{color:var(--primary);font-size:14px;}
-        .product-badge-content span{font-size:12px;font-weight:500;color:var(--text-primary);}
-        .product-badge-content .price{margin-left:auto;font-weight:700;color:var(--primary);font-size:13px;}
+        .appointment-details{display:flex;flex-direction:column;gap:6px;}
+        .detail-row{display:flex;align-items:flex-start;gap:10px;font-size:12px;color:var(--text-secondary);}
+        .detail-row i{width:16px;color:var(--primary);font-size:12px;margin-top:1px;flex-shrink:0;}
+        .detail-row .value{flex:1;word-wrap:break-word;overflow-wrap:break-word;}
 
         .doctor-info{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary);}
         .doctor-info i{color:var(--primary);font-size:11px;}
 
-        /* List view */
-        .card-content-list{display:flex;align-items:center;gap:16px;padding:16px;flex-wrap:wrap;}
-        .list-info{flex:2;min-width:200px;}
-        .list-details{display:flex;flex-wrap:wrap;gap:12px;margin-top:6px;}
+        /* ===== PRODUCT BADGE - ONLY SHOW WHEN PRODUCT EXISTS ===== */
+        .product-badge{background:var(--bg-primary);border-radius:var(--radius-md);padding:8px 12px;margin-top:2px;}
+        .product-badge-content{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+        .product-badge-content i{color:var(--primary);font-size:14px;}
+        .product-badge-content span{font-size:12px;font-weight:500;color:var(--text-primary);flex:1;min-width:60px;}
+        .product-badge-content .price{margin-left:auto;font-weight:700;color:var(--primary);font-size:13px;white-space:nowrap;}
+
+        /* ===== LIST VIEW ===== */
+        .card-content-list{display:flex;align-items:center;gap:16px;padding:14px 18px;flex-wrap:wrap;}
+        .list-image{width:72px;height:72px;border-radius:var(--radius-md);overflow:hidden;flex-shrink:0;background:var(--bg-primary);position:relative;}
+        .list-image .pc-slider-track{width:100%;height:100%;}
+        .list-image .pc-slider-track .pc-slide{min-width:100%;height:100%;}
+        .list-image .pc-slider-track .pc-slide img{object-fit:cover;padding:0;}
+        .list-image .pc-arrow{width:18px;height:18px;font-size:8px;}
+        .list-image-placeholder{width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:var(--primary-light);color:var(--primary);font-size:24px;}
+        
+        .list-info{flex:2;min-width:180px;}
+        .list-details{display:flex;flex-wrap:wrap;gap:8px 16px;margin-top:4px;}
         .list-detail-item{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-secondary);}
-        .list-detail-item i{color:var(--primary);font-size:11px;}
-        .list-status{flex-shrink:0;}
-        @media(max-width:768px){.card-content-list{flex-direction:column;align-items:flex-start;}.list-status{align-self:flex-start;}}
+        .list-detail-item i{color:var(--primary);font-size:11px;width:14px;text-align:center;}
+        .list-status{flex-shrink:0;align-self:center;}
+        
+        @media(max-width:768px){
+            .card-content-list{flex-direction:column;align-items:flex-start;gap:12px;}
+            .list-status{align-self:flex-start;}
+            .list-image{width:100%;height:140px;}
+        }
 
-        /* Image Modal */
-        .image-modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);z-index:10000;cursor:pointer;align-items:center;justify-content:center;}
+        /* ===== IMAGE MODAL ===== */
+        .image-modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.92);z-index:10000;cursor:pointer;align-items:center;justify-content:center;}
         .image-modal.show{display:flex;}
-        .modal-image{max-width:90%;max-height:90%;object-fit:contain;border-radius:var(--radius-lg);}
-        .modal-close{position:absolute;top:20px;right:30px;color:white;font-size:40px;cursor:pointer;transition:all 0.2s;}
-        .modal-close:hover{color:var(--primary);}
+        .modal-image{max-width:92%;max-height:90%;object-fit:contain;border-radius:var(--radius-lg);}
+        .modal-close{position:absolute;top:20px;right:30px;color:white;font-size:40px;cursor:pointer;transition:all 0.2s;background:none;border:none;}
+        .modal-close:hover{color:var(--primary);transform:rotate(90deg);}
 
-        /* Pagination */
+        /* ===== PAGINATION ===== */
         .pagination{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:32px;flex-wrap:wrap;}
-        .pagination-btn{padding:8px 14px;border-radius:var(--radius-full);background:var(--bg-secondary);border:1px solid var(--border-light);color:var(--text-secondary);text-decoration:none;font-size:13px;font-weight:500;transition:all 0.2s;cursor:pointer;display:inline-flex;align-items:center;gap:6px;}
-        .pagination-btn:hover{background:var(--primary-light);color:var(--primary);border-color:var(--primary);}
+        .pagination-btn{padding:8px 16px;border-radius:var(--radius-full);background:var(--bg-secondary);border:1px solid var(--border-light);color:var(--text-secondary);text-decoration:none;font-size:13px;font-weight:500;transition:all 0.2s;cursor:pointer;display:inline-flex;align-items:center;gap:6px;}
+        .pagination-btn:hover:not(.disabled):not(.active){background:var(--primary-light);color:var(--primary);border-color:var(--primary);}
         .pagination-btn.active{background:var(--primary);color:white;border-color:var(--primary);}
-        .pagination-btn.disabled{opacity:0.5;cursor:not-allowed;pointer-events:none;}
+        .pagination-btn.disabled{opacity:0.4;cursor:not-allowed;pointer-events:none;}
 
-        /* Empty State */
+        /* ===== EMPTY STATE ===== */
         .empty-state{grid-column:1/-1;text-align:center;padding:60px 20px;background:var(--bg-secondary);border-radius:var(--radius-lg);border:1px solid var(--border-light);}
-        .empty-state i{font-size:64px;color:var(--text-muted);margin-bottom:16px;opacity:0.5;}
+        .empty-state i{font-size:64px;color:var(--text-muted);margin-bottom:16px;opacity:0.4;}
         .empty-state h3{font-size:18px;font-weight:700;margin-bottom:8px;color:var(--text-primary);}
         .empty-state p{color:var(--text-secondary);font-size:14px;margin-bottom:20px;}
-        .btn-primary-sm{display:inline-flex;align-items:center;gap:8px;padding:10px 20px;background:var(--primary-gradient);color:white;border-radius:var(--radius-full);text-decoration:none;font-size:13px;font-weight:600;transition:all 0.2s;}
-        .btn-primary-sm:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,183,97,0.3);}
+        .btn-primary-sm{display:inline-flex;align-items:center;gap:8px;padding:10px 24px;background:var(--primary-gradient);color:white;border-radius:var(--radius-full);text-decoration:none;font-size:13px;font-weight:600;transition:all 0.2s;}
+        .btn-primary-sm:hover{transform:translateY(-2px);box-shadow:0 4px 14px rgba(0,183,97,0.35);}
 
+        /* ===== CSS VARIABLES ===== */
         :root{--primary:#00B761;--primary-dark:#00874A;--primary-light:#E3FCE9;--primary-gradient:linear-gradient(135deg,#00B761,#00A86B);--secondary:#FF8C42;--bg-primary:#F5F7FA;--bg-secondary:#FFFFFF;--card-bg:#FFFFFF;--text-primary:#111827;--text-secondary:#6B7280;--text-muted:#9CA3AF;--border-color:#E5E7EB;--border-light:#F3F4F6;--shadow-sm:0 1px 3px rgba(0,0,0,0.06);--shadow-md:0 4px 16px rgba(0,0,0,0.08);--shadow-lg:0 12px 40px rgba(0,0,0,0.10);--radius-sm:10px;--radius-md:14px;--radius-lg:20px;--radius-xl:28px;--radius-full:999px;--danger:#EF4444;--warning:#F59E0B;--success:#00B761;--info:#3B82F6;}
         .theme-dark{--primary:#00E676;--primary-dark:#00C853;--primary-light:#0D2818;--bg-primary:#0D0D0D;--bg-secondary:#161616;--card-bg:#1E1E1E;--text-primary:#F9FAFB;--text-secondary:#9CA3AF;--text-muted:#6B7280;--border-color:#2A2A2A;--border-light:#222222;}
     </style>
@@ -401,12 +440,14 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
                     $formatted_date = $apd->format('M j, Y');
                     $formatted_time = !empty($appointment['appointment_time']) ? date('g:i A', strtotime($appointment['appointment_time'])) : $apd->format('g:i A');
                     $aid = $appointment['id'];
+                    $clinic_id = $appointment['clinic_id'];
+                    $has_product = !empty($appointment['product_name']);
                 ?>
                 <div class="appointment-card" onclick="window.location.href='appointment-details.php?id=<?php echo $aid; ?>'">
                     <?php if ($view_mode === 'grid'): ?>
-                    <!-- GRID VIEW -->
+                    <!-- ===== GRID VIEW ===== -->
                     <div class="card-content-grid">
-                        <!-- Image Slider (same pattern as clinic-details.php) -->
+                        <!-- Image Slider -->
                         <div class="product-image-section" id="pic-<?php echo $aid; ?>" onclick="event.stopPropagation();">
                             <?php if ($has_img): ?>
                                 <div class="pc-slider-track" id="track-<?php echo $aid; ?>">
@@ -473,19 +514,26 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
                                     </div>
                                     <div class="status-badge <?php echo getStatusBadgeClass($appointment['status']); ?>">
                                         <i class="fas <?php echo getStatusIcon($appointment['status']); ?>"></i>
-                                        <?php echo ucfirst($appointment['status']); ?>
+                                        <?php echo getStatusLabel($appointment['status']); ?>
                                     </div>
                                 </div>
                             </div>
                             <div class="appointment-details">
                                 <div class="detail-row"><i class="fas fa-calendar-alt"></i><span class="value"><?php echo $formatted_date; ?></span></div>
                                 <div class="detail-row"><i class="fas fa-clock"></i><span class="value"><?php echo $formatted_time; ?></span></div>
-                                <div class="detail-row"><i class="fas fa-map-marker-alt"></i><span class="value"><?php echo htmlspecialchars($appointment['address']); ?></span></div>
+                                <div class="detail-row"><i class="fas fa-map-marker-alt"></i><span class="value">
+                                    <?php 
+                                    $addr = $appointment['address'];
+                                    echo strlen($addr) > 50 ? substr($addr, 0, 47) . '...' : htmlspecialchars($addr);
+                                    ?>
+                                </span></div>
                                 <?php if (!empty($appointment['doctor_name'])): ?>
                                 <div class="doctor-info"><i class="fas fa-user-md"></i> Dr. <?php echo htmlspecialchars($appointment['doctor_name']); ?></div>
                                 <?php endif; ?>
                             </div>
-                            <?php if (!empty($appointment['product_name'])): ?>
+                            
+                            <!-- ✅ FIX: Product badge only shows when product exists -->
+                            <?php if ($has_product): ?>
                             <div class="product-badge">
                                 <div class="product-badge-content">
                                     <i class="fas fa-tag"></i>
@@ -500,7 +548,7 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
                     </div>
 
                     <?php else: ?>
-                    <!-- LIST VIEW -->
+                    <!-- ===== LIST VIEW ===== -->
                     <div class="card-content-list">
                         <div class="list-image" id="lpic-<?php echo $aid; ?>" onclick="event.stopPropagation();">
                             <?php if ($has_img): ?>
@@ -538,26 +586,29 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
                             <div class="clinic-name">
                                 <?php echo htmlspecialchars($appointment['clinic_name']); ?>
                                 <span class="ref-no">#<?php echo htmlspecialchars($appointment['ref_no']); ?></span>
+                                <span class="status-badge <?php echo getStatusBadgeClass($appointment['status']); ?>" style="margin-left:4px;font-size:10px;">
+                                    <i class="fas <?php echo getStatusIcon($appointment['status']); ?>"></i>
+                                    <?php echo getStatusLabel($appointment['status']); ?>
+                                </span>
                             </div>
                             <div class="list-details">
                                 <div class="list-detail-item"><i class="fas fa-calendar-alt"></i><?php echo $formatted_date; ?> • <?php echo $formatted_time; ?></div>
-                                <div class="list-detail-item"><i class="fas fa-map-marker-alt"></i><?php echo htmlspecialchars($appointment['address']); ?></div>
+                                <div class="list-detail-item"><i class="fas fa-map-marker-alt"></i>
+                                    <?php 
+                                    $addr = $appointment['address'];
+                                    echo strlen($addr) > 35 ? substr($addr, 0, 32) . '...' : htmlspecialchars($addr);
+                                    ?>
+                                </div>
                                 <?php if (!empty($appointment['doctor_name'])): ?>
                                 <div class="list-detail-item"><i class="fas fa-user-md"></i>Dr. <?php echo htmlspecialchars($appointment['doctor_name']); ?></div>
                                 <?php endif; ?>
-                                <?php if (!empty($appointment['product_name'])): ?>
+                                <?php if ($has_product): ?>
                                 <div class="list-detail-item">
                                     <i class="fas fa-tag"></i>
                                     <?php echo htmlspecialchars($appointment['product_name']); ?>
                                     <?php if (!empty($appointment['product_price'])): ?> • ₱<?php echo number_format($appointment['product_price'],2); ?><?php endif; ?>
                                 </div>
                                 <?php endif; ?>
-                            </div>
-                        </div>
-                        <div class="list-status">
-                            <div class="status-badge <?php echo getStatusBadgeClass($appointment['status']); ?>">
-                                <i class="fas <?php echo getStatusIcon($appointment['status']); ?>"></i>
-                                <?php echo ucfirst($appointment['status']); ?>
                             </div>
                         </div>
                     </div>
@@ -599,7 +650,7 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
 
     <script>
     // ──────────────────────────────────────────────────────
-    // SLIDER STATE INITIALIZATION (same as clinic-details.php)
+    // SLIDER STATE INITIALIZATION
     // ──────────────────────────────────────────────────────
     const pcState  = {};
     const pcStateL = {};
@@ -611,13 +662,12 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
         echo json_encode($totals_js); 
     ?>;
 
-    // Initialize all states
     Object.keys(pcTotal).forEach(id => { 
         pcState[id] = 0; 
         pcStateL[id] = 0; 
     });
 
-    // Grid slider function (same as clinic-details)
+    // Grid slider
     function pcGo(id, index, event) {
         if (event) { event.preventDefault(); event.stopPropagation(); }
         const total = pcTotal[id] || 1;
@@ -640,7 +690,7 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
         }
     }
 
-    // List slider function
+    // List slider
     function pcGoList(id, index, event) {
         if (event) { event.preventDefault(); event.stopPropagation(); }
         const total = pcTotal[id] || 1;
@@ -674,16 +724,22 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
 
     function showImageModal(imageUrl, productName) {
         document.getElementById('modalImage').src = imageUrl;
-        document.getElementById('modalImage').alt = productName;
+        document.getElementById('modalImage').alt = productName || 'Product image';
         document.getElementById('imageModal').classList.add('show');
+        document.body.style.overflow = 'hidden';
     }
 
     function closeImageModal() { 
-        document.getElementById('imageModal').classList.remove('show'); 
+        document.getElementById('imageModal').classList.remove('show');
+        document.body.style.overflow = '';
     }
     
     document.addEventListener('keydown', e => { 
-        if(e.key === 'Escape') closeImageModal(); 
+        if(e.key === 'Escape') { 
+            if(document.getElementById('imageModal').classList.contains('show')) {
+                closeImageModal();
+            }
+        } 
     });
 
     // Search debouncer
@@ -700,6 +756,8 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
             }, 500);
         });
     }
+
+    // Modal close on click outside (handled by onclick on modal itself)
     </script>
 </body>
 </html>

@@ -1,4 +1,8 @@
 <?php
+// ============================================
+// COMPLETE 3D-VIEW.PHP
+// WITH SIZE SELECTOR + PAYMENT POLICY + VAT/DISCOUNT
+// ============================================
 
 include '../includes/config.php';
 include '../includes/theme.php';
@@ -19,6 +23,20 @@ $user_data = mysqli_fetch_assoc($avatar_query);
 
 $product_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 if (!$product_id) { header('Location: dashboard.php'); exit(); }
+
+// ============================================
+// STORE REFERRER FOR BACK BUTTON
+// ============================================
+if (isset($_SERVER['HTTP_REFERER']) && strpos($_SERVER['HTTP_REFERER'], $_SERVER['HTTP_HOST']) !== false) {
+    $referrer = $_SERVER['HTTP_REFERER'];
+    $referrer_parts = parse_url($referrer);
+    $referrer_path = isset($referrer_parts['path']) ? $referrer_parts['path'] : '';
+    
+    // Only store if it's not the current page
+    if ($referrer_path !== $_SERVER['SCRIPT_NAME']) {
+        $_SESSION['last_page'] = $referrer;
+    }
+}
 
 // ============================================
 // GET PRODUCT + CLINIC DETAILS
@@ -59,6 +77,19 @@ $IS_ACCESSORY = in_array($category, ['Accessories', 'Parts', 'Cleaning Kits']);
 $IS_SERVICE = in_array($category, ['Service', 'Eye Exam', 'Treatment', 'Screening']);
 $IS_CONTACT_LENS = ($category === 'Contact Lens');
 $IS_LENS_ONLY = ($category === 'Lenses');
+
+// ============================================
+// GET EXTRA FIELDS (for sizes)
+// ============================================
+$extra_fields = [];
+if (!empty($product['extra_fields_json'])) {
+    $extra_fields = json_decode($product['extra_fields_json'], true);
+}
+$available_sizes = [];
+if (!empty($extra_fields['sizes_available']) && is_array($extra_fields['sizes_available'])) {
+    $available_sizes = $extra_fields['sizes_available'];
+}
+$has_sizes = !empty($available_sizes) && in_array($category, ['Frames', 'Eyeglasses', 'Sunglasses']);
 
 // ============================================
 // SALE DETECTION
@@ -145,6 +176,25 @@ $user_status = mysqli_fetch_assoc($user_status_query);
 $is_pwd_senior = ($user_status && $user_status['pwd_senior_status'] === 'verified');
 
 // ============================================
+// GET CLINIC PAYMENT CONFIGURATION
+// ============================================
+$clinic_payment_config = getClinicPaymentPolicy($conn, $clinic_id);
+
+$clinic_payment_policy = $clinic_payment_config['payment_policy'];
+$clinic_downpayment_percent = (float)($clinic_payment_config['downpayment_percentage'] ?? 30);
+$clinic_booking_flow = $clinic_payment_config['booking_flow'] ?? 'approve_first';
+
+// Payment policy display labels
+$policy_labels = [
+    'full_payment' => '100% Full Payment',
+    'downpayment_30' => '30% Downpayment',
+    'downpayment_custom' => $clinic_downpayment_percent . '% Downpayment',
+    'pay_on_site' => 'Pay On-Site Only',
+    'no_payment' => 'Free Service'
+];
+$clinic_payment_policy_display = $policy_labels[$clinic_payment_policy] ?? 'Standard Payment';
+
+// ============================================
 // CALCULATE TAX AND DISCOUNT
 // ============================================
 $tax_calc = applyTaxAndDiscount($conn, $display_price, $is_pwd_senior);
@@ -207,6 +257,7 @@ if (isset($_POST['ajax_action'])) {
     $contact_number  = mysqli_real_escape_string($conn, $_POST['contact_number'] ?? '');
     $color_code      = mysqli_real_escape_string($conn, $_POST['color_code'] ?? '');
     $color_name      = mysqli_real_escape_string($conn, $_POST['color_name'] ?? '');
+    $frame_size      = mysqli_real_escape_string($conn, $_POST['frame_size'] ?? '');
 
     if (!$preferred_date || !$preferred_time) {
         echo json_encode(['success' => false, 'message' => 'Please select a date and time.']);
@@ -318,7 +369,6 @@ if (isset($_POST['ajax_action'])) {
     $lens_price_add   = $lens_prices[$lens_type] ?? 0;
     $total_before_tax = $display_price + $lens_price_add;
     
-    // Apply tax and discount
     $tax_calc_submit = applyTaxAndDiscount($conn, $total_before_tax, $is_pwd_senior);
     $final_total_submit = $tax_calc_submit['final_total'];
     $discount_amount_submit = $tax_calc_submit['discount_amount'];
@@ -333,13 +383,13 @@ if (isset($_POST['ajax_action'])) {
     mysqli_query($conn, "
         INSERT INTO reservations
         (reservation_code, user_id, product_id, clinic_id, lens_type, prescription_id,
-         color_code, color_name,
+         color_code, color_name, frame_size,
          total_amount, downpayment_amount, balance_amount,
          preferred_date, preferred_time, notes, status, payment_status, expires_at, created_at)
         VALUES
         ('$reservation_code', $user_id, $product_id, $clinic_id, '$lens_type',
          " . ($prescription_id ? $prescription_id : 'NULL') . ",
-         '$color_code', '$color_name',
+         '$color_code', '$color_name', '$frame_size',
          $final_total_submit, $downpayment_amount_submit, $balance_amount_submit,
          '$preferred_date', '$preferred_time', '$notes', 'pending', 'unpaid', '$expires_at', NOW())
     ");
@@ -368,9 +418,6 @@ if (isset($_POST['ajax_action'])) {
 
 include '../includes/navbar.php';
 
-// ============================================
-// GET LENS PRICE FOR DISPLAY
-// ============================================
 $lens_prices_display = [
     'frame_only'      => 0,
     'single_vision'   => 500,
@@ -379,6 +426,14 @@ $lens_prices_display = [
     'contact_daily'   => 0,
     'contact_monthly' => 0,
 ];
+
+// ============================================
+// DETERMINE BACK URL
+// ============================================
+$back_url = 'product-view.php?id=' . $product_id;
+if (isset($_SESSION['last_page'])) {
+    $back_url = $_SESSION['last_page'];
+}
 ?>
 <!DOCTYPE html>
 <html lang="en" class="<?php echo getThemeClass(); ?>">
@@ -393,6 +448,7 @@ $lens_prices_display = [
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
     <style>
+    /* ===== ALL STYLES FROM PREVIOUS VERSION PLUS SIZE SELECTOR AND PAYMENT POLICY ===== */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { width: 100%; overflow-x: hidden; background: var(--bg-primary); min-height: 100vh; }
     body { font-family: 'DM Sans', -apple-system, sans-serif; transition: background 0.3s, color 0.3s; }
@@ -501,10 +557,7 @@ $lens_prices_display = [
     }
     @media (max-width: 768px) { .viewer-canvas { height: 320px; } }
 
-    #viewer3D {
-        width: 100%;
-        height: 100%;
-    }
+    #viewer3D { width: 100%; height: 100%; }
 
     .no-model-msg {
         position: absolute;
@@ -522,7 +575,6 @@ $lens_prices_display = [
     .no-model-msg h3 { color: white; font-size: 18px; }
     .no-model-msg p { font-size: 13px; }
 
-    /* Viewer controls */
     .viewer-controls {
         display: flex;
         justify-content: center;
@@ -546,12 +598,10 @@ $lens_prices_display = [
         align-items: center;
         justify-content: center;
         transition: all 0.2s;
-        title: attr(title);
     }
     .ctrl-btn:hover { background: var(--primary); color: white; border-color: var(--primary); transform: scale(1.1); }
     .ctrl-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
 
-    /* Color swatches */
     .color-strip {
         display: flex;
         align-items: center;
@@ -583,7 +633,6 @@ $lens_prices_display = [
     }
     .color-swatch.reset-btn i { font-size: 11px; color: #666; }
 
-    /* Controls hint */
     .viewer-hint {
         display: flex;
         gap: 16px;
@@ -619,7 +668,6 @@ $lens_prices_display = [
     .info-card-head i { color: var(--primary); }
     .info-card-body { padding: 20px; }
 
-    /* Product info */
     .category-pill {
         display: inline-flex;
         align-items: center;
@@ -640,7 +688,6 @@ $lens_prices_display = [
         line-height: 1.2;
     }
 
-    /* Price display */
     .price-box {
         background: var(--primary-light);
         border-radius: var(--radius-md);
@@ -671,7 +718,26 @@ $lens_prices_display = [
         margin-bottom: 16px;
     }
 
-    /* Existing notice */
+    /* ===== PAYMENT POLICY CARD ===== */
+    .payment-policy-card {
+        margin-top: 16px;
+        padding: 14px;
+        background: var(--bg-primary);
+        border-radius: var(--radius-md);
+        border-left: 4px solid var(--primary);
+        font-size: 13px;
+    }
+    .payment-policy-card i { color: var(--primary); margin-right: 8px; }
+    .payment-policy-card .policy-title {
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 4px;
+    }
+    .payment-policy-card .policy-desc {
+        color: var(--text-secondary);
+        font-size: 12px;
+    }
+
     .existing-notice {
         display: flex;
         align-items: center;
@@ -686,7 +752,6 @@ $lens_prices_display = [
     .existing-notice.appointment { background: #DBEAFE; color: #1E40AF; border: 1px solid #BFDBFE; }
     .existing-notice a { color: inherit; font-weight: 700; }
 
-    /* Action button */
     .btn-main-action {
         width: 100%;
         padding: 14px;
@@ -722,7 +787,6 @@ $lens_prices_display = [
         margin-bottom: 4px;
     }
 
-    /* Also view full product link */
     .view-product-link {
         display: flex;
         align-items: center;
@@ -740,7 +804,6 @@ $lens_prices_display = [
     }
     .view-product-link:hover { border-color: var(--primary); color: var(--primary); }
 
-    /* Lens selection */
     .flow-card {
         background: var(--bg-secondary);
         border-radius: var(--radius-lg);
@@ -818,7 +881,88 @@ $lens_prices_display = [
     .eye-exam-box i { font-size: 24px; color: var(--primary); }
     .eye-exam-box p { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
 
-    /* Clinic card */
+    /* ===== COLOR SELECTOR ===== */
+    .color-selector-box { background: var(--bg-primary); border-radius: var(--radius-md); padding: 14px; margin-bottom: 8px; border: 1px solid var(--border-light); }
+    .cs-title { font-size: 13px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
+    .cs-title i { color: var(--primary); }
+    .cs-selected-label { font-weight: 500; color: var(--text-secondary); font-size: 12px; margin-left: auto; }
+    .cs-selected-label.chosen { color: var(--primary); font-weight: 600; }
+    .color-btns { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 8px; }
+    .color-btn { display: flex; align-items: center; gap: 6px; padding: 7px 12px; border: 2px solid var(--border-color); border-radius: var(--radius-md); background: var(--bg-secondary); cursor: pointer; transition: all 0.2s; font-family: inherit; }
+    .color-btn:hover:not(:disabled):not(.oos) { border-color: var(--primary); background: var(--primary-light); }
+    .color-btn.selected { border-color: var(--primary); background: var(--primary-light); box-shadow: 0 0 0 3px rgba(0,183,97,0.12); }
+    .color-btn.oos { opacity: 0.45; cursor: not-allowed; border-style: dashed; }
+    .color-dot { width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid rgba(0,0,0,0.15); flex-shrink: 0; }
+    .color-btn-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+    .color-btn-qty { font-size: 10px; color: var(--text-muted); margin-left: 2px; }
+    .color-btn-qty.low { color: var(--warning); font-weight: 600; }
+    .color-btn-qty.oos-label { color: var(--danger); font-weight: 600; }
+    .cs-hint { font-size: 11px; color: var(--text-muted); display: flex; align-items: center; gap: 4px; }
+    .cs-hint i { color: var(--primary); }
+    .sold-out-notice { display: flex; align-items: flex-start; gap: 10px; background: #FEE2E2; border: 1px solid #FECACA; border-radius: var(--radius-md); padding: 12px; }
+    .theme-dark .sold-out-notice { background: #3B0F0F; border-color: #7F1D1D; }
+    .sold-out-notice > i { color: var(--danger); font-size: 16px; flex-shrink: 0; margin-top: 1px; }
+    .sold-out-notice strong { font-size: 13px; color: var(--danger); display: block; margin-bottom: 2px; }
+    .sold-out-notice p { font-size: 11px; color: var(--text-secondary); }
+
+    /* ===== SIZE SELECTOR ===== */
+    .size-selector-box {
+        background: var(--bg-primary);
+        border-radius: var(--radius-md);
+        padding: 16px;
+        margin-bottom: 16px;
+        border: 1px solid var(--border-light);
+    }
+    .size-btns {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .size-btn {
+        padding: 8px 16px;
+        border: 2px solid var(--border-color);
+        border-radius: var(--radius-md);
+        background: var(--bg-secondary);
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 13px;
+        transition: all 0.2s;
+    }
+    .size-btn:hover, .size-btn.selected {
+        border-color: var(--primary);
+        background: var(--primary-light);
+        color: var(--primary);
+    }
+
+    .fav-product-wrap { margin-bottom: 12px; }
+    .btn-fav-product-full {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        padding: 13px 20px;
+        border-radius: var(--radius-full, 999px);
+        border: 2px solid #e5e7eb;
+        background: transparent;
+        color: var(--text-secondary, #6B7280);
+        font-size: 15px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+        font-family: inherit;
+    }
+    .btn-fav-product-full i { font-size: 16px; color: #ccc; transition: all 0.2s; }
+    .btn-fav-product-full:hover { border-color: #EF4444; color: #EF4444; }
+    .btn-fav-product-full:hover i { color: #EF4444; }
+    .btn-fav-product-full.active { border-color: #EF4444; color: #EF4444; background: #fff5f5; }
+    .btn-fav-product-full.active i { color: #EF4444; }
+    .btn-fav-product-full.pop { animation: favPop 0.3s ease; }
+    @keyframes favPop { 0%{transform:scale(1);} 50%{transform:scale(1.04);} 100%{transform:scale(1);} }
+    .theme-dark .btn-fav-product-full { border-color: #333; color: #888; }
+    .theme-dark .btn-fav-product-full.active { background: #2a1a1a; border-color: #EF4444; color: #EF4444; }
+
+    /* ===== CLINIC CARD ===== */
     .clinic-card {
         background: var(--bg-secondary);
         border-radius: var(--radius-lg);
@@ -841,7 +985,7 @@ $lens_prices_display = [
     .clinic-info .ch { font-size: 11px; color: var(--text-muted); margin-top: 3px; display: flex; align-items: center; gap: 4px; }
     .clinic-info .ch i { color: var(--primary); }
 
-    /* ===== IMPROVED MODAL STYLES ===== */
+    /* ===== MODAL STYLES ===== */
     .modal-overlay {
         display: none;
         position: fixed;
@@ -881,7 +1025,6 @@ $lens_prices_display = [
     .modal-close:hover { opacity: 1; transform: rotate(90deg); transition: all 0.2s; }
     .modal-body { padding: 20px 22px; }
 
-    /* Modal Summary Box */
     .modal-summary-box {
         background: var(--primary-light);
         border-radius: var(--radius-md);
@@ -899,22 +1042,15 @@ $lens_prices_display = [
     .ms-row .ms-label { color: var(--text-secondary); font-weight: 500; }
     .ms-row .ms-value { color: var(--text-primary); font-weight: 600; }
     .ms-row .ms-value.success { color: var(--primary); }
-    .ms-divider {
-        height: 1px;
-        background: var(--border-color);
-        margin: 6px 0;
-    }
+    .ms-divider { height: 1px; background: var(--border-color); margin: 6px 0; }
 
-    /* Modal form */
     .modal-form-row {
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 12px;
         margin-bottom: 12px;
     }
-    @media (max-width: 480px) {
-        .modal-form-row { grid-template-columns: 1fr; }
-    }
+    @media (max-width: 480px) { .modal-form-row { grid-template-columns: 1fr; } }
     .modal-form-group { margin-bottom: 12px; }
     .modal-form-group.half { margin-bottom: 0; }
     .modal-label {
@@ -941,7 +1077,6 @@ $lens_prices_display = [
     .modal-input:focus { outline: none; border-color: var(--primary); }
     .modal-textarea { resize: vertical; min-height: 50px; }
 
-    /* Modal Price Box - with VAT & Discount */
     .modal-price-box {
         background: var(--bg-primary);
         border-radius: var(--radius-md);
@@ -949,15 +1084,7 @@ $lens_prices_display = [
         margin-top: 6px;
         border: 1px solid var(--border-light);
     }
-    .modal-price-title {
-        font-size: 12px;
-        font-weight: 700;
-        color: var(--text-primary);
-        margin-bottom: 10px;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-    }
+    .modal-price-title { font-size: 12px; font-weight: 700; color: var(--text-primary); margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
     .modal-price-title i { color: var(--primary); }
     .mpb-row {
         display: flex;
@@ -974,7 +1101,6 @@ $lens_prices_display = [
     .mpb-row.dp .mpb-value { color: var(--warning); }
     .mpb-row.balance .mpb-value { color: var(--text-secondary); }
 
-    /* Modal notices */
     .modal-apt-notice {
         background: #EFF6FF;
         border: 1px solid #BFDBFE;
@@ -998,7 +1124,6 @@ $lens_prices_display = [
     }
     .theme-dark .modal-exam-notice { background: #3D2E00; border-color: #5A4C00; color: #FBBF24; }
 
-    /* Modal footer */
     .modal-foot {
         padding: 14px 22px;
         border-top: 1px solid var(--border-light);
@@ -1044,59 +1169,6 @@ $lens_prices_display = [
     .spinner { width: 46px; height: 46px; border: 4px solid rgba(255,255,255,0.2); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .hidden { display: none !important; }
-
-    /* ===== COLOR SELECTOR ===== */
-    .color-selector-box { background: var(--bg-primary); border-radius: var(--radius-md); padding: 14px; margin-bottom: 8px; border: 1px solid var(--border-light); }
-    .cs-title { font-size: 13px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
-    .cs-title i { color: var(--primary); }
-    .cs-selected-label { font-weight: 500; color: var(--text-secondary); font-size: 12px; margin-left: auto; }
-    .cs-selected-label.chosen { color: var(--primary); font-weight: 600; }
-    .color-btns { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 8px; }
-    .color-btn { display: flex; align-items: center; gap: 6px; padding: 7px 12px; border: 2px solid var(--border-color); border-radius: var(--radius-md); background: var(--bg-secondary); cursor: pointer; transition: all 0.2s; font-family: inherit; }
-    .color-btn:hover:not(:disabled):not(.oos) { border-color: var(--primary); background: var(--primary-light); }
-    .color-btn.selected { border-color: var(--primary); background: var(--primary-light); box-shadow: 0 0 0 3px rgba(0,183,97,0.12); }
-    .color-btn.oos { opacity: 0.45; cursor: not-allowed; border-style: dashed; }
-    .color-dot { width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid rgba(0,0,0,0.15); flex-shrink: 0; }
-    .color-btn-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
-    .color-btn-qty { font-size: 10px; color: var(--text-muted); margin-left: 2px; }
-    .color-btn-qty.low { color: var(--warning); font-weight: 600; }
-    .color-btn-qty.oos-label { color: var(--danger); font-weight: 600; }
-    .cs-hint { font-size: 11px; color: var(--text-muted); display: flex; align-items: center; gap: 4px; }
-    .cs-hint i { color: var(--primary); }
-    .sold-out-notice { display: flex; align-items: flex-start; gap: 10px; background: #FEE2E2; border: 1px solid #FECACA; border-radius: var(--radius-md); padding: 12px; }
-    .theme-dark .sold-out-notice { background: #3B0F0F; border-color: #7F1D1D; }
-    .sold-out-notice > i { color: var(--danger); font-size: 16px; flex-shrink: 0; margin-top: 1px; }
-    .sold-out-notice strong { font-size: 13px; color: var(--danger); display: block; margin-bottom: 2px; }
-    .sold-out-notice p { font-size: 11px; color: var(--text-secondary); }
-
-    /* ===== PRODUCT FAVORITE BUTTON ===== */
-    .fav-product-wrap { margin-bottom: 12px; }
-    .btn-fav-product-full {
-        width: 100%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 10px;
-        padding: 13px 20px;
-        border-radius: var(--radius-full, 999px);
-        border: 2px solid #e5e7eb;
-        background: transparent;
-        color: var(--text-secondary, #6B7280);
-        font-size: 15px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: all 0.2s;
-        font-family: inherit;
-    }
-    .btn-fav-product-full i { font-size: 16px; color: #ccc; transition: all 0.2s; }
-    .btn-fav-product-full:hover { border-color: #EF4444; color: #EF4444; }
-    .btn-fav-product-full:hover i { color: #EF4444; }
-    .btn-fav-product-full.active { border-color: #EF4444; color: #EF4444; background: #fff5f5; }
-    .btn-fav-product-full.active i { color: #EF4444; }
-    .btn-fav-product-full.pop { animation: favPop 0.3s ease; }
-    @keyframes favPop { 0%{transform:scale(1);} 50%{transform:scale(1.04);} 100%{transform:scale(1);} }
-    .theme-dark .btn-fav-product-full { border-color: #333; color: #888; }
-    .theme-dark .btn-fav-product-full.active { background: #2a1a1a; border-color: #EF4444; color: #EF4444; }
     </style>
 </head>
 <body>
@@ -1107,7 +1179,7 @@ $lens_prices_display = [
 
     <!-- Breadcrumb -->
     <div class="breadcrumb">
-        <a href="product-view.php?id=<?php echo $product_id; ?>">
+        <a href="<?php echo htmlspecialchars($back_url); ?>">
             <i class="fas fa-arrow-left"></i> <?php echo htmlspecialchars($product['name']); ?>
         </a>
         <span class="sep">/</span>
@@ -1197,6 +1269,30 @@ $lens_prices_display = [
                     <p class="product-desc"><?php echo nl2br(htmlspecialchars($product['description'])); ?></p>
                     <?php endif; ?>
 
+                    <!-- ===== PAYMENT POLICY CARD (like product-view.php) ===== -->
+                    <div class="payment-policy-card">
+                        <div class="policy-title">
+                            <i class="fas fa-credit-card"></i> Payment Policy: <?php echo $clinic_payment_policy_display; ?>
+                            <?php if ($clinic_booking_flow == 'pay_first'): ?>
+                                <span style="background: var(--primary); color: white; padding: 2px 8px; border-radius: 20px; font-size: 10px; margin-left: 8px;">Pay First</span>
+                            <?php else: ?>
+                                <span style="background: var(--warning); color: white; padding: 2px 8px; border-radius: 20px; font-size: 10px; margin-left: 8px;">Approve First</span>
+                            <?php endif; ?>
+                        </div>
+                        <div class="policy-desc">
+                            <?php if ($payment_type == 'downpayment'): ?>
+                                <i class="fas fa-percent"></i> <?php echo $downpayment_percent; ?>% downpayment (₱<?php echo number_format($downpayment_amount, 2); ?>) required online.
+                                Balance of ₱<?php echo number_format($balance_amount, 2); ?> to be paid at the clinic.
+                            <?php elseif ($payment_type == 'full'): ?>
+                                <i class="fas fa-cash"></i> 100% full payment of ₱<?php echo number_format($downpayment_amount, 2); ?> required online.
+                            <?php elseif ($payment_type == 'onsite'): ?>
+                                <i class="fas fa-store"></i> Pay ₱<?php echo number_format($display_price, 2); ?> directly at the clinic. No online payment required.
+                            <?php elseif ($payment_type == 'free'): ?>
+                                <i class="fas fa-gift"></i> This is a free service. No payment required.
+                            <?php endif; ?>
+                        </div>
+                    </div>
+
                     <!-- COLOR / VARIANT SELECTOR -->
                     <?php if ($has_stock_tracking && !$IS_SERVICE): ?>
                     <div class="color-selector-box">
@@ -1241,6 +1337,27 @@ $lens_prices_display = [
                                 <i class="fas fa-info-circle"></i> Please select a color to continue.
                             </p>
                         <?php endif; ?>
+                    </div>
+                    <?php endif; ?>
+
+                    <!-- ===== SIZE SELECTOR (like product-view.php) ===== -->
+                    <?php if ($has_sizes): ?>
+                    <div class="size-selector-box">
+                        <div class="cs-title">
+                            <i class="fas fa-ruler-combined"></i>
+                            Frame Size
+                            <span class="cs-selected-label" id="sizeSelectedLabel">— Select a size</span>
+                        </div>
+                        <div class="size-btns" id="sizeBtns">
+                            <?php foreach ($available_sizes as $size): ?>
+                            <button class="size-btn" data-size="<?php echo htmlspecialchars($size); ?>" onclick="selectSize(this)">
+                                <?php echo htmlspecialchars($size); ?>
+                            </button>
+                            <?php endforeach; ?>
+                        </div>
+                        <p class="cs-hint" id="sizeHint">
+                            <i class="fas fa-info-circle"></i> Please select your preferred frame size.
+                        </p>
                     </div>
                     <?php endif; ?>
 
@@ -1290,14 +1407,22 @@ $lens_prices_display = [
                         <button class="btn-main-action" onclick="openModal('reservation')">
                             <i class="fas fa-bookmark"></i> Reserve This Item
                         </button>
-                        <p class="action-helper"><i class="fas fa-info-circle"></i> <?php echo $product['downpayment_percentage'] ?? 30; ?>% downpayment required.</p>
+                        <p class="action-helper"><i class="fas fa-info-circle"></i> <?php echo $downpayment_percent; ?>% downpayment required.</p>
                     <?php else: ?>
-                        <button class="btn-main-action" id="mainActionBtn" onclick="handleMainAction()" <?php echo $has_stock_tracking ? 'disabled' : ''; ?>>
+                        <button class="btn-main-action" id="mainActionBtn" onclick="handleMainAction()" <?php echo ($has_stock_tracking || $has_sizes) ? 'disabled' : ''; ?>>
                             <i class="fas fa-arrow-right"></i> Continue
                         </button>
                         <p class="action-helper" id="actionHelper">
                             <i class="fas fa-info-circle"></i>
-                            <?php echo $has_stock_tracking ? 'Select a color variant to continue.' : 'Select your lens option below to continue.'; ?>
+                            <?php 
+                            if ($has_sizes) {
+                                echo 'Please select a frame size to continue.';
+                            } elseif ($has_stock_tracking) {
+                                echo 'Select a color variant to continue.';
+                            } else {
+                                echo 'Select your lens option below to continue.';
+                            }
+                            ?>
                         </p>
                     <?php endif; ?>
 
@@ -1437,7 +1562,7 @@ $lens_prices_display = [
 </div><!-- /main-content -->
 
 <!-- ============================================ -->
-<!-- IMPROVED SCHEDULE MODAL WITH VAT & DISCOUNT -->
+<!-- MODAL (same as before) -->
 <!-- ============================================ -->
 <div class="modal-overlay" id="scheduleModal">
     <div class="modal-box">
@@ -1447,7 +1572,7 @@ $lens_prices_display = [
         </div>
         <div class="modal-body">
 
-            <!-- ===== SELECTED ITEM SUMMARY ===== -->
+            <!-- Summary Box -->
             <div class="modal-summary-box" id="modalSummaryBox">
                 <div class="ms-row">
                     <span class="ms-label">Product:</span>
@@ -1456,6 +1581,10 @@ $lens_prices_display = [
                 <div class="ms-row" id="modalColorRow">
                     <span class="ms-label">Color:</span>
                     <span class="ms-value" id="modalColorName">—</span>
+                </div>
+                <div class="ms-row" id="modalSizeRow">
+                    <span class="ms-label">Size:</span>
+                    <span class="ms-value" id="modalSizeName">—</span>
                 </div>
                 <div class="ms-row" id="modalLensRow">
                     <span class="ms-label">Lens Type:</span>
@@ -1480,10 +1609,9 @@ $lens_prices_display = [
                 <?php endif; ?>
             </div>
 
-            <!-- ===== DIVIDER ===== -->
             <div class="modal-divider" style="height:1px; background:var(--border-color); margin:0 0 14px 0;"></div>
 
-            <!-- ===== DATE & TIME ===== -->
+            <!-- Date & Time -->
             <div class="modal-form-row">
                 <div class="modal-form-group half">
                     <label class="modal-label"><i class="fas fa-calendar-alt"></i> Date *</label>
@@ -1505,30 +1633,24 @@ $lens_prices_display = [
                 <textarea id="mNotes" class="modal-input modal-textarea" rows="2" placeholder="Any special requests..."></textarea>
             </div>
 
-            <!-- ===== DIVIDER ===== -->
             <div class="modal-divider" style="height:1px; background:var(--border-color); margin:0 0 14px 0;"></div>
 
-            <!-- ===== PRICE BREAKDOWN WITH VAT & DISCOUNT ===== -->
+            <!-- Price Breakdown -->
             <div class="modal-price-box" id="modalPriceBox">
                 <div class="modal-price-title"><i class="fas fa-receipt"></i> Payment Summary</div>
                 
-                <!-- Subtotal -->
                 <div class="mpb-row">
                     <span class="mpb-label">Subtotal</span>
                     <span class="mpb-value" id="mpbSubtotal">₱<?php echo number_format($subtotal, 2); ?></span>
                 </div>
                 
-                <!-- Discount (if applicable) -->
                 <?php if ($discount_amount > 0): ?>
                 <div class="mpb-row discount">
-                    <span class="mpb-label">
-                        <?php echo $is_pwd_senior ? 'PWD/Senior Discount (20%)' : 'Discount'; ?>
-                    </span>
+                    <span class="mpb-label"><?php echo $is_pwd_senior ? 'PWD/Senior Discount (20%)' : 'Discount'; ?></span>
                     <span class="mpb-value">-₱<?php echo number_format($discount_amount, 2); ?></span>
                 </div>
                 <?php endif; ?>
                 
-                <!-- Subtotal after discount -->
                 <?php if ($discount_amount > 0): ?>
                 <div class="mpb-row">
                     <span class="mpb-label">Subtotal After Discount</span>
@@ -1536,13 +1658,11 @@ $lens_prices_display = [
                 </div>
                 <?php endif; ?>
                 
-                <!-- VAT -->
                 <div class="mpb-row">
                     <span class="mpb-label">VAT (<?php echo $vat_rate; ?>%)</span>
                     <span class="mpb-value">₱<?php echo number_format($vat_amount, 2); ?></span>
                 </div>
                 
-                <!-- Lens Upgrade (if selected) -->
                 <div class="mpb-row" id="mpbLensRow" style="display:none;">
                     <span class="mpb-label">Lens Upgrade</span>
                     <span class="mpb-value" id="mpbLensVal">+₱0</span>
@@ -1550,25 +1670,21 @@ $lens_prices_display = [
                 
                 <div class="mpb-divider"></div>
                 
-                <!-- Total -->
                 <div class="mpb-row total">
                     <span class="mpb-label" style="font-weight:700;">Total</span>
                     <span class="mpb-value" id="mpbTotal">₱<?php echo number_format($final_total, 2); ?></span>
                 </div>
                 
-                <!-- Downpayment -->
                 <div class="mpb-row dp">
                     <span class="mpb-label">Downpayment (<?php echo $downpayment_percent; ?>%)</span>
                     <span class="mpb-value" id="mpbDp">₱<?php echo number_format($downpayment_amount, 2); ?></span>
                 </div>
                 
-                <!-- Balance -->
                 <div class="mpb-row balance">
                     <span class="mpb-label">Balance (upon visit)</span>
                     <span class="mpb-value" id="mpbBal">₱<?php echo number_format($balance_amount, 2); ?></span>
                 </div>
                 
-                <!-- Payment Methods Badges -->
                 <div style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">
                     <?php if ($payment_method_online): ?>
                     <span style="background: var(--bg-secondary); padding: 3px 10px; border-radius: 20px; font-size: 10px; border: 1px solid var(--border-color);">
@@ -1588,14 +1704,12 @@ $lens_prices_display = [
                 </div>
             </div>
 
-            <!-- ===== APPOINTMENT NOTICE ===== -->
             <div class="modal-apt-notice" id="modalAptNotice" style="display:none;">
                 <i class="fas fa-calendar-check" style="font-size:18px; display:block; margin-bottom:6px;"></i>
                 <strong>Appointment Booking</strong><br>
                 The clinic will confirm your schedule. No downpayment required.
             </div>
 
-            <!-- ===== EYE EXAM NOTICE ===== -->
             <div class="modal-exam-notice" id="modalExamNotice" style="display:none;">
                 <i class="fas fa-stethoscope" style="font-size:18px; display:block; margin-bottom:6px;"></i>
                 <strong>Eye Exam Required</strong><br>
@@ -1620,9 +1734,10 @@ let selectedLens = '<?php echo ($IS_ACCESSORY || $IS_SERVICE) ? '' : ($IS_LENS_O
 let rxKnowledge = null;
 let currentModal = null;
 let selectedColor = null;
+let selectedSize = null;
 
 const BASE_PRICE         = <?php echo $display_price; ?>;
-const DP_PERCENT         = <?php echo (float)($downpayment_percent); ?>;
+const DP_PERCENT         = <?php echo (float)$downpayment_percent; ?>;
 const DISCOUNT_AMOUNT    = <?php echo (float)$discount_amount; ?>;
 const VAT_RATE           = <?php echo (float)$vat_rate; ?>;
 const IS_SERVICE         = <?php echo $IS_SERVICE ? 'true' : 'false'; ?>;
@@ -1631,8 +1746,27 @@ const IS_LENS_ONLY       = <?php echo $IS_LENS_ONLY ? 'true' : 'false'; ?>;
 const IS_CONTACT         = <?php echo $IS_CONTACT_LENS ? 'true' : 'false'; ?>;
 const NEEDS_LENS         = <?php echo $NEEDS_LENS_SELECTION ? 'true' : 'false'; ?>;
 const HAS_STOCK_TRACKING = <?php echo $has_stock_tracking ? 'true' : 'false'; ?>;
+const HAS_SIZES          = <?php echo $has_sizes ? 'true' : 'false'; ?>;
 const IS_FULLY_SOLD_OUT  = <?php echo $is_fully_sold_out ? 'true' : 'false'; ?>;
 const LENS_PRICES  = { frame_only:0, single_vision:500, progressive:1500, blue_cut:800, contact_daily:0, contact_monthly:0 };
+
+// ============================================
+// SIZE SELECTION
+// ============================================
+function selectSize(btn) {
+    document.querySelectorAll('.size-btn').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+    selectedSize = btn.dataset.size;
+    const label = document.getElementById('sizeSelectedLabel');
+    if (label) {
+        label.textContent = selectedSize;
+        label.classList.add('chosen');
+    }
+    const hint = document.getElementById('sizeHint');
+    if (hint) hint.style.display = 'none';
+    updateActionButton();
+    updateModalSummary();
+}
 
 // ============================================
 // COLOR SELECTION
@@ -1653,6 +1787,7 @@ function selectColor(btn) {
     const btn2 = document.getElementById('mainActionBtn');
     if (btn2 && btn2.disabled && !IS_FULLY_SOLD_OUT) btn2.disabled = false;
     updateActionButton();
+    updateModalSummary();
 }
 
 // ============================================
@@ -1701,6 +1836,16 @@ function updateModalSummary() {
         colorName.textContent = '—';
     }
 
+    const sizeRow = document.getElementById('modalSizeRow');
+    const sizeName = document.getElementById('modalSizeName');
+    if (selectedSize) {
+        sizeRow.style.display = 'flex';
+        sizeName.textContent = selectedSize;
+    } else {
+        sizeRow.style.display = 'flex';
+        sizeName.textContent = '—';
+    }
+
     const lensRow = document.getElementById('modalLensRow');
     const lensName = document.getElementById('modalLensName');
     if (selectedLens) {
@@ -1719,7 +1864,7 @@ function updateModalSummary() {
 }
 
 // ============================================
-// PRICE DISPLAY WITH VAT & DISCOUNT
+// PRICE DISPLAY
 // ============================================
 function getLensPrice() { return LENS_PRICES[selectedLens] || 0; }
 
@@ -1727,8 +1872,6 @@ function updatePriceDisplay() {
     const lp = getLensPrice();
     const basePrice = BASE_PRICE;
     const subtotal = basePrice + lp;
-    
-    // Calculate with discount and VAT
     const discountAmount = DISCOUNT_AMOUNT;
     let totalAfterDiscount = subtotal - discountAmount;
     const vatAmount = totalAfterDiscount * (VAT_RATE / 100);
@@ -1760,27 +1903,55 @@ function updateActionButton() {
     const btn = document.getElementById('mainActionBtn');
     const helper = document.getElementById('actionHelper');
     if (!btn) return;
+
+    // CHECK SIZE FIRST
+    if (HAS_SIZES && !selectedSize && !IS_FULLY_SOLD_OUT && !IS_LENS_ONLY && !IS_CONTACT) {
+        btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
+        btn.disabled = true;
+        if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Please select a frame size to continue.';
+        return;
+    }
+
+    // CHECK COLOR
+    if (HAS_STOCK_TRACKING && !IS_FULLY_SOLD_OUT && !selectedColor) {
+        btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
+        btn.disabled = true;
+        if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Please select a color/variant to continue.';
+        return;
+    }
+
     const isFrameOnly = (selectedLens === 'frame_only');
     if (isFrameOnly) {
         btn.innerHTML = '<i class="fas fa-bookmark"></i> Reserve — Frame Only';
         btn.className = 'btn-main-action';
+        btn.disabled = false;
         if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> ' + DP_PERCENT + '% downpayment required.';
     } else if (!rxKnowledge) {
         btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
         btn.className = 'btn-main-action';
+        btn.disabled = false;
         if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Choose your prescription option above.';
     } else if (rxKnowledge === 'dont_know') {
         btn.innerHTML = '<i class="fas fa-calendar-plus"></i> Book Eye Exam';
         btn.className = 'btn-main-action apt';
+        btn.disabled = false;
         if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> We\'ll schedule an eye exam for you.';
     } else {
         btn.innerHTML = '<i class="fas fa-bookmark"></i> Reserve with Prescription';
         btn.className = 'btn-main-action';
+        btn.disabled = false;
         if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> ' + DP_PERCENT + '% downpayment required. Rx verified on visit.';
     }
 }
 
 function handleMainAction() {
+    // CHECK SIZE FIRST
+    if (HAS_SIZES && !selectedSize && !IS_FULLY_SOLD_OUT && !IS_LENS_ONLY && !IS_CONTACT) {
+        showToast('Please select a frame size first.', 'error');
+        document.getElementById('sizeBtns')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+    }
+
     if (HAS_STOCK_TRACKING && !IS_FULLY_SOLD_OUT && !selectedColor) {
         showToast('Please select a color/variant first.', 'error');
         document.getElementById('colorBtns')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1877,6 +2048,9 @@ function submitAction() {
         formData.append('color_code', selectedColor.code);
         formData.append('color_name', selectedColor.name);
     }
+    if (selectedSize) {
+        formData.append('frame_size', selectedSize);
+    }
     if (rxKnowledge === 'know') {
         formData.append('od_sph',  document.getElementById('od_sph')?.value || '');
         formData.append('od_cyl',  document.getElementById('od_cyl')?.value || '');
@@ -1904,7 +2078,7 @@ function submitAction() {
 }
 
 // ============================================
-// 3D VIEWER (keep your existing 3D viewer code)
+// 3D VIEWER
 // ============================================
 let scene, camera, renderer, controls, model;
 let autoRotate = false, wireframeMode = false;

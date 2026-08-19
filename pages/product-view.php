@@ -13,9 +13,23 @@ if (!isset($_SESSION['user_id'])) {
 $user_id = $_SESSION['user_id'];
 $product_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 
-if (!$product_id) {
+if (!$product_id) {     
     header('Location: dashboard.php');
     exit();
+}
+
+// ============================================
+// STORE REFERRER FOR BACK BUTTON
+// ============================================
+if (isset($_SERVER['HTTP_REFERER']) && strpos($_SERVER['HTTP_REFERER'], $_SERVER['HTTP_HOST']) !== false) {
+    $referrer = $_SERVER['HTTP_REFERER'];
+    $referrer_parts = parse_url($referrer);
+    $referrer_path = isset($referrer_parts['path']) ? $referrer_parts['path'] : '';
+
+    // Only store if it's not the current page
+    if ($referrer_path !== $_SERVER['SCRIPT_NAME']) {
+        $_SESSION['last_page'] = $referrer;
+    }
 }
 
 // Get user data
@@ -69,12 +83,11 @@ if (mysqli_num_rows($product_query) == 0) {
     exit();
 }
 
-// ✅ FIXED: Only fetch once (duplicate line removed)
 $product = mysqli_fetch_assoc($product_query);
 $category = $product['category'];
 
 // ============================================
-// ✅ GET EXTRA FIELDS (product details) - DYNAMIC
+// GET EXTRA FIELDS
 // ============================================
 $extra_fields = [];
 if (!empty($product['extra_fields_json'])) {
@@ -82,21 +95,19 @@ if (!empty($product['extra_fields_json'])) {
 }
 
 // ============================================
-// ✅ GET AVAILABLE SIZES - ONLY FROM DATABASE (NO DEFAULTS)
+// GET AVAILABLE SIZES
 // ============================================
 $available_sizes = [];
 if (!empty($extra_fields['sizes_available']) && is_array($extra_fields['sizes_available'])) {
     $available_sizes = $extra_fields['sizes_available'];
 }
-// ✅ WALANG DEFAULT SIZES! Kung walang laman, empty array lang.
 
 // ============================================
-// ✅ GET SPEC FIELDS - ONLY FROM DATABASE (NO HARD-CODED)
+// GET SPEC FIELDS
 // ============================================
 $spec_fields = [];
 $spec_fields_display = [];
 
-// Define possible fields per category (para malaman kung ano ang titingnan)
 $possible_specs = [];
 if (in_array($category, ['Frames', 'Eyeglasses', 'Sunglasses'])) {
     $possible_specs = [
@@ -144,7 +155,6 @@ if (in_array($category, ['Frames', 'Eyeglasses', 'Sunglasses'])) {
     ];
 }
 
-// ✅ ONLY ADD FIELDS THAT HAVE VALUES IN DATABASE
 foreach ($possible_specs as $key => $label) {
     if (!empty($extra_fields[$key])) {
         $spec_fields[$key] = $label;
@@ -153,7 +163,7 @@ foreach ($possible_specs as $key => $label) {
 }
 
 // ============================================
-// ✅ GET WARRANTY DATA - FULL DETAILS
+// GET WARRANTY DATA
 // ============================================
 $warranty_period = $product['warranty_period'] ?? '';
 $warranty_coverage = [];
@@ -178,7 +188,7 @@ $has_warranty = ($warranty_period && $warranty_period != 'no_warranty');
 $clinic_id = $product['clinic_id'];
 
 // ============================================
-// ✅ GET CLINIC PAYMENT CONFIGURATION
+// GET CLINIC PAYMENT CONFIGURATION
 // ============================================
 $clinic_payment_config = getClinicPaymentPolicy($conn, $clinic_id);
 
@@ -204,7 +214,7 @@ $days_left        = $is_on_sale ? (int)ceil((strtotime($product['sale_end']) - s
 $savings          = $is_on_sale ? ($original_price - $sale_price) : 0;
 
 // ============================================
-// ✅ CALCULATE PAYMENT BASED ON CLINIC POLICY
+// CALCULATE PAYMENT
 // ============================================
 $payment_info = calculatePaymentAmounts($conn, $clinic_id, $display_price);
 
@@ -247,15 +257,10 @@ $clinic_payment_policy_display = $policy_labels[$clinic_payment_policy] ?? 'Stan
 // ============================================
 $category = $product['category'];
 
-// Categories that require appointment (with grado)
 $NEEDS_LENS_SELECTION = in_array($category, ['Frames', 'Eyeglasses', 'Sunglasses', 'Lenses', 'Contact Lenses']);
-// Direct reservation only (no appointment)
 $IS_ACCESSORY = in_array($category, ['Accessories', 'Parts', 'Cleaning Kits']);
-// Direct appointment (services)
 $IS_SERVICE = in_array($category, ['Service', 'Eye Exam', 'Treatment', 'Screening']);
-// Contact lens specific
 $IS_CONTACT_LENS = ($category === 'Contact Lenses');
-// Lenses only (no frame option)
 $IS_LENS_ONLY = ($category === 'Lenses');
 
 // ============================================
@@ -338,9 +343,11 @@ $product_images = getProductImages($product);
 $has_multiple_images = count($product_images) > 1;
 
 // ============================================
-// CHECK 3D MODEL
+// ✅ FIXED: CHECK 3D MODEL - BOTH TABLES
 // ============================================
 $has_3d = false;
+
+// Check in custom_3d_requests first
 if (!empty($product['inventory_id'])) {
     $r3d = mysqli_fetch_assoc(mysqli_query($conn,
         "SELECT completed_model_file FROM custom_3d_requests
@@ -349,7 +356,21 @@ if (!empty($product['inventory_id'])) {
          AND completed_model_file IS NOT NULL
          ORDER BY completed_at DESC LIMIT 1"
     ));
-    if ($r3d && !empty($r3d['completed_model_file'])) $has_3d = true;
+    if ($r3d && !empty($r3d['completed_model_file'])) {
+        $has_3d = true;
+    }
+}
+
+// If not found, check in product_3d_models table
+if (!$has_3d) {
+    $p3d = mysqli_fetch_assoc(mysqli_query($conn,
+        "SELECT has_3d, model_file FROM product_3d_models
+         WHERE product_id = $product_id AND has_3d = 1 AND model_file IS NOT NULL
+         LIMIT 1"
+    ));
+    if ($p3d && $p3d['has_3d'] == 1 && !empty($p3d['model_file'])) {
+        $has_3d = true;
+    }
 }
 
 // ============================================
@@ -368,7 +389,7 @@ $fav_check = mysqli_query($conn, "SELECT id FROM favorites WHERE user_id = $user
 $is_product_favorited = mysqli_num_rows($fav_check) > 0;
 
 // ============================================
-// CHECK EXISTING ACTIVE APPOINTMENT (for this product)
+// CHECK EXISTING ACTIVE APPOINTMENT
 // ============================================
 $existing_appointment = mysqli_fetch_assoc(mysqli_query($conn,
     "SELECT id, status, ref_no FROM appointments
@@ -377,7 +398,7 @@ $existing_appointment = mysqli_fetch_assoc(mysqli_query($conn,
 )) ?? null;
 
 // ============================================
-// GET SIMILAR PRODUCTS (same clinic, same category)
+// GET SIMILAR PRODUCTS
 // ============================================
 $similar_query = mysqli_query($conn, "
     SELECT p.*
@@ -389,12 +410,12 @@ $similar_query = mysqli_query($conn, "
 ");
 
 // ============================================
-// ✅ FIXED: HANDLE AJAX SUBMISSION
+// HANDLE AJAX SUBMISSION
 // ============================================
 if (isset($_POST['ajax_action'])) {
     header('Content-Type: application/json');
 
-    $action = mysqli_real_escape_string($conn, $_POST['ajax_action']); // 'reserve' or 'appointment'
+    $action = mysqli_real_escape_string($conn, $_POST['ajax_action']);
     $lens_type = mysqli_real_escape_string($conn, $_POST['lens_type'] ?? 'frame_only');
     $prescription_knowledge = mysqli_real_escape_string($conn, $_POST['prescription_knowledge'] ?? '');
     $od_sph = mysqli_real_escape_string($conn, $_POST['od_sph'] ?? '');
@@ -411,7 +432,6 @@ if (isset($_POST['ajax_action'])) {
     $color_name = mysqli_real_escape_string($conn, $_POST['color_name'] ?? '');
     $frame_size = mysqli_real_escape_string($conn, $_POST['frame_size'] ?? '');
 
-    // Basic validations
     if (!$preferred_date || !$preferred_time) {
         echo json_encode(['success' => false, 'message' => 'Please select a date and time.']);
         exit();
@@ -421,30 +441,20 @@ if (isset($_POST['ajax_action'])) {
         exit();
     }
 
-    // ============================================
-    // DETERMINE FLOW
-    // ============================================
     $make_appointment = false;
 
     if ($IS_SERVICE) {
-        // Always appointment
         $make_appointment = true;
     } elseif ($IS_ACCESSORY) {
-        // Always reservation
         $make_appointment = false;
     } elseif ($NEEDS_LENS_SELECTION) {
         if ($lens_type === 'frame_only') {
-            // Frame only = reservation, no prescription needed
             $make_appointment = false;
         } else {
-            // With lenses = check prescription knowledge
             $make_appointment = ($prescription_knowledge === 'dont_know');
         }
     }
 
-    // ============================================
-    // SAVE PRESCRIPTION (if knows it)
-    // ============================================
     $prescription_id = null;
     if (!$make_appointment && $prescription_knowledge === 'know' && ($od_sph || $os_sph)) {
         $insert_pres = mysqli_query($conn, "
@@ -455,11 +465,7 @@ if (isset($_POST['ajax_action'])) {
         if ($insert_pres) $prescription_id = mysqli_insert_id($conn);
     }
 
-    // ============================================
-    // APPOINTMENT FLOW
-    // ============================================
     if ($make_appointment) {
-        // Check for duplicate appointment for this product
         $dup_apt = mysqli_fetch_assoc(mysqli_query($conn,
             "SELECT id FROM appointments WHERE user_id = $user_id AND product_id = $product_id AND status IN ('pending','confirmed') LIMIT 1"
         ));
@@ -468,7 +474,6 @@ if (isset($_POST['ajax_action'])) {
             exit();
         }
 
-        // Check time conflict
         $conflict = mysqli_fetch_assoc(mysqli_query($conn,
             "SELECT a.*, c.name as clinic_name FROM appointments a
              JOIN clinics c ON a.clinic_id = c.id
@@ -485,7 +490,6 @@ if (isset($_POST['ajax_action'])) {
         $ref_no = 'APP-' . strtoupper(substr(uniqid(), -8));
         $notes_final = $notes ?: ($IS_SERVICE ? 'Service booking' : 'Needs eye exam before lens fitting');
 
-        // Determine item_type
         $item_type_db = $IS_SERVICE ? 'service' : 'product';
 
         mysqli_query($conn, "
@@ -503,7 +507,6 @@ if (isset($_POST['ajax_action'])) {
 
         $appointment_id = mysqli_insert_id($conn);
 
-        // Link prescription if saved
         if ($prescription_id) {
             mysqli_query($conn, "UPDATE user_prescriptions SET appointment_id = $appointment_id WHERE id = $prescription_id");
         }
@@ -522,10 +525,7 @@ if (isset($_POST['ajax_action'])) {
         exit();
     }
 
-    // ============================================
-    // ✅ RESERVATION FLOW - FIXED WITH AUTO_INCREMENT
-    // ============================================
-    // Check duplicate reservation
+    // RESERVATION FLOW
     $dup_res = mysqli_fetch_assoc(mysqli_query($conn,
         "SELECT id FROM reservations WHERE user_id = $user_id AND product_id = $product_id AND status IN ('pending', 'confirmed') LIMIT 1"
     ));
@@ -534,7 +534,6 @@ if (isset($_POST['ajax_action'])) {
         exit();
     }
 
-    // Calculate pricing using clinic payment config
     $lens_prices = [
         'frame_only'      => 0,
         'single_vision'   => 500,
@@ -546,7 +545,6 @@ if (isset($_POST['ajax_action'])) {
     $lens_price_add = $lens_prices[$lens_type] ?? 0;
     $total_amount = $product['price'] + $lens_price_add;
 
-    // ✅ USE CLINIC PAYMENT CONFIGURATION
     $payment_info = calculatePaymentAmounts($conn, $clinic_id, $total_amount);
 
     $downpayment_amount = $payment_info['downpayment_amount'];
@@ -557,7 +555,6 @@ if (isset($_POST['ajax_action'])) {
 
     $reservation_code = 'RES-' . strtoupper(substr(uniqid(), -8));
 
-    // ✅ Set expiration and status
     if ($requires_payment) {
         $expires_at = date('Y-m-d H:i:s', strtotime('+48 hours'));
         $payment_status = 'unpaid';
@@ -572,17 +569,16 @@ if (isset($_POST['ajax_action'])) {
         $reservation_status = 'confirmed';
     }
 
-    // ✅ FIXED: REMOVED 'id' from INSERT - let AUTO_INCREMENT handle it!
     $insert_query = "
         INSERT INTO reservations
         (reservation_code, user_id, product_id, clinic_id, lens_type, prescription_id,
-         color_code, color_name,
+         color_code, color_name, frame_size,
          total_amount, downpayment_amount, balance_amount,
          preferred_date, preferred_time, notes, status, payment_status, expires_at, created_at)
         VALUES
         ('$reservation_code', $user_id, $product_id, $clinic_id, '$lens_type',
          " . ($prescription_id ? $prescription_id : 'NULL') . ",
-         '$color_code', '$color_name',
+         '$color_code', '$color_name', '$frame_size',
          $total_amount, $downpayment_amount, $balance_amount,
          '$preferred_date', '$preferred_time', '$notes', '$reservation_status', '$payment_status', '$expires_at', NOW())
     ";
@@ -603,12 +599,10 @@ if (isset($_POST['ajax_action'])) {
         exit();
     }
 
-    // Link prescription
     if ($prescription_id) {
         mysqli_query($conn, "UPDATE user_prescriptions SET reservation_id = $reservation_id WHERE id = $prescription_id");
     }
 
-    // ✅ Determine redirect URL based on booking flow
     if ($requires_payment) {
         if ($clinic_booking_flow === 'pay_first') {
             $redirect_url = 'payment.php?reservation_id=' . $reservation_id;
@@ -661,6 +655,14 @@ if (isset($_POST['ajax_action'])) {
 
 $active_nav = 'discover';
 include '../includes/navbar.php';
+
+// ============================================
+// DETERMINE BACK URL
+// ============================================
+$back_url = 'clinic-details.php?id=' . $clinic_id; // fallback
+if (isset($_SESSION['last_page'])) {
+    $back_url = $_SESSION['last_page'];
+}
 ?>
 
 <!DOCTYPE html>
@@ -674,7 +676,7 @@ include '../includes/navbar.php';
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Serif+Display&display=swap" rel="stylesheet">
 
     <style>
-    /* ===== RESET & VARIABLES ===== */
+    /* ===== ALL STYLES FROM ORIGINAL ===== */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html { scroll-behavior: smooth; }
     html, body { width: 100%; overflow-x: hidden; }
@@ -726,7 +728,6 @@ include '../includes/navbar.php';
         transition: background 0.3s, color 0.3s;
     }
 
-    /* ===== LAYOUT ===== */
     .main-content {
         max-width: 1300px;
         margin: 0 auto;
@@ -735,7 +736,6 @@ include '../includes/navbar.php';
     @media (min-width: 1024px) { .main-content { padding: 32px 40px 60px; } }
     @media (max-width: 768px) { .main-content { padding: 16px 14px 100px; } }
 
-    /* ===== BREADCRUMB ===== */
     .breadcrumb {
         display: flex;
         align-items: center;
@@ -762,7 +762,6 @@ include '../includes/navbar.php';
     .breadcrumb .sep { color: var(--border-color); }
     .breadcrumb .current { color: var(--text-secondary); }
 
-    /* ===== PRODUCT GRID ===== */
     .product-grid {
         display: grid;
         grid-template-columns: 1fr 1.2fr;
@@ -771,7 +770,7 @@ include '../includes/navbar.php';
     }
     @media (max-width: 900px) { .product-grid { grid-template-columns: 1fr; } }
 
-    /* ===== IMAGE SECTION — Lenskart style ===== */
+    /* ===== IMAGE SECTION ===== */
     .image-section {
         position: sticky;
         top: 80px;
@@ -789,7 +788,6 @@ include '../includes/navbar.php';
         gap: 0;
     }
 
-    /* Vertical thumbnail strip — left side */
     .thumb-strip {
         display: flex;
         flex-direction: column;
@@ -818,7 +816,6 @@ include '../includes/navbar.php';
     .thumb img { width: 100%; height: 100%; object-fit: contain; padding: 4px; }
     .thumb:hover, .thumb.active { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(0,183,97,0.2); }
 
-    /* Main image area — right of thumbs */
     .main-image-area {
         position: relative;
         flex: 1;
@@ -829,7 +826,6 @@ include '../includes/navbar.php';
     }
     @media (max-width: 768px) { .main-image-area { height: 300px; } }
 
-    /* Custom slider — replaces Swiper for reliability */
     .product-swiper {
         width: 100%;
         height: 440px;
@@ -866,7 +862,6 @@ include '../includes/navbar.php';
     }
     .swiper-slide img:hover { transform: scale(1.04); }
 
-    /* Dot pagination */
     .swiper-pagination {
         position: absolute;
         bottom: 8px;
@@ -905,7 +900,6 @@ include '../includes/navbar.php';
         pointer-events: none;
     }
 
-    /* zoom icon overlay on hover */
     .main-image-area::after {
         content: '\f00e';
         font-family: 'Font Awesome 6 Free';
@@ -952,7 +946,7 @@ include '../includes/navbar.php';
     .img-nav.prev { left: 10px; }
     .img-nav.next { right: 10px; }
 
-    /* 3D Button below image */
+    /* ===== 3D BUTTON ===== */
     .btn-3d-full {
         display: flex;
         align-items: center;
@@ -972,56 +966,7 @@ include '../includes/navbar.php';
     }
     .btn-3d-full:hover { opacity: 0.92; }
 
-    /* Responsive: on mobile, thumbs go horizontal on top */
-    @media (max-width: 600px) {
-        .image-wrapper { flex-direction: column-reverse; }
-        .thumb-strip {
-            flex-direction: row;
-            max-height: none;
-            overflow-x: auto;
-            overflow-y: hidden;
-            border-right: none;
-            border-top: 1px solid var(--border-light);
-            padding: 10px 12px;
-            width: 100%;
-        }
-        .thumb { width: 54px; height: 54px; }
-        .main-image-area { height: 280px; }
-    }
-
-    @media (max-width: 900px) {
-        .image-wrapper { flex-direction: column-reverse; }
-        .thumb-strip {
-            flex-direction: row;
-            max-height: none;
-            overflow-x: auto;
-            overflow-y: hidden;
-            border-right: none;
-            border-top: 1px solid var(--border-light);
-            padding: 10px 14px;
-            width: 100%;
-        }
-        .thumb { width: 60px; height: 60px; }
-        .main-image-area { height: 360px; }
-    }
-
-    @media (min-width: 901px) {
-        .image-wrapper { flex-direction: row; }
-        .thumb-strip {
-            flex-direction: column;
-            max-height: 440px;
-            overflow-y: auto;
-            overflow-x: hidden;
-            border-right: 1px solid var(--border-light);
-            border-top: none;
-            padding: 12px 10px;
-            width: auto;
-        }
-        .thumb { width: 64px; height: 64px; }
-        .main-image-area { height: 440px; }
-    }
-
-    /* ===== LENSKART-STYLE LIGHTBOX ===== */
+    /* ===== LIGHTBOX ===== */
     .lk-lightbox {
         display: none;
         position: fixed;
@@ -1049,7 +994,6 @@ include '../includes/navbar.php';
     .theme-dark .lk-lb-inner { background: #1A1A1A; }
     @keyframes lbIn { from { opacity:0; transform: scale(0.96); } to { opacity:1; transform: none; } }
 
-    /* Lightbox thumbnail strip */
     .lk-lb-thumbs {
         display: flex;
         flex-direction: column;
@@ -1081,7 +1025,6 @@ include '../includes/navbar.php';
     .lk-lb-thumb img { width: 100%; height: 100%; object-fit: contain; padding: 4px; }
     .lk-lb-thumb.active { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(0,183,97,0.25); }
 
-    /* Lightbox main image */
     .lk-lb-main {
         flex: 1;
         display: flex;
@@ -1103,7 +1046,6 @@ include '../includes/navbar.php';
         user-select: none;
     }
 
-    /* Lightbox nav arrows */
     .lk-lb-prev, .lk-lb-next {
         position: absolute;
         top: 50%;
@@ -1127,7 +1069,6 @@ include '../includes/navbar.php';
     .lk-lb-prev { left: 12px; }
     .lk-lb-next { right: 12px; }
 
-    /* Lightbox close */
     .lk-lb-close {
         position: absolute;
         top: 14px;
@@ -1149,7 +1090,6 @@ include '../includes/navbar.php';
     .theme-dark .lk-lb-close { background: rgba(255,255,255,0.1); color: white; }
     .lk-lb-close:hover { background: var(--danger); color: white; }
 
-    /* Lightbox counter */
     .lk-lb-counter {
         position: absolute;
         bottom: 14px;
@@ -1241,7 +1181,6 @@ include '../includes/navbar.php';
         font-weight: 400;
     }
 
-    /* Sale banner */
     .sale-banner {
         display: flex;
         align-items: center;
@@ -1267,7 +1206,6 @@ include '../includes/navbar.php';
         opacity: 0.9;
     }
 
-    /* Savings row */
     .savings-row {
         font-size: 12px;
         color: var(--success);
@@ -1287,7 +1225,6 @@ include '../includes/navbar.php';
         margin-bottom: 6px;
     }
 
-    /* Payment Policy Info Card */
     .payment-policy-card {
         margin-top: 16px;
         padding: 14px;
@@ -1310,7 +1247,6 @@ include '../includes/navbar.php';
         font-size: 12px;
     }
 
-    /* Existing reservation/appointment notice */
     .existing-notice {
         display: flex;
         align-items: center;
@@ -1324,7 +1260,7 @@ include '../includes/navbar.php';
     .existing-notice.appointment { background: #DBEAFE; color: #1E40AF; border: 1px solid #BFDBFE; }
     .existing-notice a { color: inherit; font-weight: 700; }
 
-    /* ===== LENS SELECTION CARD ===== */
+    /* ===== LENS SELECTION ===== */
     .flow-card {
         background: var(--bg-secondary);
         border-radius: var(--radius-lg);
@@ -1343,7 +1279,6 @@ include '../includes/navbar.php';
     }
     .flow-card-title i { color: var(--primary); }
 
-    /* Lens option buttons */
     .lens-grid {
         display: grid;
         grid-template-columns: 1fr 1fr;
@@ -1374,7 +1309,6 @@ include '../includes/navbar.php';
     .lens-btn .lp { font-size: 12px; color: var(--primary); font-weight: 600; }
     .lens-btn .ld { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
-    /* Prescription toggle */
     .rx-toggle {
         display: flex;
         gap: 12px;
@@ -1416,7 +1350,6 @@ include '../includes/navbar.php';
     }
     .rx-option:has(input:checked) .icon { background: var(--primary); color: white; }
 
-    /* Prescription form */
     .rx-form {
         background: var(--bg-primary);
         border-radius: var(--radius-md);
@@ -1491,7 +1424,6 @@ include '../includes/navbar.php';
     }
     .rx-note i { color: var(--primary); }
 
-    /* Eye exam info box */
     .eye-exam-box {
         background: var(--primary-light);
         border: 1px solid rgba(0,183,97,0.2);
@@ -1507,7 +1439,6 @@ include '../includes/navbar.php';
     .eye-exam-box i { font-size: 28px; color: var(--primary); }
     .eye-exam-box p { font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
 
-    /* Price summary strip */
     .price-summary {
         background: var(--bg-primary);
         border-radius: var(--radius-md);
@@ -1612,19 +1543,68 @@ include '../includes/navbar.php';
     }
     .cs-hint i { color: var(--primary); }
 
+    /* ===== OUT OF STOCK NOTICE - IMPROVED ===== */
     .sold-out-notice {
         display: flex;
         align-items: flex-start;
         gap: 12px;
         background: #FEE2E2;
-        border: 1px solid #FECACA;
+        border: 2px solid #FECACA;
         border-radius: var(--radius-md);
-        padding: 14px;
+        padding: 16px;
+        margin-bottom: 16px;
     }
     .theme-dark .sold-out-notice { background: #3B0F0F; border-color: #7F1D1D; }
-    .sold-out-notice > i { color: var(--danger); font-size: 18px; flex-shrink: 0; margin-top: 1px; }
-    .sold-out-notice strong { font-size: 14px; color: var(--danger); display: block; margin-bottom: 3px; }
-    .sold-out-notice p { font-size: 12px; color: var(--text-secondary); }
+    .sold-out-notice > i { 
+        color: var(--danger); 
+        font-size: 20px; 
+        flex-shrink: 0; 
+        margin-top: 2px;
+        background: rgba(239,68,68,0.1);
+        padding: 8px;
+        border-radius: 50%;
+    }
+    .sold-out-notice strong { 
+        font-size: 15px; 
+        color: var(--danger); 
+        display: block; 
+        margin-bottom: 4px; 
+    }
+    .sold-out-notice p { 
+        font-size: 13px; 
+        color: var(--text-secondary); 
+        margin: 0;
+        line-height: 1.5;
+    }
+
+    /* ===== SIZE SELECTOR ===== */
+    .size-selector-box {
+        background: var(--bg-primary);
+        border-radius: var(--radius-md);
+        padding: 16px;
+        margin-bottom: 16px;
+        border: 1px solid var(--border-light);
+    }
+    .size-btns {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .size-btn {
+        padding: 8px 16px;
+        border: 2px solid var(--border-color);
+        border-radius: var(--radius-md);
+        background: var(--bg-secondary);
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 13px;
+        transition: all 0.2s;
+    }
+    .size-btn:hover, .size-btn.selected {
+        border-color: var(--primary);
+        background: var(--primary-light);
+        color: var(--primary);
+    }
 
     /* ===== ACTION CARD ===== */
     .action-card {
@@ -1658,7 +1638,13 @@ include '../includes/navbar.php';
         transform: translateY(-2px);
         box-shadow: 0 8px 24px rgba(0,183,97,0.4);
     }
-    .btn-main-action:disabled { opacity: 0.55; cursor: not-allowed; transform: none; box-shadow: none; }
+    .btn-main-action:disabled { 
+        opacity: 0.55; 
+        cursor: not-allowed; 
+        transform: none; 
+        box-shadow: none;
+        background: #9CA3AF;
+    }
 
     .btn-main-action.appointment-style {
         background: linear-gradient(135deg, #3B82F6, #2563EB);
@@ -1919,7 +1905,6 @@ include '../includes/navbar.php';
     @keyframes spin { to { transform: rotate(360deg); } }
     .hidden { display: none !important; }
 
-    /* ===== PRODUCT PAGE FAVORITE BUTTON ===== */
     .fav-product-wrap { margin-bottom: 12px; }
     .btn-fav-product-full {
         width: 100%;
@@ -1947,215 +1932,183 @@ include '../includes/navbar.php';
     @keyframes favPop { 0%{transform:scale(1);} 50%{transform:scale(1.04);} 100%{transform:scale(1);} }
     .theme-dark .btn-fav-product-full { border-color: #333; color: #888; }
     .theme-dark .btn-fav-product-full.active { background: #2a1a1a; border-color: #EF4444; color: #EF4444; }
-    /* ===== SIZE SELECTOR ===== */
-.size-selector-box {
-    background: var(--bg-primary);
-    border-radius: var(--radius-md);
-    padding: 16px;
-    margin-bottom: 16px;
-    border: 1px solid var(--border-light);
-}
-.size-btns {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-}
-.size-btn {
-    padding: 8px 16px;
-    border: 2px solid var(--border-color);
-    border-radius: var(--radius-md);
-    background: var(--bg-secondary);
-    cursor: pointer;
-    font-weight: 600;
-    font-size: 13px;
-    transition: all 0.2s;
-}
-.size-btn:hover, .size-btn.selected {
-    border-color: var(--primary);
-    background: var(--primary-light);
-    color: var(--primary);
-}
 
-/* ===== SPECIFICATIONS ACCORDION ===== */
-.specs-accordion {
-    background: var(--bg-secondary);
-    border-radius: var(--radius-md);
-    margin-bottom: 12px;
-    border: 1px solid var(--border-light);
-    overflow: hidden;
-}
-.specs-header {
-    padding: 14px 18px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    cursor: pointer;
-    font-weight: 600;
-    background: var(--bg-primary);
-    transition: background 0.2s;
-}
-.specs-header:hover {
-    background: var(--border-light);
-}
-.specs-content {
-    padding: 16px 18px;
-    border-top: 1px solid var(--border-light);
-}
-.specs-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 12px;
-}
-.spec-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 13px;
-    padding: 6px 0;
-    border-bottom: 1px dashed var(--border-light);
-}
-.spec-label {
-    color: var(--text-secondary);
-    font-weight: 500;
-}
-.spec-value {
-    color: var(--text-primary);
-    font-weight: 600;
-}
+    /* SPECIFICATIONS & WARRANTY STYLES (from original) */
+    .specs-accordion {
+        background: var(--bg-secondary);
+        border-radius: var(--radius-md);
+        margin-bottom: 12px;
+        border: 1px solid var(--border-light);
+        overflow: hidden;
+    }
+    .specs-header {
+        padding: 14px 18px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        cursor: pointer;
+        font-weight: 600;
+        background: var(--bg-primary);
+        transition: background 0.2s;
+    }
+    .specs-header:hover {
+        background: var(--border-light);
+    }
+    .specs-content {
+        padding: 16px 18px;
+        border-top: 1px solid var(--border-light);
+    }
+    .specs-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+    }
+    .spec-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 13px;
+        padding: 6px 0;
+        border-bottom: 1px dashed var(--border-light);
+    }
+    .spec-label {
+        color: var(--text-secondary);
+        font-weight: 500;
+    }
+    .spec-value {
+        color: var(--text-primary);
+        font-weight: 600;
+    }
 
-/* Warranty Section - Detailed Display */
-.warranty-box {
-    background: var(--bg-secondary);
-    border-radius: var(--radius-md);
-    margin-bottom: 12px;
-    border: 1px solid var(--border-light);
-    overflow: hidden;
-}
-.warranty-header {
-    padding: 14px 18px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    cursor: pointer;
-    font-weight: 600;
-    background: var(--bg-primary);
-}
-.warranty-header:hover {
-    background: var(--border-light);
-}
-.warranty-content {
-    padding: 16px 18px;
-    border-top: 1px solid var(--border-light);
-}
-.warranty-period-badge {
-    background: var(--primary-light);
-    padding: 10px 15px;
-    border-radius: var(--radius-md);
-    margin-bottom: 16px;
-    font-weight: 600;
-    color: var(--primary);
-    display: inline-block;
-}
-.premium-badge {
-    background: #FFC107;
-    color: #856404;
-    padding: 2px 8px;
-    border-radius: 20px;
-    font-size: 11px;
-    margin-left: 8px;
-}
-.coverage-title, .exclusions-title, .terms-title, .claim-title, .care-title {
-    font-weight: 700;
-    margin-bottom: 10px;
-    font-size: 13px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-.coverage-grid {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 20px;
-    margin-bottom: 16px;
-}
-.coverage-category {
-    flex: 1;
-    min-width: 200px;
-}
-.coverage-category strong {
-    font-size: 12px;
-    display: block;
-    margin-bottom: 6px;
-}
-.coverage-category ul {
-    margin: 0;
-    padding-left: 0;
-    list-style: none;
-}
-.coverage-category li {
-    font-size: 12px;
-    margin: 4px 0;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-.coverage-category li i {
-    color: var(--success);
-    font-size: 10px;
-}
-.warranty-exclusions {
-    background: #FEF3C7;
-    border: 1px solid #FDE68A;
-    border-radius: var(--radius-sm);
-    padding: 12px;
-    margin-bottom: 16px;
-}
-.theme-dark .warranty-exclusions {
-    background: #3B2F0F;
-    border-color: #7F6B1D;
-}
-.warranty-exclusions p {
-    font-size: 12px;
-    margin: 0;
-    line-height: 1.5;
-}
-.warranty-terms-section {
-    margin-bottom: 16px;
-}
-.warranty-terms-section p {
-    font-size: 12px;
-    line-height: 1.5;
-    color: var(--text-secondary);
-}
-.warranty-claim {
-    margin-bottom: 16px;
-    padding: 12px;
-    background: var(--bg-primary);
-    border-radius: var(--radius-sm);
-}
-.warranty-claim p {
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin: 0;
-    line-height: 1.5;
-}
-.warranty-care {
-    margin-top: 12px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border-light);
-}
-.warranty-care p {
-    font-size: 12px;
-    color: var(--text-secondary);
-    line-height: 1.5;
-}
+    .warranty-box {
+        background: var(--bg-secondary);
+        border-radius: var(--radius-md);
+        margin-bottom: 12px;
+        border: 1px solid var(--border-light);
+        overflow: hidden;
+    }
+    .warranty-header {
+        padding: 14px 18px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        cursor: pointer;
+        font-weight: 600;
+        background: var(--bg-primary);
+    }
+    .warranty-header:hover {
+        background: var(--border-light);
+    }
+    .warranty-content {
+        padding: 16px 18px;
+        border-top: 1px solid var(--border-light);
+    }
+    .warranty-period-badge {
+        background: var(--primary-light);
+        padding: 10px 15px;
+        border-radius: var(--radius-md);
+        margin-bottom: 16px;
+        font-weight: 600;
+        color: var(--primary);
+        display: inline-block;
+    }
+    .premium-badge {
+        background: #FFC107;
+        color: #856404;
+        padding: 2px 8px;
+        border-radius: 20px;
+        font-size: 11px;
+        margin-left: 8px;
+    }
+    .coverage-title, .exclusions-title, .terms-title, .claim-title, .care-title {
+        font-weight: 700;
+        margin-bottom: 10px;
+        font-size: 13px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .coverage-grid {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 20px;
+        margin-bottom: 16px;
+    }
+    .coverage-category {
+        flex: 1;
+        min-width: 200px;
+    }
+    .coverage-category strong {
+        font-size: 12px;
+        display: block;
+        margin-bottom: 6px;
+    }
+    .coverage-category ul {
+        margin: 0;
+        padding-left: 0;
+        list-style: none;
+    }
+    .coverage-category li {
+        font-size: 12px;
+        margin: 4px 0;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .coverage-category li i {
+        color: var(--success);
+        font-size: 10px;
+    }
+    .warranty-exclusions {
+        background: #FEF3C7;
+        border: 1px solid #FDE68A;
+        border-radius: var(--radius-sm);
+        padding: 12px;
+        margin-bottom: 16px;
+    }
+    .theme-dark .warranty-exclusions {
+        background: #3B2F0F;
+        border-color: #7F6B1D;
+    }
+    .warranty-exclusions p {
+        font-size: 12px;
+        margin: 0;
+        line-height: 1.5;
+    }
+    .warranty-terms-section {
+        margin-bottom: 16px;
+    }
+    .warranty-terms-section p {
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--text-secondary);
+    }
+    .warranty-claim {
+        margin-bottom: 16px;
+        padding: 12px;
+        background: var(--bg-primary);
+        border-radius: var(--radius-sm);
+    }
+    .warranty-claim p {
+        font-size: 12px;
+        color: var(--text-secondary);
+        margin: 0;
+        line-height: 1.5;
+    }
+    .warranty-care {
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid var(--border-light);
+    }
+    .warranty-care p {
+        font-size: 12px;
+        color: var(--text-secondary);
+        line-height: 1.5;
+    }
 
-/* Force prescription section for Lenses */
-<?php if ($category === 'Lenses' || $category === 'Contact Lenses'): ?>
-#rxSection {
-    display: block !important;
-}
-<?php endif; ?>
+    <?php if ($category === 'Lenses' || $category === 'Contact Lenses'): ?>
+    #rxSection { display: block !important; }
+    <?php endif; ?>
     </style>
 </head>
 <body>
@@ -2166,8 +2119,8 @@ include '../includes/navbar.php';
 
     <!-- Breadcrumb -->
     <div class="breadcrumb">
-        <a href="clinic-details.php?id=<?php echo $clinic_id; ?>">
-            <i class="fas fa-arrow-left"></i> <?php echo htmlspecialchars($product['clinic_name']); ?>
+        <a href="<?php echo htmlspecialchars($back_url); ?>">
+            <i class="fas fa-arrow-left"></i> Back
         </a>
         <span class="sep">/</span>
         <span class="current"><?php echo htmlspecialchars($product['name']); ?></span>
@@ -2176,11 +2129,10 @@ include '../includes/navbar.php';
     <!-- Main Product Grid -->
     <div class="product-grid">
 
-        <!-- LEFT: Images — Lenskart style -->
+        <!-- LEFT: Images -->
         <div class="image-section">
             <div class="image-wrapper">
 
-                <!-- Vertical thumbnail strip (left) -->
                 <?php if ($has_multiple_images): ?>
                 <div class="thumb-strip" id="thumbStrip">
                     <?php foreach ($product_images as $i => $img): ?>
@@ -2193,7 +2145,6 @@ include '../includes/navbar.php';
                 </div>
                 <?php endif; ?>
 
-                <!-- Main image area (right of thumbs) -->
                 <div class="main-image-area" onclick="openLightbox(currentSlide)">
                     <div class="product-swiper" id="productSlider">
                         <div class="swiper-wrapper" id="sliderWrapper">
@@ -2217,6 +2168,7 @@ include '../includes/navbar.php';
                 </div>
             </div>
 
+            <!-- ✅ FIXED: 3D Button - Now shows if product has 3D model -->
             <?php if ($has_3d): ?>
             <a href="3d-view.php?id=<?php echo $product_id; ?>" class="btn-3d-full" style="border-radius:0 0 var(--radius-lg) var(--radius-lg); margin-top:-1px;">
                 <i class="fas fa-cube"></i> View in 3D
@@ -2224,11 +2176,10 @@ include '../includes/navbar.php';
             <?php endif; ?>
         </div>
 
-        <!-- LENSKART-STYLE LIGHTBOX -->
+        <!-- LIGHTBOX -->
         <div class="lk-lightbox" id="lkLightbox" onclick="closeLightbox()">
             <div class="lk-lb-inner" onclick="event.stopPropagation()">
 
-                <!-- Lightbox thumbnails -->
                 <div class="lk-lb-thumbs" id="lbThumbStrip">
                     <?php foreach ($product_images as $i => $img): ?>
                     <div class="lk-lb-thumb <?php echo $i === 0 ? 'active' : ''; ?>"
@@ -2240,7 +2191,6 @@ include '../includes/navbar.php';
                     <?php endforeach; ?>
                 </div>
 
-                <!-- Lightbox main image -->
                 <div class="lk-lb-main">
                     <img id="lbMainImg"
                          src="<?php echo $product_images[0]; ?>"
@@ -2255,7 +2205,6 @@ include '../includes/navbar.php';
                     <div class="lk-lb-counter" id="lbCounter">1 / <?php echo count($product_images); ?></div>
                 </div>
 
-                <!-- Close button -->
                 <button class="lk-lb-close" onclick="closeLightbox()">&#10005;</button>
             </div>
         </div>
@@ -2297,7 +2246,6 @@ include '../includes/navbar.php';
                 </div>
                 <?php endif; ?>
 
-                <!-- Payment Policy Info Card -->
                 <div class="payment-policy-card">
                     <div class="policy-title">
                         <i class="fas fa-credit-card"></i> Payment Policy: <?php echo $clinic_payment_policy_display; ?>
@@ -2374,7 +2322,7 @@ include '../includes/navbar.php';
                 </div>
                 <?php endif; ?>
 
-                                <!-- FRAME SIZE SELECTOR (for Frames/Eyeglasses/Sunglasses) - ONLY SHOW IF HAS SIZES -->
+                <!-- FRAME SIZE SELECTOR -->
                 <?php if (in_array($category, ['Frames', 'Eyeglasses', 'Sunglasses']) && !empty($available_sizes)): ?>
                 <div class="size-selector-box">
                     <div class="cs-title">
@@ -2560,7 +2508,7 @@ include '../includes/navbar.php';
                     <div class="ps-total" id="totalDisplay">₱<?php echo number_format($display_price, 2); ?></div>
                 </div>
 
-<!-- TECHNICAL SPECIFICATIONS - ONLY SHOW IF HAS DATA -->
+<!-- TECHNICAL SPECIFICATIONS -->
 <?php if (!empty($spec_fields)): ?>
 <div class="specs-accordion" style="margin-top:20px;">
     <div class="specs-header" onclick="toggleSpecs()">
@@ -2580,7 +2528,7 @@ include '../includes/navbar.php';
 </div>
 <?php endif; ?>
 
-<!-- WARRANTY SECTION - DETAILED DISPLAY FOR USERS (tulad ng Lenskart) -->
+<!-- WARRANTY SECTION -->
 <?php if ($has_warranty): ?>
 <div class="warranty-box">
     <div class="warranty-header" onclick="toggleWarranty()">
@@ -2589,7 +2537,6 @@ include '../includes/navbar.php';
     </div>
     <div class="warranty-content" id="warrantyContent" style="display:none;">
         
-        <!-- Warranty Period Badge -->
         <div class="warranty-period-badge">
             <i class="fas fa-clock"></i> <?php echo $warranty_period_display; ?> Warranty
             <?php if ($warranty_premium > 0): ?>
@@ -2597,7 +2544,6 @@ include '../includes/navbar.php';
             <?php endif; ?>
         </div>
         
-        <!-- What's Covered (Frame & Lens Issues) -->
         <?php if (!empty($warranty_coverage)): ?>
         <div class="warranty-coverage-list">
             <div class="coverage-title">
@@ -2637,7 +2583,6 @@ include '../includes/navbar.php';
         </div>
         <?php endif; ?>
         
-        <!-- Exclusions (What's NOT Covered) -->
         <?php if (!empty($warranty_exclusions)): ?>
         <div class="warranty-exclusions">
             <div class="exclusions-title">
@@ -2647,7 +2592,6 @@ include '../includes/navbar.php';
         </div>
         <?php endif; ?>
         
-        <!-- Terms & Conditions -->
         <?php if (!empty($warranty_terms)): ?>
         <div class="warranty-terms-section">
             <div class="terms-title">
@@ -2657,7 +2601,6 @@ include '../includes/navbar.php';
         </div>
         <?php endif; ?>
         
-        <!-- How to Claim Warranty -->
         <div class="warranty-claim">
             <div class="claim-title">
                 <i class="fas fa-headset"></i> How to Claim Warranty
@@ -2669,7 +2612,6 @@ include '../includes/navbar.php';
             <?php endif; ?>
         </div>
         
-        <!-- Care Instructions -->
         <?php if (!empty($warranty_care)): ?>
         <div class="warranty-care">
             <div class="care-title">
@@ -2704,6 +2646,7 @@ include '../includes/navbar.php';
                         <?php echo $existing_reservation ? 'Already Reserved' : 'Already Booked'; ?>
                     </button>
                 <?php elseif ($is_fully_sold_out): ?>
+                    <!-- ✅ OUT OF STOCK - Disabled Button with clear indicator -->
                     <button class="btn-main-action" disabled>
                         <i class="fas fa-times-circle"></i> Out of Stock
                     </button>
@@ -2747,12 +2690,20 @@ include '../includes/navbar.php';
                         ?>
                     </p>
                 <?php else: ?>
-                    <button class="btn-main-action" id="mainActionBtn" onclick="handleMainAction()" <?php echo $has_stock_tracking ? 'disabled' : ''; ?>>
+                    <button class="btn-main-action" id="mainActionBtn" onclick="handleMainAction()" <?php echo ($has_stock_tracking || !empty($available_sizes)) ? 'disabled' : ''; ?>>
                         <i class="fas fa-arrow-right"></i> Continue
                     </button>
                     <p class="action-helper" id="actionHelper">
                         <i class="fas fa-info-circle"></i>
-                        <?php echo $has_stock_tracking ? 'Select a color variant to continue.' : 'Select your lens option to continue.'; ?>
+                        <?php 
+                        if (!empty($available_sizes)) {
+                            echo 'Please select a frame size to continue.';
+                        } elseif ($has_stock_tracking) {
+                            echo 'Select a color variant to continue.';
+                        } else {
+                            echo 'Select your lens option to continue.';
+                        }
+                        ?>
                     </p>
                 <?php endif; ?>
             </div>
@@ -2924,6 +2875,7 @@ let selectedColor = null;
 let selectedSize = null;
 
 const HAS_STOCK_TRACKING = <?php echo $has_stock_tracking ? 'true' : 'false'; ?>;
+const HAS_SIZES          = <?php echo !empty($available_sizes) ? 'true' : 'false'; ?>;
 const IS_FULLY_SOLD_OUT  = <?php echo $is_fully_sold_out ? 'true' : 'false'; ?>;
 
 const BASE_PRICE = <?php echo $display_price; ?>;
@@ -3012,29 +2964,13 @@ document.addEventListener('DOMContentLoaded', function() {
     tomorrow.setDate(tomorrow.getDate() + 1);
     document.getElementById('mDate').value = tomorrow.toISOString().split('T')[0];
     
-    // ✅ FIX: For Lenses and Contact Lenses, show prescription section immediately
     const rxSection = document.getElementById('rxSection');
-    const hasLensOptions = document.getElementById('lensGrid') !== null;
-    
-    // For Lenses and Contact Lenses, prescription is always needed
     if (IS_LENS_ONLY || IS_CONTACT_LENS) {
-        if (rxSection) {
-            rxSection.style.display = 'block';
-        }
-        // For lenses, we need to ensure the prescription options are visible
-        // but don't auto-select anything - let user choose
-    }
-    // For regular eyewear with lenses selected (not frame_only)
-    else if (NEEDS_LENS && selectedLens !== 'frame_only' && selectedLens !== '') {
-        if (rxSection) {
-            rxSection.style.display = 'block';
-        }
-    }
-    // For frame_only, prescription section should be hidden
-    else if (selectedLens === 'frame_only') {
-        if (rxSection) {
-            rxSection.style.display = 'none';
-        }
+        if (rxSection) rxSection.style.display = 'block';
+    } else if (NEEDS_LENS && selectedLens !== 'frame_only' && selectedLens !== '') {
+        if (rxSection) rxSection.style.display = 'block';
+    } else if (selectedLens === 'frame_only') {
+        if (rxSection) rxSection.style.display = 'none';
     }
     
     updatePriceDisplay();
@@ -3144,16 +3080,11 @@ function selectColor(btn) {
     const hint = document.getElementById('csHint');
     if (hint) hint.style.display = 'none';
 
-    const btn2 = document.getElementById('mainActionBtn');
-    if (btn2 && btn2.disabled && !IS_FULLY_SOLD_OUT) {
-        btn2.disabled = false;
-    }
-
     updateActionButton();
 }
 
 // ============================================
-// LENS SELECTION - FIXED
+// LENS SELECTION
 // ============================================
 function selectLens(btn) {
     document.querySelectorAll('.lens-btn').forEach(b => b.classList.remove('selected'));
@@ -3163,15 +3094,9 @@ function selectLens(btn) {
     const rxSection = document.getElementById('rxSection');
     const isFrameOnly = (selectedLens === 'frame_only');
     
-    // ✅ FIX: For Lenses and Contact Lenses, ALWAYS show prescription section
     if (IS_LENS_ONLY || IS_CONTACT_LENS) {
-        if (rxSection) {
-            rxSection.style.display = 'block';
-        }
-        // Don't reset rxKnowledge for lenses
-    }
-    // For regular eyewear
-    else {
+        if (rxSection) rxSection.style.display = 'block';
+    } else {
         const needsRx = !isFrameOnly && NEEDS_LENS;
         if (rxSection) {
             rxSection.style.display = needsRx ? 'block' : 'none';
@@ -3243,13 +3168,14 @@ function updatePriceDisplay() {
 }
 
 // ============================================
-// ACTION BUTTON - FIXED
+// ACTION BUTTON
 // ============================================
 function updateActionButton() {
     const btn = document.getElementById('mainActionBtn');
     const helper = document.getElementById('actionHelper');
     if (!btn) return;
 
+    // ✅ Check if size is required
     const hasSizeSelector = document.getElementById('sizeBtns') !== null;
     if (hasSizeSelector && !selectedSize && !IS_FULLY_SOLD_OUT && !IS_LENS_ONLY && !IS_CONTACT_LENS) {
         btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
@@ -3258,17 +3184,22 @@ function updateActionButton() {
         return;
     }
 
+    // Check if color is required
+    if (HAS_STOCK_TRACKING && !IS_FULLY_SOLD_OUT && !selectedColor) {
+        btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
+        btn.disabled = true;
+        if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Please select a color/variant to continue.';
+        return;
+    }
+
     const isFrameOnly = (selectedLens === 'frame_only');
     
-    // ✅ FIX: For Lenses and Contact Lenses, prescription is ALWAYS required
     if ((IS_LENS_ONLY || IS_CONTACT_LENS) && !rxKnowledge) {
         btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
         btn.className = 'btn-main-action';
         btn.disabled = false;
         if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Please select whether you know your prescription or need an eye exam.';
-    }
-    // Frame Only option (for regular eyewear only, not lenses)
-    else if (isFrameOnly && !IS_LENS_ONLY && !IS_CONTACT_LENS) {
+    } else if (isFrameOnly && !IS_LENS_ONLY && !IS_CONTACT_LENS) {
         btn.innerHTML = '<i class="fas fa-bookmark"></i> Reserve — Frame Only';
         btn.className = 'btn-main-action';
         btn.disabled = false;
@@ -3332,11 +3263,11 @@ function updateActionButton() {
 }
 
 // ============================================
-// HANDLE MAIN ACTION - FIXED
+// HANDLE MAIN ACTION
 // ============================================
 function handleMainAction() {
+    // ✅ Check size first
     const hasSizeSelector = document.getElementById('sizeBtns') !== null;
-    // Skip size check for Lenses and Contact Lenses (they don't have frame sizes)
     if (hasSizeSelector && !selectedSize && !IS_FULLY_SOLD_OUT && !IS_LENS_ONLY && !IS_CONTACT_LENS) {
         showToast('Please select a frame size first.', 'error');
         document.getElementById('sizeBtns')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -3351,7 +3282,6 @@ function handleMainAction() {
 
     const isFrameOnly = (selectedLens === 'frame_only');
     
-    // For Lenses and Contact Lenses, ALWAYS require prescription
     if (IS_LENS_ONLY || IS_CONTACT_LENS) {
         if (!rxKnowledge) {
             showToast('Please choose whether you know your prescription.', 'error');
@@ -3369,7 +3299,6 @@ function handleMainAction() {
             return;
         }
         
-        // rxKnowledge === 'know'
         const od_sph = document.getElementById('od_sph')?.value || '';
         const os_sph = document.getElementById('os_sph')?.value || '';
         if (!od_sph && !os_sph) {
@@ -3397,7 +3326,6 @@ function handleMainAction() {
         return;
     }
     
-    // Original logic for regular eyewear
     if (isFrameOnly) { 
         const colorCode = selectedColor ? selectedColor.code : '';
         window.location.href = 'book-specific-product.php?clinic_id=' + CLINIC_ID

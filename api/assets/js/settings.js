@@ -12,9 +12,11 @@ document.addEventListener('DOMContentLoaded', function() {
     loadClinicDetails();
     loadWorkingHours();
     loadModuleVisibility();
+    loadDeliverySettings();
     setupWorkingHoursToggle();
     setupLogoUpload();
     setupCoverUpload();
+    setupDeliveryToggle();   // ✅ NEW
 });
 
 // ============================================
@@ -631,11 +633,189 @@ function toggleAllModules(enable) {
     });
 }
 
-// Save all settings (only Clinic Details, Working Hours, Module Visibility)
+// ============================================
+// ✅ DELIVERY SETTINGS FUNCTIONS
+// ============================================
+
+// Load delivery settings
+async function loadDeliverySettings() {
+    try {
+        const response = await fetch('api/settings.php?action=get_delivery_settings');
+        const result = await response.json();
+        
+        if (result.success && result.data) {
+            const data = result.data;
+            
+            const toggle = document.getElementById('offers_delivery');
+            if (toggle) {
+                toggle.checked = data.offers_delivery == 1;
+                // ✅ Apply toggle state to fields after loading
+                toggleDeliveryFields();
+            }
+            
+            const feeInput = document.getElementById('delivery_fee');
+            if (feeInput) feeInput.value = data.delivery_fee || 0;
+            
+            const radiusInput = document.getElementById('delivery_radius_km');
+            if (radiusInput) radiusInput.value = data.delivery_radius_km || 0;
+            
+            const freeInput = document.getElementById('free_delivery_minimum');
+            if (freeInput) freeInput.value = data.free_delivery_minimum || 0;
+        }
+    } catch (error) {
+        console.error('Error loading delivery settings:', error);
+    }
+}
+
+// ✅ Toggle delivery fields - dependency logic
+function toggleDeliveryFields() {
+    const toggle = document.getElementById('offers_delivery');
+    const feeInput = document.getElementById('delivery_fee');
+    const radiusInput = document.getElementById('delivery_radius_km');
+    const freeInput = document.getElementById('free_delivery_minimum');
+    
+    // Get the container elements for styling
+    const feeContainer = feeInput ? feeInput.closest('.col-md-4') : null;
+    const radiusContainer = radiusInput ? radiusInput.closest('.col-md-4') : null;
+    const freeContainer = freeInput ? freeInput.closest('.col-md-4') : null;
+    
+    const isEnabled = toggle ? toggle.checked : false;
+    
+    // ✅ Toggle disabled state
+    if (feeInput) {
+        feeInput.disabled = !isEnabled;
+        feeInput.style.opacity = isEnabled ? '1' : '0.6';
+        feeInput.style.cursor = isEnabled ? 'default' : 'not-allowed';
+        if (feeContainer) {
+            feeContainer.style.opacity = isEnabled ? '1' : '0.6';
+        }
+    }
+    
+    if (radiusInput) {
+        radiusInput.disabled = !isEnabled;
+        radiusInput.style.opacity = isEnabled ? '1' : '0.6';
+        radiusInput.style.cursor = isEnabled ? 'default' : 'not-allowed';
+        if (radiusContainer) {
+            radiusContainer.style.opacity = isEnabled ? '1' : '0.6';
+        }
+    }
+    
+    if (freeInput) {
+        freeInput.disabled = !isEnabled;
+        freeInput.style.opacity = isEnabled ? '1' : '0.6';
+        freeInput.style.cursor = isEnabled ? 'default' : 'not-allowed';
+        if (freeContainer) {
+            freeContainer.style.opacity = isEnabled ? '1' : '0.6';
+        }
+    }
+}
+
+// ✅ Setup delivery toggle event listener
+function setupDeliveryToggle() {
+    const toggle = document.getElementById('offers_delivery');
+    if (toggle) {
+        toggle.addEventListener('change', function() {
+            toggleDeliveryFields();
+            
+            // ✅ Show info message when enabling/disabling
+            if (this.checked) {
+                Toast.fire({
+                    icon: 'info',
+                    title: 'Delivery enabled. Set the fee and radius below.',
+                    timer: 3000
+                });
+            } else {
+                Toast.fire({
+                    icon: 'info',
+                    title: 'Delivery disabled. Fields are now locked.',
+                    timer: 2000
+                });
+            }
+        });
+    }
+}
+
+// Save delivery settings
+async function saveDeliverySettings() {
+    const toggle = document.getElementById('offers_delivery');
+    const feeInput = document.getElementById('delivery_fee');
+    const radiusInput = document.getElementById('delivery_radius_km');
+    const freeInput = document.getElementById('free_delivery_minimum');
+    
+    // Validate
+    if (feeInput && parseFloat(feeInput.value) < 0) {
+        Toast.fire({ icon: 'error', title: 'Delivery fee cannot be negative' });
+        return;
+    }
+    
+    if (radiusInput && parseInt(radiusInput.value) < 0) {
+        Toast.fire({ icon: 'error', title: 'Radius cannot be negative' });
+        return;
+    }
+    
+    if (freeInput && parseFloat(freeInput.value) < 0) {
+        Toast.fire({ icon: 'error', title: 'Free delivery minimum cannot be negative' });
+        return;
+    }
+    
+    const data = {
+        offers_delivery: toggle ? (toggle.checked ? 1 : 0) : 0,
+        delivery_fee: feeInput ? parseFloat(feeInput.value) || 0 : 0,
+        delivery_radius_km: radiusInput ? parseInt(radiusInput.value) || 0 : 0,
+        free_delivery_minimum: freeInput ? parseFloat(freeInput.value) || 0 : 0
+    };
+    
+    Swal.fire({
+        title: 'Saving...',
+        allowOutsideClick: false,
+        didOpen: () => Swal.showLoading()
+    });
+    
+    try {
+        const response = await fetch('api/settings.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'delivery_settings', data: data })
+        });
+        
+        const result = await response.json();
+        Swal.close();
+        
+        if (result.success) {
+            Toast.fire({ icon: 'success', title: 'Delivery settings saved successfully!' });
+            
+            // Show additional info if delivery is enabled
+            if (data.offers_delivery === 1) {
+                let info = 'Delivery is now enabled.';
+                if (data.delivery_fee > 0) {
+                    info += ` Fee: ₱${data.delivery_fee.toFixed(2)}`;
+                }
+                if (data.free_delivery_minimum > 0) {
+                    info += ` Free for orders ₱${data.free_delivery_minimum.toFixed(2)}+`;
+                }
+                if (data.delivery_radius_km > 0) {
+                    info += ` Radius: ${data.delivery_radius_km}km`;
+                }
+                Toast.fire({ icon: 'info', title: info, timer: 4000 });
+            }
+        } else {
+            Toast.fire({ icon: 'error', title: result.error || 'Failed to save delivery settings' });
+        }
+    } catch (error) {
+        Swal.close();
+        Toast.fire({ icon: 'error', title: 'Failed to save delivery settings' });
+    }
+}
+
+// ============================================
+// SAVE ALL SETTINGS
+// ============================================
+
+// Save all settings
 async function saveAllSettings() {
     const confirm = await Swal.fire({
         title: 'Save All Settings?',
-        text: 'This will update clinic details, working hours, and module visibility.',
+        text: 'This will update clinic details, working hours, module visibility, and delivery settings.',
         icon: 'question',
         showCancelButton: true,
         confirmButtonColor: '#3085d6',
@@ -649,6 +829,7 @@ async function saveAllSettings() {
             await saveClinicDetails();
             await saveWorkingHours();
             await saveModuleVisibility();
+            await saveDeliverySettings();
             
             Swal.fire({ title: 'Success!', text: 'All settings have been saved successfully.', icon: 'success', confirmButtonColor: '#3085d6' });
         } catch (error) {

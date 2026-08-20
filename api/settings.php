@@ -152,6 +152,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             exit;
         }
         
+        // ===== ✅ NEW: GET DELIVERY SETTINGS =====
+        if ($action === 'get_delivery_settings') {
+            $stmt = $pdo->prepare("
+                SELECT offers_delivery, delivery_fee, delivery_radius_km, free_delivery_minimum
+                FROM clinics 
+                WHERE id = ?
+            ");
+            $stmt->execute([$clinic_id]);
+            $delivery = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            echo json_encode([
+                'success' => true,
+                'data' => $delivery ?: [
+                    'offers_delivery' => 0,
+                    'delivery_fee' => 0,
+                    'delivery_radius_km' => 0,
+                    'free_delivery_minimum' => 0
+                ]
+            ]);
+            exit;
+        }
+        
         // Default: Return all settings
         $stmt = $pdo->prepare("
             SELECT setting_key, setting_value 
@@ -184,7 +206,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                 status,
                 logo,
                 cover_photo,
-                radius
+                radius,
+                offers_delivery,
+                delivery_fee,
+                delivery_radius_km,
+                free_delivery_minimum
             FROM clinics 
             WHERE id = ?
         ");
@@ -208,6 +234,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             $settings['logo'] = $clinic['logo'];
             $settings['cover_photo'] = $clinic['cover_photo'];
             $settings['radius'] = $clinic['radius'] ?? 100;
+            $settings['offers_delivery'] = $clinic['offers_delivery'] ?? 0;
+            $settings['delivery_fee'] = $clinic['delivery_fee'] ?? 0;
+            $settings['delivery_radius_km'] = $clinic['delivery_radius_km'] ?? 0;
+            $settings['free_delivery_minimum'] = $clinic['free_delivery_minimum'] ?? 0;
         }
         
         logAudit($pdo, $user_id, $clinic_id, 'VIEW', 'settings_all', null, null);
@@ -459,6 +489,58 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             exit;
         }
+        
+        // ===== HANDLE DELIVERY SETTINGS UPDATE =====
+if ($type === 'delivery_settings') {
+    // ✅ FIX: Check the actual value, not just if key exists
+    $offers_delivery = isset($data['offers_delivery']) && $data['offers_delivery'] == 1 ? 1 : 0;
+    $delivery_fee = floatval($data['delivery_fee'] ?? 0);
+    $delivery_radius_km = intval($data['delivery_radius_km'] ?? 0);
+    $free_delivery_minimum = floatval($data['free_delivery_minimum'] ?? 0);
+    
+    $pdo->beginTransaction();
+    try {
+        // Get old values for audit
+        $oldStmt = $pdo->prepare("
+            SELECT offers_delivery, delivery_fee, delivery_radius_km, free_delivery_minimum 
+            FROM clinics WHERE id = ?
+        ");
+        $oldStmt->execute([$clinic_id]);
+        $old = $oldStmt->fetch(PDO::FETCH_ASSOC);
+        
+        $stmt = $pdo->prepare("
+            UPDATE clinics SET
+                offers_delivery = ?,
+                delivery_fee = ?,
+                delivery_radius_km = ?,
+                free_delivery_minimum = ?
+            WHERE id = ?
+        ");
+        $stmt->execute([
+            $offers_delivery,
+            $delivery_fee,
+            $delivery_radius_km,
+            $free_delivery_minimum,
+            $clinic_id
+        ]);
+        
+        // Log changes
+        $fields = ['offers_delivery', 'delivery_fee', 'delivery_radius_km', 'free_delivery_minimum'];
+        foreach ($fields as $field) {
+            if ($old[$field] != $$field) {
+                logAudit($pdo, $user_id, $clinic_id, 'UPDATE', $field, $old[$field], $$field);
+            }
+        }
+        
+        $pdo->commit();
+        echo json_encode(['success' => true, 'message' => 'Delivery settings updated']);
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        echo json_encode(['error' => $e->getMessage()]);
+    }
+    exit;
+}
         
         // Default error for unsupported types
         echo json_encode(['error' => 'Invalid settings type']);

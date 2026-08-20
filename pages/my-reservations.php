@@ -1,4 +1,7 @@
 <?php
+// ✅ SET TIMEZONE TO PHILIPPINES
+date_default_timezone_set('Asia/Manila');
+
 include '../includes/config.php';
 include '../includes/theme.php';
 require_once '../includes/payment-helper.php';
@@ -27,7 +30,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit();
     }
 
-    // Verify ownership and get reservation details
     $check = mysqli_query($conn,
         "SELECT r.id, r.status, r.product_id, p.name as product_name 
          FROM reservations r
@@ -42,7 +44,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
     $res = mysqli_fetch_assoc($check);
     
-    // Check if reservation is cancellable
     $cancellable = ['pending', 'confirmed'];
     $current_status = $res['status'];
 
@@ -52,19 +53,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit();
     }
 
-    // Update reservation status to cancelled
     $update = mysqli_query($conn,
         "UPDATE reservations SET status = 'cancelled', updated_at = NOW() WHERE id = $id AND user_id = $user_id"
     );
 
     if ($update && mysqli_affected_rows($conn) > 0) {
-        // Restore product quantity if color tracking exists
-        // Get color info from reservation
         $color_query = mysqli_query($conn, "SELECT color_code, color_name FROM reservations WHERE id = $id");
         $color_data = mysqli_fetch_assoc($color_query);
         
         if ($color_data && !empty($color_data['color_code'])) {
-            // Restore quantity for the specific color
             $restore_qty = mysqli_query($conn, "
                 UPDATE product_color_inventory 
                 SET quantity = quantity + 1 
@@ -95,11 +92,9 @@ $user = mysqli_fetch_assoc($user_query);
 $avatar_query = mysqli_query($conn, "SELECT avatar FROM users WHERE id = $user_id");
 $user_data = mysqli_fetch_assoc($avatar_query);
 
-// Get pending appointments count for navbar badge
 $pending_q = mysqli_query($conn, "SELECT COUNT(*) as total FROM appointments WHERE user_id = $user_id AND status = 'pending'");
 $pending = mysqli_fetch_assoc($pending_q)['total'] ?? 0;
 
-// Get unread notifications
 $unread_count = 0;
 if (function_exists('getUnreadNotificationCount')) {
     $unread_count = getUnreadNotificationCount($user_id);
@@ -109,11 +104,9 @@ if (function_exists('getRecentNotifications')) {
     $recent_notifications = getRecentNotifications($user_id);
 }
 
-// Get total bookings for navbar
 $total_bookings_q = mysqli_query($conn, "SELECT COUNT(*) as total FROM appointments WHERE user_id = $user_id");
 $total_bookings = mysqli_fetch_assoc($total_bookings_q)['total'] ?? 0;
 
-// Get total points
 $points_row = mysqli_fetch_assoc(mysqli_query($conn, "SELECT SUM(points) as t FROM user_rewards WHERE user_id=$user_id"));
 $total_points = $points_row['t'] ?: 0;
 
@@ -130,18 +123,22 @@ $reservations_query = mysqli_query($conn, "
            p.warranty_terms, 
            p.warranty_premium_price,
            c.name as clinic_name,
-           c.logo as clinic_logo
+           c.logo as clinic_logo,
+           c.clinic_image,
+           c.cover_photo
     FROM reservations r
     JOIN products p ON r.product_id = p.id
     JOIN clinics c ON r.clinic_id = c.id
     WHERE r.user_id = $user_id
     ORDER BY r.created_at DESC
 ");
-// Helper function to get product image URL
+
+// ============================================
+// ✅ FIXED: GET PRODUCT IMAGE URL
+// ============================================
 function getProductImageUrl($product) {
     $imageUrl = '/assets/img/no-image.png';
     
-    // PRIORITY 1: Check images_json
     if (!empty($product['product_images_json'])) {
         $images = json_decode($product['product_images_json'], true);
         if (!empty($images) && isset($images[0])) {
@@ -157,7 +154,6 @@ function getProductImageUrl($product) {
         }
     }
     
-    // PRIORITY 2: Check images column
     if (!empty($product['product_images_old'])) {
         $imagePath = $product['product_images_old'];
         if (strpos($imagePath, '[') === 0) {
@@ -176,7 +172,6 @@ function getProductImageUrl($product) {
         return $imageUrl;
     }
     
-    // PRIORITY 3: Check image column
     if (!empty($product['product_image'])) {
         if (strpos($product['product_image'], 'uploads/') === false && strpos($product['product_image'], '/') === false) {
             $imageUrl = '/assets/images/products/' . $product['product_image'];
@@ -194,6 +189,43 @@ function getProductImageUrl($product) {
     return $imageUrl;
 }
 
+// ============================================
+// ✅ FIXED: GET CLINIC LOGO
+// ============================================
+function getClinicLogo($reservation) {
+    if (!empty($reservation['logo'])) {
+        $logo = trim($reservation['logo']);
+        if (strpos($logo, 'uploads/') === 0) {
+            return '/' . $logo;
+        }
+        if (strpos($logo, '/uploads/') === 0) {
+            return $logo;
+        }
+        return '/assets/images/clinic-logos/' . $logo;
+    }
+    if (!empty($reservation['clinic_image'])) {
+        $img = trim($reservation['clinic_image']);
+        if (strpos($img, 'uploads/') === 0) {
+            return '/' . $img;
+        }
+        if (strpos($img, '/uploads/') === 0) {
+            return $img;
+        }
+        return '/assets/images/clinic-images/' . $img;
+    }
+    if (!empty($reservation['cover_photo'])) {
+        $cover = trim($reservation['cover_photo']);
+        if (strpos($cover, 'uploads/') === 0) {
+            return '/' . $cover;
+        }
+        if (strpos($cover, '/uploads/') === 0) {
+            return $cover;
+        }
+        return '/assets/images/clinic-covers/' . $cover;
+    }
+    return null;
+}
+
 // Helper function for category icon
 function getCategoryIcon($category) {
     $icons = [
@@ -208,17 +240,8 @@ function getCategoryIcon($category) {
     return $icons[$category] ?? 'fa-box';
 }
 
-// Helper function for clinic logo
-if (!function_exists('getClinicLogo')) {
-    function getClinicLogo($c) {
-        if (!empty($c['clinic_logo'])) return '/assets/images/clinic-logos/' . $c['clinic_logo'];
-        return null;
-    }
-}
-
 // Include navbar
 $active_nav = 'reservations';
-
 
 // Get stats
 $total_reservations = mysqli_num_rows($reservations_query);
@@ -234,7 +257,6 @@ while($temp = mysqli_fetch_assoc($reservations_query)) {
 // ============================================
 // WARRANTY HELPER FUNCTIONS
 // ============================================
-
 function calculateWarrantyEndDateRes($purchase_date, $warranty_period) {
     if (empty($purchase_date) || empty($warranty_period)) return null;
     
@@ -277,6 +299,7 @@ function getWarrantyPeriodDisplayRes($warranty_period) {
     ];
     return $labels[$warranty_period] ?? '';
 }
+
 mysqli_data_seek($reservations_query, 0);
 ?>
 <!DOCTYPE html>
@@ -287,13 +310,10 @@ mysqli_data_seek($reservations_query, 0);
     <title>My Reservations - Eyecore</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-    <!-- SweetAlert2 -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css">
-    <!-- IDAGDAG ITO sa <head> -->
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
-        /* ===== RESET AND BASE STYLES ===== */
         * {
             margin: 0;
             padding: 0;
@@ -308,7 +328,48 @@ mysqli_data_seek($reservations_query, 0);
             transition: all 0.3s;
         }
 
-        /* Main Content */
+        :root {
+            --primary: #00B761;
+            --primary-dark: #00874A;
+            --primary-light: #E3FCE9;
+            --primary-gradient: linear-gradient(135deg,#00B761,#00A86B);
+            --secondary: #FF8C42;
+            --bg-primary: #F5F7FA;
+            --bg-secondary: #FFFFFF;
+            --card-bg: #FFFFFF;
+            --text-primary: #111827;
+            --text-secondary: #6B7280;
+            --text-muted: #9CA3AF;
+            --border-color: #E5E7EB;
+            --border-light: #F3F4F6;
+            --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
+            --shadow-md: 0 4px 16px rgba(0,0,0,0.08);
+            --shadow-lg: 0 12px 40px rgba(0,0,0,0.10);
+            --radius-sm: 10px;
+            --radius-md: 14px;
+            --radius-lg: 20px;
+            --radius-xl: 28px;
+            --radius-full: 999px;
+            --danger: #EF4444;
+            --warning: #F59E0B;
+            --success: #00B761;
+            --info: #3B82F6;
+        }
+
+        .theme-dark {
+            --primary: #00E676;
+            --primary-dark: #00C853;
+            --primary-light: #0D2818;
+            --bg-primary: #0D0D0D;
+            --bg-secondary: #161616;
+            --card-bg: #1E1E1E;
+            --text-primary: #F9FAFB;
+            --text-secondary: #9CA3AF;
+            --text-muted: #6B7280;
+            --border-color: #2A2A2A;
+            --border-light: #222222;
+        }
+
         .main-content {
             max-width: 1200px;
             margin: 0 auto;
@@ -316,18 +377,12 @@ mysqli_data_seek($reservations_query, 0);
         }
 
         @media (max-width: 1024px) {
-            .main-content {
-                padding: 24px;
-            }
+            .main-content { padding: 24px; }
         }
-
         @media (max-width: 768px) {
-            .main-content {
-                padding: 18px 16px 100px;
-            }
+            .main-content { padding: 18px 16px 100px; }
         }
 
-        /* Page Header */
         .page-header {
             display: flex;
             justify-content: space-between;
@@ -382,7 +437,6 @@ mysqli_data_seek($reservations_query, 0);
             border-color: var(--primary);
         }
 
-        /* Stats Cards */
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -414,14 +468,12 @@ mysqli_data_seek($reservations_query, 0);
             gap: 5px;
         }
 
-        /* Reservations Grid */
         .reservations-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
             gap: 20px;
         }
 
-        /* Reservation Card */
         .reservation-card {
             background: var(--bg-secondary);
             border-radius: var(--radius-lg);
@@ -436,7 +488,6 @@ mysqli_data_seek($reservations_query, 0);
             border-color: var(--primary);
         }
 
-        /* Product Image Section */
         .product-image-section {
             position: relative;
             height: 200px;
@@ -504,7 +555,6 @@ mysqli_data_seek($reservations_query, 0);
             color: var(--text-muted);
         }
 
-        /* Card Body */
         .card-body {
             padding: 16px;
             display: flex;
@@ -512,7 +562,6 @@ mysqli_data_seek($reservations_query, 0);
             gap: 12px;
         }
 
-        /* Header with Clinic Info */
         .card-header-info {
             display: flex;
             align-items: center;
@@ -536,7 +585,6 @@ mysqli_data_seek($reservations_query, 0);
             font-size: 10px;
         }
 
-        /* Product Name */
         .product-name {
             font-size: 16px;
             font-weight: 700;
@@ -544,7 +592,6 @@ mysqli_data_seek($reservations_query, 0);
             margin-bottom: 4px;
         }
 
-        /* Status Badge */
         .status-badge {
             display: inline-flex;
             align-items: center;
@@ -559,38 +606,31 @@ mysqli_data_seek($reservations_query, 0);
             background: #FEF3C7;
             color: #92400E;
         }
-
         .status-confirmed {
             background: #D1FAE5;
             color: #065F46;
         }
-
         .status-cancelled {
             background: #FEE2E2;
             color: #991B1B;
         }
-
         .status-completed {
             background: #EDE9FE;
             color: #5B21B6;
         }
-
         .status-ready {
             background: #DBEAFE;
             color: #1E40AF;
         }
-
         .status-expired {
             background: #F3F4F6;
             color: #6B7280;
         }
-
         .status-noshow {
             background: #FFF7ED;
             color: #9A3412;
         }
 
-        /* Details */
         .reservation-details {
             display: flex;
             flex-direction: column;
@@ -629,7 +669,6 @@ mysqli_data_seek($reservations_query, 0);
             box-shadow: 0 0 0 1px var(--border-color);
         }
 
-        /* Price */
         .product-price {
             font-size: 18px;
             font-weight: 800;
@@ -637,7 +676,6 @@ mysqli_data_seek($reservations_query, 0);
             margin-top: 4px;
         }
 
-        /* Payment Info */
         .payment-info {
             background: var(--bg-primary);
             border-radius: var(--radius-md);
@@ -670,11 +708,11 @@ mysqli_data_seek($reservations_query, 0);
             color: var(--warning);
         }
 
-        /* Action Buttons */
         .card-actions {
             display: flex;
             gap: 10px;
             margin-top: 8px;
+            flex-wrap: wrap;
         }
 
         .btn {
@@ -691,13 +729,13 @@ mysqli_data_seek($reservations_query, 0);
             transition: all 0.2s;
             cursor: pointer;
             border: none;
+            min-width: 80px;
         }
 
         .btn-primary {
             background: var(--primary-gradient);
             color: white;
         }
-
         .btn-primary:hover {
             transform: translateY(-2px);
             box-shadow: 0 4px 12px rgba(0,183,97,0.3);
@@ -708,7 +746,6 @@ mysqli_data_seek($reservations_query, 0);
             border: 1px solid var(--border-color);
             color: var(--text-secondary);
         }
-
         .btn-outline:hover {
             background: var(--bg-primary);
             border-color: var(--primary);
@@ -720,7 +757,6 @@ mysqli_data_seek($reservations_query, 0);
             border: 1px solid var(--danger);
             color: var(--danger);
         }
-
         .btn-danger:hover {
             background: var(--danger);
             color: white;
@@ -731,61 +767,97 @@ mysqli_data_seek($reservations_query, 0);
             color: white;
             border: none;
         }
-
         .btn-warning:hover {
             background: #e67e22;
             transform: translateY(-2px);
         }
 
-        /* Empty State */
-        .empty-state {
-            text-align: center;
-            padding: 60px 20px;
-            background: var(--bg-secondary);
-            border-radius: var(--radius-lg);
-            border: 1px solid var(--border-light);
+        .warranty-section {
+            background: var(--bg-primary);
+            border-radius: var(--radius-md);
+            padding: 10px 12px;
+            margin-top: 8px;
         }
 
-        .empty-state i {
-            font-size: 64px;
-            color: var(--text-muted);
-            margin-bottom: 16px;
-            opacity: 0.5;
-        }
-
-        .empty-state h3 {
-            font-size: 18px;
-            font-weight: 700;
-            margin-bottom: 8px;
-            color: var(--text-primary);
-        }
-
-        .empty-state p {
-            color: var(--text-secondary);
-            font-size: 14px;
-            margin-bottom: 20px;
-        }
-
-        .btn-browse {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            padding: 12px 24px;
-            background: var(--primary-gradient);
-            color: white;
+        .warranty-badge {
+            background: var(--primary-light);
+            color: var(--primary);
+            padding: 2px 6px;
             border-radius: var(--radius-full);
-            text-decoration: none;
-            font-size: 14px;
+            font-size: 10px;
             font-weight: 600;
+            margin-left: 6px;
+        }
+
+        .warranty-status.active {
+            background: #E8F5E9;
+            color: #2E7D32;
+            border-radius: var(--radius-md);
+            padding: 4px 8px;
+            font-size: 11px;
+        }
+
+        .warranty-status.expired {
+            background: #FFEBEE;
+            color: #EF4444;
+            border-radius: var(--radius-md);
+            padding: 4px 8px;
+            font-size: 11px;
+        }
+
+        .theme-dark .warranty-status.active {
+            background: #0D2818;
+            color: #00E676;
+        }
+        .theme-dark .warranty-status.expired {
+            background: #3B0F0F;
+            color: #EF4444;
+        }
+
+        .btn-warranty-claim-small {
+            background: linear-gradient(135deg, #00B761, #00A86B);
+            color: white;
+            border: none;
+            border-radius: var(--radius-sm);
+            padding: 8px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
             transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            width: 100%;
         }
 
-        .btn-browse:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(0,183,97,0.3);
+        .btn-warranty-claim-small:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 2px 8px rgba(0,183,97,0.3);
         }
 
-        /* Image Modal */
+        .btn-warranty-expired-small {
+            background: #9CA3AF;
+            color: white;
+            border: none;
+            border-radius: var(--radius-sm);
+            padding: 8px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: not-allowed;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            width: 100%;
+            opacity: 0.7;
+        }
+
+        .warranty-note small {
+            color: var(--text-muted);
+            font-size: 11px;
+        }
+
         .image-modal {
             display: none;
             position: fixed;
@@ -820,132 +892,147 @@ mysqli_data_seek($reservations_query, 0);
             cursor: pointer;
             transition: all 0.2s;
         }
-
         .modal-close:hover {
             color: var(--primary);
         }
 
-        /* CSS Variables */
-        :root {
-            --primary: #00B761;
-            --primary-dark: #00874A;
-            --primary-light: #E3FCE9;
-            --primary-gradient: linear-gradient(135deg,#00B761,#00A86B);
-            --secondary: #FF8C42;
-            --bg-primary: #F5F7FA;
-            --bg-secondary: #FFFFFF;
-            --card-bg: #FFFFFF;
-            --text-primary: #111827;
-            --text-secondary: #6B7280;
-            --text-muted: #9CA3AF;
-            --border-color: #E5E7EB;
-            --border-light: #F3F4F6;
-            --shadow-sm: 0 1px 3px rgba(0,0,0,0.06);
-            --shadow-md: 0 4px 16px rgba(0,0,0,0.08);
-            --shadow-lg: 0 12px 40px rgba(0,0,0,0.10);
-            --radius-sm: 10px;
-            --radius-md: 14px;
-            --radius-lg: 20px;
-            --radius-xl: 28px;
-            --radius-full: 999px;
-            --danger: #EF4444;
-            --warning: #F59E0B;
-            --success: #00B761;
-            --info: #3B82F6;
+        /* ===== ✅ IMPROVED EMPTY STATE ===== */
+        .empty-state-reservations {
+            text-align: center;
+            padding: 80px 40px;
+            background: var(--bg-secondary);
+            border-radius: var(--radius-xl);
+            border: 2px dashed var(--border-color);
+            position: relative;
+            overflow: hidden;
+            max-width: 600px;
+            margin: 0 auto;
+            width: 100%;
         }
 
-        .theme-dark {
-            --primary: #00E676;
-            --primary-dark: #00C853;
-            --primary-light: #0D2818;
-            --bg-primary: #0D0D0D;
-            --bg-secondary: #161616;
-            --card-bg: #1E1E1E;
-            --text-primary: #F9FAFB;
-            --text-secondary: #9CA3AF;
-            --text-muted: #6B7280;
-            --border-color: #2A2A2A;
-            --border-light: #222222;
+        .empty-state-reservations::before {
+            content: '';
+            position: absolute;
+            top: -40%;
+            right: -20%;
+            width: 250px;
+            height: 250px;
+            background: radial-gradient(circle, rgba(0,183,97,0.04) 0%, transparent 70%);
+            border-radius: 50%;
+            pointer-events: none;
         }
 
-        /* Warranty Section Styles */
-.warranty-section {
-    background: var(--bg-primary);
-    border-radius: var(--radius-md);
-    padding: 10px 12px;
-    margin-top: 8px;
-}
+        .empty-state-reservations .empty-icon-wrap {
+            display: inline-block;
+            background: linear-gradient(135deg, var(--primary-light), #B7F5D2);
+            padding: 24px;
+            border-radius: var(--radius-full);
+            margin-bottom: 20px;
+        }
 
-.warranty-badge {
-    background: var(--primary-light);
-    color: var(--primary);
-    padding: 2px 6px;
-    border-radius: var(--radius-full);
-    font-size: 10px;
-    font-weight: 600;
-    margin-left: 6px;
-}
+        .empty-state-reservations .empty-icon-wrap i {
+            font-size: 56px;
+            color: var(--primary);
+            display: block;
+        }
 
-.warranty-status.active {
-    background: #E8F5E9;
-    color: #2E7D32;
-    border-radius: var(--radius-md);
-}
+        .empty-state-reservations h2 {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
 
-.warranty-status.expired {
-    background: #FFEBEE;
-    color: #EF4444;
-    border-radius: var(--radius-md);
-}
+        .empty-state-reservations p {
+            color: var(--text-secondary);
+            font-size: 15px;
+            line-height: 1.6;
+            max-width: 400px;
+            margin: 0 auto 24px;
+        }
 
-.theme-dark .warranty-status.active {
-    background: #0D2818;
-    color: #00E676;
-}
+        .empty-state-reservations .empty-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
 
-.theme-dark .warranty-status.expired {
-    background: #3B0F0F;
-    color: #EF4444;
-}
+        .empty-state-reservations .empty-btn-primary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 28px;
+            background: var(--primary-gradient);
+            color: white;
+            border-radius: var(--radius-full);
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.2s;
+            box-shadow: 0 4px 14px rgba(0,183,97,0.25);
+        }
 
-.btn-warranty-claim-small {
-    background: linear-gradient(135deg, #00B761, #00A86B);
-    color: white;
-    border: none;
-    border-radius: var(--radius-sm);
-    padding: 8px 12px;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    width: 100%;
-}
+        .empty-state-reservations .empty-btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0,183,97,0.35);
+        }
 
-.btn-warranty-claim-small:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 2px 8px rgba(0,183,97,0.3);
-}
+        .empty-state-reservations .empty-btn-secondary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 28px;
+            background: transparent;
+            color: var(--text-secondary);
+            border-radius: var(--radius-full);
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            border: 2px solid var(--border-color);
+            transition: all 0.2s;
+        }
 
-.btn-warranty-expired-small {
-    background: #9CA3AF;
-    color: white;
-    border: none;
-    border-radius: var(--radius-sm);
-    padding: 8px 12px;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: not-allowed;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    width: 100%;
-    opacity: 0.7;
-}
+        .empty-state-reservations .empty-btn-secondary:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: var(--primary-light);
+        }
+
+        .empty-state-reservations .empty-tip {
+            margin-top: 20px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border-light);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .empty-state-reservations .empty-tip i {
+            color: var(--warning);
+        }
+
+        .btn-browse {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 24px;
+            background: var(--primary-gradient);
+            color: white;
+            border-radius: var(--radius-full);
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+
+        .btn-browse:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,183,97,0.3);
+        }
     </style>
 </head>
 <body>
@@ -1021,48 +1108,41 @@ mysqli_data_seek($reservations_query, 0);
                             $status_text = ucfirst(str_replace('_', ' ', $res['status']));
                     }
                     
-                    // Get product image URL
                     $product_image_url = getProductImageUrl($res);
                     $category_icon = getCategoryIcon($res['product_category']);
                     $clinic_logo = getClinicLogo($res);
                     
-                    // Calculate payment info
-                    $downpayment_percent = 30; // default
+                    $downpayment_percent = 30;
                     if (!empty($res['downpayment_amount']) && $res['downpayment_amount'] > 0 && $res['total_amount'] > 0) {
                         $downpayment_percent = round(($res['downpayment_amount'] / $res['total_amount']) * 100);
                     }
 
-                    // Calculate warranty info for this reservation
-$has_warranty = false;
-$is_within_warranty = false;
-$warranty_end_date = null;
-$warranty_display = '';
-$can_claim_warranty = false;
-$warranty_coverage = [];
-$warranty_terms = '';
+                    $has_warranty = false;
+                    $is_within_warranty = false;
+                    $warranty_end_date = null;
+                    $warranty_display = '';
+                    $can_claim_warranty = false;
+                    $warranty_coverage = [];
+                    $warranty_terms = '';
 
-if (!empty($res['product_id']) && !empty($res['warranty_period']) && $res['warranty_period'] != 'no_warranty') {
-    $has_warranty = true;
-    $warranty_display = getWarrantyPeriodDisplayRes($res['warranty_period']);
-    
-    // Decode warranty coverage if exists
-    if (!empty($res['warranty_coverage'])) {
-        $warranty_coverage = json_decode($res['warranty_coverage'], true);
-        if (!is_array($warranty_coverage)) $warranty_coverage = [];
-    }
-    if (!empty($res['warranty_terms'])) {
-        $warranty_terms = $res['warranty_terms'];
-    }
-    
-    // Check if within warranty period (using created_at as purchase date)
-    if (!empty($res['created_at'])) {
-        $warranty_end_date = calculateWarrantyEndDateRes($res['created_at'], $res['warranty_period']);
-        $is_within_warranty = isWithinWarrantyRes($res['created_at'], $res['warranty_period']);
-        
-        // Can claim if: reservation is completed AND within warranty period
-        $can_claim_warranty = ($res['status'] == 'completed' && $is_within_warranty);
-    }
-}
+                    if (!empty($res['product_id']) && !empty($res['warranty_period']) && $res['warranty_period'] != 'no_warranty') {
+                        $has_warranty = true;
+                        $warranty_display = getWarrantyPeriodDisplayRes($res['warranty_period']);
+                        
+                        if (!empty($res['warranty_coverage'])) {
+                            $warranty_coverage = json_decode($res['warranty_coverage'], true);
+                            if (!is_array($warranty_coverage)) $warranty_coverage = [];
+                        }
+                        if (!empty($res['warranty_terms'])) {
+                            $warranty_terms = $res['warranty_terms'];
+                        }
+                        
+                        if (!empty($res['created_at'])) {
+                            $warranty_end_date = calculateWarrantyEndDateRes($res['created_at'], $res['warranty_period']);
+                            $is_within_warranty = isWithinWarrantyRes($res['created_at'], $res['warranty_period']);
+                            $can_claim_warranty = ($res['status'] == 'completed' && $is_within_warranty);
+                        }
+                    }
                 ?>
                     <div class="reservation-card" data-reservation-id="<?php echo $res['id']; ?>">
                         <!-- Product Image Section -->
@@ -1172,42 +1252,41 @@ if (!empty($res['product_id']) && !empty($res['warranty_period']) && $res['warra
                             <?php endif; ?>
 
                             <!-- Warranty Section -->
-<?php if ($has_warranty): ?>
-<div class="warranty-section mt-2 pt-2 border-top">
-    <div class="warranty-header" style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px;">
-        <i class="fas fa-shield-alt" style="color: var(--primary);"></i>
-        <strong>Warranty</strong>
-        <?php if ($warranty_display): ?>
-        <span class="warranty-badge"><?php echo $warranty_display; ?></span>
-        <?php endif; ?>
-    </div>
-    
-    <?php if ($is_within_warranty && $warranty_end_date): ?>
-    <div class="warranty-status active small" style="font-size: 11px; padding: 4px 8px;">
-        <i class="fas fa-check-circle"></i> Active until <?php echo date('M d, Y', strtotime($warranty_end_date)); ?>
-    </div>
-    <?php elseif ($has_warranty && !$is_within_warranty && $warranty_end_date): ?>
-    <div class="warranty-status expired small" style="font-size: 11px; padding: 4px 8px;">
-        <i class="fas fa-clock"></i> Expired on <?php echo date('M d, Y', strtotime($warranty_end_date)); ?>
-    </div>
-    <?php endif; ?>
-    
-    <!-- Claim Warranty Button -->
-    <?php if ($can_claim_warranty): ?>
-    <button class="btn-warranty-claim-small mt-2" onclick="openWarrantyClaimRes(<?php echo $res['id']; ?>, <?php echo $res['product_id']; ?>, '<?php echo htmlspecialchars($res['product_name']); ?>')">
-        <i class="fas fa-tools"></i> Claim Warranty
-    </button>
-    <?php elseif ($has_warranty && $res['status'] == 'completed' && !$is_within_warranty): ?>
-    <button class="btn-warranty-expired-small mt-2" disabled>
-        <i class="fas fa-clock"></i> Warranty Expired
-    </button>
-    <?php elseif ($has_warranty && $res['status'] != 'completed'): ?>
-    <div class="warranty-note small mt-1">
-        <small class="text-muted"><i class="fas fa-info-circle"></i> Warranty available after completion</small>
-    </div>
-    <?php endif; ?>
-</div>
-<?php endif; ?>
+                            <?php if ($has_warranty): ?>
+                            <div class="warranty-section">
+                                <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px;">
+                                    <i class="fas fa-shield-alt" style="color: var(--primary);"></i>
+                                    <strong>Warranty</strong>
+                                    <?php if ($warranty_display): ?>
+                                    <span class="warranty-badge"><?php echo $warranty_display; ?></span>
+                                    <?php endif; ?>
+                                </div>
+                                
+                                <?php if ($is_within_warranty && $warranty_end_date): ?>
+                                <div class="warranty-status active">
+                                    <i class="fas fa-check-circle"></i> Active until <?php echo date('M d, Y', strtotime($warranty_end_date)); ?>
+                                </div>
+                                <?php elseif ($has_warranty && !$is_within_warranty && $warranty_end_date): ?>
+                                <div class="warranty-status expired">
+                                    <i class="fas fa-clock"></i> Expired on <?php echo date('M d, Y', strtotime($warranty_end_date)); ?>
+                                </div>
+                                <?php endif; ?>
+                                
+                                <?php if ($can_claim_warranty): ?>
+                                <button class="btn-warranty-claim-small mt-2" onclick="openWarrantyClaimRes(<?php echo $res['id']; ?>, <?php echo $res['product_id']; ?>, '<?php echo htmlspecialchars($res['product_name']); ?>')">
+                                    <i class="fas fa-tools"></i> Claim Warranty
+                                </button>
+                                <?php elseif ($has_warranty && $res['status'] == 'completed' && !$is_within_warranty): ?>
+                                <button class="btn-warranty-expired-small mt-2" disabled>
+                                    <i class="fas fa-clock"></i> Warranty Expired
+                                </button>
+                                <?php elseif ($has_warranty && $res['status'] != 'completed'): ?>
+                                <div class="warranty-note mt-1">
+                                    <small><i class="fas fa-info-circle"></i> Warranty available after completion</small>
+                                </div>
+                                <?php endif; ?>
+                            </div>
+                            <?php endif; ?>
                             
                             <!-- Actions -->
                             <div class="card-actions">
@@ -1255,13 +1334,25 @@ if (!empty($res['product_id']) && !empty($res['warranty_period']) && $res['warra
                 <?php endforeach; ?>
             </div>
         <?php else: ?>
-            <div class="empty-state">
-                <i class="fas fa-calendar-times"></i>
-                <h3>No Reservations Yet</h3>
-                <p>Browse products and reserve your favorite items!</p>
-                <a href="dashboard.php" class="btn-browse">
-                    <i class="fas fa-shopping-bag"></i> Browse Products
-                </a>
+            <!-- ===== ✅ IMPROVED EMPTY STATE ===== -->
+            <div class="empty-state-reservations">
+                <div class="empty-icon-wrap">
+                    <i class="fas fa-clock"></i>
+                </div>
+                <h2>No Reservations Yet</h2>
+                <p>Browse products and reserve your favorite items! Your reservations will appear here.</p>
+                <div class="empty-actions">
+                    <a href="dashboard.php" class="empty-btn-primary">
+                        <i class="fas fa-shopping-bag"></i> Browse Products
+                    </a>
+                    <a href="sale-products.php" class="empty-btn-secondary">
+                        <i class="fas fa-tags"></i> View Sales
+                    </a>
+                </div>
+                <div class="empty-tip">
+                    <i class="fas fa-lightbulb"></i>
+                    Tip: Save your favorite products to quickly reserve them later!
+                </div>
             </div>
         <?php endif; ?>
     </div>
@@ -1273,60 +1364,60 @@ if (!empty($res['product_id']) && !empty($res['warranty_period']) && $res['warra
     </div>
 
     <!-- Warranty Claim Modal -->
-<div class="modal fade" id="warrantyClaimModalRes" tabindex="-1">
-    <div class="modal-dialog">
-        <div class="modal-content">
-            <div class="modal-header" style="background: linear-gradient(135deg, #00B761, #00A86B); color: white;">
-                <h5 class="modal-title"><i class="fas fa-shield-alt"></i> Request Warranty Service</h5>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-            </div>
-            <div class="modal-body">
-                <div id="warrantyProductInfoRes" class="alert alert-light border mb-3"></div>
-                
-                <div class="alert alert-warning small">
-                    <i class="fas fa-info-circle"></i>
-                    <strong>Walk-in Service Only</strong><br>
-                    Please bring your product to the clinic for inspection.
+    <div class="modal fade" id="warrantyClaimModalRes" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header" style="background: linear-gradient(135deg, #00B761, #00A86B); color: white;">
+                    <h5 class="modal-title"><i class="fas fa-shield-alt"></i> Request Warranty Service</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
-                
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <label class="form-label">Preferred Date</label>
-                        <input type="date" id="claim_date_res" class="form-control" min="<?php echo date('Y-m-d'); ?>">
+                <div class="modal-body">
+                    <div id="warrantyProductInfoRes" class="alert alert-light border mb-3"></div>
+                    
+                    <div class="alert alert-warning small">
+                        <i class="fas fa-info-circle"></i>
+                        <strong>Walk-in Service Only</strong><br>
+                        Please bring your product to the clinic for inspection.
                     </div>
-                    <div class="col-md-6">
-                        <label class="form-label">Preferred Time</label>
-                        <input type="time" id="claim_time_res" class="form-control">
+                    
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Preferred Date</label>
+                            <input type="date" id="claim_date_res" class="form-control" min="<?php echo date('Y-m-d'); ?>">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Preferred Time</label>
+                            <input type="time" id="claim_time_res" class="form-control">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Issue Description</label>
+                            <textarea id="claim_description_res" class="form-control" rows="2" placeholder="Describe the issue..."></textarea>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label">Upload Reference Photos (Optional)</label>
+                            <input type="file" id="claim_photos_res" class="form-control" multiple accept="image/*">
+                            <small class="text-muted">Upload up to 3 photos</small>
+                        </div>
                     </div>
-                    <div class="col-12">
-                        <label class="form-label">Issue Description</label>
-                        <textarea id="claim_description_res" class="form-control" rows="2" placeholder="Describe the issue..."></textarea>
-                    </div>
-                    <div class="col-12">
-                        <label class="form-label">Upload Reference Photos (Optional)</label>
-                        <input type="file" id="claim_photos_res" class="form-control" multiple accept="image/*">
-                        <small class="text-muted">Upload up to 3 photos</small>
-                    </div>
+                    
+                    <input type="hidden" id="claim_reservation_id_res">
+                    <input type="hidden" id="claim_product_id_res">
+                    <input type="hidden" id="claim_product_name_res">
                 </div>
-                
-                <input type="hidden" id="claim_reservation_id_res">
-                <input type="hidden" id="claim_product_id_res">
-                <input type="hidden" id="claim_product_name_res">
-            </div>
-            <div class="modal-footer">
-                <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button>
-                <button type="button" class="btn" style="background: #00B761; color: white;" onclick="submitWarrantyClaimRes()">Submit Request</button>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn" style="background: #00B761; color: white;" onclick="submitWarrantyClaimRes()">Submit Request</button>
+                </div>
             </div>
         </div>
     </div>
-</div>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         // ============================================
-        // CANCEL RESERVATION FUNCTION - FIXED
+        // CANCEL RESERVATION FUNCTION
         // ============================================
         function cancelReservation(reservationId, productName, colorName) {
-            // Validate reservation ID
             if (!reservationId || reservationId <= 0) {
                 Swal.fire({
                     icon: 'error',
@@ -1366,7 +1457,6 @@ if (!empty($res['product_id']) && !empty($res['warranty_period']) && $res['warra
                         background: document.documentElement.classList.contains('theme-dark') ? '#1E1E1E' : '#FFFFFF'
                     });
 
-                    // Use fetch with proper POST data
                     const formData = new URLSearchParams();
                     formData.append('action', 'cancel');
                     formData.append('id', reservationId);
@@ -1414,7 +1504,6 @@ if (!empty($res['product_id']) && !empty($res['warranty_period']) && $res['warra
             });
         }
         
-        // Helper function to escape HTML
         function escapeHtml(text) {
             if (!text) return '';
             const div = document.createElement('div');
@@ -1431,11 +1520,13 @@ if (!empty($res['product_id']) && !empty($res['warranty_period']) && $res['warra
             modalImg.src = imageUrl;
             modalImg.alt = productName;
             modal.classList.add('show');
+            document.body.style.overflow = 'hidden';
         }
 
         function closeImageModal() {
             const modal = document.getElementById('imageModal');
             modal.classList.remove('show');
+            document.body.style.overflow = '';
         }
 
         document.addEventListener('keydown', function(e) {
@@ -1458,7 +1549,6 @@ if (!empty($res['product_id']) && !empty($res['warranty_period']) && $res['warra
             }
         }
 
-        // Load saved theme
         document.addEventListener('DOMContentLoaded', function() {
             const savedTheme = localStorage.getItem('theme') || 'light';
             if (savedTheme === 'dark') {
@@ -1467,105 +1557,104 @@ if (!empty($res['product_id']) && !empty($res['warranty_period']) && $res['warra
         });
 
         // ============================================
-// WARRANTY CLAIM FUNCTIONS FOR RESERVATIONS
-// ============================================
-
-function openWarrantyClaimRes(reservationId, productId, productName) {
-    document.getElementById('claim_date_res').value = '';
-    document.getElementById('claim_time_res').value = '';
-    document.getElementById('claim_description_res').value = '';
-    document.getElementById('claim_photos_res').value = '';
-    
-    document.getElementById('claim_reservation_id_res').value = reservationId;
-    document.getElementById('claim_product_id_res').value = productId;
-    document.getElementById('claim_product_name_res').value = productName;
-    
-    document.getElementById('warrantyProductInfoRes').innerHTML = `
-        <div class="d-flex gap-3">
-            <i class="fas fa-box" style="font-size: 40px; color: #00B761;"></i>
-            <div>
-                <strong>${escapeHtml(productName)}</strong><br>
-                <small>Reservation #: ${reservationId}</small><br>
-                <small class="text-teal">Warranty claim will be verified by the clinic</small>
-            </div>
-        </div>
-    `;
-    
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    document.getElementById('claim_date_res').value = tomorrow.toISOString().split('T')[0];
-    
-    const modal = new bootstrap.Modal(document.getElementById('warrantyClaimModalRes'));
-    modal.show();
-}
-
-function submitWarrantyClaimRes() {
-    const reservationId = document.getElementById('claim_reservation_id_res').value;
-    const productId = document.getElementById('claim_product_id_res').value;
-    const productName = document.getElementById('claim_product_name_res').value;
-    const claimDate = document.getElementById('claim_date_res').value;
-    const claimTime = document.getElementById('claim_time_res').value;
-    const description = document.getElementById('claim_description_res').value;
-    
-    if (!claimDate) {
-        Swal.fire('Error', 'Please select a date', 'error');
-        return;
-    }
-    if (!claimTime) {
-        Swal.fire('Error', 'Please select a time', 'error');
-        return;
-    }
-    
-    Swal.fire({
-        title: 'Submitting...',
-        allowOutsideClick: false,
-        didOpen: () => Swal.showLoading()
-    });
-    
-    const formData = new FormData();
-    formData.append('action', 'warranty_claim');
-    formData.append('reservation_id', reservationId);
-    formData.append('product_id', productId);
-    formData.append('product_name', productName);
-    formData.append('claim_date', claimDate);
-    formData.append('claim_time', claimTime);
-    formData.append('description', description);
-    
-    const photosInput = document.getElementById('claim_photos_res');
-    if (photosInput.files) {
-        for (let i = 0; i < Math.min(photosInput.files.length, 3); i++) {
-            formData.append('photos[]', photosInput.files[i]);
+        // WARRANTY CLAIM FUNCTIONS FOR RESERVATIONS
+        // ============================================
+        function openWarrantyClaimRes(reservationId, productId, productName) {
+            document.getElementById('claim_date_res').value = '';
+            document.getElementById('claim_time_res').value = '';
+            document.getElementById('claim_description_res').value = '';
+            document.getElementById('claim_photos_res').value = '';
+            
+            document.getElementById('claim_reservation_id_res').value = reservationId;
+            document.getElementById('claim_product_id_res').value = productId;
+            document.getElementById('claim_product_name_res').value = productName;
+            
+            document.getElementById('warrantyProductInfoRes').innerHTML = `
+                <div class="d-flex gap-3">
+                    <i class="fas fa-box" style="font-size: 40px; color: #00B761;"></i>
+                    <div>
+                        <strong>${escapeHtml(productName)}</strong><br>
+                        <small>Reservation #: ${reservationId}</small><br>
+                        <small class="text-teal">Warranty claim will be verified by the clinic</small>
+                    </div>
+                </div>
+            `;
+            
+            const tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            document.getElementById('claim_date_res').value = tomorrow.toISOString().split('T')[0];
+            
+            const modal = new bootstrap.Modal(document.getElementById('warrantyClaimModalRes'));
+            modal.show();
         }
-    }
-    
-    fetch('ajax/warranty-claim.php', {
-        method: 'POST',
-        body: formData
-    })
-    .then(r => r.json())
-    .then(data => {
-        Swal.close();
-        if (data.success) {
-            const modal = bootstrap.Modal.getInstance(document.getElementById('warrantyClaimModalRes'));
-            modal.hide();
+
+        function submitWarrantyClaimRes() {
+            const reservationId = document.getElementById('claim_reservation_id_res').value;
+            const productId = document.getElementById('claim_product_id_res').value;
+            const productName = document.getElementById('claim_product_name_res').value;
+            const claimDate = document.getElementById('claim_date_res').value;
+            const claimTime = document.getElementById('claim_time_res').value;
+            const description = document.getElementById('claim_description_res').value;
+            
+            if (!claimDate) {
+                Swal.fire('Error', 'Please select a date', 'error');
+                return;
+            }
+            if (!claimTime) {
+                Swal.fire('Error', 'Please select a time', 'error');
+                return;
+            }
             
             Swal.fire({
-                icon: 'success',
-                title: 'Success!',
-                text: data.message,
-                confirmButtonColor: '#00B761'
-            }).then(() => {
-                location.reload();
+                title: 'Submitting...',
+                allowOutsideClick: false,
+                didOpen: () => Swal.showLoading()
             });
-        } else {
-            Swal.fire('Error!', data.message, 'error');
+            
+            const formData = new FormData();
+            formData.append('action', 'warranty_claim');
+            formData.append('reservation_id', reservationId);
+            formData.append('product_id', productId);
+            formData.append('product_name', productName);
+            formData.append('claim_date', claimDate);
+            formData.append('claim_time', claimTime);
+            formData.append('description', description);
+            
+            const photosInput = document.getElementById('claim_photos_res');
+            if (photosInput.files) {
+                for (let i = 0; i < Math.min(photosInput.files.length, 3); i++) {
+                    formData.append('photos[]', photosInput.files[i]);
+                }
+            }
+            
+            fetch('ajax/warranty-claim.php', {
+                method: 'POST',
+                body: formData
+            })
+            .then(r => r.json())
+            .then(data => {
+                Swal.close();
+                if (data.success) {
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('warrantyClaimModalRes'));
+                    modal.hide();
+                    
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Success!',
+                        text: data.message,
+                        confirmButtonColor: '#00B761'
+                    }).then(() => {
+                        location.reload();
+                    });
+                } else {
+                    Swal.fire('Error!', data.message, 'error');
+                }
+            })
+            .catch(err => {
+                Swal.close();
+                Swal.fire('Error!', 'Network error. Please try again.', 'error');
+            });
         }
-    })
-    .catch(err => {
-        Swal.close();
-        Swal.fire('Error!', 'Network error. Please try again.', 'error');
-    });
-}
     </script>
 </body>
 </html>

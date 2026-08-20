@@ -2,6 +2,9 @@
 include '../includes/config.php';
 include '../includes/theme.php';
 
+// ✅ SET TIMEZONE TO PHILIPPINES
+date_default_timezone_set('Asia/Manila');
+
 // Auth check
 if (!isset($_SESSION['user_id'])) {
     header('Location: ../auth/user_login.php');
@@ -85,6 +88,59 @@ if ($cat_q) {
     }
 }
 
+// ===== ✅ FIXED: GET PRODUCT IMAGE FOR DROPDOWN =====
+function getProductImageForDropdown($product) {
+    $image = null;
+    
+    // Try images_json first
+    if (!empty($product['images_json'])) {
+        $imgs = json_decode($product['images_json'], true);
+        if (!empty($imgs) && is_array($imgs)) {
+            $image = $imgs[0];
+        }
+    }
+    
+    // Try images (JSON or plain string)
+    if (empty($image) && !empty($product['images'])) {
+        $imgData = $product['images'];
+        if (strpos($imgData, '[') === 0) {
+            $imgs = json_decode($imgData, true);
+            if (!empty($imgs) && is_array($imgs)) {
+                $image = $imgs[0];
+            }
+        } else {
+            $image = $imgData;
+        }
+    }
+    
+    // Try image (fallback)
+    if (empty($image) && !empty($product['image'])) {
+        $image = $product['image'];
+    }
+    
+    // If still empty, return null
+    if (empty($image)) {
+        return null;
+    }
+    
+    // Clean the path
+    $image = str_replace('uploads/uploads/', 'uploads/', $image);
+    
+    // Return absolute path from root
+    if (strpos($image, 'uploads/') === 0) {
+        return '/' . $image;
+    }
+    if (strpos($image, '/uploads/') === 0) {
+        return $image;
+    }
+    if (strpos($image, 'http') === 0 || strpos($image, '//') === 0) {
+        return $image;
+    }
+    
+    // Default: assume it's in assets/images/products/
+    return '/assets/images/products/' . $image;
+}
+
 // ===== CATEGORY HOVER PREVIEW =====
 $categories_with_products = [];
 foreach ($dynamic_categories as $cat_data) {
@@ -98,6 +154,7 @@ foreach ($dynamic_categories as $cat_data) {
     ");
     $products_preview = [];
     while ($row = mysqli_fetch_assoc($preview_query)) {
+        $row['image_url'] = getProductImageForDropdown($row);
         $products_preview[] = $row;
     }
     $categories_with_products[$display_name] = [
@@ -159,13 +216,67 @@ function getClinicImg($c) {
     if (!empty($c['logo']))         return '/assets/images/clinic-logos/'   . $c['logo'];
     return null;
 }
-function getProductImage($product) {
-    if (!empty($product['image'])) {
-        $p = '/assets/images/products/' . $product['image'];
-        if (file_exists($_SERVER['DOCUMENT_ROOT'] . $p)) return $p;
+
+// ✅ FIXED: isClinicOpen - Proper time-based logic
+function isClinicOpen($hours) {
+    if (empty($hours) || strtolower(trim($hours)) === 'hours not set') {
+        return ['open' => null, 'label' => 'Hours N/A'];
     }
-    return '';
+    
+    if (stripos($hours, '24/7') !== false || stripos($hours, '24 hours') !== false) {
+        return ['open' => true, 'label' => 'Open 24/7'];
+    }
+    
+    // Clean up hours string
+    $hours = trim(preg_replace('/\s+/', ' ', $hours));
+    
+    // Patterns to match: with minutes or without
+    $patterns = [
+        '/(\d{1,2}:\d{2})\s*(AM|PM)\s*[-–]+\s*(\d{1,2}:\d{2})\s*(AM|PM)/i',
+        '/(\d{1,2})\s*(AM|PM)\s*[-–]+\s*(\d{1,2})\s*(AM|PM)/i',
+    ];
+    
+    $timezone = new DateTimeZone('Asia/Manila');
+    $now = new DateTime('now', $timezone);
+    
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $hours, $matches)) {
+            // Build time strings
+            if (count($matches) == 5) {
+                // with minutes
+                $open_str = $matches[1] . ' ' . $matches[2];
+                $close_str = $matches[3] . ' ' . $matches[4];
+            } else {
+                // without minutes, assume :00
+                $open_str = $matches[1] . ':00 ' . $matches[2];
+                $close_str = $matches[3] . ':00 ' . $matches[4];
+            }
+            
+            $open = DateTime::createFromFormat('g:i A', $open_str, $timezone);
+            $close = DateTime::createFromFormat('g:i A', $close_str, $timezone);
+            
+            if ($open && $close) {
+                // Set both to today's date
+                $open->setDate($now->format('Y'), $now->format('m'), $now->format('d'));
+                $close->setDate($now->format('Y'), $now->format('m'), $now->format('d'));
+                
+                // If close is before open, it crosses midnight
+                if ($close < $open) {
+                    $close->modify('+1 day');
+                }
+                
+                $is_open = ($now >= $open && $now < $close);
+                return [
+                    'open' => $is_open,
+                    'label' => $is_open ? 'Open now' : 'Closed now'
+                ];
+            }
+        }
+    }
+    
+    return ['open' => null, 'label' => 'Hours N/A'];
 }
+
 if (!function_exists('timeAgo')) {
     function timeAgo($ts) {
         $diff = time() - strtotime($ts);
@@ -191,73 +302,6 @@ if (!function_exists('getTravelText')) {
         if ($m === 'walking') return round($d*12).' min walk';
         if ($m === 'driving') return round($d*2).' min drive';
         return $d.' km away';
-    }
-}
-if (!function_exists('isClinicOpen')) {
-    function isClinicOpen($hours) {
-        // FORCE OPEN - TEMPORARY FIX
-        // Para laging "Open now" ang status ng lahat ng clinics
-        return ['open' => true, 'label' => 'Open now'];
-        
-        /* ORIGINAL CODE - COMMENTED OUT
-        if (empty($hours) || strtolower(trim($hours)) === 'hours not set'
-            || trim($hours) === 'NULL' || trim($hours) === '0.0') {
-            return ['open' => null, 'label' => 'Hours N/A'];
-        }
-
-        $now     = new DateTime('now');
-        $today   = (int)$now->format('N');
-        $nowMins = (int)$now->format('H') * 60 + (int)$now->format('i');
-
-        $dayMap = [
-            'mon'=>1,'tue'=>2,'wed'=>3,'thu'=>4,'fri'=>5,'sat'=>6,'sun'=>7,
-            'monday'=>1,'tuesday'=>2,'wednesday'=>3,'thursday'=>4,
-            'friday'=>5,'saturday'=>6,'sunday'=>7,
-        ];
-
-        $toMins = function($str) {
-            $str = strtolower(trim($str));
-            $pm  = strpos($str, 'pm') !== false;
-            $am  = strpos($str, 'am') !== false;
-            $str = preg_replace('/[^0-9:]/', '', $str);
-            $parts = explode(':', $str);
-            $h = (int)$parts[0];
-            $m = isset($parts[1]) ? (int)$parts[1] : 0;
-            if ($pm && $h !== 12) $h += 12;
-            if ($am && $h === 12) $h = 0;
-            return $h * 60 + $m;
-        };
-
-        if (!preg_match(
-            '/(\d{1,2}(?::\d{2})?\s*(?:am|pm))\s*[-–to]+\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm))/i',
-            $hours, $tm
-        )) {
-            return ['open' => null, 'label' => htmlspecialchars($hours)];
-        }
-
-        $openMins  = $toMins($tm[1]);
-        $closeMins = $toMins($tm[2]);
-
-        $dayPart  = strtolower(preg_replace('/' . preg_quote($tm[0], '/') . '.*$/i', '', $hours));
-        $inRange  = true;
-
-        if (preg_match('/([a-z]+)\s*[-–]\s*([a-z]+)/i', $dayPart, $dr)) {
-            $startDay = $dayMap[strtolower(substr($dr[1], 0, 3))] ?? null;
-            $endDay   = $dayMap[strtolower(substr($dr[2], 0, 3))] ?? null;
-            if ($startDay && $endDay) {
-                $inRange = ($startDay <= $endDay)
-                    ? ($today >= $startDay && $today <= $endDay)
-                    : ($today >= $startDay || $today <= $endDay);
-            }
-        }
-
-        if (!$inRange) {
-            return ['open' => false, 'label' => 'Closed today'];
-        }
-
-        $open = ($nowMins >= $openMins && $nowMins < $closeMins);
-        return ['open' => $open, 'label' => $open ? 'Open now' : 'Closed now'];
-        */
     }
 }
 
@@ -679,8 +723,35 @@ include '../includes/navbar.php';
     .dropdown-product-item:last-child { border-bottom: none; }
     .dropdown-product-item:hover { background: var(--bg-primary); transform: translateX(4px); }
 
-    .dropdown-product-img { width: 45px; height: 45px; border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; background: var(--bg-primary); overflow: hidden; }
-    .dropdown-product-img img { width: 100%; height: 100%; object-fit: cover; }
+    .dropdown-product-img {
+        width: 45px;
+        height: 45px;
+        border-radius: var(--radius-md);
+        overflow: hidden;
+        flex-shrink: 0;
+        background: var(--bg-primary);
+        border: 1px solid var(--border-light);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .dropdown-product-img img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+    }
+    .dropdown-product-img .img-fallback {
+        width: 100%;
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--bg-primary);
+        color: var(--primary);
+        font-size: 18px;
+    }
+
     .dropdown-product-name   { font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 2px; }
     .dropdown-product-clinic { font-size: 10px; color: var(--text-muted); display: flex; align-items: center; gap: 4px; }
     .dropdown-product-clinic i { font-size: 9px; color: var(--primary); }
@@ -854,16 +925,17 @@ include '../includes/navbar.php';
         <?php if (mysqli_num_rows($nearby_clinics) > 0): ?>
         <div class="nearby-scroll" style="margin-bottom:28px;">
             <div class="nearby-track">
-                <?php $nci = 0; while ($nc = mysqli_fetch_assoc($nearby_clinics)):
-                    $nc_img = getClinicImg($nc);
-                    $nc_grad = $grads[$nci % count($grads)];
-                    $nc_color = $icon_colors[$nci % count($icon_colors)];
-                    $nc_avg = round($nc['avg_rating'], 1);
-                    $nc_travel_text = getTravelText($nc['travel_mode'], $nc['distance_km']);
-                    $nc_travel_icon = getTravelIcon($nc['travel_mode']);
-                ?>
+                <?php $nci = 0; while ($nc = mysqli_fetch_assoc($nearby_clinics)): ?>
                 <a href="clinic-details.php?id=<?php echo $nc['id']; ?>" class="nearby-card">
                     <div class="nc-img">
+                        <?php
+                        $nc_img = getClinicImg($nc);
+                        $nc_grad = $grads[$nci % count($grads)];
+                        $nc_color = $icon_colors[$nci % count($icon_colors)];
+                        $nc_avg = round($nc['avg_rating'], 1);
+                        $nc_travel_text = getTravelText($nc['travel_mode'], $nc['distance_km']);
+                        $nc_travel_icon = getTravelIcon($nc['travel_mode']);
+                        ?>
                         <?php if ($nc_img): ?>
                             <img src="<?php echo htmlspecialchars($nc_img); ?>" alt="<?php echo htmlspecialchars($nc['clinic_name']); ?>"
                                  onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
@@ -1035,13 +1107,19 @@ include '../includes/navbar.php';
                     </div>
                     <div class="dropdown-products">
                         <?php if (count($hover_products) > 0): ?>
-                            <?php foreach ($hover_products as $product): ?>
+                            <?php foreach ($hover_products as $product):
+                                $img_src = $product['image_url'] ?? null;
+                            ?>
                             <a href="product-view.php?id=<?php echo $product['id']; ?>" class="dropdown-product-item">
                                 <div class="dropdown-product-img">
-                                    <?php $img_src = getProductImage($product); if ($img_src): ?>
-                                        <img src="<?php echo $img_src; ?>" alt="<?php echo htmlspecialchars($product['name']); ?>">
+                                    <?php if ($img_src): ?>
+                                        <img src="<?php echo htmlspecialchars($img_src); ?>" 
+                                             alt="<?php echo htmlspecialchars($product['name']); ?>"
+                                             onerror="this.onerror=null;this.parentElement.innerHTML='<div class=\'img-fallback\'><i class=\'fas fa-glasses\'></i></div>'">
                                     <?php else: ?>
-                                        <i class="<?php echo $icon_info['icon']; ?>" style="font-size:24px;color:<?php echo $icon_info['text']; ?>;"></i>
+                                        <div class="img-fallback">
+                                            <i class="<?php echo $icon_info['icon']; ?>" style="font-size:24px;color:<?php echo $icon_info['text']; ?>;"></i>
+                                        </div>
                                     <?php endif; ?>
                                 </div>
                                 <div class="dropdown-product-info">
@@ -1100,11 +1178,11 @@ include '../includes/navbar.php';
                     $d = calculateDistance($user_lat, $user_lng, $clinic['latitude'], $clinic['longitude']);
                     if ($d !== '') $dist = $d . ' km';
                 }
+                // ✅ FIXED: isClinicOpen now works properly
                 $clinic_status = isClinicOpen($clinic['hours'] ?? '');
-                $status_open   = $clinic_status['open'];   // true, false, or null
+                $status_open   = $clinic_status['open'];
                 $status_label  = $clinic_status['label'];
                 $status_class  = $status_open === true ? 'open' : ($status_open === false ? 'closed' : 'unknown');
-                $status_dot_icon = $status_open === true ? 'fa-circle' : ($status_open === false ? 'fa-circle' : 'fa-question-circle');
             ?>
             <div class="clinic-card"
                  data-city="<?php echo htmlspecialchars($clinic['city'] ?? ''); ?>"
@@ -1123,7 +1201,7 @@ include '../includes/navbar.php';
                         </div>
                     <?php endif; ?>
                     <div class="clinic-img-overlay"></div>
-                    <!-- Open / Closed badge -->
+                    <!-- ✅ FIXED: Open/Closed status now works -->
                     <div class="clinic-status-badge <?php echo $status_class; ?>">
                         <span class="clinic-status-dot"></span>
                         <?php echo htmlspecialchars($status_label); ?>
@@ -1157,7 +1235,6 @@ include '../includes/navbar.php';
                     <div class="clinic-footer">
                         <a href="clinic-details.php?id=<?php echo $clinic['id']; ?>" class="clinic-view-btn"><i class="fas fa-eye"></i> View</a>
                         <a href="book-appointment.php?clinic_id=<?php echo $clinic['id']; ?>" class="clinic-book-btn"><i class="fas fa-calendar-plus"></i> Book</a>
-                        <!-- Message button that goes to messages.php with clinic context -->
                         <a href="messages.php?clinic_id=<?php echo $clinic['id']; ?>&clinic_name=<?php echo urlencode($clinic['clinic_name']); ?>" class="clinic-msg-btn" title="Message <?php echo htmlspecialchars($clinic['clinic_name']); ?>">
                             <i class="fas fa-comment-dots"></i>
                         </a>

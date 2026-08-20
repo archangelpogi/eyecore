@@ -1,4 +1,7 @@
 <?php
+// ✅ SET TIMEZONE TO PHILIPPINES
+date_default_timezone_set('Asia/Manila');
+
 include '../includes/config.php';
 include '../includes/theme.php';
 
@@ -98,9 +101,36 @@ function getProductImagesForAppointment($appointment) {
 }
 
 function getClinicImgForAppointment($c) {
-    if (!empty($c['cover_photo']))  return '/assets/images/clinic-covers/'.$c['cover_photo'];
-    if (!empty($c['clinic_image'])) return '/assets/images/clinic-images/'.$c['clinic_image'];
-    if (!empty($c['logo']))         return '/assets/images/clinic-logos/'.$c['logo'];
+    if (empty($c)) return null;
+    
+    $imageFields = [
+        'cover_photo' => '/assets/images/clinic-covers/',
+        'clinic_image' => '/assets/images/clinic-images/',
+        'logo' => '/assets/images/clinic-logos/',
+        'clinic_logo' => '/assets/images/clinic-logos/'
+    ];
+    
+    foreach ($imageFields as $field => $path) {
+        if (!empty($c[$field])) {
+            $filename = trim($c[$field]);
+            
+            if (strpos($filename, 'http') === 0 || strpos($filename, '//') === 0) {
+                return $filename;
+            }
+            if (strpos($filename, 'uploads/') === 0) {
+                return '/' . $filename;
+            }
+            if (strpos($filename, '/uploads/') === 0) {
+                return $filename;
+            }
+            if (strpos($filename, '/') === 0) {
+                return $filename;
+            }
+            
+            return $path . $filename;
+        }
+    }
+    
     return null;
 }
 
@@ -154,12 +184,9 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
     $product_images = getProductImagesForAppointment($ap);
     $clinic_img = getClinicImgForAppointment($ap);
     
-    // Fallback: if no product images but has clinic image, use clinic image
     if (empty($product_images) && $clinic_img) {
         $product_images = [$clinic_img];
     }
-    
-    // If still empty, use placeholder
     if (empty($product_images)) {
         $product_images = ['/assets/img/no-image.png'];
     }
@@ -214,18 +241,15 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
         .results-count{background:var(--bg-secondary);padding:6px 14px;border-radius:var(--radius-full);font-size:13px;border:1px solid var(--border-light);color:var(--text-secondary);}
         .results-count span{font-weight:700;color:var(--primary);}
 
-        /* ===== GRID & LIST LAYOUTS ===== */
         .appointments-grid{display:grid;grid-template-columns:repeat(1,1fr);gap:20px;}
         @media(min-width:768px){.appointments-grid{grid-template-columns:repeat(2,1fr);}}
         @media(min-width:1200px){.appointments-grid{grid-template-columns:repeat(3,1fr);}}
         .appointments-list{display:flex;flex-direction:column;gap:12px;}
 
-        /* ===== APPOINTMENT CARD ===== */
         .appointment-card{background:var(--bg-secondary);border-radius:var(--radius-lg);border:1px solid var(--border-light);overflow:hidden;transition:all 0.25s;cursor:pointer;text-decoration:none;display:block;position:relative;}
         .appointment-card:hover{transform:translateY(-4px);box-shadow:var(--shadow-md);border-color:var(--primary);}
         .card-content-grid{display:flex;flex-direction:column;}
 
-        /* ===== PRODUCT IMAGE SLIDER ===== */
         .product-image-section {
             position: relative;
             height: 160px;
@@ -297,12 +321,10 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
             backdrop-filter: blur(2px);
         }
 
-        /* Placeholder */
         .product-placeholder{width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;background:var(--bg-primary);}
         .product-placeholder i{font-size:40px;color:var(--primary);opacity:0.5;}
         .product-placeholder span{font-size:12px;color:var(--text-muted);font-weight:500;}
 
-        /* ===== CARD BODY ===== */
         .card-body{padding:16px 18px 18px;display:flex;flex-direction:column;gap:12px;}
         
         .clinic-header{display:flex;align-items:center;gap:12px;}
@@ -330,14 +352,12 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
         .doctor-info{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary);}
         .doctor-info i{color:var(--primary);font-size:11px;}
 
-        /* ===== PRODUCT BADGE - ONLY SHOW WHEN PRODUCT EXISTS ===== */
         .product-badge{background:var(--bg-primary);border-radius:var(--radius-md);padding:8px 12px;margin-top:2px;}
         .product-badge-content{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
         .product-badge-content i{color:var(--primary);font-size:14px;}
         .product-badge-content span{font-size:12px;font-weight:500;color:var(--text-primary);flex:1;min-width:60px;}
         .product-badge-content .price{margin-left:auto;font-weight:700;color:var(--primary);font-size:13px;white-space:nowrap;}
 
-        /* ===== LIST VIEW ===== */
         .card-content-list{display:flex;align-items:center;gap:16px;padding:14px 18px;flex-wrap:wrap;}
         .list-image{width:72px;height:72px;border-radius:var(--radius-md);overflow:hidden;flex-shrink:0;background:var(--bg-primary);position:relative;}
         .list-image .pc-slider-track{width:100%;height:100%;}
@@ -358,29 +378,127 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
             .list-image{width:100%;height:140px;}
         }
 
-        /* ===== IMAGE MODAL ===== */
         .image-modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.92);z-index:10000;cursor:pointer;align-items:center;justify-content:center;}
         .image-modal.show{display:flex;}
         .modal-image{max-width:92%;max-height:90%;object-fit:contain;border-radius:var(--radius-lg);}
         .modal-close{position:absolute;top:20px;right:30px;color:white;font-size:40px;cursor:pointer;transition:all 0.2s;background:none;border:none;}
         .modal-close:hover{color:var(--primary);transform:rotate(90deg);}
 
-        /* ===== PAGINATION ===== */
         .pagination{display:flex;justify-content:center;align-items:center;gap:8px;margin-top:32px;flex-wrap:wrap;}
         .pagination-btn{padding:8px 16px;border-radius:var(--radius-full);background:var(--bg-secondary);border:1px solid var(--border-light);color:var(--text-secondary);text-decoration:none;font-size:13px;font-weight:500;transition:all 0.2s;cursor:pointer;display:inline-flex;align-items:center;gap:6px;}
         .pagination-btn:hover:not(.disabled):not(.active){background:var(--primary-light);color:var(--primary);border-color:var(--primary);}
         .pagination-btn.active{background:var(--primary);color:white;border-color:var(--primary);}
         .pagination-btn.disabled{opacity:0.4;cursor:not-allowed;pointer-events:none;}
 
-        /* ===== EMPTY STATE ===== */
-        .empty-state{grid-column:1/-1;text-align:center;padding:60px 20px;background:var(--bg-secondary);border-radius:var(--radius-lg);border:1px solid var(--border-light);}
-        .empty-state i{font-size:64px;color:var(--text-muted);margin-bottom:16px;opacity:0.4;}
-        .empty-state h3{font-size:18px;font-weight:700;margin-bottom:8px;color:var(--text-primary);}
-        .empty-state p{color:var(--text-secondary);font-size:14px;margin-bottom:20px;}
+        /* ===== ✅ IMPROVED EMPTY STATE ===== */
+        .empty-state-appointments {
+            grid-column: 1 / -1;
+            text-align: center;
+            padding: 80px 40px;
+            background: var(--bg-secondary);
+            border-radius: var(--radius-xl);
+            border: 2px dashed var(--border-color);
+            position: relative;
+            overflow: hidden;
+            max-width: 600px;
+            margin: 0 auto;
+            width: 100%;
+        }
+        .empty-state-appointments::before {
+            content: '';
+            position: absolute;
+            top: -40%;
+            right: -20%;
+            width: 250px;
+            height: 250px;
+            background: radial-gradient(circle, rgba(0,183,97,0.04) 0%, transparent 70%);
+            border-radius: 50%;
+            pointer-events: none;
+        }
+        .empty-state-appointments .empty-icon-wrap {
+            display: inline-block;
+            background: linear-gradient(135deg, var(--primary-light), #B7F5D2);
+            padding: 24px;
+            border-radius: var(--radius-full);
+            margin-bottom: 20px;
+        }
+        .empty-state-appointments .empty-icon-wrap i {
+            font-size: 56px;
+            color: var(--primary);
+            display: block;
+        }
+        .empty-state-appointments h2 {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
+        .empty-state-appointments p {
+            color: var(--text-secondary);
+            font-size: 15px;
+            line-height: 1.6;
+            max-width: 400px;
+            margin: 0 auto 24px;
+        }
+        .empty-state-appointments .empty-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .empty-state-appointments .empty-btn-primary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 28px;
+            background: var(--primary-gradient);
+            color: white;
+            border-radius: var(--radius-full);
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.2s;
+            box-shadow: 0 4px 14px rgba(0,183,97,0.25);
+        }
+        .empty-state-appointments .empty-btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0,183,97,0.35);
+        }
+        .empty-state-appointments .empty-btn-secondary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 28px;
+            background: transparent;
+            color: var(--text-secondary);
+            border-radius: var(--radius-full);
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            border: 2px solid var(--border-color);
+            transition: all 0.2s;
+        }
+        .empty-state-appointments .empty-btn-secondary:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: var(--primary-light);
+        }
+        .empty-state-appointments .empty-tip {
+            margin-top: 20px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border-light);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+        .empty-state-appointments .empty-tip i { color: var(--warning); }
+
         .btn-primary-sm{display:inline-flex;align-items:center;gap:8px;padding:10px 24px;background:var(--primary-gradient);color:white;border-radius:var(--radius-full);text-decoration:none;font-size:13px;font-weight:600;transition:all 0.2s;}
         .btn-primary-sm:hover{transform:translateY(-2px);box-shadow:0 4px 14px rgba(0,183,97,0.35);}
 
-        /* ===== CSS VARIABLES ===== */
         :root{--primary:#00B761;--primary-dark:#00874A;--primary-light:#E3FCE9;--primary-gradient:linear-gradient(135deg,#00B761,#00A86B);--secondary:#FF8C42;--bg-primary:#F5F7FA;--bg-secondary:#FFFFFF;--card-bg:#FFFFFF;--text-primary:#111827;--text-secondary:#6B7280;--text-muted:#9CA3AF;--border-color:#E5E7EB;--border-light:#F3F4F6;--shadow-sm:0 1px 3px rgba(0,0,0,0.06);--shadow-md:0 4px 16px rgba(0,0,0,0.08);--shadow-lg:0 12px 40px rgba(0,0,0,0.10);--radius-sm:10px;--radius-md:14px;--radius-lg:20px;--radius-xl:28px;--radius-full:999px;--danger:#EF4444;--warning:#F59E0B;--success:#00B761;--info:#3B82F6;}
         .theme-dark{--primary:#00E676;--primary-dark:#00C853;--primary-light:#0D2818;--bg-primary:#0D0D0D;--bg-secondary:#161616;--card-bg:#1E1E1E;--text-primary:#F9FAFB;--text-secondary:#9CA3AF;--text-muted:#6B7280;--border-color:#2A2A2A;--border-light:#222222;}
     </style>
@@ -447,7 +565,6 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
                     <?php if ($view_mode === 'grid'): ?>
                     <!-- ===== GRID VIEW ===== -->
                     <div class="card-content-grid">
-                        <!-- Image Slider -->
                         <div class="product-image-section" id="pic-<?php echo $aid; ?>" onclick="event.stopPropagation();">
                             <?php if ($has_img): ?>
                                 <div class="pc-slider-track" id="track-<?php echo $aid; ?>">
@@ -475,7 +592,6 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
                                 </div>
                                 <?php endif; ?>
                             <?php else: ?>
-                                <!-- Fallback: clinic image or placeholder -->
                                 <?php if ($clinic_img): ?>
                                     <div class="pc-slider-track">
                                         <div class="pc-slide">
@@ -495,7 +611,6 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
                             <?php endif; ?>
                         </div>
 
-                        <!-- Card Body -->
                         <div class="card-body">
                             <div class="clinic-header">
                                 <div class="clinic-avatar">
@@ -532,7 +647,6 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
                                 <?php endif; ?>
                             </div>
                             
-                            <!-- ✅ FIX: Product badge only shows when product exists -->
                             <?php if ($has_product): ?>
                             <div class="product-badge">
                                 <div class="product-badge-content">
@@ -548,7 +662,6 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
                     </div>
 
                     <?php else: ?>
-                    <!-- ===== LIST VIEW ===== -->
                     <div class="card-content-list">
                         <div class="list-image" id="lpic-<?php echo $aid; ?>" onclick="event.stopPropagation();">
                             <?php if ($has_img): ?>
@@ -617,16 +730,31 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
                 <?php endforeach; ?>
 
             <?php else: ?>
-                <div class="empty-state">
-                    <i class="fas fa-calendar-times"></i>
-                    <h3>No appointments found</h3>
-                    <p><?php echo $search_query?"No appointments matching '{$search_query}'":'You haven\'t booked any appointments yet.'; ?></p>
-                    <a href="nearby.php" class="btn-primary-sm"><i class="fas fa-map-marker-alt"></i> Find a Clinic</a>
+                <!-- ===== ✅ IMPROVED EMPTY STATE ===== -->
+                <div class="empty-state-appointments">
+                    <div class="empty-icon-wrap">
+                        <i class="fas fa-calendar-plus"></i>
+                    </div>
+                    <h2>No Appointments Yet</h2>
+                    <p>
+                        <?php echo $search_query ? "No appointments matching '{$search_query}'." : 'You haven\'t booked any appointments yet. Find a clinic and schedule your first visit!'; ?>
+                    </p>
+                    <div class="empty-actions">
+                        <a href="nearby.php" class="empty-btn-primary">
+                            <i class="fas fa-map-marker-alt"></i> Find a Clinic
+                        </a>
+                        <a href="dashboard.php" class="empty-btn-secondary">
+                            <i class="fas fa-arrow-right"></i> Browse Products
+                        </a>
+                    </div>
+                    <div class="empty-tip">
+                        <i class="fas fa-lightbulb"></i>
+                        Tip: Save your favorite clinics to book appointments faster!
+                    </div>
                 </div>
             <?php endif; ?>
         </div>
 
-        <!-- PHP Pagination -->
         <?php if ($total_pages > 1): ?>
         <div class="pagination">
             <a href="#" class="pagination-btn <?php echo $page<=1?'disabled':''; ?>" onclick="goToPage(<?php echo $page-1; ?>);return false;">
@@ -649,9 +777,6 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
     </div>
 
     <script>
-    // ──────────────────────────────────────────────────────
-    // SLIDER STATE INITIALIZATION
-    // ──────────────────────────────────────────────────────
     const pcState  = {};
     const pcStateL = {};
     const pcTotal  = <?php 
@@ -667,7 +792,6 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
         pcStateL[id] = 0; 
     });
 
-    // Grid slider
     function pcGo(id, index, event) {
         if (event) { event.preventDefault(); event.stopPropagation(); }
         const total = pcTotal[id] || 1;
@@ -690,7 +814,6 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
         }
     }
 
-    // List slider
     function pcGoList(id, index, event) {
         if (event) { event.preventDefault(); event.stopPropagation(); }
         const total = pcTotal[id] || 1;
@@ -700,9 +823,6 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
         if (track) track.style.transform = 'translateX(' + (-index * 100) + '%)';
     }
 
-    // ──────────────────────────────────────────────────────
-    // UI controls
-    // ──────────────────────────────────────────────────────
     function filterByStatus(status) {
         const url = new URL(window.location.href);
         status==='all' ? url.searchParams.delete('status') : url.searchParams.set('status',status);
@@ -742,7 +862,6 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
         } 
     });
 
-    // Search debouncer
     const searchInput = document.getElementById('searchInput');
     if (searchInput) {
         let t;
@@ -756,8 +875,6 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
             }, 500);
         });
     }
-
-    // Modal close on click outside (handled by onclick on modal itself)
     </script>
 </body>
 </html>

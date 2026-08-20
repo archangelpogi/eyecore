@@ -2,6 +2,9 @@
 include '../includes/config.php';
 include '../includes/theme.php';
 
+// ✅ SET TIMEZONE TO PHILIPPINES
+date_default_timezone_set('Asia/Manila');
+
 if (!isset($_SESSION['user_id'])) {
     header('Location: ../auth/user_login.php');
     exit();
@@ -9,49 +12,64 @@ if (!isset($_SESSION['user_id'])) {
 
 $user_id = $_SESSION['user_id'];
 
-// ===== NAVBAR VARIABLES - LAHAT NG KAILANGAN =====
-// Get user info
+// ===== NAVBAR VARIABLES =====
 $user_query = mysqli_query($conn, "SELECT * FROM users WHERE id = $user_id");
 $user = mysqli_fetch_assoc($user_query);
 $avatar_query = mysqli_query($conn, "SELECT avatar, created_at FROM users WHERE id = $user_id");
 $user_data = mysqli_fetch_assoc($avatar_query);
 
-// Total bookings for navbar
 $bookings_query = mysqli_query($conn, "SELECT COUNT(*) as total FROM appointments WHERE user_id = $user_id");
 $bookings_row = mysqli_fetch_assoc($bookings_query);
 $total_bookings = $bookings_row['total'] ?? 0;
 
-// Pending appointments count for navbar
 $pending_count_query = mysqli_query($conn, "SELECT COUNT(*) as total FROM appointments WHERE user_id = $user_id AND status = 'pending'");
 $pending_result = mysqli_fetch_assoc($pending_count_query);
 $pending = $pending_result['total'] ?? 0;
 
-// Total points for navbar
 $points_query = mysqli_query($conn, "SELECT SUM(points) as total_points FROM user_rewards WHERE user_id = $user_id");
 $points_row = mysqli_fetch_assoc($points_query);
 $total_points = $points_row['total_points'] ?? 0;
 
-// Unread notifications for navbar
 $unread_count = getUnreadNotificationCount($user_id);
 $recent_notifications = getRecentNotifications($user_id);
 
-// Sale count for navbar
 $sale_count_query = mysqli_query($conn, "SELECT COUNT(*) as total FROM products WHERE is_on_sale = 1 AND sale_end >= CURDATE()");
 $sale_count = mysqli_fetch_assoc($sale_count_query)['total'] ?? 0;
 
 // ============================================
-// HELPER: Clinic Image Path
+// ✅ FIXED: GET CLINIC IMAGE
 // ============================================
 function getClinicImg($c) {
-    if (!empty($c['cover_photo']))  return '/assets/images/clinic-covers/' . $c['cover_photo'];
-    if (!empty($c['clinic_image'])) return '/assets/images/clinic-images/' . $c['clinic_image'];
-    if (!empty($c['logo']))         return '/assets/images/clinic-logos/' . $c['logo'];
-    if (!empty($c['clinic_logo'])) {
-        $l = $c['clinic_logo'];
-        if (strpos($l, 'uploads/') !== false) return '/' . $l;
-        if (strpos($l, 'clinic_') !== false)  return '/assets/images/clinic-logos/' . $l;
-        return '/assets/images/clinic-logos/' . $l;
+    if (empty($c)) return null;
+    
+    $imageFields = [
+        'cover_photo' => '/assets/images/clinic-covers/',
+        'clinic_image' => '/assets/images/clinic-images/',
+        'logo' => '/assets/images/clinic-logos/',
+        'clinic_logo' => '/assets/images/clinic-logos/'
+    ];
+    
+    foreach ($imageFields as $field => $path) {
+        if (!empty($c[$field])) {
+            $filename = trim($c[$field]);
+            
+            if (strpos($filename, 'http') === 0 || strpos($filename, '//') === 0) {
+                return $filename;
+            }
+            if (strpos($filename, 'uploads/') === 0) {
+                return '/' . $filename;
+            }
+            if (strpos($filename, '/uploads/') === 0) {
+                return $filename;
+            }
+            if (strpos($filename, '/') === 0) {
+                return $filename;
+            }
+            
+            return $path . $filename;
+        }
     }
+    
     return null;
 }
 
@@ -65,56 +83,55 @@ $grads = [
     ['bg'=>'linear-gradient(135deg,#ccfbf1,#5eead4)','text'=>'#134e4e'],
 ];
 
+// ============================================
+// ✅ FIXED: CHECK IF CLINIC IS OPEN
+// ============================================
 function isClinicOpen($hours) {
-    if (empty($hours)) return false;
-    $current_time = date('H:i');
-    $current_day = date('D');
-    if (stripos($hours, '24/7') !== false || stripos($hours, '24 hours') !== false) return true;
-    $hours = strtolower($hours);
-    $hours = str_replace([' ', ':', 'am', 'pm'], ['', '', ' am', ' pm'], $hours);
-    $schedules = explode(',', $hours);
-    foreach ($schedules as $schedule) {
-        $schedule = trim($schedule);
-        if (strpos($schedule, 'closed') !== false) continue;
-        if (preg_match('/([a-z]{3})-([a-z]{3})?\s*([0-9]+[amp\s]+-[0-9]+[amp\s]+)/i', $schedule, $matches)) {
-            if (isDayInRange($current_day, $matches[1], $matches[2] ?? $matches[1])) {
-                if (isTimeInRange($matches[3], $current_time)) return true;
+    if (empty($hours) || strtolower(trim($hours)) === 'hours not set') {
+        return false;
+    }
+    
+    if (stripos($hours, '24/7') !== false || stripos($hours, '24 hours') !== false) {
+        return true;
+    }
+    
+    $hours = trim(preg_replace('/\s+/', ' ', $hours));
+    
+    $patterns = [
+        '/(\d{1,2}:\d{2})\s*(AM|PM)\s*[-–]+\s*(\d{1,2}:\d{2})\s*(AM|PM)/i',
+        '/(\d{1,2})\s*(AM|PM)\s*[-–]+\s*(\d{1,2})\s*(AM|PM)/i',
+    ];
+    
+    $timezone = new DateTimeZone('Asia/Manila');
+    $now = new DateTime('now', $timezone);
+    
+    foreach ($patterns as $pattern) {
+        if (preg_match($pattern, $hours, $matches)) {
+            if (count($matches) == 5) {
+                $open_str = $matches[1] . ' ' . $matches[2];
+                $close_str = $matches[3] . ' ' . $matches[4];
+            } else {
+                $open_str = $matches[1] . ':00 ' . $matches[2];
+                $close_str = $matches[3] . ':00 ' . $matches[4];
             }
-        } elseif (preg_match('/(mon-sun|daily|everyday)\s+([0-9]+[amp\s]+-[0-9]+[amp\s]+)/i', $schedule, $matches)) {
-            if (isTimeInRange($matches[2], $current_time)) return true;
-        } elseif (preg_match('/([0-9]+[amp\s]+)-([0-9]+[amp\s]+)/i', $schedule, $matches)) {
-            if (isTimeInRange($matches[1].'-'.$matches[2], $current_time)) return true;
+            
+            $open = DateTime::createFromFormat('g:i A', $open_str, $timezone);
+            $close = DateTime::createFromFormat('g:i A', $close_str, $timezone);
+            
+            if ($open && $close) {
+                $open->setDate($now->format('Y'), $now->format('m'), $now->format('d'));
+                $close->setDate($now->format('Y'), $now->format('m'), $now->format('d'));
+                
+                if ($close < $open) {
+                    $close->modify('+1 day');
+                }
+                
+                return ($now >= $open && $now < $close);
+            }
         }
     }
+    
     return false;
-}
-function isDayInRange($current_day, $start_day, $end_day) {
-    $days = ['mon'=>1,'tue'=>2,'wed'=>3,'thu'=>4,'fri'=>5,'sat'=>6,'sun'=>7];
-    $c = $days[strtolower(substr($current_day,0,3))] ?? 0;
-    $s = $days[strtolower(substr($start_day,0,3))] ?? 0;
-    $e = $days[strtolower(substr($end_day,0,3))] ?? 0;
-    if ($s <= $e) return ($c >= $s && $c <= $e);
-    return ($c >= $s || $c <= $e);
-}
-function isTimeInRange($time_range, $current_time) {
-    if (preg_match('/([0-9]+[amp\s]+)-([0-9]+[amp\s]+)/i', $time_range, $m)) {
-        $s = convertTo24Hour(trim($m[1]));
-        $e = convertTo24Hour(trim($m[2]));
-        if ($e < $s) return ($current_time >= $s || $current_time <= $e);
-        return ($current_time >= $s && $current_time <= $e);
-    }
-    return false;
-}
-function convertTo24Hour($time_str) {
-    $time_str = strtolower(trim($time_str));
-    if (preg_match('/([0-9]+)([amp]+)?/i', $time_str, $m)) {
-        $hour = (int)$m[1];
-        $ampm = $m[2] ?? '';
-        if ($ampm == 'pm' && $hour < 12) $hour += 12;
-        elseif ($ampm == 'am' && $hour == 12) $hour = 0;
-        return sprintf('%02d:00', $hour);
-    }
-    return '00:00';
 }
 
 // ============================================
@@ -420,11 +437,109 @@ include '../includes/navbar.php';
         .modal-btn.cancel { background:var(--bg-primary); color:var(--text-secondary); }
         .modal-btn.confirm { background:var(--danger); color:white; text-decoration:none; display:flex; align-items:center; justify-content:center; gap:8px; }
 
-        .empty-state { text-align:center; padding:80px 20px; }
-        .empty-state i { font-size:64px; color:var(--border-color); margin-bottom:20px; display:block; }
-        .empty-state h2 { font-size:22px; font-weight:700; color:var(--text-primary); margin-bottom:10px; }
-        .empty-state p { color:var(--text-muted); margin-bottom:24px; font-size:15px; }
-        .btn-browse { display:inline-flex; align-items:center; gap:8px; background:var(--primary-gradient); color:white; padding:13px 28px; border-radius:var(--radius-full); font-weight:700; text-decoration:none; }
+        .empty-state-favorites {
+            text-align: center;
+            padding: 80px 40px;
+            background: var(--bg-secondary);
+            border-radius: var(--radius-xl);
+            border: 2px dashed var(--border-color);
+            position: relative;
+            overflow: hidden;
+            max-width: 600px;
+            margin: 0 auto;
+            width: 100%;
+        }
+        .empty-state-favorites::before {
+            content: '';
+            position: absolute;
+            top: -40%;
+            right: -20%;
+            width: 250px;
+            height: 250px;
+            background: radial-gradient(circle, rgba(239,68,68,0.04) 0%, transparent 70%);
+            border-radius: 50%;
+            pointer-events: none;
+        }
+        .empty-state-favorites .empty-icon-wrap {
+            display: inline-block;
+            background: linear-gradient(135deg, #FEE2E2, #FECACA);
+            padding: 24px;
+            border-radius: var(--radius-full);
+            margin-bottom: 20px;
+        }
+        .empty-state-favorites .empty-icon-wrap i {
+            font-size: 56px;
+            color: var(--danger);
+            display: block;
+        }
+        .empty-state-favorites h2 {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
+        .empty-state-favorites p {
+            color: var(--text-secondary);
+            font-size: 15px;
+            line-height: 1.6;
+            max-width: 400px;
+            margin: 0 auto 24px;
+        }
+        .empty-state-favorites .empty-actions {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .empty-state-favorites .empty-btn-primary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 28px;
+            background: var(--primary-gradient);
+            color: white;
+            border-radius: var(--radius-full);
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            transition: all 0.2s;
+            box-shadow: 0 4px 14px rgba(0,183,97,0.25);
+        }
+        .empty-state-favorites .empty-btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0,183,97,0.35);
+        }
+        .empty-state-favorites .empty-btn-secondary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 12px 28px;
+            background: transparent;
+            color: var(--text-secondary);
+            border-radius: var(--radius-full);
+            font-size: 14px;
+            font-weight: 600;
+            text-decoration: none;
+            border: 2px solid var(--border-color);
+            transition: all 0.2s;
+        }
+        .empty-state-favorites .empty-btn-secondary:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: var(--primary-light);
+        }
+        .empty-state-favorites .empty-tip {
+            margin-top: 20px;
+            padding-top: 16px;
+            border-top: 1px solid var(--border-light);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+        .empty-state-favorites .empty-tip i { color: var(--warning); }
 
         .toast { position:fixed; bottom:80px; left:50%; transform:translateX(-50%) translateY(20px); background:var(--text-primary); color:var(--bg-secondary); padding:12px 20px; border-radius:var(--radius-full); font-size:14px; font-weight:600; z-index:9999; opacity:0; transition:all 0.3s; }
         .toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
@@ -434,7 +549,6 @@ include '../includes/navbar.php';
         .results-count { font-size:14px; color:var(--text-muted); }
         .results-count strong { color:var(--text-primary); }
 
-        /* ===== MAIN TAB SWITCHER (Clinics / Products) ===== */
         .main-tab-switcher {
             display: flex;
             gap: 0;
@@ -478,7 +592,6 @@ include '../includes/navbar.php';
         .main-tab-btn.active .tab-badge { background: rgba(255,255,255,0.25); color: white; }
         .main-tab-btn:not(.active):hover { color: var(--primary); }
 
-        /* ===== PRODUCTS TAB CONTENT ===== */
         .fav-products-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -563,10 +676,7 @@ include '../includes/navbar.php';
         .btn-view-prod { background: var(--primary-light); color: var(--primary); }
         .btn-view-prod:hover { background: var(--primary); color: white; }
 
-        /* Product remove confirm modal */
         #removeProductModal .modal-container { max-width: 360px; }
-
-        /* Tab panel visibility */
         .tab-panel { display: none; }
         .tab-panel.active { display: block; }
     </style>
@@ -674,7 +784,8 @@ include '../includes/navbar.php';
 
                 <div class="card-image">
                     <?php if ($clinic_img): ?>
-                        <img src="<?php echo $clinic_img; ?>" alt="<?php echo htmlspecialchars($clinic['name']); ?>">
+                        <img src="<?php echo $clinic_img; ?>" alt="<?php echo htmlspecialchars($clinic['name']); ?>"
+                             onerror="this.parentElement.innerHTML='<div class=\'card-image-placeholder\' style=\'background:<?php echo $grad['bg']; ?>; color:<?php echo $grad['text']; ?>\'><div class=\'initials\'><?php echo $name_initial; ?></div></div>'">
                     <?php else: ?>
                         <div class="card-image-placeholder" style="background:<?php echo $grad['bg']; ?>; color:<?php echo $grad['text']; ?>">
                             <div class="initials"><?php echo $name_initial; ?></div>
@@ -741,11 +852,25 @@ include '../includes/navbar.php';
         </div>
 
         <?php else: ?>
-        <div class="empty-state">
-            <i class="fas fa-heart-broken"></i>
+        <!-- ===== ✅ IMPROVED EMPTY STATE ===== -->
+        <div class="empty-state-favorites">
+            <div class="empty-icon-wrap">
+                <i class="fas fa-heart"></i>
+            </div>
             <h2>No Favorite Clinics Yet</h2>
-            <p>Explore clinics and tap the heart icon to save them here.</p>
-            <a href="dashboard.php" class="btn-browse"><i class="fas fa-search"></i> Browse Clinics</a>
+            <p>Explore clinics and tap the heart icon to save them here. Your favorites will appear in this list.</p>
+            <div class="empty-actions">
+                <a href="dashboard.php" class="empty-btn-primary">
+                    <i class="fas fa-search"></i> Browse Clinics
+                </a>
+                <a href="nearby.php" class="empty-btn-secondary">
+                    <i class="fas fa-map-marker-alt"></i> Find Nearby
+                </a>
+            </div>
+            <div class="empty-tip">
+                <i class="fas fa-lightbulb"></i>
+                Tip: Save your favorite clinics to get updates on promotions and new services!
+            </div>
         </div>
         <?php endif; ?>
 
@@ -764,7 +889,6 @@ include '../includes/navbar.php';
                     $orig_price    = (float)$fp['price'];
                     $is_out        = ($fp['total_stock'] !== null && (int)$fp['total_stock'] === 0);
 
-                    // Build image URL
                     $fp_img = '/assets/img/no-image.png';
                     if (!empty($fp['images_json'])) {
                         $dec = json_decode($fp['images_json'], true);
@@ -799,7 +923,6 @@ include '../includes/navbar.php';
 
                         <div class="fav-product-cat"><?php echo htmlspecialchars($fp['category']); ?></div>
 
-                        <!-- Remove from favorites (heart) -->
                         <button class="btn-unfav-product"
                                 onclick="showRemoveProductModal(<?php echo $fp_id; ?>, '<?php echo addslashes($fp['name']); ?>')"
                                 title="Remove from favorites">
@@ -828,11 +951,25 @@ include '../includes/navbar.php';
                 <?php endforeach; ?>
             </div>
             <?php else: ?>
-            <div class="empty-state">
-                <i class="fas fa-glasses"></i>
+            <!-- ===== ✅ IMPROVED EMPTY STATE FOR PRODUCTS ===== -->
+            <div class="empty-state-favorites">
+                <div class="empty-icon-wrap">
+                    <i class="fas fa-glasses"></i>
+                </div>
                 <h2>No Favorite Products Yet</h2>
-                <p>Browse products and tap the ❤️ icon to save them here.</p>
-                <a href="dashboard.php" class="btn-browse"><i class="fas fa-search"></i> Browse Products</a>
+                <p>Browse products and tap the ❤️ icon to save them here. Your favorite products will appear in this list.</p>
+                <div class="empty-actions">
+                    <a href="dashboard.php" class="empty-btn-primary">
+                        <i class="fas fa-search"></i> Browse Products
+                    </a>
+                    <a href="sale-products.php" class="empty-btn-secondary">
+                        <i class="fas fa-tags"></i> View Sales
+                    </a>
+                </div>
+                <div class="empty-tip">
+                    <i class="fas fa-lightbulb"></i>
+                    Tip: Save your favorite products to quickly find them later!
+                </div>
             </div>
             <?php endif; ?>
         </div><!-- /panelProducts -->
@@ -856,7 +993,7 @@ include '../includes/navbar.php';
 
 <!-- Remove Product Modal -->
 <div class="modal-overlay" id="removeProductModal">
-    <div class="modal-container" id="removeProductModal">
+    <div class="modal-container">
         <div class="modal-header"><i class="fas fa-heart-broken"></i><h3>Remove Product?</h3></div>
         <div class="modal-body"><p>Remove <strong id="modalProductName"></strong> from your favorite products?</p></div>
         <div class="modal-footer">
@@ -997,7 +1134,6 @@ function exportFavorites() {
 setTimeout(() => document.querySelectorAll('.alert-banner').forEach(b => b.style.display = 'none'), 3000);
 applyFilter();
 
-// ===== MAIN TAB SWITCHER =====
 function switchMainTab(tab) {
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
     document.querySelectorAll('.main-tab-btn').forEach(b => b.classList.remove('active'));
@@ -1015,7 +1151,6 @@ function switchMainTab(tab) {
     }
 }
 
-// ===== PRODUCT REMOVE MODAL =====
 let pendingRemoveProductId = null;
 
 function showRemoveProductModal(id, name) {
@@ -1037,7 +1172,6 @@ function confirmRemoveProduct() {
         .then(r => r.json())
         .then(data => {
             if (data.success) {
-                // Remove the card from DOM
                 const grid = document.getElementById('favProductsGrid');
                 const cards = grid ? grid.querySelectorAll('.fav-product-card') : [];
                 cards.forEach(card => {
@@ -1052,7 +1186,6 @@ function confirmRemoveProduct() {
                 showToast('Removed from favorites');
                 closeProductModal();
 
-                // Update badge count
                 const badge = document.querySelector('#tabBtnProducts .tab-badge');
                 if (badge) {
                     const count = parseInt(badge.textContent) - 1;
@@ -1066,12 +1199,10 @@ function confirmRemoveProduct() {
         .catch(() => { showToast('Network error.'); closeProductModal(); });
 }
 
-// Close modals on overlay click
 document.getElementById('removeProductModal').addEventListener('click', function(e) {
     if (e.target === this) closeProductModal();
 });
 
-// Check URL param to auto-switch tab
 const urlParams = new URLSearchParams(window.location.search);
 if (urlParams.get('tab') === 'products') {
     switchMainTab('products');

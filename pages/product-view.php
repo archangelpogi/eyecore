@@ -18,20 +18,6 @@ if (!$product_id) {
     exit();
 }
 
-// ============================================
-// STORE REFERRER FOR BACK BUTTON
-// ============================================
-if (isset($_SERVER['HTTP_REFERER']) && strpos($_SERVER['HTTP_REFERER'], $_SERVER['HTTP_HOST']) !== false) {
-    $referrer = $_SERVER['HTTP_REFERER'];
-    $referrer_parts = parse_url($referrer);
-    $referrer_path = isset($referrer_parts['path']) ? $referrer_parts['path'] : '';
-
-    // Only store if it's not the current page
-    if ($referrer_path !== $_SERVER['SCRIPT_NAME']) {
-        $_SESSION['last_page'] = $referrer;
-    }
-}
-
 // Get user data
 $user_query = mysqli_query($conn, "SELECT * FROM users WHERE id = $user_id");
 $user = mysqli_fetch_assoc($user_query);
@@ -85,6 +71,7 @@ if (mysqli_num_rows($product_query) == 0) {
 
 $product = mysqli_fetch_assoc($product_query);
 $category = $product['category'];
+$clinic_id = $product['clinic_id'];
 
 // ============================================
 // GET EXTRA FIELDS
@@ -185,7 +172,6 @@ $period_labels = [
 ];
 $warranty_period_display = $period_labels[$warranty_period] ?? ($warranty_period == 'no_warranty' ? 'No Warranty' : '');
 $has_warranty = ($warranty_period && $warranty_period != 'no_warranty');
-$clinic_id = $product['clinic_id'];
 
 // ============================================
 // GET CLINIC PAYMENT CONFIGURATION
@@ -655,16 +641,7 @@ if (isset($_POST['ajax_action'])) {
 
 $active_nav = 'discover';
 include '../includes/navbar.php';
-
-// ============================================
-// DETERMINE BACK URL
-// ============================================
-$back_url = 'clinic-details.php?id=' . $clinic_id; // fallback
-if (isset($_SESSION['last_page'])) {
-    $back_url = $_SESSION['last_page'];
-}
 ?>
-
 <!DOCTYPE html>
 <html lang="en" class="<?php echo getThemeClass(); ?>">
 <head>
@@ -2119,8 +2096,8 @@ if (isset($_SESSION['last_page'])) {
 
     <!-- Breadcrumb -->
     <div class="breadcrumb">
-        <a href="<?php echo htmlspecialchars($back_url); ?>">
-            <i class="fas fa-arrow-left"></i> Back
+        <a href="#" onclick="goBack(); return false;" id="backButton">
+            <i class="fas fa-arrow-left"></i> <?php echo htmlspecialchars($product['clinic_name']); ?>
         </a>
         <span class="sep">/</span>
         <span class="current"><?php echo htmlspecialchars($product['name']); ?></span>
@@ -2168,7 +2145,7 @@ if (isset($_SESSION['last_page'])) {
                 </div>
             </div>
 
-            <!-- ✅ FIXED: 3D Button - Now shows if product has 3D model -->
+            <!-- 3D Button -->
             <?php if ($has_3d): ?>
             <a href="3d-view.php?id=<?php echo $product_id; ?>" class="btn-3d-full" style="border-radius:0 0 var(--radius-lg) var(--radius-lg); margin-top:-1px;">
                 <i class="fas fa-cube"></i> View in 3D
@@ -2646,7 +2623,6 @@ if (isset($_SESSION['last_page'])) {
                         <?php echo $existing_reservation ? 'Already Reserved' : 'Already Booked'; ?>
                     </button>
                 <?php elseif ($is_fully_sold_out): ?>
-                    <!-- ✅ OUT OF STOCK - Disabled Button with clear indicator -->
                     <button class="btn-main-action" disabled>
                         <i class="fas fa-times-circle"></i> Out of Stock
                     </button>
@@ -2863,6 +2839,20 @@ if (isset($_SESSION['last_page'])) {
 </div>
 
 <script>
+// ============================================
+// GO BACK FUNCTION - FIXED!
+// ============================================
+function goBack() {
+    // Check if user came from our website
+    if (document.referrer && document.referrer.indexOf(window.location.hostname) !== -1) {
+        // Go back naturally using browser history
+        window.history.back();
+    } else {
+        // Fallback: go to clinic details
+        window.location.href = 'clinic-details.php?id=<?php echo $clinic_id; ?>';
+    }
+}
+
 // ============================================
 // VARIABLES
 // ============================================
@@ -3175,7 +3165,7 @@ function updateActionButton() {
     const helper = document.getElementById('actionHelper');
     if (!btn) return;
 
-    // ✅ Check if size is required
+    // Check if size is required
     const hasSizeSelector = document.getElementById('sizeBtns') !== null;
     if (hasSizeSelector && !selectedSize && !IS_FULLY_SOLD_OUT && !IS_LENS_ONLY && !IS_CONTACT_LENS) {
         btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
@@ -3266,7 +3256,7 @@ function updateActionButton() {
 // HANDLE MAIN ACTION
 // ============================================
 function handleMainAction() {
-    // ✅ Check size first
+    // Check size first
     const hasSizeSelector = document.getElementById('sizeBtns') !== null;
     if (hasSizeSelector && !selectedSize && !IS_FULLY_SOLD_OUT && !IS_LENS_ONLY && !IS_CONTACT_LENS) {
         showToast('Please select a frame size first.', 'error');

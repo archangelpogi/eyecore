@@ -14,7 +14,7 @@ $user_id = $_SESSION['user_id'];
 // Get clinic ID from URL
 $clinic_id = isset($_GET['clinic_id']) ? (int)$_GET['clinic_id'] : 0;
 $item_id = isset($_GET['item_id']) ? (int)$_GET['item_id'] : 0;
-$item_type = isset($_GET['type']) ? $_GET['type'] : ''; // 'service' or 'product'
+$item_type = isset($_GET['type']) ? $_GET['type'] : '';
 
 if (!$clinic_id) {
     header('Location: dashboard.php');
@@ -30,6 +30,48 @@ if (!$clinic) {
     exit();
 }
 
+// ============================================
+// ✅ CHECK IF PRODUCT IS DELIVERABLE
+// ============================================
+function isProductDeliverable($product, $clinic) {
+    $category = $product['category'] ?? '';
+    
+    if (empty($clinic['offers_delivery']) || $clinic['offers_delivery'] != 1) {
+        return false;
+    }
+    
+    $deliverable_categories = ['Accessories', 'Parts', 'Cleaning Kits'];
+    if (in_array($category, $deliverable_categories)) {
+        return true;
+    }
+    
+    if ($category === 'Sunglasses') {
+        return true;
+    }
+    
+    if (in_array($category, ['Contact Lenses', 'Contact Lens'])) {
+        if (isset($product['requires_prescription']) && $product['requires_prescription'] == 1) {
+            return false;
+        }
+        if (isset($product['lens_power']) && !empty($product['lens_power'])) {
+            $power = trim($product['lens_power']);
+            if ($power !== 'plano' && $power !== '0' && $power !== '0.00') {
+                return false;
+            }
+        }
+        if (isset($product['lens_type']) && in_array($product['lens_type'], ['prescription', 'rx', 'graded'])) {
+            return false;
+        }
+        return true;
+    }
+    
+    if (isset($product['is_deliverable']) && $product['is_deliverable'] !== '') {
+        return (int)$product['is_deliverable'] === 1;
+    }
+    
+    return false;
+}
+
 // Get clinic breaks
 $breaks_query = mysqli_query($conn, "SELECT * FROM clinic_breaks 
                                       WHERE clinic_id = $clinic_id 
@@ -43,25 +85,29 @@ while($break = mysqli_fetch_assoc($breaks_query)) {
 // Get user details
 $user_query = mysqli_query($conn, "SELECT * FROM users WHERE id = $user_id");
 $user = mysqli_fetch_assoc($user_query);
+$user_delivery_address = $user['delivery_address'] ?? '';
 
-// Get item if selected from URL (service or product)
+// Get item if selected from URL
 $selected_item = null;
 $selected_item_type = null;
 $item_price = 0;
+$selected_item_id = 0;
 
 if ($item_id > 0 && $item_type == 'service') {
     $service_query = mysqli_query($conn, "SELECT *, 'service' as type FROM services WHERE id = $item_id AND clinic_id = $clinic_id");
     $selected_item = mysqli_fetch_assoc($service_query);
     $selected_item_type = 'service';
     $item_price = $selected_item['price'] ?? 0;
+    $selected_item_id = $item_id;
 } elseif ($item_id > 0 && $item_type == 'product') {
     $product_query = mysqli_query($conn, "SELECT *, 'product' as type FROM products WHERE id = $item_id AND clinic_id = $clinic_id");
     $selected_item = mysqli_fetch_assoc($product_query);
     $selected_item_type = 'product';
     $item_price = $selected_item['price'] ?? 0;
+    $selected_item_id = $item_id;
 }
 
-// Get all services from this clinic (now includes booking_group + max_per_booking)
+// Get all services
 $services_query = mysqli_query($conn, "SELECT s.*, 
                                         GROUP_CONCAT(d.name SEPARATOR ', ') as available_doctors
                                         FROM services s
@@ -71,36 +117,68 @@ $services_query = mysqli_query($conn, "SELECT s.*,
                                         GROUP BY s.id
                                         ORDER BY s.category, s.name");
 
-// Get all products from this clinic
-$products_query = mysqli_query($conn, "SELECT *, 'product' as type FROM products WHERE clinic_id = $clinic_id ORDER BY category, name");
+// Get all products
+$all_products_query = mysqli_query($conn, "SELECT *, 'product' as type FROM products WHERE clinic_id = $clinic_id ORDER BY category, name");
 
-// Get doctors from this clinic with their schedules
+// ============================================
+// ✅ CATEGORIZE PRODUCTS FOR TABS
+// ============================================
+$eyewear_products = [];
+$contact_lens_products = [];
+$accessory_products = [];
+
+while($prod = mysqli_fetch_assoc($all_products_query)) {
+    $cat = $prod['category'] ?? '';
+    if (in_array($cat, ['Frames', 'Eyeglasses', 'Sunglasses', 'Lenses'])) {
+        $eyewear_products[] = $prod;
+    } elseif (in_array($cat, ['Contact Lenses', 'Contact Lens'])) {
+        $contact_lens_products[] = $prod;
+    } elseif (in_array($cat, ['Accessories', 'Parts', 'Cleaning Kits'])) {
+        $accessory_products[] = $prod;
+    } else {
+        $eyewear_products[] = $prod;
+    }
+}
+
+// ============================================
+// ✅ BUILD PRODUCT DELIVERABILITY DATA
+// ============================================
+$product_deliverability = [];
+foreach (array_merge($eyewear_products, $contact_lens_products, $accessory_products) as $prod) {
+    $deliverable = isProductDeliverable($prod, $clinic);
+    $product_deliverability[$prod['id']] = [
+        'deliverable' => $deliverable,
+        'delivery_fee' => $deliverable ? ($clinic['delivery_fee'] ?? 0) : 0,
+        'free_delivery_minimum' => $clinic['free_delivery_minimum'] ?? 0
+    ];
+}
+
+// Reset products query for display
+mysqli_data_seek($all_products_query, 0);
+
+// Get doctors
 $doctors_query = mysqli_query($conn, "SELECT * FROM doctors WHERE clinic_id = $clinic_id AND is_active = 1 ORDER BY name");
 $doctors_list = [];
 while($doc = mysqli_fetch_assoc($doctors_query)) {
-    // Parse schedule JSON
     $doc['schedule'] = json_decode($doc['schedule'], true);
     $doctors_list[] = $doc;
 }
 
-// Get user avatar for sidebar
+// Get user avatar
 $avatar_query = mysqli_query($conn, "SELECT avatar, created_at FROM users WHERE id = $user_id");
 $user_data = mysqli_fetch_assoc($avatar_query);
 
-// Get appointments count for badge
+// Navbar counts
 $appointments_count = mysqli_query($conn, "SELECT COUNT(*) as total FROM appointments WHERE user_id = $user_id AND status = 'pending'");
 $appointments = mysqli_fetch_assoc($appointments_count);
 $pending = $appointments['total'] ?? 0;
 
-// Get unread notification count
 $unread_count = getUnreadNotificationCount($user_id);
 $recent_notifications = getRecentNotifications($user_id);
 
-// Get sale count for sidebar badge
 $sale_count_query = mysqli_query($conn, "SELECT COUNT(*) as total FROM products WHERE is_on_sale = 1 AND sale_end >= CURDATE()");
 $sale_count = mysqli_fetch_assoc($sale_count_query)['total'] ?? 0;
 
-// Get user stats
 $points_query = mysqli_query($conn, "SELECT SUM(points) as total_points FROM user_rewards WHERE user_id = $user_id");
 $points_row = mysqli_fetch_assoc($points_query);
 $total_points = $points_row['total_points'] ?: 0;
@@ -109,338 +187,14 @@ $bookings_query = mysqli_query($conn, "SELECT COUNT(*) as total FROM appointment
 $bookings_row = mysqli_fetch_assoc($bookings_query);
 $total_bookings = $bookings_row['total'] ?: 0;
 
-// Set active navigation for this page
+// Set active navigation
 $active_nav = 'discover';
-
-// Handle form submission
-$success_message = '';
-$error_message = '';
-
-if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
-    $item_type_db = mysqli_real_escape_string($conn, $_POST['item_type']);
-    $appointment_date = mysqli_real_escape_string($conn, $_POST['appointment_date']);
-    $appointment_time = mysqli_real_escape_string($conn, $_POST['appointment_time']);
-    $doctor_id = $_POST['doctor_id'] === 'any' ? 'NULL' : (int)$_POST['doctor_id'];
-    $notes = mysqli_real_escape_string($conn, $_POST['notes']);
-    $contact_number = mysqli_real_escape_string($conn, $_POST['contact_number']);
-
-    // NEW: services can now be multiple, products stay single-select
-    $selected_service_ids = [];
-    $selected_product_id = 0;
-
-    if ($item_type_db === 'service') {
-        $selected_service_ids = isset($_POST['service_ids']) ? array_map('intval', $_POST['service_ids']) : [];
-    } else {
-        $selected_product_id = isset($_POST['item_id']) ? (int)$_POST['item_id'] : 0;
-    }
-
-    $hasSelection = ($item_type_db === 'service') ? !empty($selected_service_ids) : $selected_product_id > 0;
-
-    // Validate all fields
-    if (!$hasSelection || empty($appointment_date) || empty($appointment_time) || empty($contact_number)) {
-        $error_message = 'Please complete all steps before confirming';
-    } else {
-
-        // ============================================
-        // ✅ NEW: SERVER-SIDE PAST DATE/TIME CHECK
-        // (bawal mag-book ng petsa/oras na nasa nakaraan na — kahit
-        //  ma-bypass ang JS validation, hindi papasa dito)
-        // ============================================
-        $tz = new DateTimeZone(date_default_timezone_get() ?: 'Asia/Manila');
-        $now_server = new DateTime('now', $tz);
-        $appointment_datetime_str = $appointment_date . ' ' . $appointment_time;
-        $appointment_datetime = DateTime::createFromFormat('Y-m-d H:i:s', $appointment_datetime_str, $tz);
-
-        if (!$appointment_datetime) {
-            $error_message = 'Invalid date or time format.';
-        } elseif ($appointment_datetime < $now_server) {
-            $error_message = 'You cannot book an appointment in the past. Please select a valid date and time.';
-        }
-
-        // ============================================
-        // NEW: SERVICE COMBINATION VALIDATION
-        // (server-side — cannot be bypassed even if JS is disabled/tampered)
-        // ============================================
-        $service_rows = [];
-        if (empty($error_message) && $item_type_db === 'service' && !empty($selected_service_ids)) {
-            $ids_str = implode(',', $selected_service_ids);
-            $svc_check = mysqli_query($conn, "SELECT id, name, price, booking_group, max_per_booking FROM services WHERE id IN ($ids_str) AND clinic_id = $clinic_id");
-
-            $groupCounts = [];
-            $hasStandalone = false;
-
-            while ($svcRow = mysqli_fetch_assoc($svc_check)) {
-                $service_rows[] = $svcRow;
-                $grp = $svcRow['booking_group'];
-                if ($grp === 'treatment' || $grp === 'repair' || $grp === null || $grp === '') {
-                    $hasStandalone = true;
-                }
-                $groupCounts[$grp] = ($groupCounts[$grp] ?? 0) + 1;
-            }
-
-            if ($hasStandalone && count($selected_service_ids) > 1) {
-                $error_message = 'Treatment, repair, or standalone services cannot be combined with other services.';
-            } else {
-                foreach ($groupCounts as $grp => $cnt) {
-                    $max_q = mysqli_query($conn, "SELECT max_per_booking FROM services WHERE booking_group = '$grp' AND clinic_id = $clinic_id LIMIT 1");
-                    $max_row = mysqli_fetch_assoc($max_q);
-                    $maxAllowed = $max_row['max_per_booking'] ?? 1;
-                    if ($cnt > $maxAllowed) {
-                        $error_message = "Only $maxAllowed service(s) from the '$grp' group can be combined per booking.";
-                        break;
-                    }
-                }
-            }
-        } elseif ($item_type_db === 'service' && !empty($selected_service_ids)) {
-            // (kailangan pa rin i-populate ang $service_rows kahit may naunang error,
-            //  para hindi masira ang ibang logic pagkatapos nito)
-            $ids_str = implode(',', $selected_service_ids);
-            $svc_check2 = mysqli_query($conn, "SELECT id, name, price, booking_group, max_per_booking FROM services WHERE id IN ($ids_str) AND clinic_id = $clinic_id");
-            while ($svcRow2 = mysqli_fetch_assoc($svc_check2)) {
-                $service_rows[] = $svcRow2;
-            }
-        }
-
-        // ============================================
-        // SIMPLE VALIDATION (SAME LOGIC AS book-specific-product.php)
-        // ============================================
-
-        // 1. Check if user already has appointment at this exact date and time (kahit ibang clinic)
-        if (empty($error_message)) {
-            $conflict_query = mysqli_query($conn, "
-                SELECT a.*, c.name as clinic_name 
-                FROM appointments a
-                JOIN clinics c ON a.clinic_id = c.id
-                WHERE a.user_id = $user_id 
-                AND a.appointment_date = '$appointment_date' 
-                AND a.appointment_time = '$appointment_time'
-                AND a.status != 'cancelled'
-            ");
-
-            if (mysqli_num_rows($conflict_query) > 0) {
-                $conflict = mysqli_fetch_assoc($conflict_query);
-                $formatted_time = date('g:i A', strtotime($appointment_time));
-                $formatted_date = date('F j, Y', strtotime($appointment_date));
-                $error_message = "You already have an appointment at {$conflict['clinic_name']} on {$formatted_date} at {$formatted_time}. Please choose another time.";
-            }
-        }
-
-        // 2. Check daily limit (max 3 appointments per day)
-        if (empty($error_message)) {
-            $daily_count_query = mysqli_query($conn, "
-                SELECT COUNT(*) as total 
-                FROM appointments 
-                WHERE user_id = $user_id 
-                AND appointment_date = '$appointment_date'
-                AND status != 'cancelled'
-            ");
-            $daily_count = mysqli_fetch_assoc($daily_count_query)['total'];
-
-            if ($daily_count >= 3) {
-                $error_message = 'You can only book up to 3 appointments per day. Please choose another date.';
-            }
-        }
-
-        // 3. Check if slot is already taken sa clinic na ito
-        if (empty($error_message)) {
-            $slot_taken_query = mysqli_query($conn, "
-                SELECT id FROM appointments 
-                WHERE clinic_id = $clinic_id 
-                AND appointment_date = '$appointment_date' 
-                AND appointment_time = '$appointment_time'
-                AND status != 'cancelled'
-            ");
-
-            if (mysqli_num_rows($slot_taken_query) > 0) {
-                $error_message = 'This time slot is already taken. Please choose another time.';
-            }
-        }
-
-        // 4. If specific doctor selected and it's a service, check if doctor is available on that date and time
-        if (empty($error_message) && $doctor_id !== 'NULL' && $item_type_db == 'service') {
-            // Get doctor's schedule
-            $doctor_query = mysqli_query($conn, "SELECT schedule FROM doctors WHERE id = $doctor_id");
-            $doctor = mysqli_fetch_assoc($doctor_query);
-            $schedule = json_decode($doctor['schedule'], true);
-
-            // Get day of week (3-letter format: Mon, Tue, etc.)
-            $day_of_week = strtolower(date('D', strtotime($appointment_date)));
-
-            // Check if doctor works on that day
-            if (!isset($schedule[$day_of_week])) {
-                $error_message = 'Selected doctor is not available on this date. Please choose another doctor or date.';
-            } else {
-                // Parse the selected time
-                $time_parts = explode(':', $appointment_time);
-                $selected_hour = (int)$time_parts[0];
-                $selected_min = (int)$time_parts[1];
-                $selected_time_mins = $selected_hour * 60 + $selected_min;
-
-                // Check if time is within doctor's schedule for that day
-                $is_valid_time = false;
-
-                foreach ($schedule[$day_of_week] as $time_range) {
-                    // Parse time range like "09:00-12:00"
-                    $range_parts = explode('-', $time_range);
-                    $start_time = $range_parts[0];
-                    $end_time = $range_parts[1];
-
-                    $start_parts = explode(':', $start_time);
-                    $end_parts = explode(':', $end_time);
-
-                    $start_hour = (int)$start_parts[0];
-                    $start_min = (int)($start_parts[1] ?? 0);
-                    $start_mins = $start_hour * 60 + $start_min;
-
-                    $end_hour = (int)$end_parts[0];
-                    $end_min = (int)($end_parts[1] ?? 0);
-                    $end_mins = $end_hour * 60 + $end_min;
-
-                    if ($selected_time_mins >= $start_mins && $selected_time_mins < $end_mins) {
-                        $is_valid_time = true;
-                        break;
-                    }
-                }
-
-                if (!$is_valid_time) {
-                    $error_message = 'Selected time is outside doctor\'s working hours. Please choose another time.';
-                }
-            }
-        }
-
-        // ============================================
-        // If no errors, proceed with booking
-        // ============================================
-        if (empty($error_message)) {
-            // For products, doctor_id should be NULL
-            if ($item_type_db == 'product') {
-                $doctor_id = 'NULL';
-            }
-
-            // STEP 1: Check kung may existing patient na ang user na ito
-            $existingPatientId = null;
-
-            // 1.1 Check sa users table kung may naka-link na patient_id
-            $userCheck = mysqli_query($conn, "SELECT patient_id FROM users WHERE id = $user_id");
-            if ($userCheck && mysqli_num_rows($userCheck) > 0) {
-                $userData = mysqli_fetch_assoc($userCheck);
-                if ($userData['patient_id']) {
-                    $existingPatientId = $userData['patient_id'];
-                }
-            }
-
-            // 1.2 Kung wala, check sa patients table gamit ang email o contact
-            if (!$existingPatientId) {
-                $userEmail = mysqli_real_escape_string($conn, $user['email'] ?? '');
-                $userContact = mysqli_real_escape_string($conn, $user['contact'] ?? '');
-
-                if ($userEmail || $userContact) {
-                    $patientCheck = mysqli_query($conn, "
-                        SELECT id FROM patients 
-                        WHERE (email = '$userEmail' OR phone = '$userContact') 
-                        AND clinic_id = $clinic_id
-                        LIMIT 1
-                    ");
-
-                    if ($patientCheck && mysqli_num_rows($patientCheck) > 0) {
-                        $existingPatient = mysqli_fetch_assoc($patientCheck);
-                        $existingPatientId = $existingPatient['id'];
-                        mysqli_query($conn, "UPDATE users SET patient_id = $existingPatientId WHERE id = $user_id");
-                    }
-                }
-            }
-
-            $isNewPatient = $existingPatientId ? 0 : 1;
-
-            // NEW: compute total price, item names, and the "primary" item_id
-            // (item_id column stays for backward compatibility with old code/reports;
-            //  the FULL list of services now lives in appointment_services)
-            $total_price = 0;
-            $item_names = [];
-            $primary_item_id = 0;
-
-            if ($item_type_db === 'service') {
-                foreach ($service_rows as $svc) {
-                    $total_price += $svc['price'];
-                    $item_names[] = $svc['name'];
-                }
-                $primary_item_id = $selected_service_ids[0];
-            } else {
-                $price_row = mysqli_fetch_assoc(mysqli_query($conn, "SELECT name, price FROM products WHERE id = $selected_product_id"));
-                $total_price = $price_row['price'] ?? 0;
-                $item_names[] = $price_row['name'] ?? 'Product';
-                $primary_item_id = $selected_product_id;
-            }
-
-            // STEP 2: Insert appointment
-            $insert_query = "INSERT INTO appointments 
-                            (user_id, patient_id, clinic_id, item_id, item_type, doctor_id, 
-                             appointment_date, appointment_time, notes, contact_number, status, is_new_patient, created_at) 
-                            VALUES ($user_id, " . ($existingPatientId ?: 'NULL') . ", $clinic_id, $primary_item_id, '$item_type_db', " .
-                            ($doctor_id === 'NULL' ? 'NULL' : $doctor_id) . ", 
-                            '$appointment_date', '$appointment_time', '$notes', '$contact_number', 'pending', $isNewPatient, NOW())";
-
-            if (mysqli_query($conn, $insert_query)) {
-                $new_appointment_id = mysqli_insert_id($conn);
-
-                // NEW: save ALL selected services into the junction table
-                if ($item_type_db === 'service' && !empty($service_rows)) {
-                    foreach ($service_rows as $svc) {
-                        $svc_id = (int)$svc['id'];
-                        $svc_price = (float)$svc['price'];
-                        mysqli_query($conn, "INSERT INTO appointment_services (appointment_id, service_id, price) 
-                                              VALUES ($new_appointment_id, $svc_id, $svc_price)");
-                    }
-                }
-
-                // Add notification
-                $formatted_date = date('F j, Y', strtotime($appointment_date));
-                $formatted_time = date('g:i A', strtotime($appointment_time));
-                $doctor_text = ($doctor_id === 'NULL' || $item_type_db == 'product')
-                               ? ''
-                               : ' with Dr. ' . $_POST['doctor_name'];
-                $item_text = implode(' + ', $item_names);
-
-                if (function_exists('addNotification')) {
-                    addNotification(
-                        $user_id,
-                        'appointment',
-                        'New Appointment Booked',
-                        "Your {$item_text} at {$clinic['name']}{$doctor_text} on {$formatted_date} at {$formatted_time} is pending confirmation.",
-                        'my-appointments.php'
-                    );
-                }
-
-                // CHECK PAYMENT POLICY (based on total combined price of all selected services)
-                $payment_info = calculatePaymentAmounts($conn, $clinic_id, $total_price);
-                $booking_flow = $payment_info['booking_flow'] ?? 'approve_first';
-
-                if ($payment_info['requires_payment']) {
-                    if ($booking_flow === 'pay_first') {
-                        header('Location: payment.php?appointment_id=' . $new_appointment_id);
-                        exit();
-                    } else {
-                        $success_message = 'Appointment booked successfully! Please wait for clinic approval before making payment.';
-                        $_POST = array();
-                    }
-                } else {
-                    $success_message = 'Appointment booked successfully!';
-                    $_POST = array();
-                }
-            } else {
-                $error_message = 'Error booking appointment: ' . mysqli_error($conn);
-            }
-        }
-    }
-}
-
-// Get clinic hours
+$step1_completed = ($selected_item !== null);
 $clinic_hours = $clinic['hours'];
-
 $min_date = date('Y-m-d');
 $max_date = date('Y-m-d', strtotime('+30 days'));
 
-// Get all booked slots for this clinic for JavaScript
+// Get booked slots
 $booked_slots_query = mysqli_query($conn, "
     SELECT appointment_date, appointment_time
     FROM appointments 
@@ -454,10 +208,414 @@ while ($row = mysqli_fetch_assoc($booked_slots_query)) {
     $booked_slots[] = $row;
 }
 
-// Check if item is pre-selected
-$step1_completed = ($selected_item !== null);
-?>
+// Determine active tab from pre-selected item
+$active_tab = 'services';
+if ($selected_item_type === 'product') {
+    $cat = $selected_item['category'] ?? '';
+    if (in_array($cat, ['Frames', 'Eyeglasses', 'Sunglasses', 'Lenses'])) {
+        $active_tab = 'eyewear';
+    } elseif (in_array($cat, ['Contact Lenses', 'Contact Lens'])) {
+        $active_tab = 'contact_lenses';
+    } elseif (in_array($cat, ['Accessories', 'Parts', 'Cleaning Kits'])) {
+        $active_tab = 'accessories';
+    }
+}
 
+// ============================================
+// ✅ AJAX ENDPOINT: Get Product Details (Colors, Sizes)
+// ============================================
+if (isset($_GET['ajax_get_product_details']) && isset($_GET['product_id'])) {
+    header('Content-Type: application/json');
+    $product_id = (int)$_GET['product_id'];
+
+    // Get colors
+    $colors = [];
+    $colors_query = mysqli_query($conn, "
+        SELECT color_code, color_name, quantity
+        FROM product_color_inventory
+        WHERE product_id = $product_id AND is_available = 1
+        ORDER BY color_name
+    ");
+    while ($c = mysqli_fetch_assoc($colors_query)) {
+        $colors[] = $c;
+    }
+
+    // Get extra fields (for sizes)
+    $extra_fields = [];
+    $prod_query = mysqli_query($conn, "SELECT extra_fields_json FROM products WHERE id = $product_id");
+    $prod_data = mysqli_fetch_assoc($prod_query);
+    if ($prod_data && !empty($prod_data['extra_fields_json'])) {
+        $extra_fields = json_decode($prod_data['extra_fields_json'], true);
+    }
+    $sizes = $extra_fields['sizes_available'] ?? [];
+
+    echo json_encode(['colors' => $colors, 'sizes' => $sizes]);
+    exit();
+}
+
+// ============================================
+// HANDLE FORM SUBMISSION
+// ============================================
+$success_message = '';
+$error_message = '';
+
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
+    $item_type_db = mysqli_real_escape_string($conn, $_POST['item_type']);
+    $appointment_date = mysqli_real_escape_string($conn, $_POST['appointment_date']);
+    $appointment_time = mysqli_real_escape_string($conn, $_POST['appointment_time']);
+    $doctor_id = $_POST['doctor_id'] === 'any' ? 'NULL' : (int)$_POST['doctor_id'];
+    $notes = mysqli_real_escape_string($conn, $_POST['notes']);
+    $contact_number = mysqli_real_escape_string($conn, $_POST['contact_number']);
+
+    $delivery_type = isset($_POST['delivery_type']) ? $_POST['delivery_type'] : 'pickup';
+    $delivery_address = mysqli_real_escape_string($conn, $_POST['delivery_address'] ?? '');
+    $delivery_notes = mysqli_real_escape_string($conn, $_POST['delivery_notes'] ?? '');
+
+    $selected_lens_type = mysqli_real_escape_string($conn, $_POST['selected_lens_type'] ?? '');
+    $selected_color_code = mysqli_real_escape_string($conn, $_POST['selected_color_code'] ?? '');
+    $selected_color_name = mysqli_real_escape_string($conn, $_POST['selected_color_name'] ?? '');
+    $selected_frame_size = mysqli_real_escape_string($conn, $_POST['selected_frame_size'] ?? '');
+
+    $selected_service_ids = [];
+    $selected_product_id = 0;
+
+    if ($item_type_db === 'service') {
+        $selected_service_ids = isset($_POST['service_ids']) ? array_map('intval', $_POST['service_ids']) : [];
+    } else {
+        $selected_product_id = isset($_POST['item_id']) ? (int)$_POST['item_id'] : 0;
+    }
+
+    $hasSelection = ($item_type_db === 'service') ? !empty($selected_service_ids) : $selected_product_id > 0;
+
+    if (!$hasSelection || empty($appointment_date) || empty($appointment_time) || empty($contact_number)) {
+        $error_message = 'Please complete all steps before confirming';
+    } else {
+        $is_product = ($item_type_db === 'product' && $selected_product_id > 0);
+        $selected_product_data = null;
+        
+        if ($is_product) {
+            $prod_query = mysqli_query($conn, "SELECT * FROM products WHERE id = $selected_product_id AND clinic_id = $clinic_id");
+            $selected_product_data = mysqli_fetch_assoc($prod_query);
+        }
+
+        if ($is_product && $delivery_type === 'delivery' && empty($delivery_address)) {
+            $error_message = 'Please enter your delivery address.';
+        }
+
+        // Past date check for services
+        if (empty($error_message) && !$is_product) {
+            $tz = new DateTimeZone('Asia/Manila');
+            $now_server = new DateTime('now', $tz);
+            $appointment_datetime = DateTime::createFromFormat('Y-m-d H:i:s', $appointment_date . ' ' . $appointment_time, $tz);
+            
+            if (!$appointment_datetime) {
+                $error_message = 'Invalid date or time format.';
+            } elseif ($appointment_datetime < $now_server) {
+                $error_message = 'You cannot book an appointment in the past. Please select a valid date and time.';
+            }
+        }
+
+        // Conflict checks for services
+        if (empty($error_message) && !$is_product) {
+            $conflict_query = mysqli_query($conn, "
+                SELECT a.*, c.name as clinic_name 
+                FROM appointments a
+                JOIN clinics c ON a.clinic_id = c.id
+                WHERE a.user_id = $user_id 
+                AND a.appointment_date = '$appointment_date' 
+                AND a.appointment_time = '$appointment_time'
+                AND a.status != 'cancelled'
+            ");
+            
+            if (mysqli_num_rows($conflict_query) > 0) {
+                $conflict = mysqli_fetch_assoc($conflict_query);
+                $formatted_time = date('g:i A', strtotime($appointment_time));
+                $formatted_date = date('F j, Y', strtotime($appointment_date));
+                $error_message = "You already have an appointment at {$conflict['clinic_name']} on {$formatted_date} at {$formatted_time}. Please choose another time.";
+            }
+        }
+
+        if (empty($error_message) && !$is_product) {
+            $daily_count_query = mysqli_query($conn, "
+                SELECT COUNT(*) as total 
+                FROM appointments 
+                WHERE user_id = $user_id 
+                AND appointment_date = '$appointment_date'
+                AND status != 'cancelled'
+            ");
+            $daily_count = mysqli_fetch_assoc($daily_count_query)['total'];
+            
+            if ($daily_count >= 3) {
+                $error_message = 'You can only book up to 3 appointments per day. Please choose another date.';
+            }
+        }
+
+        if (empty($error_message) && !$is_product) {
+            $slot_taken_query = mysqli_query($conn, "
+                SELECT id FROM appointments 
+                WHERE clinic_id = $clinic_id 
+                AND appointment_date = '$appointment_date' 
+                AND appointment_time = '$appointment_time'
+                AND status != 'cancelled'
+            ");
+            
+            if (mysqli_num_rows($slot_taken_query) > 0) {
+                $error_message = 'This time slot is already taken. Please choose another time.';
+            }
+        }
+
+        if (empty($error_message) && !$is_product && $doctor_id !== 'NULL' && $item_type_db == 'service') {
+            $doctor_query = mysqli_query($conn, "SELECT schedule FROM doctors WHERE id = $doctor_id");
+            $doctor = mysqli_fetch_assoc($doctor_query);
+            $schedule = json_decode($doctor['schedule'], true);
+            $day_of_week = strtolower(date('D', strtotime($appointment_date)));
+
+            if (!isset($schedule[$day_of_week])) {
+                $error_message = 'Selected doctor is not available on this date. Please choose another doctor or date.';
+            } else {
+                $time_parts = explode(':', $appointment_time);
+                $selected_time_mins = (int)$time_parts[0] * 60 + (int)$time_parts[1];
+                $is_valid_time = false;
+
+                foreach ($schedule[$day_of_week] as $time_range) {
+                    $range_parts = explode('-', $time_range);
+                    $start_parts = explode(':', $range_parts[0]);
+                    $end_parts = explode(':', $range_parts[1]);
+                    $start_mins = (int)$start_parts[0] * 60 + (int)($start_parts[1] ?? 0);
+                    $end_mins = (int)$end_parts[0] * 60 + (int)($end_parts[1] ?? 0);
+                    
+                    if ($selected_time_mins >= $start_mins && $selected_time_mins < $end_mins) {
+                        $is_valid_time = true;
+                        break;
+                    }
+                }
+
+                if (!$is_valid_time) {
+                    $error_message = 'Selected time is outside doctor\'s working hours. Please choose another time.';
+                }
+            }
+        }
+
+        // Service combination validation
+        $service_rows = [];
+        if (empty($error_message) && !$is_product && $item_type_db === 'service' && !empty($selected_service_ids)) {
+            $ids_str = implode(',', $selected_service_ids);
+            $svc_check = mysqli_query($conn, "SELECT id, name, price, booking_group, max_per_booking FROM services WHERE id IN ($ids_str) AND clinic_id = $clinic_id");
+            
+            $groupCounts = [];
+            $hasStandalone = false;
+            
+            while ($svcRow = mysqli_fetch_assoc($svc_check)) {
+                $service_rows[] = $svcRow;
+                $grp = $svcRow['booking_group'];
+                if ($grp === 'treatment' || $grp === 'repair' || $grp === null || $grp === '') {
+                    $hasStandalone = true;
+                }
+                $groupCounts[$grp] = ($groupCounts[$grp] ?? 0) + 1;
+            }
+            
+            if ($hasStandalone && count($selected_service_ids) > 1) {
+                $error_message = 'Treatment, repair, or standalone services cannot be combined with other services.';
+            } else {
+                foreach ($groupCounts as $grp => $cnt) {
+                    $max_q = mysqli_query($conn, "SELECT max_per_booking FROM services WHERE booking_group = '$grp' AND clinic_id = $clinic_id LIMIT 1");
+                    $max_row = mysqli_fetch_assoc($max_q);
+                    $maxAllowed = $max_row['max_per_booking'] ?? 1;
+                    if ($cnt > $maxAllowed) {
+                        $error_message = "Only $maxAllowed service(s) from the '$grp' group can be combined per booking.";
+                        break;
+                    }
+                }
+            }
+        } elseif (empty($error_message) && !$is_product && $item_type_db === 'service' && !empty($selected_service_ids)) {
+            $ids_str = implode(',', $selected_service_ids);
+            $svc_check2 = mysqli_query($conn, "SELECT id, name, price, booking_group, max_per_booking FROM services WHERE id IN ($ids_str) AND clinic_id = $clinic_id");
+            while ($svcRow2 = mysqli_fetch_assoc($svc_check2)) {
+                $service_rows[] = $svcRow2;
+            }
+        }
+
+        // Proceed with booking
+        if (empty($error_message)) {
+            if ($is_product && $selected_product_data) {
+                // PRODUCT: Save to customer_orders
+                $is_deliverable = isProductDeliverable($selected_product_data, $clinic);
+                $delivery_fee_charged = ($is_deliverable && $delivery_type === 'delivery') ? ($clinic['delivery_fee'] ?? 0) : 0;
+                
+                $free_delivery_minimum = $clinic['free_delivery_minimum'] ?? 0;
+                if ($delivery_type === 'delivery' && $free_delivery_minimum > 0 && $item_price >= $free_delivery_minimum) {
+                    $delivery_fee_charged = 0;
+                }
+                
+                $grand_total = $item_price + $delivery_fee_charged;
+                $order_number = 'ORD-' . strtoupper(substr(uniqid(), -8));
+                
+                if ($delivery_type === 'delivery' && !empty($delivery_address)) {
+                    mysqli_query($conn, "UPDATE users SET delivery_address = '$delivery_address' WHERE id = $user_id");
+                }
+                
+                $notes_final = $notes . ' | Lens: ' . $selected_lens_type . ' | Color: ' . $selected_color_name . ' | Size: ' . $selected_frame_size;
+
+                $insert_order = mysqli_query($conn, "
+                    INSERT INTO customer_orders (
+                        order_number, user_id, clinic_id, delivery_type, delivery_address,
+                        delivery_fee, delivery_notes, subtotal, total_amount,
+                        payment_status, status, notes, created_at
+                    ) VALUES (
+                        '$order_number', $user_id, $clinic_id, '$delivery_type', '$delivery_address',
+                        $delivery_fee_charged, '$delivery_notes', $item_price, $grand_total,
+                        'pending', 'pending', '$notes_final', NOW()
+                    )
+                ");
+                
+                if ($insert_order) {
+                    $order_id = mysqli_insert_id($conn);
+                    
+                    mysqli_query($conn, "
+                        INSERT INTO customer_order_items (order_id, product_id, quantity, price, subtotal)
+                        VALUES ($order_id, $selected_product_id, 1, $item_price, $item_price)
+                    ");
+                    
+                    if (function_exists('addNotification')) {
+                        $delivery_text = ($delivery_type === 'delivery') ? " (Delivery: $delivery_address)" : ' (Pickup)';
+                        addNotification($user_id, 'order', 'Order Placed', 
+                            "Your order #$order_number for {$selected_product_data['name']} has been placed.{$delivery_text}",
+                            'my-orders.php'
+                        );
+                    }
+                    
+                    $payment_info = calculatePaymentAmounts($conn, $clinic_id, $grand_total);
+                    $booking_flow = $payment_info['booking_flow'] ?? 'approve_first';
+                    
+                    if ($payment_info['requires_payment']) {
+                        if ($booking_flow === 'pay_first') {
+                            header('Location: payment-order.php?order_id=' . $order_id);
+                            exit();
+                        } else {
+                            $success_message = 'Order placed successfully! Please wait for clinic approval before making payment.';
+                            $_POST = array();
+                        }
+                    } else {
+                        mysqli_query($conn, "UPDATE customer_orders SET status = 'confirmed' WHERE id = $order_id");
+                        $success_message = 'Order placed successfully!';
+                        $_POST = array();
+                    }
+                } else {
+                    $error_message = 'Error placing order: ' . mysqli_error($conn);
+                }
+                
+            } else {
+                // SERVICE: Save to appointments
+                if ($item_type_db == 'product') {
+                    $doctor_id = 'NULL';
+                }
+
+                $existingPatientId = null;
+                $userCheck = mysqli_query($conn, "SELECT patient_id FROM users WHERE id = $user_id");
+                if ($userCheck && mysqli_num_rows($userCheck) > 0) {
+                    $userData = mysqli_fetch_assoc($userCheck);
+                    if ($userData['patient_id']) {
+                        $existingPatientId = $userData['patient_id'];
+                    }
+                }
+
+                if (!$existingPatientId) {
+                    $userEmail = mysqli_real_escape_string($conn, $user['email'] ?? '');
+                    $userContact = mysqli_real_escape_string($conn, $user['contact'] ?? '');
+                    
+                    if ($userEmail || $userContact) {
+                        $patientCheck = mysqli_query($conn, "
+                            SELECT id FROM patients 
+                            WHERE (email = '$userEmail' OR phone = '$userContact') 
+                            AND clinic_id = $clinic_id
+                            LIMIT 1
+                        ");
+                        
+                        if ($patientCheck && mysqli_num_rows($patientCheck) > 0) {
+                            $existingPatient = mysqli_fetch_assoc($patientCheck);
+                            $existingPatientId = $existingPatient['id'];
+                            mysqli_query($conn, "UPDATE users SET patient_id = $existingPatientId WHERE id = $user_id");
+                        }
+                    }
+                }
+
+                $isNewPatient = $existingPatientId ? 0 : 1;
+                $total_price = 0;
+                $item_names = [];
+                $primary_item_id = 0;
+
+                if ($item_type_db === 'service') {
+                    foreach ($service_rows as $svc) {
+                        $total_price += $svc['price'];
+                        $item_names[] = $svc['name'];
+                    }
+                    $primary_item_id = $selected_service_ids[0];
+                } else {
+                    $price_row = mysqli_fetch_assoc(mysqli_query($conn, "SELECT name, price FROM products WHERE id = $selected_product_id"));
+                    $total_price = $price_row['price'] ?? 0;
+                    $item_names[] = $price_row['name'] ?? 'Product';
+                    $primary_item_id = $selected_product_id;
+                }
+
+                $appointment_notes = $notes;
+                if (!empty($selected_lens_type)) $appointment_notes .= ' | Lens: ' . $selected_lens_type;
+                if (!empty($selected_color_name)) $appointment_notes .= ' | Color: ' . $selected_color_name;
+                if (!empty($selected_frame_size)) $appointment_notes .= ' | Size: ' . $selected_frame_size;
+
+                $insert_query = "INSERT INTO appointments 
+                    (user_id, patient_id, clinic_id, item_id, item_type, doctor_id, 
+                     appointment_date, appointment_time, notes, contact_number, status, is_new_patient, created_at) 
+                    VALUES ($user_id, " . ($existingPatientId ?: 'NULL') . ", $clinic_id, $primary_item_id, '$item_type_db', " .
+                    ($doctor_id === 'NULL' ? 'NULL' : $doctor_id) . ", 
+                    '$appointment_date', '$appointment_time', '$appointment_notes', '$contact_number', 'pending', $isNewPatient, NOW())";
+
+                if (mysqli_query($conn, $insert_query)) {
+                    $new_appointment_id = mysqli_insert_id($conn);
+
+                    if ($item_type_db === 'service' && !empty($service_rows)) {
+                        foreach ($service_rows as $svc) {
+                            $svc_id = (int)$svc['id'];
+                            $svc_price = (float)$svc['price'];
+                            mysqli_query($conn, "INSERT INTO appointment_services (appointment_id, service_id, price) 
+                                                  VALUES ($new_appointment_id, $svc_id, $svc_price)");
+                        }
+                    }
+
+                    $formatted_date = date('F j, Y', strtotime($appointment_date));
+                    $formatted_time = date('g:i A', strtotime($appointment_time));
+                    $doctor_text = ($doctor_id === 'NULL' || $item_type_db == 'product') ? '' : ' with Dr. ' . $_POST['doctor_name'];
+                    $item_text = implode(' + ', $item_names);
+
+                    if (function_exists('addNotification')) {
+                        addNotification($user_id, 'appointment', 'New Appointment Booked',
+                            "Your {$item_text} at {$clinic['name']}{$doctor_text} on {$formatted_date} at {$formatted_time} is pending confirmation.",
+                            'my-appointments.php'
+                        );
+                    }
+
+                    $payment_info = calculatePaymentAmounts($conn, $clinic_id, $total_price);
+                    $booking_flow = $payment_info['booking_flow'] ?? 'approve_first';
+
+                    if ($payment_info['requires_payment']) {
+                        if ($booking_flow === 'pay_first') {
+                            header('Location: payment.php?appointment_id=' . $new_appointment_id);
+                            exit();
+                        } else {
+                            $success_message = 'Appointment booked successfully! Please wait for clinic approval before making payment.';
+                            $_POST = array();
+                        }
+                    } else {
+                        $success_message = 'Appointment booked successfully!';
+                        $_POST = array();
+                    }
+                } else {
+                    $error_message = 'Error booking appointment: ' . mysqli_error($conn);
+                }
+            }
+        }
+    }
+}
+?>
 <!DOCTYPE html>
 <html lang="en" class="<?php echo getThemeClass(); ?>">
 <head>
@@ -466,1612 +624,455 @@ $step1_completed = ($selected_item !== null);
     <title>Book Appointment - <?php echo $clinic['name']; ?></title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
-        /* ===== RESET AND BASE STYLES ===== */
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        }
-
-        html, body {
-            margin: 0 !important;
-            padding: 0 !important;
-            width: 100%;
-            overflow-x: hidden;
-            background: var(--bg-primary);
-        }
-
-        body {
-            min-height: 100vh;
-            transition: background-color 0.3s, color 0.3s;
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+        html, body { margin: 0 !important; padding: 0 !important; width: 100%; overflow-x: hidden; background: var(--bg-primary); }
+        body { min-height: 100vh; transition: background-color 0.3s, color 0.3s; }
 
         :root {
-            --primary: #00B761;
-            --primary-dark: #00994D;
-            --primary-light: #E3FCE9;
+            --primary: #00B761; --primary-dark: #00994D; --primary-light: #E3FCE9;
             --primary-gradient: linear-gradient(135deg, #00B761 0%, #00A86B 100%);
-            
-            --secondary: #FF8C42;
-            --secondary-light: #FFF1E6;
-            
-            --bg-primary: #F5F7FA;
-            --bg-secondary: #FFFFFF;
-            --card-bg: #FFFFFF;
-            --text-primary: #1A1A1A;
-            --text-secondary: #6B7280;
-            --text-muted: #9CA3AF;
-            --border-color: #E5E7EB;
-            --border-light: #F3F4F6;
-            
+            --bg-primary: #F5F7FA; --bg-secondary: #FFFFFF;
+            --text-primary: #1A1A1A; --text-secondary: #6B7280; --text-muted: #9CA3AF;
+            --border-color: #E5E7EB; --border-light: #F3F4F6;
             --shadow-sm: 0 2px 8px rgba(0,0,0,0.04);
             --shadow-md: 0 8px 20px rgba(0,0,0,0.06);
             --shadow-lg: 0 20px 40px rgba(0,0,0,0.08);
-            --shadow-hover: 0 30px 50px -20px rgba(0,183,97,0.3);
-            
-            --radius-sm: 12px;
-            --radius-md: 16px;
-            --radius-lg: 24px;
-            --radius-full: 999px;
-            
-            --danger: #FF4444;
-            --warning: #FF8C42;
-            --info: #17A2B8;
-            --success: #00B761;
-            
-            --open-bg: #d4edda;
-            --open-text: #28a745;
-            --closed-bg: #f8d7da;
-            --closed-text: #721c24;
-            
-            --input-bg: var(--bg-primary);
-            --input-border: var(--border-color);
-            --input-focus: var(--primary);
-            --disabled-bg: var(--bg-secondary);
-            
-            --break-bg: #fff3cd;
-            --break-color: #856404;
-            --booked-bg: #f8d7da;
-            --booked-color: #721c24;
-            
-            --unavailable-bg: #f8d7da;
-            --unavailable-color: #721c24;
-            
-            --calendar-available: #d4edda;
-            --calendar-unavailable: #f8d7da;
-            --calendar-partial: #fff3cd;
-            --calendar-today: #cce5ff;
+            --radius-sm: 12px; --radius-md: 16px; --radius-lg: 24px; --radius-full: 999px;
+            --danger: #FF4444; --warning: #FF8C42; --info: #17A2B8; --success: #00B761;
+            --open-bg: #d4edda; --open-text: #28a745; --closed-bg: #f8d7da; --closed-text: #721c24;
+            --input-bg: var(--bg-primary); --input-border: var(--border-color);
+            --input-focus: var(--primary); --disabled-bg: var(--bg-secondary);
+            --break-bg: #fff3cd; --break-color: #856404; --booked-bg: #f8d7da; --booked-color: #721c24;
+            --calendar-available: #d4edda; --calendar-unavailable: #f8d7da;
+            --calendar-partial: #fff3cd; --calendar-today: #cce5ff;
             --calendar-selected: var(--primary-gradient);
-            --calendar-border: var(--border-color);
         }
 
         .theme-dark {
-            --primary: #00E676;
-            --primary-dark: #00C853;
-            --primary-light: #1E3A2E;
-            
-            --bg-primary: #0F0F0F;
-            --bg-secondary: #1A1A1A;
-            --card-bg: #242424;
-            --text-primary: #FFFFFF;
-            --text-secondary: #B0B0B0;
-            --text-muted: #6B7280;
-            --border-color: #2D2D2D;
-            --border-light: #262626;
-            
-            --shadow-sm: 0 2px 8px rgba(0,0,0,0.2);
-            --shadow-md: 0 8px 20px rgba(0,0,0,0.3);
-            --shadow-lg: 0 20px 40px rgba(0,0,0,0.4);
-            
-            --open-bg: #2d4a2d;
-            --open-text: #7ac97a;
-            --closed-bg: #5a2d2d;
-            --closed-text: #ff9999;
-            
-            --input-bg: #1E1E1E;
-            --input-border: #2D2D2D;
-            --input-focus: #00E676;
-            --disabled-bg: #1A1A1A;
-            
-            --break-bg: #5a4c2d;
-            --break-color: #ffd966;
-            --booked-bg: #5a2d2d;
-            --booked-color: #ff9999;
-            
-            --unavailable-bg: #5a2d2d;
-            --unavailable-color: #ff9999;
-            
-            --calendar-available: #1e4a1e;
-            --calendar-unavailable: #4a2d2d;
-            --calendar-partial: #5a4c2d;
-            --calendar-today: #1e4a5a;
+            --primary: #00E676; --primary-dark: #00C853; --primary-light: #1E3A2E;
+            --bg-primary: #0F0F0F; --bg-secondary: #1A1A1A;
+            --text-primary: #FFFFFF; --text-secondary: #B0B0B0; --text-muted: #6B7280;
+            --border-color: #2D2D2D; --border-light: #262626;
+            --open-bg: #2d4a2d; --open-text: #7ac97a; --closed-bg: #5a2d2d; --closed-text: #ff9999;
+            --break-bg: #5a4c2d; --break-color: #ffd966; --booked-bg: #5a2d2d; --booked-color: #ff9999;
+            --calendar-available: #1e4a1e; --calendar-unavailable: #4a2d2d;
+            --calendar-partial: #5a4c2d; --calendar-today: #1e4a5a;
             --calendar-selected: var(--primary-gradient);
-            --calendar-border: #2D2D2D;
         }
 
-        h1, h2, h3, h4, h5, h6, p {
-            margin: 0;
-        }
+        h1, h2, h3, h4, h5, h6, p { margin: 0; }
 
-        /* ===== LOADING OVERLAY ===== */
-        .loading-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.7);
-            z-index: 9999;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
+        .loading-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); z-index: 9999; display: flex; align-items: center; justify-content: center; }
+        .loading-spinner-large { width: 50px; height: 50px; border: 4px solid var(--border-light); border-top-color: var(--primary); border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
 
-        .loading-spinner-large {
-            width: 50px;
-            height: 50px;
-            border: 4px solid var(--border-light);
-            border-top-color: var(--primary);
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        /* ===== TOAST NOTIFICATIONS ===== */
-        .toast-container {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            z-index: 9999;
-        }
-
-        .toast-notification {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            background: var(--bg-secondary);
-            border-radius: var(--radius-md);
-            padding: 16px 24px;
-            box-shadow: var(--shadow-lg);
-            margin-bottom: 12px;
-            min-width: 320px;
-            animation: slideIn 0.3s ease;
-            border-left: 4px solid var(--primary);
-        }
-
+        .toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; }
+        .toast-notification { display: flex; align-items: center; gap: 12px; background: var(--bg-secondary); border-radius: var(--radius-md); padding: 16px 24px; box-shadow: var(--shadow-lg); margin-bottom: 12px; min-width: 320px; animation: slideIn 0.3s ease; border-left: 4px solid var(--primary); }
         .toast-notification.success { border-left-color: var(--success); }
         .toast-notification.error { border-left-color: var(--danger); }
         .toast-notification.info { border-left-color: var(--info); }
-
-        .toast-notification i {
-            font-size: 20px;
-        }
-
+        .toast-notification i { font-size: 20px; }
         .toast-notification.success i { color: var(--success); }
         .toast-notification.error i { color: var(--danger); }
         .toast-notification.info i { color: var(--info); }
+        .toast-notification span { flex: 1; font-size: 14px; color: var(--text-primary); }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        @keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
 
-        .toast-notification span {
-            flex: 1;
-            font-size: 14px;
-            color: var(--text-primary);
-        }
+        [data-tooltip] { position: relative; cursor: help; }
+        [data-tooltip]:hover::after { content: attr(data-tooltip); position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); background: var(--bg-secondary); color: var(--text-primary); padding: 8px 12px; border-radius: var(--radius-md); font-size: 12px; white-space: nowrap; box-shadow: var(--shadow-md); z-index: 1000; margin-bottom: 8px; border: 1px solid var(--border-light); font-weight: 500; }
 
-        @keyframes slideIn {
-            from {
-                transform: translateX(100%);
-                opacity: 0;
-            }
-            to {
-                transform: translateX(0);
-                opacity: 1;
-            }
-        }
+        .main-content { max-width: 1400px; margin: 0 auto; padding: 30px 20px; }
+        @media (min-width: 1024px) { .main-content { padding: 30px 40px; } }
+        @media (max-width: 768px) { .main-content { padding: 20px 16px 100px; } }
 
-        @keyframes fadeOut {
-            from { opacity: 1; }
-            to { opacity: 0; }
-        }
+        .back-button { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .back-button a { color: var(--primary); text-decoration: none; display: flex; align-items: center; gap: 8px; font-weight: 500; font-size: 14px; transition: all 0.2s; padding: 8px 16px; background: var(--bg-secondary); border-radius: var(--radius-full); border: 1px solid var(--border-light); }
+        .back-button a:hover { background: var(--primary); color: white; transform: translateX(-3px); }
+        .back-button span { color: var(--text-secondary); font-size: 14px; }
 
+        .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 30px; flex-wrap: wrap; gap: 15px; }
+        .page-header h1 { font-size: 28px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 12px; }
+        .page-header h1 i { color: var(--primary); background: var(--primary-light); width: 50px; height: 50px; display: flex; align-items: center; justify-content: center; border-radius: var(--radius-full); font-size: 24px; }
+        .clinic-badge { background: var(--bg-secondary); padding: 12px 24px; border-radius: 30px; border: 1px solid var(--border-light); display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 500; color: var(--text-secondary); box-shadow: var(--shadow-sm); }
+        .clinic-badge i { color: var(--primary); }
+        .clinic-badge span { font-weight: 600; color: var(--primary); margin-right: 4px; }
 
-        /* ===== TOOLTIPS ===== */
-        [data-tooltip] {
-            position: relative;
-            cursor: help;
-        }
+        .booking-grid { display: grid; grid-template-columns: 2fr 1fr; gap: 25px; }
+        .booking-main { background: var(--bg-secondary); border-radius: var(--radius-lg); padding: 25px; border: 1px solid var(--border-light); box-shadow: var(--shadow-sm); }
 
-        [data-tooltip]:hover::before {
-            content: '';
-            position: absolute;
-            top: -8px;
-            left: 50%;
-            transform: translateX(-50%);
-            border-width: 5px;
-            border-style: solid;
-            border-color: transparent transparent var(--bg-secondary) transparent;
-            z-index: 1001;
-        }
+        .product-preview { display: flex; gap: 25px; padding: 20px; background: var(--primary-light); border: 2px solid var(--primary); border-radius: var(--radius-lg); margin-bottom: 30px; align-items: center; }
+        .product-preview-image { width: 100px; height: 100px; background: var(--bg-secondary); border-radius: var(--radius-md); overflow: hidden; box-shadow: var(--shadow-md); border: 3px solid white; flex-shrink: 0; }
+        .product-preview-image img { width: 100%; height: 100%; object-fit: cover; }
+        .product-preview-image .placeholder { width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: var(--bg-primary); color: var(--primary); }
+        .product-preview-image .placeholder i { font-size: 30px; margin-bottom: 5px; }
+        .product-preview-image .placeholder span { font-size: 10px; color: var(--text-muted); }
+        .product-preview-details { flex: 1; }
+        .product-preview-category { font-size: 13px; color: var(--primary); text-transform: uppercase; letter-spacing: 1px; font-weight: 600; margin-bottom: 5px; }
+        .product-preview-name { font-size: 22px; font-weight: 700; color: var(--text-primary); margin-bottom: 8px; }
+        .product-preview-price { font-size: 24px; font-weight: 700; color: var(--success); }
+        .product-preview-badge { background: var(--success); color: white; padding: 4px 12px; border-radius: var(--radius-full); font-size: 11px; font-weight: 600; display: inline-block; margin-top: 8px; }
 
-        [data-tooltip]:hover::after {
-            content: attr(data-tooltip);
-            position: absolute;
-            bottom: 100%;
-            left: 50%;
-            transform: translateX(-50%);
+        .booking-progress { display: flex; justify-content: space-between; margin-bottom: 30px; position: relative; background: var(--bg-primary); border-radius: var(--radius-lg); padding: 15px; border: 1px solid var(--border-light); }
+        .booking-progress::before { content: ''; position: absolute; top: 35px; left: 60px; right: 60px; height: 2px; background: var(--border-color); z-index: 1; }
+        .progress-step { position: relative; z-index: 2; background: var(--bg-primary); padding: 0 10px; text-align: center; flex: 1; cursor: pointer; }
+        .progress-step.disabled { cursor: not-allowed; opacity: 0.5; pointer-events: none; }
+        .step-number { width: 50px; height: 50px; background: var(--bg-secondary); border-radius: 50%; display: flex; align-items: center; justify-content: center; margin: 0 auto 10px; font-weight: 700; color: var(--text-secondary); transition: all 0.2s; border: 2px solid var(--border-light); }
+        .progress-step.active .step-number { background: var(--primary-gradient); color: white; border-color: transparent; }
+        .progress-step.completed .step-number { background: var(--success); color: white; border-color: transparent; }
+        .step-label { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+        .progress-step.active .step-label { color: var(--primary); }
+        .progress-step.completed .step-label { color: var(--success); }
+
+        .step-section { margin-bottom: 30px; padding: 20px; background: var(--bg-primary); border-radius: var(--radius-md); border: 1px solid var(--border-light); transition: all 0.2s; }
+        .step-section.active { border-left: 4px solid var(--primary); }
+        .step-section.completed { border-left: 4px solid var(--success); }
+        .step-section.locked { opacity: 0.7; background: var(--disabled-bg); }
+        .step-header { display: flex; align-items: center; gap: 15px; margin-bottom: 20px; }
+        .step-header h3 { font-size: 18px; font-weight: 600; color: var(--text-primary); margin: 0; flex: 1; }
+        .step-header h3 i { color: var(--primary); margin-right: 8px; }
+        .step-status-badge { padding: 4px 12px; border-radius: var(--radius-full); font-size: 11px; font-weight: 600; }
+        .status-pending { background: var(--warning); color: white; }
+        .status-completed { background: var(--success); color: white; }
+        .status-locked { background: var(--text-muted); color: white; }
+        .disabled-content { opacity: 0.5; pointer-events: none; }
+
+        /* ============================================ */
+        /* ✅ MAIN TABS */
+        /* ============================================ */
+        .main-tabs { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 2px solid var(--border-color); padding-bottom: 4px; flex-wrap: wrap; }
+        .main-tab-btn { padding: 10px 20px; background: transparent; border: none; border-radius: var(--radius-md) var(--radius-md) 0 0; cursor: pointer; font-weight: 600; color: var(--text-secondary); transition: all 0.2s; font-size: 14px; display: flex; align-items: center; gap: 6px; border-bottom: 3px solid transparent; }
+        .main-tab-btn i { font-size: 16px; }
+        .main-tab-btn:hover { color: var(--primary); background: var(--primary-light); }
+        .main-tab-btn.active { color: var(--primary); border-bottom-color: var(--primary); background: transparent; }
+        .main-tab-btn .tab-badge { background: var(--bg-primary); color: var(--text-muted); font-size: 10px; padding: 1px 6px; border-radius: var(--radius-full); margin-left: 4px; }
+        .main-tab-btn.active .tab-badge { background: var(--primary-light); color: var(--primary); }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        /* ============================================ */
+        /* ✅ SERVICE CARDS */
+        /* ============================================ */
+        .service-combine-note { background: var(--primary-light); border-left: 4px solid var(--primary); padding: 12px 15px; border-radius: var(--radius-md); margin-bottom: 15px; font-size: 13px; color: var(--text-secondary); }
+        .service-combine-note i { color: var(--primary); margin-right: 6px; }
+
+        .services-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
+        .service-card { background: var(--bg-secondary); border-radius: var(--radius-md); padding: 16px; border: 1px solid var(--border-light); transition: all 0.2s; cursor: pointer; text-align: center; position: relative; }
+        .service-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-md); border-color: var(--primary); }
+        .service-card.selected { border-color: var(--primary); background: var(--primary-light); }
+        .service-card input[type="checkbox"] { position: absolute; top: 10px; right: 10px; width: 18px; height: 18px; cursor: pointer; }
+        .service-card .doctor-avatar { width: 60px; height: 60px; border-radius: 50%; background: var(--primary-light); display: flex; align-items: center; justify-content: center; margin: 0 auto 10px; color: var(--primary); font-size: 28px; }
+        .service-card .doctor-name { font-size: 14px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
+        .service-card .doctor-specialty { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+        .service-card .product-price { font-size: 16px; font-weight: 700; color: var(--success); }
+        .service-card .doctor-schedule-badge { display: inline-block; padding: 4px 10px; background: var(--bg-primary); color: var(--primary); border-radius: var(--radius-full); font-size: 10px; font-weight: 600; margin-top: 4px; }
+        .service-card .service-group-badge { display: inline-block; padding: 2px 8px; background: var(--secondary-light); color: var(--secondary); border-radius: var(--radius-full); font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-top: 6px; }
+        .service-card.blocked { opacity: 0.4; cursor: not-allowed; background: var(--disabled-bg); }
+        .service-card.blocked input[type="checkbox"] { cursor: not-allowed; }
+
+        /* ============================================ */
+        /* ✅ PRODUCT CARDS (Eyewear, Contact Lenses, Accessories) */
+        /* ============================================ */
+        .products-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; margin-top: 10px; }
+        .product-card { background: var(--bg-secondary); border-radius: var(--radius-md); padding: 16px; border: 1px solid var(--border-light); transition: all 0.2s; cursor: pointer; text-align: center; }
+        .product-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-md); border-color: var(--primary); }
+        .product-card.selected { border-color: var(--primary); background: var(--primary-light); }
+        .product-card .product-img-thumb { width: 70px; height: 70px; border-radius: var(--radius-sm); margin: 0 auto 12px; overflow: hidden; border: 1px solid var(--border-light); background: var(--bg-primary); display: flex; align-items: center; justify-content: center; }
+        .product-card .product-img-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .product-card .product-img-thumb .img-fallback { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; background: var(--primary-light); color: var(--primary); font-size: 24px; }
+        .product-card .product-name { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .product-card .product-category { font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
+        .product-card .product-price { font-size: 15px; font-weight: 700; color: var(--success); }
+
+        /* ============================================ */
+        /* ✅ LENS SELECTION BOX */
+        /* ============================================ */
+        .lens-selection-box {
             background: var(--bg-secondary);
-            color: var(--text-primary);
-            padding: 8px 12px;
             border-radius: var(--radius-md);
-            font-size: 12px;
-            white-space: nowrap;
-            box-shadow: var(--shadow-md);
-            z-index: 1000;
-            margin-bottom: 8px;
-            border: 1px solid var(--border-light);
-            font-weight: 500;
-        }
-
-        /* ===== MAIN CONTENT ===== */
-        .main-content {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 30px 20px;
-        }
-
-        @media (min-width: 1024px) {
-            .main-content {
-                padding: 30px 40px;
-            }
-        }
-
-        @media (max-width: 768px) {
-            .main-content {
-                padding: 20px 16px 100px;
-            }
-        }
-
-        /* ===== BACK BUTTON ===== */
-        .back-button {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-        }
-
-        .back-button a {
-            color: var(--primary);
-            text-decoration: none;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-weight: 500;
-            font-size: 14px;
-            transition: all 0.2s;
-            padding: 8px 16px;
-            background: var(--bg-secondary);
-            border-radius: var(--radius-full);
-            border: 1px solid var(--border-light);
-        }
-
-        .back-button a:hover {
-            background: var(--primary);
-            color: white;
-            transform: translateX(-3px);
-        }
-
-        .back-button span {
-            color: var(--text-secondary);
-            font-size: 14px;
-        }
-
-        /* ===== PAGE HEADER ===== */
-        .page-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 30px;
-            flex-wrap: wrap;
-            gap: 15px;
-        }
-
-        .page-header h1 {
-            font-size: 28px;
-            font-weight: 700;
-            color: var(--text-primary);
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .page-header h1 i {
-            color: var(--primary);
-            background: var(--primary-light);
-            width: 50px;
-            height: 50px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            border-radius: var(--radius-full);
-            font-size: 24px;
-        }
-
-        .clinic-badge {
-            background: var(--bg-secondary);
-            padding: 12px 24px;
-            border-radius: 30px;
-            border: 1px solid var(--border-light);
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            font-size: 14px;
-            font-weight: 500;
-            color: var(--text-secondary);
-            box-shadow: var(--shadow-sm);
-        }
-
-        .clinic-badge i {
-            color: var(--primary);
-        }
-
-        .clinic-badge span {
-            font-weight: 600;
-            color: var(--primary);
-            margin-right: 4px;
-        }
-
-        /* ===== BOOKING GRID ===== */
-        .booking-grid {
-            display: grid;
-            grid-template-columns: 2fr 1fr;
-            gap: 25px;
-        }
-
-        /* Booking Main */
-        .booking-main {
-            background: var(--bg-secondary);
-            border-radius: var(--radius-lg);
-            padding: 25px;
-            border: 1px solid var(--border-light);
-            box-shadow: var(--shadow-sm);
-        }
-
-        /* Product Preview */
-        .product-preview {
-            display: flex;
-            gap: 25px;
             padding: 20px;
-            background: var(--primary-light);
-            border: 2px solid var(--primary);
-            border-radius: var(--radius-lg);
-            margin-bottom: 30px;
-            align-items: center;
-        }
-
-        .product-preview-image {
-            width: 100px;
-            height: 100px;
-            background: var(--bg-secondary);
-            border-radius: var(--radius-md);
-            overflow: hidden;
-            box-shadow: var(--shadow-md);
-            border: 3px solid white;
-            flex-shrink: 0;
-        }
-
-        .product-preview-image img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-
-        .product-preview-image .placeholder {
-            width: 100%;
-            height: 100%;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            background: var(--bg-primary);
-            color: var(--primary);
-        }
-
-        .product-preview-image .placeholder i {
-            font-size: 30px;
-            margin-bottom: 5px;
-        }
-
-        .product-preview-image .placeholder span {
-            font-size: 10px;
-            color: var(--text-muted);
-        }
-
-        .product-preview-details {
-            flex: 1;
-        }
-
-        .product-preview-category {
-            font-size: 13px;
-            color: var(--primary);
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            font-weight: 600;
-            margin-bottom: 5px;
-        }
-
-        .product-preview-name {
-            font-size: 22px;
-            font-weight: 700;
-            color: var(--text-primary);
-            margin-bottom: 8px;
-        }
-
-        .product-preview-price {
-            font-size: 24px;
-            font-weight: 700;
-            color: var(--success);
-        }
-
-        .product-preview-badge {
-            background: var(--success);
-            color: white;
-            padding: 4px 12px;
-            border-radius: var(--radius-full);
-            font-size: 11px;
-            font-weight: 600;
-            display: inline-block;
-            margin-top: 8px;
-        }
-
-        /* Progress Steps */
-        .booking-progress {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 30px;
-            position: relative;
-            background: var(--bg-primary);
-            border-radius: var(--radius-lg);
-            padding: 15px;
+            margin: 20px 0;
             border: 1px solid var(--border-light);
-        }
-
-        .booking-progress::before {
-            content: '';
-            position: absolute;
-            top: 35px;
-            left: 60px;
-            right: 60px;
-            height: 2px;
-            background: var(--border-color);
-            z-index: 1;
-        }
-
-        .progress-step {
-            position: relative;
-            z-index: 2;
-            background: var(--bg-primary);
-            padding: 0 10px;
-            text-align: center;
-            flex: 1;
-            cursor: pointer;
-        }
-
-        .progress-step.disabled {
-            cursor: not-allowed;
-            opacity: 0.5;
-            pointer-events: none;
-        }
-
-        .step-number {
-            width: 50px;
-            height: 50px;
-            background: var(--bg-secondary);
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 0 auto 10px;
-            font-weight: 700;
-            color: var(--text-secondary);
-            transition: all 0.2s;
-            border: 2px solid var(--border-light);
-        }
-
-        .progress-step.active .step-number {
-            background: var(--primary-gradient);
-            color: white;
-            border-color: transparent;
-        }
-
-        .progress-step.completed .step-number {
-            background: var(--success);
-            color: white;
-            border-color: transparent;
-        }
-
-        .step-label {
-            font-size: 13px;
-            font-weight: 600;
-            color: var(--text-secondary);
-        }
-
-        .progress-step.active .step-label {
-            color: var(--primary);
-        }
-
-        .progress-step.completed .step-label {
-            color: var(--success);
-        }
-
-        /* Step Sections */
-        .step-section {
-            margin-bottom: 30px;
-            padding: 20px;
-            background: var(--bg-primary);
-            border-radius: var(--radius-md);
-            border: 1px solid var(--border-light);
-            transition: all 0.2s;
-        }
-
-        .step-section.active {
-            border-left: 4px solid var(--primary);
-        }
-
-        .step-section.completed {
-            border-left: 4px solid var(--success);
-        }
-
-        .step-section.locked {
-            opacity: 0.7;
-            background: var(--disabled-bg);
-        }
-
-        .step-header {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            margin-bottom: 20px;
-        }
-
-        .step-header h3 {
-            font-size: 18px;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin: 0;
-            flex: 1;
-        }
-
-        .step-header h3 i {
-            color: var(--primary);
-            margin-right: 8px;
-        }
-
-        .step-status-badge {
-            padding: 4px 12px;
-            border-radius: var(--radius-full);
-            font-size: 11px;
-            font-weight: 600;
-        }
-
-        .status-pending {
-            background: var(--warning);
-            color: white;
-        }
-
-        .status-completed {
-            background: var(--success);
-            color: white;
-        }
-
-        .status-locked {
-            background: var(--text-muted);
-            color: white;
-        }
-
-        .disabled-content {
-            opacity: 0.5;
-            pointer-events: none;
-        }
-
-        /* Doctors Grid */
-        .doctors-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-            gap: 15px;
-            margin-top: 15px;
-        }
-
-        .doctor-card {
-            background: var(--bg-secondary);
-            border-radius: var(--radius-md);
-            padding: 15px;
-            transition: all 0.2s;
-            border: 2px solid transparent;
-            cursor: pointer;
-            position: relative;
-            text-align: center;
-            border: 1px solid var(--border-light);
-        }
-
-        .doctor-card:hover:not(.unavailable) {
-            transform: translateY(-3px);
-            box-shadow: var(--shadow-md);
-            border-color: var(--primary);
-        }
-
-        .doctor-card.selected {
-            border-color: var(--primary);
-            background: var(--primary-light);
-        }
-
-        .doctor-card.unavailable {
-            opacity: 0.5;
-            pointer-events: none;
-            background: var(--unavailable-bg);
-            border-color: var(--border-color);
-            position: relative;
-            cursor: not-allowed;
-        }
-
-        .doctor-card.unavailable::after {
-            content: 'Not available this day';
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: var(--danger);
-            color: white;
-            font-size: 10px;
-            padding: 3px;
-            border-radius: 0 0 var(--radius-md) var(--radius-md);
-        }
-
-        .doctor-card.no-schedule {
-            opacity: 0.7;
-            border-color: #999 !important;
-            cursor: not-allowed;
-            background: var(--bg-secondary);
-        }
-
-        .doctor-card.no-schedule .doctor-avatar {
-            background: #999 !important;
-        }
-
-        .doctor-card.no-schedule .doctor-schedule-badge {
-            background: #999 !important;
-            color: white !important;
-        }
-
-        .doctor-card input[type="radio"] {
-            position: absolute;
-            opacity: 0;
-        }
-
-        .doctor-card input[type="checkbox"] {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            width: 20px;
-            height: 20px;
-            opacity: 1;
-            cursor: pointer;
-        }
-
-        .doctor-card.blocked {
-            opacity: 0.4;
-            cursor: not-allowed;
-            background: var(--disabled-bg);
-        }
-
-        .doctor-card.blocked input[type="checkbox"] {
-            cursor: not-allowed;
-        }
-
-        .doctor-avatar {
-            width: 70px;
-            height: 70px;
-            border-radius: 50%;
-            background: var(--primary-gradient);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 0 auto 12px;
-            color: white;
-            font-size: 28px;
-        }
-
-        .any-doctor-card .doctor-avatar {
-            background: var(--success);
-        }
-
-        .doctor-name {
-            font-size: 15px;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 5px;
-        }
-
-        .doctor-specialty {
-            font-size: 12px;
-            color: var(--text-secondary);
-            margin-bottom: 8px;
-        }
-
-        .doctor-schedule-badge {
-            display: inline-block;
-            padding: 4px 10px;
-            background: var(--bg-primary);
-            color: var(--primary);
-            border-radius: var(--radius-full);
-            font-size: 10px;
-            font-weight: 600;
-        }
-
-        .any-doctor-card .doctor-schedule-badge {
-            background: var(--success);
-            color: white;
-        }
-
-        .service-group-badge {
-            display: inline-block;
-            padding: 2px 8px;
-            background: var(--secondary-light);
-            color: var(--secondary);
-            border-radius: var(--radius-full);
-            font-size: 9px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-top: 6px;
-        }
-
-        /* Product card image thumbnail */
-        .product-img-thumb {
-            width: 70px;
-            height: 70px;
-            border-radius: var(--radius-sm);
-            margin: 0 auto 12px;
-            overflow: hidden;
-            border: 1px solid var(--border-light);
-            background: var(--bg-primary);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .product-img-thumb img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            display: block;
-        }
-        .product-img-thumb .img-fallback {
-            width: 100%;
-            height: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: var(--primary-light);
-            color: var(--primary);
-            font-size: 28px;
-        }
-        .doctor-card.selected .product-img-thumb {
-            border-color: var(--primary);
-        }
-
-        /* Tabs for Services/Products */
-        .booking-tabs {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            border-bottom: 1px solid var(--border-color);
-            padding-bottom: 10px;
-        }
-        
-        .tab-btn {
-            padding: 10px 20px;
-            background: transparent;
-            border: none;
-            border-radius: var(--radius-md);
-            cursor: pointer;
-            font-weight: 500;
-            color: var(--text-secondary);
-            transition: all 0.2s;
-        }
-        
-        .tab-btn i {
-            margin-right: 8px;
-        }
-        
-        .tab-btn.active {
-            background: var(--primary-gradient);
-            color: white;
-        }
-        
-        .tab-content {
             display: none;
         }
-        
-        .tab-content.active {
-            display: block;
-        }
-        
-        .product-price {
-            font-size: 18px;
-            font-weight: 700;
-            color: var(--success);
-            margin-top: 8px;
-        }
-        
-        .service-duration, .service-doctors {
-            font-size: 11px;
-            color: var(--text-muted);
-            margin-top: 8px;
-        }
-        
-        .service-duration i, .service-doctors i {
-            margin-right: 4px;
-        }
-
-        .service-combine-note {
-            background: var(--primary-light);
-            border-left: 4px solid var(--primary);
-            padding: 12px 15px;
+        .lens-selection-box.visible { display: block; animation: fadeIn 0.3s ease; }
+        .lens-options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+        @media (max-width: 500px) { .lens-options-grid { grid-template-columns: 1fr; } }
+        .lens-option-btn {
+            padding: 14px 12px;
+            border: 2px solid var(--border-color);
             border-radius: var(--radius-md);
-            margin-bottom: 15px;
-            font-size: 13px;
-            color: var(--text-secondary);
-        }
-
-        .service-combine-note i {
-            color: var(--primary);
-            margin-right: 6px;
-        }
-
-        /* Calendar Styles */
-        .calendar-container {
-            background: var(--bg-secondary);
-            border-radius: var(--radius-lg);
-            padding: 20px;
-            margin-top: 15px;
-            border: 1px solid var(--border-light);
-        }
-
-        .calendar-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
-        }
-
-        .calendar-header h4 {
-            font-size: 16px;
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-
-        .calendar-nav-btn {
-            width: 36px;
-            height: 36px;
-            border: none;
             background: var(--bg-primary);
-            border-radius: var(--radius-full);
             cursor: pointer;
-            color: var(--text-secondary);
             transition: all 0.2s;
-            font-size: 14px;
-        }
-
-        .calendar-nav-btn:hover {
-            background: var(--primary);
-            color: white;
-        }
-
-        .calendar-weekdays {
-            display: grid;
-            grid-template-columns: repeat(7, 1fr);
-            text-align: center;
-            font-weight: 600;
-            font-size: 12px;
-            color: var(--text-secondary);
-            margin-bottom: 10px;
-        }
-
-        .calendar-days {
-            display: grid;
-            grid-template-columns: repeat(7, 1fr);
-            gap: 5px;
-        }
-
-        .calendar-day {
-            aspect-ratio: 1;
+            text-align: left;
+            font-family: inherit;
             display: flex;
             flex-direction: column;
-            align-items: center;
-            justify-content: center;
+            gap: 4px;
+        }
+        .lens-option-btn:hover { border-color: var(--primary); background: var(--primary-light); }
+        .lens-option-btn.selected { border-color: var(--primary); background: var(--primary-light); box-shadow: 0 0 0 3px rgba(0,183,97,0.12); }
+        .lens-option-btn .ln { font-weight: 700; font-size: 14px; color: var(--text-primary); }
+        .lens-option-btn .lp { font-size: 12px; color: var(--primary); font-weight: 600; }
+        .lens-option-btn .ld { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+        /* ============================================ */
+        /* ✅ COLOR & SIZE SELECTOR */
+        /* ============================================ */
+        .color-size-selector {
             background: var(--bg-primary);
             border-radius: var(--radius-md);
-            cursor: pointer;
-            transition: all 0.2s;
-            position: relative;
+            padding: 16px;
+            margin-top: 16px;
+            border: 1px solid var(--border-light);
+            display: none;
+        }
+        .color-size-selector.visible { display: block; }
+        .cs-title {
             font-size: 14px;
-            font-weight: 500;
-            border: 2px solid transparent;
-        }
-
-        .calendar-day:hover:not(.empty):not(.unavailable) {
-            transform: translateY(-2px);
-            box-shadow: var(--shadow-sm);
-            border-color: var(--primary);
-        }
-
-        .calendar-day.available {
-            background: var(--calendar-available);
-            color: var(--success);
-            border: 2px solid var(--success);
-        }
-
-        .calendar-day.unavailable {
-            background: var(--calendar-unavailable);
-            color: var(--danger);
-            opacity: 0.5;
-            cursor: not-allowed;
-            border: 2px solid var(--danger);
-        }
-
-        .calendar-day.partial {
-            background: var(--calendar-partial);
-            color: var(--warning);
-            border: 2px solid var(--warning);
-        }
-
-        .calendar-day.today {
-            border: 2px solid var(--info);
-            background: var(--calendar-today);
-            color: var(--info);
-        }
-
-        .calendar-day.selected {
-            background: var(--primary-gradient);
-            color: white;
-            border-color: transparent;
-        }
-
-        .calendar-day.empty {
-            background: transparent;
-            cursor: default;
-            border: none;
-        }
-
-        /* Time Slots */
-        .time-slots-container {
-            margin-top: 20px;
-        }
-
-        .time-slots-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
-        }
-
-        .time-slots-header h4 {
-            font-size: 15px;
-            font-weight: 600;
+            font-weight: 700;
             color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            margin-bottom: 14px;
         }
-
-        .time-slots-header span {
-            font-size: 13px;
-            color: var(--text-secondary);
-        }
-
-        .time-slots-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-            gap: 10px;
-        }
-
-        .time-slot-card {
-            padding: 12px 8px;
-            text-align: center;
-            border: 1px solid var(--border-color);
+        .cs-title i { color: var(--primary); }
+        .cs-selected-label { font-weight: 500; color: var(--text-secondary); font-size: 13px; margin-left: auto; }
+        .cs-selected-label.chosen { color: var(--primary); font-weight: 600; }
+        .color-btns, .size-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+        .color-btn {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            padding: 8px 14px;
+            border: 2px solid var(--border-color);
             border-radius: var(--radius-md);
+            background: var(--bg-secondary);
             cursor: pointer;
             transition: all 0.2s;
-            font-size: 13px;
-            font-weight: 500;
-            position: relative;
-            background: var(--bg-secondary);
-            color: var(--text-primary);
+            font-family: inherit;
         }
-
-        .time-slot-card:hover:not(.disabled):not(.booked):not(.unavailable) {
-            border-color: var(--primary);
-            background: var(--primary-light);
-            transform: translateY(-2px);
-        }
-
-        .time-slot-card.selected {
-            background: var(--primary-gradient);
-            color: white;
-            border-color: transparent;
-        }
-
-        .time-slot-card.available {
-            border-color: var(--success);
-        }
-
-        .time-slot-card.disabled {
-            background: var(--break-bg);
-            color: var(--break-color);
-            border-color: var(--border-color);
-            cursor: not-allowed;
-            pointer-events: none;
-            opacity: 0.7;
-        }
-
-        .time-slot-card.booked {
-            background: var(--booked-bg);
-            color: var(--booked-color);
-            border-color: var(--danger);
-            cursor: not-allowed;
-            pointer-events: none;
-            opacity: 0.7;
-        }
-
-        .time-slot-card.unavailable {
-            background: var(--unavailable-bg);
-            color: var(--unavailable-color);
-            border-color: var(--danger);
-            cursor: not-allowed;
-            pointer-events: none;
-            opacity: 0.7;
-        }
-
-        .no-slots-message {
-            grid-column: 1 / -1;
-            text-align: center;
-            padding: 30px;
-            background: var(--bg-primary);
+        .color-btn:hover:not(.oos) { border-color: var(--primary); background: var(--primary-light); }
+        .color-btn.selected { border-color: var(--primary); background: var(--primary-light); box-shadow: 0 0 0 3px rgba(0,183,97,0.12); }
+        .color-btn.oos { opacity: 0.45; cursor: not-allowed; border-style: dashed; }
+        .color-dot { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid rgba(0,0,0,0.15); flex-shrink: 0; }
+        .color-btn-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+        .color-btn-qty { font-size: 11px; color: var(--text-muted); margin-left: 2px; }
+        .color-btn-qty.low { color: var(--warning); font-weight: 600; }
+        .color-btn-qty.oos-label { color: var(--danger); font-weight: 600; }
+        .size-btn {
+            padding: 8px 16px;
+            border: 2px solid var(--border-color);
             border-radius: var(--radius-md);
-            color: var(--text-muted);
-        }
-
-        .no-slots-message i {
-            font-size: 40px;
-            color: var(--text-muted);
-            margin-bottom: 10px;
-            opacity: 0.5;
-        }
-
-        .no-slots-message h4 {
-            font-size: 16px;
-            color: var(--text-primary);
-            margin-bottom: 5px;
-        }
-
-        .no-slots-message p {
+            background: var(--bg-secondary);
+            cursor: pointer;
+            font-weight: 600;
             font-size: 13px;
+            transition: all 0.2s;
         }
+        .size-btn:hover, .size-btn.selected { border-color: var(--primary); background: var(--primary-light); color: var(--primary); }
+        .cs-hint { font-size: 11px; color: var(--text-muted); display: flex; align-items: center; gap: 4px; }
+        .cs-hint i { color: var(--primary); }
 
-        /* Calendar Legend */
-        .calendar-legend {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 15px;
-            margin-top: 15px;
-            padding-top: 15px;
-            border-top: 1px solid var(--border-light);
+        /* ============================================ */
+        /* ✅ CLINIC VISIT REQUIRED NOTICE */
+        /* ============================================ */
+        .clinic-visit-required {
+            background: #FEF3C7;
+            border: 1px solid #FDE68A;
+            border-radius: var(--radius-md);
+            padding: 16px;
+            margin-top: 16px;
+            display: none;
+            align-items: flex-start;
+            gap: 12px;
         }
+        .clinic-visit-required.visible { display: flex; }
+        .clinic-visit-required i { color: var(--warning); font-size: 20px; flex-shrink: 0; }
+        .theme-dark .clinic-visit-required { background: #3B2F0F; border-color: #7F6B1D; }
 
-        .legend-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
+        /* ============================================ */
+        /* ✅ DELIVERY SECTION (inline) */
+        /* ============================================ */
+        .delivery-section { margin-top: 20px; padding: 16px; background: var(--bg-primary); border-radius: var(--radius-md); border: 1px solid var(--border-light); display: none; }
+        .delivery-section.visible { display: block; }
+        .delivery-section .delivery-options { display: flex; gap: 15px; flex-wrap: wrap; margin-top: 8px; }
+        .delivery-section .delivery-options label { padding: 12px 16px; border: 2px solid var(--border-color); border-radius: var(--radius-md); cursor: pointer; display: flex; align-items: center; gap: 10px; background: var(--bg-secondary); transition: all 0.2s; flex: 1; min-width: 120px; }
+        .delivery-section .delivery-options label:has(input:checked) { border-color: var(--primary); background: var(--primary-light); }
+        .delivery-section .delivery-options label i { font-size: 18px; color: var(--primary); }
+        .delivery-address-form { margin-top: 16px; padding: 16px; background: var(--bg-secondary); border-radius: var(--radius-md); border: 1px solid var(--border-light); display: none; }
+        .delivery-address-form.show { display: block; animation: fadeIn 0.3s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
 
-        .legend-color {
-            width: 16px;
-            height: 16px;
-            border-radius: 4px;
-        }
+        .clinic-visit-notice { padding: 12px 16px; background: var(--primary-light); border-radius: var(--radius-md); margin-top: 12px; border-left: 4px solid var(--warning); display: flex; align-items: flex-start; gap: 10px; display: none; }
+        .clinic-visit-notice i { color: var(--warning); font-size: 18px; margin-top: 2px; }
+        .free-delivery-badge { background: var(--success); color: white; padding: 2px 10px; border-radius: var(--radius-full); font-size: 11px; font-weight: 600; display: inline-block; margin-left: 6px; }
 
+        /* ============================================ */
+        /* ✅ SUB TABS FOR FILTERS */
+        /* ============================================ */
+        .sub-tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+        .sub-tab-btn { padding: 6px 14px; border: 1px solid var(--border-color); background: var(--bg-secondary); border-radius: var(--radius-full); cursor: pointer; font-size: 12px; font-weight: 500; color: var(--text-secondary); transition: all 0.2s; }
+        .sub-tab-btn:hover { border-color: var(--primary); color: var(--primary); }
+        .sub-tab-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
+
+        /* ============================================ */
+        /* ✅ PAGINATION */
+        /* ============================================ */
+        .pagination-container { display: flex; justify-content: center; align-items: center; gap: 6px; margin-top: 20px; padding: 10px 0; flex-wrap: wrap; }
+        .pagination-container button { padding: 6px 12px; border: 1px solid var(--border-color); background: var(--bg-secondary); border-radius: var(--radius-md); cursor: pointer; font-size: 13px; font-weight: 500; transition: all 0.2s; color: var(--text-secondary); min-width: 32px; }
+        .pagination-container button:hover:not(:disabled) { background: var(--primary-light); color: var(--primary); border-color: var(--primary); }
+        .pagination-container button.active { background: var(--primary); color: white; border-color: var(--primary); }
+        .pagination-container button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* ============================================ */
+        /* ✅ DOCTORS GRID */
+        /* ============================================ */
+        .doctors-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px; margin-top: 15px; }
+        .doctor-card { background: var(--bg-secondary); border-radius: var(--radius-md); padding: 16px; transition: all 0.2s; border: 2px solid transparent; cursor: pointer; position: relative; text-align: center; border: 1px solid var(--border-light); }
+        .doctor-card:hover:not(.no-schedule) { transform: translateY(-3px); box-shadow: var(--shadow-md); border-color: var(--primary); }
+        .doctor-card.selected { border-color: var(--primary); background: var(--primary-light); }
+        .doctor-card.no-schedule { opacity: 0.6; cursor: not-allowed; background: var(--bg-primary); }
+        .doctor-card input[type="radio"] { position: absolute; opacity: 0; }
+        .doctor-avatar { width: 70px; height: 70px; border-radius: 50%; background: var(--primary-gradient); display: flex; align-items: center; justify-content: center; margin: 0 auto 12px; color: white; font-size: 28px; }
+        .any-doctor-card .doctor-avatar { background: var(--success); }
+        .doctor-name { font-size: 15px; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
+        .doctor-specialty { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; }
+        .doctor-schedule-badge { display: inline-block; padding: 4px 10px; background: var(--bg-primary); color: var(--primary); border-radius: var(--radius-full); font-size: 10px; font-weight: 600; }
+        .any-doctor-card .doctor-schedule-badge { background: var(--success); color: white; }
+
+        /* ============================================ */
+        /* ✅ CALENDAR */
+        /* ============================================ */
+        .calendar-container { background: var(--bg-secondary); border-radius: var(--radius-lg); padding: 20px; margin-top: 15px; border: 1px solid var(--border-light); }
+        .calendar-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .calendar-header h4 { font-size: 16px; font-weight: 600; color: var(--text-primary); }
+        .calendar-nav-btn { width: 36px; height: 36px; border: none; background: var(--bg-primary); border-radius: var(--radius-full); cursor: pointer; color: var(--text-secondary); transition: all 0.2s; font-size: 14px; }
+        .calendar-nav-btn:hover { background: var(--primary); color: white; }
+        .calendar-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; font-weight: 600; font-size: 12px; color: var(--text-secondary); margin-bottom: 10px; }
+        .calendar-days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
+        .calendar-day { aspect-ratio: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; background: var(--bg-primary); border-radius: var(--radius-md); cursor: pointer; transition: all 0.2s; position: relative; font-size: 14px; font-weight: 500; border: 2px solid transparent; }
+        .calendar-day:hover:not(.empty):not(.unavailable) { transform: translateY(-2px); box-shadow: var(--shadow-sm); border-color: var(--primary); }
+        .calendar-day.available { background: var(--calendar-available); color: var(--success); border: 2px solid var(--success); }
+        .calendar-day.unavailable { background: var(--calendar-unavailable); color: var(--danger); opacity: 0.5; cursor: not-allowed; border: 2px solid var(--danger); }
+        .calendar-day.partial { background: var(--calendar-partial); color: var(--warning); border: 2px solid var(--warning); }
+        .calendar-day.today { border: 2px solid var(--info); background: var(--calendar-today); color: var(--info); }
+        .calendar-day.selected { background: var(--primary-gradient); color: white; border-color: transparent; }
+        .calendar-day.empty { background: transparent; cursor: default; border: none; }
+
+        .time-slots-container { margin-top: 20px; }
+        .time-slots-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
+        .time-slots-header h4 { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+        .time-slots-header span { font-size: 13px; color: var(--text-secondary); }
+        .time-slots-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px; }
+        .time-slot-card { padding: 12px 8px; text-align: center; border: 1px solid var(--border-color); border-radius: var(--radius-md); cursor: pointer; transition: all 0.2s; font-size: 13px; font-weight: 500; position: relative; background: var(--bg-secondary); color: var(--text-primary); }
+        .time-slot-card:hover:not(.disabled):not(.booked):not(.unavailable) { border-color: var(--primary); background: var(--primary-light); transform: translateY(-2px); }
+        .time-slot-card.selected { background: var(--primary-gradient); color: white; border-color: transparent; }
+        .time-slot-card.available { border-color: var(--success); }
+        .time-slot-card.disabled { background: var(--break-bg); color: var(--break-color); border-color: var(--border-color); cursor: not-allowed; pointer-events: none; opacity: 0.7; }
+        .time-slot-card.booked { background: var(--booked-bg); color: var(--booked-color); border-color: var(--danger); cursor: not-allowed; pointer-events: none; opacity: 0.7; }
+        .time-slot-card.unavailable { background: var(--unavailable-bg); color: var(--unavailable-color); border-color: var(--danger); cursor: not-allowed; pointer-events: none; opacity: 0.7; }
+        .no-slots-message { grid-column: 1 / -1; text-align: center; padding: 30px; background: var(--bg-primary); border-radius: var(--radius-md); color: var(--text-muted); }
+        .no-slots-message i { font-size: 40px; color: var(--text-muted); margin-bottom: 10px; opacity: 0.5; }
+        .no-slots-message h4 { font-size: 16px; color: var(--text-primary); margin-bottom: 5px; }
+        .no-slots-message p { font-size: 13px; }
+
+        .calendar-legend { display: flex; flex-wrap: wrap; gap: 15px; margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border-light); }
+        .legend-item { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); }
+        .legend-color { width: 16px; height: 16px; border-radius: 4px; }
         .legend-color.available { background: var(--calendar-available); border: 2px solid var(--success); }
         .legend-color.partial { background: var(--calendar-partial); border: 2px solid var(--warning); }
         .legend-color.unavailable { background: var(--calendar-unavailable); border: 2px solid var(--danger); }
         .legend-color.today { background: var(--calendar-today); border: 2px solid var(--info); }
         .legend-color.selected { background: var(--primary-gradient); }
 
-        /* Form Elements */
-        .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-bottom: 20px;
-        }
+        /* ============================================ */
+        /* ✅ FORM ELEMENTS */
+        /* ============================================ */
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; color: var(--text-secondary); font-weight: 600; font-size: 13px; }
+        .form-group label i { color: var(--primary); margin-right: 6px; }
+        .form-control { width: 100%; padding: 12px 15px; border: 2px solid var(--border-color); border-radius: var(--radius-md); font-size: 14px; transition: all 0.2s; background: var(--input-bg); color: var(--text-primary); }
+        .form-control:focus { border-color: var(--primary); outline: none; box-shadow: 0 0 0 3px var(--primary-light); }
+        .form-control[readonly] { background: var(--disabled-bg); cursor: not-allowed; }
 
-        .form-group {
-            margin-bottom: 20px;
-        }
+        .alert { padding: 15px 20px; border-radius: var(--radius-md); margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
+        .alert-success { background: var(--open-bg); color: var(--open-text); border: 1px solid var(--open-text); }
+        .alert-error { background: var(--closed-bg); color: var(--closed-text); border: 1px solid var(--closed-text); }
 
-        .form-group label {
-            display: block;
-            margin-bottom: 8px;
-            color: var(--text-secondary);
-            font-weight: 600;
-            font-size: 13px;
-        }
+        .break-info { background: var(--break-bg); border-left: 4px solid var(--warning); padding: 15px; border-radius: var(--radius-md); margin: 20px 0; font-size: 13px; }
+        .break-info i { color: var(--warning); margin-right: 8px; }
+        .break-info ul { margin-top: 10px; padding-left: 25px; color: var(--break-color); }
+        .break-info li { margin-bottom: 5px; }
 
-        .form-group label i {
-            color: var(--primary);
-            margin-right: 6px;
-        }
+        .daily-limit-warning { background: var(--break-bg); color: var(--break-color); padding: 10px 15px; border-radius: var(--radius-md); margin-top: 10px; display: flex; align-items: center; gap: 8px; font-size: 13px; border-left: 4px solid var(--warning); }
 
-        .form-control {
-            width: 100%;
-            padding: 12px 15px;
-            border: 2px solid var(--border-color);
-            border-radius: var(--radius-md);
-            font-size: 14px;
-            transition: all 0.2s;
-            background: var(--input-bg);
-            color: var(--text-primary);
-        }
+        /* ============================================ */
+        /* ✅ SIDEBAR */
+        /* ============================================ */
+        .booking-sidebar { background: var(--bg-secondary); border-radius: var(--radius-lg); padding: 25px; border: 1px solid var(--border-light); box-shadow: var(--shadow-sm); height: fit-content; position: sticky; top: 20px; }
+        .clinic-info-sidebar { display: flex; align-items: flex-start; gap: 15px; margin-bottom: 25px; padding-bottom: 20px; border-bottom: 1px solid var(--border-light); }
+        .clinic-info-sidebar > i:first-child { font-size: 40px; color: var(--primary); background: var(--primary-light); width: 60px; height: 60px; border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+        .clinic-info-sidebar h4 { font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; }
+        .clinic-info-sidebar p { color: var(--text-secondary); font-size: 13px; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+        .clinic-info-sidebar p i { font-size: 12px; color: var(--primary); width: 16px; }
 
-        .form-control:focus {
-            border-color: var(--primary);
-            outline: none;
-            box-shadow: 0 0 0 3px var(--primary-light);
-        }
+        .flow-indicator { background: var(--bg-primary); border-radius: var(--radius-md); padding: 15px; margin-bottom: 20px; }
 
-        .form-control[readonly] {
-            background: var(--disabled-bg);
-            cursor: not-allowed;
-        }
+        .summary-card { background: var(--bg-primary); border-radius: var(--radius-md); padding: 20px; margin: 20px 0; }
+        .summary-card h4 { font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: 15px; display: flex; align-items: center; gap: 8px; }
+        .summary-card h4 i { color: var(--primary); }
+        .summary-item { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border-light); font-size: 13px; }
+        .summary-item:last-child { border-bottom: none; }
+        .summary-label { color: var(--text-secondary); font-weight: 500; }
+        .summary-value { color: var(--text-primary); font-weight: 600; }
+        .summary-services-list { padding: 10px 0; border-bottom: 1px solid var(--border-light); }
+        .summary-services-list .summary-label { display: block; margin-bottom: 6px; }
+        .summary-service-row { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-primary); padding: 3px 0; }
+        .total-price { font-size: 24px; font-weight: 700; color: var(--success); margin-top: 15px; text-align: right; }
 
-        /* Alerts */
-        .alert {
-            padding: 15px 20px;
-            border-radius: var(--radius-md);
-            margin-bottom: 20px;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
+        .btn-confirm { width: 100%; padding: 15px; background: var(--primary-gradient); color: white; border: none; border-radius: var(--radius-md); font-size: 16px; font-weight: 600; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 20px; }
+        .btn-confirm:hover:not(:disabled) { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+        .btn-confirm:disabled { opacity: 0.5; cursor: not-allowed; }
 
-        .alert-success {
-            background: var(--open-bg);
-            color: var(--open-text);
-            border: 1px solid var(--open-text);
-        }
+        .quick-info { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border-light); }
+        .quick-info p { color: var(--text-secondary); font-size: 12px; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+        .quick-info i { color: var(--primary); width: 18px; font-size: 12px; }
 
-        .alert-error {
-            background: var(--closed-bg);
-            color: var(--closed-text);
-            border: 1px solid var(--closed-text);
-        }
+        .success-container { grid-column: 1 / -1; background: var(--bg-secondary); border-radius: var(--radius-lg); padding: 60px 40px; text-align: center; border: 1px solid var(--border-light); box-shadow: var(--shadow-sm); }
+        .success-container i { font-size: 80px; color: var(--success); margin-bottom: 20px; }
+        .success-container h2 { font-size: 28px; font-weight: 700; color: var(--text-primary); margin-bottom: 10px; }
+        .success-container p { color: var(--text-secondary); margin-bottom: 30px; max-width: 500px; margin-left: auto; margin-right: auto; }
+        .success-actions { display: flex; gap: 15px; justify-content: center; flex-wrap: wrap; }
+        .btn-primary { padding: 12px 30px; background: var(--primary-gradient); color: white; border: none; border-radius: var(--radius-full); font-weight: 600; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 8px; transition: all 0.2s; }
+        .btn-secondary { padding: 12px 30px; background: transparent; color: var(--primary); border: 2px solid var(--primary); border-radius: var(--radius-full); font-weight: 600; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 8px; transition: all 0.2s; }
 
-        /* Validation Message */
-        .validation-message {
-            margin-top: 8px;
-            padding: 8px 12px;
-            background: var(--unavailable-bg);
-            color: var(--unavailable-color);
-            border-radius: var(--radius-md);
-            font-size: 13px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            border-left: 4px solid var(--danger);
-        }
+        .info-card { grid-column: 1 / -1; background: var(--bg-secondary); border-radius: var(--radius-lg); padding: 25px; margin-top: 25px; border: 1px solid var(--border-light); box-shadow: var(--shadow-sm); }
+        .info-card h2 { font-size: 18px; font-weight: 600; color: var(--text-primary); margin-bottom: 15px; display: flex; align-items: center; gap: 8px; }
+        .info-card h2 i { color: var(--primary); }
+        .info-card ul { color: var(--text-secondary); font-size: 14px; line-height: 1.8; padding-left: 20px; }
+        .info-card li { margin-bottom: 8px; }
 
-        /* Break Info */
-        .break-info {
-            background: var(--break-bg);
-            border-left: 4px solid var(--warning);
-            padding: 15px;
-            border-radius: var(--radius-md);
-            margin: 20px 0;
-            font-size: 13px;
-        }
-
-        .break-info i {
-            color: var(--warning);
-            margin-right: 8px;
-        }
-
-        .break-info ul {
-            margin-top: 10px;
-            padding-left: 25px;
-            color: var(--break-color);
-        }
-
-        .break-info li {
-            margin-bottom: 5px;
-        }
-
-        /* Daily Limit Warning */
-        .daily-limit-warning {
-            background: var(--break-bg);
-            color: var(--break-color);
-            padding: 10px 15px;
-            border-radius: var(--radius-md);
-            margin-top: 10px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 13px;
-            border-left: 4px solid var(--warning);
-        }
-
-        /* Loading Spinner */
-        .loading-spinner {
-            display: inline-block;
-            width: 30px;
-            height: 30px;
-            border: 3px solid var(--border-color);
-            border-top: 3px solid var(--primary);
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-
-        /* ===== BOOKING SIDEBAR ===== */
-        .booking-sidebar {
-            background: var(--bg-secondary);
-            border-radius: var(--radius-lg);
-            padding: 25px;
-            border: 1px solid var(--border-light);
-            box-shadow: var(--shadow-sm);
-            height: fit-content;
-            position: sticky;
-            top: 20px;
-        }
-
-        .clinic-info-sidebar {
-            display: flex;
-            align-items: flex-start;
-            gap: 15px;
-            margin-bottom: 25px;
-            padding-bottom: 20px;
-            border-bottom: 1px solid var(--border-light);
-        }
-
-        .clinic-info-sidebar > i:first-child {
-            font-size: 40px;
-            color: var(--primary);
-            background: var(--primary-light);
-            width: 60px;
-            height: 60px;
-            border-radius: var(--radius-md);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            flex-shrink: 0;
-        }
-
-        .clinic-info-sidebar h4 {
-            font-size: 16px;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 8px;
-        }
-
-        .clinic-info-sidebar p {
-            color: var(--text-secondary);
-            font-size: 13px;
-            margin-bottom: 6px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .clinic-info-sidebar p i {
-            font-size: 12px;
-            color: var(--primary);
-            width: 16px;
-        }
-
-        /* Flow Indicator */
-        .flow-indicator {
-            background: var(--bg-primary);
-            border-radius: var(--radius-md);
-            padding: 15px;
-            margin-bottom: 20px;
-        }
-
-        /* Summary Card */
-        .summary-card {
-            background: var(--bg-primary);
-            border-radius: var(--radius-md);
-            padding: 20px;
-            margin: 20px 0;
-        }
-
-        .summary-card h4 {
-            font-size: 16px;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 15px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .summary-card h4 i {
-            color: var(--primary);
-        }
-
-        .summary-item {
-            display: flex;
-            justify-content: space-between;
-            padding: 10px 0;
-            border-bottom: 1px solid var(--border-light);
-            font-size: 13px;
-        }
-
-        .summary-item:last-child {
-            border-bottom: none;
-        }
-
-        .summary-label {
-            color: var(--text-secondary);
-            font-weight: 500;
-        }
-
-        .summary-value {
-            color: var(--text-primary);
-            font-weight: 600;
-        }
-
-        .summary-services-list {
-            padding: 10px 0;
-            border-bottom: 1px solid var(--border-light);
-        }
-
-        .summary-services-list .summary-label {
-            display: block;
-            margin-bottom: 6px;
-        }
-
-        .summary-service-row {
-            display: flex;
-            justify-content: space-between;
-            font-size: 12px;
-            color: var(--text-primary);
-            padding: 3px 0;
-        }
-
-        .total-price {
-            font-size: 24px;
-            font-weight: 700;
-            color: var(--success);
-            margin-top: 15px;
-            text-align: right;
-        }
-
-        /* Confirm Button */
-        .btn-confirm {
-            width: 100%;
-            padding: 15px;
-            background: var(--primary-gradient);
-            color: white;
-            border: none;
-            border-radius: var(--radius-md);
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-            margin-top: 20px;
-        }
-
-        .btn-confirm:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: var(--shadow-md);
-        }
-
-        .btn-confirm:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        /* Quick Info */
-        .quick-info {
-            margin-top: 20px;
-            padding-top: 20px;
-            border-top: 1px solid var(--border-light);
-        }
-
-        .quick-info p {
-            color: var(--text-secondary);
-            font-size: 12px;
-            margin-bottom: 8px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .quick-info i {
-            color: var(--primary);
-            width: 18px;
-            font-size: 12px;
-        }
-
-        /* ===== SUCCESS PAGE ===== */
-        .success-container {
-            grid-column: 1 / -1;
-            background: var(--bg-secondary);
-            border-radius: var(--radius-lg);
-            padding: 60px 40px;
-            text-align: center;
-            border: 1px solid var(--border-light);
-            box-shadow: var(--shadow-sm);
-        }
-
-        .success-container i {
-            font-size: 80px;
-            color: var(--success);
-            margin-bottom: 20px;
-        }
-
-        .success-container h2 {
-            font-size: 28px;
-            font-weight: 700;
-            color: var(--text-primary);
-            margin-bottom: 10px;
-        }
-
-        .success-container p {
-            color: var(--text-secondary);
-            margin-bottom: 30px;
-            max-width: 500px;
-            margin-left: auto;
-            margin-right: auto;
-        }
-
-        .success-actions {
-            display: flex;
-            gap: 15px;
-            justify-content: center;
-            flex-wrap: wrap;
-        }
-
-        .btn-primary {
-            padding: 12px 30px;
-            background: var(--primary-gradient);
-            color: white;
-            border: none;
-            border-radius: var(--radius-full);
-            font-weight: 600;
-            cursor: pointer;
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            transition: all 0.2s;
-        }
-
-        .btn-secondary {
-            padding: 12px 30px;
-            background: transparent;
-            color: var(--primary);
-            border: 2px solid var(--primary);
-            border-radius: var(--radius-full);
-            font-weight: 600;
-            cursor: pointer;
-            text-decoration: none;
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            transition: all 0.2s;
-        }
-
-        .btn-primary:hover,
-        .btn-secondary:hover {
-            transform: translateY(-2px);
-            box-shadow: var(--shadow-md);
-        }
-
-        /* Info Card */
-        .info-card {
-            grid-column: 1 / -1;
-            background: var(--bg-secondary);
-            border-radius: var(--radius-lg);
-            padding: 25px;
-            margin-top: 25px;
-            border: 1px solid var(--border-light);
-            box-shadow: var(--shadow-sm);
-        }
-
-        .info-card h2 {
-            font-size: 18px;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 15px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .info-card h2 i {
-            color: var(--primary);
-        }
-
-        .info-card ul {
-            color: var(--text-secondary);
-            font-size: 14px;
-            line-height: 1.8;
-            padding-left: 20px;
-        }
-
-        .info-card li {
-            margin-bottom: 8px;
-        }
-
-        /* ===== RESPONSIVE ===== */
-        @media (max-width: 992px) {
-            .booking-grid {
-                grid-template-columns: 1fr;
-            }
-        }
-
+        /* Responsive */
+        @media (max-width: 992px) { .booking-grid { grid-template-columns: 1fr; } }
         @media (max-width: 768px) {
-            .booking-progress::before {
-                left: 30px;
-                right: 30px;
-            }
-            
-            .product-preview {
-                flex-direction: column;
-                text-align: center;
-            }
-            
-            .product-preview-image {
-                width: 120px;
-                height: 120px;
-                margin: 0 auto;
-            }
-            
-            .form-row {
-                grid-template-columns: 1fr;
-            }
-            
-            .doctors-grid {
-                grid-template-columns: 1fr;
-            }
-            
-            .clinic-info-sidebar {
-                flex-direction: column;
-                text-align: center;
-            }
-            
-            .clinic-info-sidebar p {
-                justify-content: center;
-            }
-            
-            .calendar-days {
-                gap: 3px;
-            }
-            
-            .calendar-day {
-                font-size: 12px;
-            }
-            
-            .time-slots-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-            
-            .success-actions {
-                flex-direction: column;
-            }
+            .booking-progress::before { left: 30px; right: 30px; }
+            .product-preview { flex-direction: column; text-align: center; }
+            .product-preview-image { width: 120px; height: 120px; margin: 0 auto; }
+            .form-row { grid-template-columns: 1fr; }
+            .doctors-grid { grid-template-columns: 1fr; }
+            .clinic-info-sidebar { flex-direction: column; text-align: center; }
+            .calendar-days { gap: 3px; }
+            .calendar-day { font-size: 12px; }
+            .time-slots-grid { grid-template-columns: repeat(2, 1fr); }
+            .success-actions { flex-direction: column; }
+            .delivery-section .delivery-options { flex-direction: column; }
+            .products-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+            .main-tab-btn { font-size: 12px; padding: 6px 12px; }
         }
     </style>
 </head>
@@ -2082,13 +1083,8 @@ $step1_completed = ($selected_item !== null);
 
     <div class="toast-container" id="toastContainer"></div>
 
-    <?php
-  
-    
-    include '../includes/navbar.php';
-    ?>
+    <?php include '../includes/navbar.php'; ?>
 
-    
     <!-- MAIN CONTENT -->
     <div class="main-content">
         <!-- Page Header -->
@@ -2116,11 +1112,17 @@ $step1_completed = ($selected_item !== null);
                 <div class="success-container">
                     <i class="fas fa-check-circle"></i>
                     <h2>Booking Confirmed!</h2>
-                    <p>Your appointment has been successfully scheduled.</p>
+                    <p>Your <?php echo ($_POST['item_type'] ?? '') === 'product' ? 'order' : 'appointment'; ?> has been successfully scheduled.</p>
                     <div class="success-actions">
-                        <a href="my-appointments.php" class="btn-primary">
-                            <i class="fas fa-calendar-check"></i> View Appointments
-                        </a>
+                        <?php if (($_POST['item_type'] ?? '') === 'product'): ?>
+                            <a href="my-orders.php" class="btn-primary">
+                                <i class="fas fa-box"></i> View Orders
+                            </a>
+                        <?php else: ?>
+                            <a href="my-appointments.php" class="btn-primary">
+                                <i class="fas fa-calendar-check"></i> View Appointments
+                            </a>
+                        <?php endif; ?>
                         <a href="dashboard.php" class="btn-secondary">
                             <i class="fas fa-home"></i> Back to Home
                         </a>
@@ -2183,9 +1185,9 @@ $step1_completed = ($selected_item !== null);
                     </div>
                 </div>
 
-                <!-- Error Message -->
-                <?php if ($error_message): ?>
-                    <div class="alert alert-error">
+                <!-- Error Message - only show on POST error -->
+                <?php if ($_SERVER['REQUEST_METHOD'] == 'POST' && $error_message): ?>
+                    <div class="alert alert-error" id="errorAlert">
                         <i class="fas fa-exclamation-circle"></i>
                         <?php echo $error_message; ?>
                     </div>
@@ -2194,6 +1196,11 @@ $step1_completed = ($selected_item !== null);
                 <form method="POST" action="" id="bookingForm">
                     <input type="hidden" name="doctor_name" id="selectedDoctorName" value="">
                     <input type="hidden" name="item_type" id="selectedItemType" value="<?php echo $selected_item_type; ?>">
+                    <input type="hidden" name="selected_lens_type" id="selectedLensType" value="">
+                    <input type="hidden" name="selected_color_code" id="selectedColorCode" value="">
+                    <input type="hidden" name="selected_color_name" id="selectedColorName" value="">
+                    <input type="hidden" name="selected_frame_size" id="selectedFrameSize" value="">
+                    <input type="hidden" name="item_id" id="selectedItemId" value="<?php echo $selected_item_id; ?>">
                     
                     <!-- STEP 1: Select Item -->
                     <div id="step1" class="step-section <?php echo $step1_completed ? 'completed' : 'active'; ?>">
@@ -2203,25 +1210,38 @@ $step1_completed = ($selected_item !== null);
                                 <?php echo $step1_completed ? '✓ Completed' : 'Required'; ?>
                             </span>
                         </div>
-                        
-                        <!-- Tabs for Services/Products -->
-                        <div class="booking-tabs">
-                            <button type="button" class="tab-btn active" onclick="switchTab('services')" id="servicesTab">
+
+                        <!-- ============================================ -->
+                        <!-- ✅ MAIN TABS -->
+                        <!-- ============================================ -->
+                        <div class="main-tabs" id="mainTabs">
+                            <button class="main-tab-btn <?php echo $active_tab === 'services' ? 'active' : ''; ?>" data-tab="services" onclick="switchMainTab('services')">
                                 <i class="fas fa-stethoscope"></i> Services
+                                <span class="tab-badge"><?php echo mysqli_num_rows($services_query); ?></span>
                             </button>
-                            <button type="button" class="tab-btn" onclick="switchTab('products')" id="productsTab">
-                                <i class="fas fa-box"></i> Products
+                            <button class="main-tab-btn <?php echo $active_tab === 'eyewear' ? 'active' : ''; ?>" data-tab="eyewear" onclick="switchMainTab('eyewear')">
+                                <i class="fas fa-glasses"></i> Eyewear
+                                <span class="tab-badge"><?php echo count($eyewear_products); ?></span>
+                            </button>
+                            <button class="main-tab-btn <?php echo $active_tab === 'contact_lenses' ? 'active' : ''; ?>" data-tab="contact_lenses" onclick="switchMainTab('contact_lenses')">
+                                <i class="fas fa-eye"></i> Contact Lenses
+                                <span class="tab-badge"><?php echo count($contact_lens_products); ?></span>
+                            </button>
+                            <button class="main-tab-btn <?php echo $active_tab === 'accessories' ? 'active' : ''; ?>" data-tab="accessories" onclick="switchMainTab('accessories')">
+                                <i class="fas fa-tag"></i> Accessories
+                                <span class="tab-badge"><?php echo count($accessory_products); ?></span>
                             </button>
                         </div>
 
-                        <div class="service-combine-note" id="servicesTabNote">
-                            <i class="fas fa-info-circle"></i>
-                            You can select more than one service. Exam, screening, and fitting services can be combined — treatment and repair services must be booked alone.
-                        </div>
-                        
-                        <!-- Services Tab -->
-                        <div id="services-tab" class="tab-content active">
-                            <div class="doctors-grid" id="servicesGrid">
+                        <!-- ============================================ -->
+                        <!-- ✅ SERVICES TAB -->
+                        <!-- ============================================ -->
+                        <div id="tab-services" class="tab-content <?php echo $active_tab === 'services' ? 'active' : ''; ?>">
+                            <div class="service-combine-note">
+                                <i class="fas fa-info-circle"></i>
+                                You can select more than one service. Exam, screening, and fitting services can be combined — treatment and repair services must be booked alone.
+                            </div>
+                            <div class="services-grid" id="servicesGrid">
                                 <?php 
                                 mysqli_data_seek($services_query, 0);
                                 if (mysqli_num_rows($services_query) > 0):
@@ -2230,7 +1250,7 @@ $step1_completed = ($selected_item !== null);
                                         $svc_max = $service['max_per_booking'] ?? 1;
                                         $is_preselected = ($selected_item && $selected_item['id'] == $service['id'] && $selected_item_type == 'service');
                                 ?>
-                                <label class="doctor-card service-card <?php echo $is_preselected ? 'selected' : ''; ?>" data-service-id="<?php echo $service['id']; ?>">
+                                <label class="service-card <?php echo $is_preselected ? 'selected' : ''; ?>" data-service-id="<?php echo $service['id']; ?>">
                                     <input type="checkbox" name="service_ids[]" value="<?php echo $service['id']; ?>" 
                                            class="service-checkbox"
                                            data-group="<?php echo htmlspecialchars($svc_group); ?>" 
@@ -2265,82 +1285,212 @@ $step1_completed = ($selected_item !== null);
                                 </div>
                                 <?php endif; ?>
                             </div>
+                            <div class="pagination-container" id="servicesPagination"></div>
                         </div>
-                        
-                        <!-- Products Tab -->
-                        <div id="products-tab" class="tab-content">
-                            <div class="doctors-grid">
-                                <?php 
-                                mysqli_data_seek($products_query, 0);
-                                if (mysqli_num_rows($products_query) > 0):
-                                    while($product = mysqli_fetch_assoc($products_query)): 
-                                ?>
-                                <label class="doctor-card <?php echo ($selected_item && $selected_item['id'] == $product['id'] && $selected_item_type == 'product') ? 'selected' : ''; ?>">
-                                    <input type="radio" name="item_id" value="<?php echo $product['id']; ?>" 
-                                           data-type="product" data-price="<?php echo $product['price']; ?>"
-                                           data-name="<?php echo htmlspecialchars($product['name']); ?>"
-                                           <?php echo ($selected_item && $selected_item['id'] == $product['id'] && $selected_item_type == 'product') ? 'checked' : ''; ?>
-                                           onchange="handleItemSelection(this)">
-                                    <?php
-                                    // Build product image URL (same logic as clinic-products.php)
-                                    $prod_img = null;
-                                    if (!empty($product['images_json'])) {
-                                        $decoded = json_decode($product['images_json'], true);
-                                        if (!empty($decoded[0])) {
-                                            $p = str_replace('uploads/uploads/', 'uploads/', $decoded[0]);
-                                            $prod_img = strpos($p, 'uploads/') === 0 ? '/' . $p : '/uploads/products/' . $p;
-                                        }
-                                    }
-                                    if (!$prod_img && !empty($product['images'])) {
-                                        $d = $product['images'];
-                                        if (strpos($d, '[') === 0) {
-                                            $decoded = json_decode($d, true);
-                                            if (!empty($decoded[0])) {
-                                                $p = str_replace('uploads/uploads/', 'uploads/', $decoded[0]);
-                                                $prod_img = strpos($p, 'uploads/') === 0 ? '/' . $p : '/uploads/products/' . $p;
-                                            }
-                                        } else {
-                                            $p = str_replace('uploads/uploads/', 'uploads/', $d);
-                                            $prod_img = strpos($p, 'uploads/') === 0 ? '/' . $p : '/uploads/products/' . $p;
-                                        }
-                                    }
-                                    if (!$prod_img && !empty($product['image'])) {
-                                        if (strpos($product['image'], 'uploads/') === false && strpos($product['image'], '/') === false) {
-                                            $prod_img = '/assets/images/products/' . $product['image'];
-                                        } else {
-                                            $p = str_replace('uploads/uploads/', 'uploads/', $product['image']);
-                                            $prod_img = strpos($p, 'uploads/') === 0 ? '/' . $p : '/uploads/products/' . $p;
-                                        }
-                                    }
-                                    ?>
-                                    <div class="product-img-thumb">
-                                        <?php if ($prod_img): ?>
-                                            <img src="<?php echo $prod_img; ?>"
-                                                 alt="<?php echo htmlspecialchars($product['name']); ?>"
-                                                 onerror="this.parentElement.innerHTML='<div class=\'img-fallback\'><i class=\'fas fa-box-open\'></i></div>'">
-                                        <?php else: ?>
-                                            <div class="img-fallback">
-                                                <i class="fas fa-box-open"></i>
-                                            </div>
-                                        <?php endif; ?>
-                                    </div>
-                                    <div class="doctor-name"><?php echo $product['name']; ?></div>
-                                    <div class="doctor-specialty"><?php echo $product['category']; ?></div>
-                                    <div class="product-price">₱<?php echo number_format($product['price'], 2); ?></div>
-                                    <span class="doctor-schedule-badge">
-                                        <i class="fas fa-tag"></i> Product
-                                    </span>
-                                </label>
-                                <?php 
-                                    endwhile;
-                                else:
-                                ?>
-                                <div class="no-slots-message" style="grid-column: 1/-1;">
-                                    <i class="fas fa-box-open"></i>
-                                    <h4>No Products Available</h4>
-                                    <p>This clinic hasn't added any products yet.</p>
+
+                        <!-- ============================================ -->
+                        <!-- ✅ EYEWEAR TAB (with Lens Selection) -->
+                        <!-- ============================================ -->
+                        <div id="tab-eyewear" class="tab-content <?php echo $active_tab === 'eyewear' ? 'active' : ''; ?>">
+                            <div class="sub-tabs" id="prescriptionFilter">
+                                <button class="sub-tab-btn active" data-filter="all" onclick="filterEyewear('all')">All</button>
+                                <button class="sub-tab-btn" data-filter="with_rx" onclick="filterEyewear('with_rx')">With Prescription</button>
+                                <button class="sub-tab-btn" data-filter="without_rx" onclick="filterEyewear('without_rx')">Without Prescription</button>
+                            </div>
+                            <div class="products-grid" id="eyewearGrid"></div>
+                            <div class="pagination-container" id="eyewearPagination"></div>
+
+                            <!-- Lens Selection Area -->
+                            <div id="eyewearLensSelection" class="lens-selection-box">
+                                <div class="lens-options-grid" id="eyewearLensOptions">
+                                    <button class="lens-option-btn" data-lens="frame_only" onclick="selectEyewearLens(this)"><span class="ln">Frame Only</span><span class="lp">+₱0</span><span class="ld">No lenses included</span></button>
+                                    <button class="lens-option-btn" data-lens="single_vision" onclick="selectEyewearLens(this)"><span class="ln">Single Vision</span><span class="lp">+₱500</span><span class="ld">For near or far sight</span></button>
+                                    <button class="lens-option-btn" data-lens="progressive" onclick="selectEyewearLens(this)"><span class="ln">Progressive</span><span class="lp">+₱1,500</span><span class="ld">Near, mid & far vision</span></button>
+                                    <button class="lens-option-btn" data-lens="blue_cut" onclick="selectEyewearLens(this)"><span class="ln">Blue Cut</span><span class="lp">+₱800</span><span class="ld">Reduces screen glare</span></button>
                                 </div>
-                                <?php endif; ?>
+
+                                <!-- Color & Size Selector -->
+                                <div id="eyewearColorSize" class="color-size-selector">
+                                    <div class="cs-title"><i class="fas fa-palette"></i> Color / Variant <span class="cs-selected-label" id="eyewearColorSelected">— Select a color</span></div>
+                                    <div class="color-btns" id="eyewearColorBtns"></div>
+                                    <p class="cs-hint" id="eyewearColorHint"><i class="fas fa-info-circle"></i> Please select a color to continue.</p>
+                                    <div style="margin-top:16px; border-top:1px solid var(--border-light); padding-top:16px;">
+                                        <div class="cs-title"><i class="fas fa-ruler-combined"></i> Frame Size <span class="cs-selected-label" id="eyewearSizeSelected">— Select a size</span></div>
+                                        <div class="size-btns" id="eyewearSizeBtns"></div>
+                                        <p class="cs-hint" id="eyewearSizeHint"><i class="fas fa-info-circle"></i> Please select your preferred frame size.</p>
+                                    </div>
+                                </div>
+
+                                <!-- Clinic Visit Required Notice -->
+                                <div id="eyewearClinicVisit" class="clinic-visit-required">
+                                    <i class="fas fa-info-circle"></i>
+                                    <div><strong>Clinic Visit Required</strong><br>This product requires a prescription lens. Please visit the clinic on your scheduled appointment. Delivery is not available.</div>
+                                </div>
+
+                                <!-- Delivery Section (shown for Frame Only) -->
+                                <div id="eyewearDeliverySection" class="delivery-section">
+                                    <div class="form-group" style="margin-bottom: 0;">
+                                        <label><i class="fas fa-truck"></i> Delivery Method</label>
+                                        <div class="delivery-options" style="margin-top: 8px;">
+                                            <label class="delivery-option" style="flex: 1; min-width: 120px;">
+                                                <input type="radio" name="delivery_type" value="pickup" checked onchange="toggleDeliveryFields('eyewear')">
+                                                <i class="fas fa-store"></i> Pickup at Clinic
+                                            </label>
+                                            <label class="delivery-option" style="flex: 1; min-width: 120px;">
+                                                <input type="radio" name="delivery_type" value="delivery" onchange="toggleDeliveryFields('eyewear')" id="deliveryRadio">
+                                                <i class="fas fa-truck"></i> Delivery 
+                                                <span id="deliveryFeeLabel"></span>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div id="deliveryAddressForm" class="delivery-address-form">
+                                        <div class="form-group" style="margin-bottom: 12px;">
+                                            <label><i class="fas fa-map-marker-alt"></i> Delivery Address *</label>
+                                            <textarea name="delivery_address" class="form-control" rows="3" 
+                                                      placeholder="House #, Street, Barangay, City, Province"
+                                                      id="deliveryAddressInput"><?php echo htmlspecialchars($user_delivery_address); ?></textarea>
+                                        </div>
+                                        <div class="form-group" style="margin-bottom: 0;">
+                                            <label><i class="fas fa-sticky-note"></i> Delivery Instructions (Optional)</label>
+                                            <textarea name="delivery_notes" class="form-control" rows="2" 
+                                                      placeholder="Gate code, contact person, etc."></textarea>
+                                        </div>
+                                        <div style="margin-top: 12px; font-size: 12px; color: var(--text-muted);">
+                                            <i class="fas fa-info-circle"></i> 
+                                            Delivery fee will be added to your total.
+                                            <span id="freeDeliveryInfo" style="display: none; color: var(--success); font-weight: 600;">
+                                                🎉 FREE Delivery!
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- ============================================ -->
+                        <!-- ✅ CONTACT LENSES TAB -->
+                        <!-- ============================================ -->
+                        <div id="tab-contact_lenses" class="tab-content <?php echo $active_tab === 'contact_lenses' ? 'active' : ''; ?>">
+                            <div class="sub-tabs" id="contactLensFilter">
+                                <button class="sub-tab-btn active" data-filter="all" onclick="filterContactLenses('all')">All</button>
+                                <button class="sub-tab-btn" data-filter="plano" onclick="filterContactLenses('plano')">Plano (No Power)</button>
+                                <button class="sub-tab-btn" data-filter="with_power" onclick="filterContactLenses('with_power')">With Power</button>
+                            </div>
+                            <div class="products-grid" id="contactLensGrid"></div>
+                            <div class="pagination-container" id="contactLensPagination"></div>
+
+                            <!-- Lens Selection for Contact Lenses -->
+                            <div id="contactLensSelection" class="lens-selection-box">
+                                <div class="lens-options-grid">
+                                    <button class="lens-option-btn selected" data-lens="daily" onclick="selectContactLens(this)"><span class="ln">Daily Disposable</span><span class="lp">Included</span><span class="ld">Fresh pair every day</span></button>
+                                    <button class="lens-option-btn" data-lens="monthly" onclick="selectContactLens(this)"><span class="ln">Monthly Wear</span><span class="lp">Included</span><span class="ld">Reusable for 30 days</span></button>
+                                </div>
+
+                                <!-- Color Selector -->
+                                <div id="contactLensColorSize" class="color-size-selector">
+                                    <div class="cs-title"><i class="fas fa-palette"></i> Color / Variant <span class="cs-selected-label" id="clColorSelected">— Select a color</span></div>
+                                    <div class="color-btns" id="contactLensColorBtns"></div>
+                                    <p class="cs-hint" id="clColorHint"><i class="fas fa-info-circle"></i> Please select a color to continue.</p>
+                                </div>
+
+                                <div id="contactLensClinicVisit" class="clinic-visit-required">
+                                    <i class="fas fa-info-circle"></i>
+                                    <div><strong>Clinic Visit Required</strong><br>This product requires a prescription. Please visit the clinic on your scheduled appointment. Delivery is not available.</div>
+                                </div>
+
+                                <div id="contactLensDeliverySection" class="delivery-section">
+                                    <div class="form-group" style="margin-bottom: 0;">
+                                        <label><i class="fas fa-truck"></i> Delivery Method</label>
+                                        <div class="delivery-options" style="margin-top: 8px;">
+                                            <label class="delivery-option" style="flex: 1; min-width: 120px;">
+                                                <input type="radio" name="delivery_type" value="pickup" checked onchange="toggleDeliveryFields('cl')">
+                                                <i class="fas fa-store"></i> Pickup at Clinic
+                                            </label>
+                                            <label class="delivery-option" style="flex: 1; min-width: 120px;">
+                                                <input type="radio" name="delivery_type" value="delivery" onchange="toggleDeliveryFields('cl')" id="deliveryRadioCL">
+                                                <i class="fas fa-truck"></i> Delivery 
+                                                <span id="deliveryFeeLabelCL"></span>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div id="deliveryAddressFormCL" class="delivery-address-form">
+                                        <div class="form-group" style="margin-bottom: 12px;">
+                                            <label><i class="fas fa-map-marker-alt"></i> Delivery Address *</label>
+                                            <textarea name="delivery_address" class="form-control" rows="3" 
+                                                      placeholder="House #, Street, Barangay, City, Province"
+                                                      id="deliveryAddressInputCL"><?php echo htmlspecialchars($user_delivery_address); ?></textarea>
+                                        </div>
+                                        <div class="form-group" style="margin-bottom: 0;">
+                                            <label><i class="fas fa-sticky-note"></i> Delivery Instructions (Optional)</label>
+                                            <textarea name="delivery_notes" class="form-control" rows="2" 
+                                                      placeholder="Gate code, contact person, etc."></textarea>
+                                        </div>
+                                        <div style="margin-top: 12px; font-size: 12px; color: var(--text-muted);">
+                                            <i class="fas fa-info-circle"></i> 
+                                            Delivery fee will be added to your total.
+                                            <span id="freeDeliveryInfoCL" style="display: none; color: var(--success); font-weight: 600;">
+                                                🎉 FREE Delivery!
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- ============================================ -->
+                        <!-- ✅ ACCESSORIES TAB -->
+                        <!-- ============================================ -->
+                        <div id="tab-accessories" class="tab-content <?php echo $active_tab === 'accessories' ? 'active' : ''; ?>">
+                            <div class="products-grid" id="accessoryGrid"></div>
+                            <div class="pagination-container" id="accessoryPagination"></div>
+                            <!-- Accessories: show delivery toggle immediately -->
+                            <div id="accessoryDeliverySection" class="delivery-section">
+                                <div class="form-group" style="margin-bottom: 0;">
+                                    <label><i class="fas fa-truck"></i> Delivery Method</label>
+                                    <div class="delivery-options" style="margin-top: 8px;">
+                                        <label class="delivery-option" style="flex: 1; min-width: 120px;">
+                                            <input type="radio" name="delivery_type" value="pickup" checked onchange="toggleDeliveryFields('acc')">
+                                            <i class="fas fa-store"></i> Pickup at Clinic
+                                        </label>
+                                        <label class="delivery-option" style="flex: 1; min-width: 120px;">
+                                            <input type="radio" name="delivery_type" value="delivery" onchange="toggleDeliveryFields('acc')" id="deliveryRadioAcc">
+                                            <i class="fas fa-truck"></i> Delivery 
+                                            <span id="deliveryFeeLabelAcc"></span>
+                                        </label>
+                                    </div>
+                                </div>
+
+                                <div id="deliveryAddressFormAcc" class="delivery-address-form">
+                                    <div class="form-group" style="margin-bottom: 12px;">
+                                        <label><i class="fas fa-map-marker-alt"></i> Delivery Address *</label>
+                                        <textarea name="delivery_address" class="form-control" rows="3" 
+                                                  placeholder="House #, Street, Barangay, City, Province"
+                                                  id="deliveryAddressInputAcc"><?php echo htmlspecialchars($user_delivery_address); ?></textarea>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom: 0;">
+                                        <label><i class="fas fa-sticky-note"></i> Delivery Instructions (Optional)</label>
+                                        <textarea name="delivery_notes" class="form-control" rows="2" 
+                                                  placeholder="Gate code, contact person, etc."></textarea>
+                                    </div>
+                                    <div style="margin-top: 12px; font-size: 12px; color: var(--text-muted);">
+                                        <i class="fas fa-info-circle"></i> 
+                                        Delivery fee will be added to your total.
+                                        <span id="freeDeliveryInfoAcc" style="display: none; color: var(--success); font-weight: 600;">
+                                            🎉 FREE Delivery!
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Clinic Visit Notice (fallback) -->
+                        <div id="clinicVisitNotice" class="clinic-visit-notice" style="display: none;">
+                            <i class="fas fa-info-circle"></i>
+                            <div>
+                                <strong>Clinic Visit Required</strong><br>
+                                Please visit the clinic on your scheduled appointment to complete your purchase. Delivery is not available for this product.
                             </div>
                         </div>
                     </div>
@@ -2357,40 +1507,24 @@ $step1_completed = ($selected_item !== null);
                         <div class="<?php echo $step1_completed ? '' : 'disabled-content'; ?>" id="step2-content">
                             <?php if (!empty($doctors_list)): ?>
                             <div class="doctors-grid" id="doctorsGrid">
-                                <!-- ANY DOCTOR Option -->
                                 <label class="doctor-card any-doctor-card" id="anyDoctorCard">
                                     <input type="radio" name="doctor_id" value="any" id="anyDoctor" onchange="handleDoctorSelection(this)" checked>
-                                    <div class="doctor-avatar">
-                                        <i class="fas fa-users"></i>
-                                    </div>
+                                    <div class="doctor-avatar"><i class="fas fa-users"></i></div>
                                     <div class="doctor-name">Any Available Doctor</div>
                                     <div class="doctor-specialty">First available doctor</div>
-                                    <span class="doctor-schedule-badge">
-                                        <i class="fas fa-clock"></i> Auto-assign
-                                    </span>
+                                    <span class="doctor-schedule-badge"><i class="fas fa-clock"></i> Auto-assign</span>
                                 </label>
                                 
-                                <!-- Individual Doctors -->
                                 <?php foreach($doctors_list as $doctor): 
-                                    // Check if doctor has schedule
-                                    $has_schedule = false;
-                                    $schedule_text = 'No schedule';
-                                    
+                                    $has_schedule = false; $schedule_text = 'No schedule';
                                     if (!empty($doctor['schedule']) && is_array($doctor['schedule'])) {
                                         $days_with_schedule = [];
                                         foreach($doctor['schedule'] as $day => $times) {
-                                            if (!empty($times) && is_array($times)) {
-                                                $days_with_schedule[] = $day;
-                                            }
+                                            if (!empty($times) && is_array($times)) $days_with_schedule[] = $day;
                                         }
-                                        
                                         if (!empty($days_with_schedule)) {
                                             $has_schedule = true;
-                                            if (count($days_with_schedule) > 3) {
-                                                $schedule_text = count($days_with_schedule) . ' days';
-                                            } else {
-                                                $schedule_text = implode(', ', array_map('ucfirst', $days_with_schedule));
-                                            }
+                                            $schedule_text = count($days_with_schedule) > 3 ? count($days_with_schedule) . ' days' : implode(', ', array_map('ucfirst', $days_with_schedule));
                                         }
                                     }
                                 ?>
@@ -2400,18 +1534,14 @@ $step1_completed = ($selected_item !== null);
                                     <input type="radio" name="doctor_id" value="<?php echo $doctor['id']; ?>" 
                                         onchange="handleDoctorSelection(this)" 
                                         <?php echo !$has_schedule ? 'disabled' : ''; ?>>
-                                    <div class="doctor-avatar">
-                                        <i class="fas fa-user-md"></i>
-                                    </div>
+                                    <div class="doctor-avatar"><i class="fas fa-user-md"></i></div>
                                     <div class="doctor-name"><?php echo $doctor['name']; ?></div>
                                     <div class="doctor-specialty"><?php echo $doctor['specialty'] ?? 'Optometrist'; ?></div>
                                     <span class="doctor-schedule-badge" style="<?php echo !$has_schedule ? 'background: #999;' : ''; ?>">
                                         <i class="fas fa-calendar-alt"></i> <?php echo $schedule_text; ?>
                                     </span>
                                     <?php if (!$has_schedule): ?>
-                                        <div style="font-size: 10px; color: #dc3545; margin-top: 5px;">
-                                            No schedule set
-                                        </div>
+                                        <div style="font-size: 10px; color: #dc3545; margin-top: 5px;">No schedule set</div>
                                     <?php endif; ?>
                                 </label>
                                 <?php endforeach; ?>
@@ -2424,7 +1554,6 @@ $step1_completed = ($selected_item !== null);
                             </div>
                             <?php endif; ?>
                             
-                            <!-- Message for Products (no doctor needed) -->
                             <div id="product-message" style="display: none; margin-top: 15px; padding: 15px; background: var(--primary-light); border-radius: var(--radius-md);">
                                 <i class="fas fa-info-circle"></i> 
                                 <strong>Products don't require a doctor assignment.</strong> You can proceed to select date and time.
@@ -2432,7 +1561,7 @@ $step1_completed = ($selected_item !== null);
                         </div>
                     </div>
 
-                    <!-- STEP 3: Choose Date & Time -->
+                    <!-- STEP 3: Date & Time -->
                     <div id="step3" class="step-section locked">
                         <div class="step-header">
                             <h3><i class="fas fa-clock"></i> Choose Date & Time</h3>
@@ -2442,54 +1571,32 @@ $step1_completed = ($selected_item !== null);
                         <div class="disabled-content" id="step3-content">
                             <div class="form-group">
                                 <label><i class="fas fa-calendar-alt"></i> Select Date</label>
-                                <div class="calendar-container" id="calendarContainer">
-                                    <!-- Calendar will be generated here via JavaScript -->
-                                </div>
+                                <div class="calendar-container" id="calendarContainer"></div>
                                 <div id="dateValidationMessage" class="validation-message" style="display: none;"></div>
                             </div>
                             
-                            <!-- Time Slots Container -->
                             <div id="timeSlotsContainer" class="time-slots-container">
                                 <div class="text-center" style="padding: 20px; color: var(--text-muted);">
                                     <i class="fas fa-clock"></i> Select a date to see available time slots
                                 </div>
                             </div>
                             
-                            <!-- Hidden input for selected date and time -->
                             <input type="hidden" name="appointment_date" id="selectedDate" value="">
                             <input type="hidden" name="appointment_time" id="selectedTime" value="">
                             
-                            <!-- Calendar Legend -->
                             <div class="calendar-legend">
-                                <div class="legend-item">
-                                    <div class="legend-color available"></div>
-                                    <span>Fully Available</span>
-                                </div>
-                                <div class="legend-item">
-                                    <div class="legend-color partial"></div>
-                                    <span>Partial Slots</span>
-                                </div>
-                                <div class="legend-item">
-                                    <div class="legend-color unavailable"></div>
-                                    <span>Not Available</span>
-                                </div>
-                                <div class="legend-item">
-                                    <div class="legend-color today"></div>
-                                    <span>Today</span>
-                                </div>
-                                <div class="legend-item">
-                                    <div class="legend-color selected"></div>
-                                    <span>Selected</span>
-                                </div>
+                                <div class="legend-item"><div class="legend-color available"></div><span>Fully Available</span></div>
+                                <div class="legend-item"><div class="legend-color partial"></div><span>Partial Slots</span></div>
+                                <div class="legend-item"><div class="legend-color unavailable"></div><span>Not Available</span></div>
+                                <div class="legend-item"><div class="legend-color today"></div><span>Today</span></div>
+                                <div class="legend-item"><div class="legend-color selected"></div><span>Selected</span></div>
                             </div>
                             
-                            <!-- Daily Limit Warning -->
                             <div id="dailyLimitWarning" class="daily-limit-warning" style="display: none;">
                                 <i class="fas fa-exclamation-triangle"></i>
                                 You have <span id="dailyCount">0</span> appointment(s) today. Maximum is 3 per day.
                             </div>
                             
-                            <!-- Break Information -->
                             <?php if (!empty($clinic_breaks)): ?>
                             <div class="break-info">
                                 <i class="fas fa-info-circle"></i> <strong>Break Times:</strong>
@@ -2503,7 +1610,7 @@ $step1_completed = ($selected_item !== null);
                         </div>
                     </div>
 
-                    <!-- STEP 4: Confirm Details -->
+                    <!-- STEP 4: Confirm -->
                     <div id="step4" class="step-section locked">
                         <div class="step-header">
                             <h3><i class="fas fa-check-circle"></i> Confirm Your Details</h3>
@@ -2539,57 +1646,37 @@ $step1_completed = ($selected_item !== null);
                     <i class="fas fa-clinic-medical"></i>
                     <div>
                         <h4><?php echo $clinic['name']; ?></h4>
-                        <p>
-                            <i class="fas fa-map-marker-alt"></i>
-                            <span><?php echo $clinic['address']; ?>, <?php echo $clinic['city']; ?></span>
-                        </p>
-                        <p>
-                            <i class="fas fa-phone"></i>
-                            <span><?php echo $clinic['contact']; ?></span>
-                        </p>
-                        <p>
-                            <i class="fas fa-clock"></i>
-                            <span><?php echo $clinic['hours']; ?></span>
-                        </p>
+                        <p><i class="fas fa-map-marker-alt"></i> <span><?php echo $clinic['address']; ?>, <?php echo $clinic['city']; ?></span></p>
+                        <p><i class="fas fa-phone"></i> <span><?php echo $clinic['contact']; ?></span></p>
+                        <p><i class="fas fa-clock"></i> <span><?php echo $clinic['hours']; ?></span></p>
                     </div>
                 </div>
 
                 <?php
-                // Payment info display
                 $display_payment = getPaymentDisplayInfo($conn, $clinic_id, $item_price);
                 $booking_flow = $display_payment['booking_flow'] ?? 'approve_first';
                 $payment_type = $display_payment['payment_type'] ?? 'downpayment';
                 
                 $flow_color = ($booking_flow === 'pay_first') ? 'var(--primary)' : 'var(--warning)';
                 $flow_icon = ($booking_flow === 'pay_first') ? 'fa-credit-card' : 'fa-clock';
-                $flow_title = ($booking_flow === 'pay_first') ? 'Pay First Booking' : 'Approve First Booking';
                 ?>
                 
                 <div class="flow-indicator" style="border-left: 4px solid <?php echo $flow_color; ?>;">
                     <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-                        <i class="fas <?php echo $flow_icon; ?>" 
-                           style="color: <?php echo $flow_color; ?>; font-size: 20px;"></i>
-                        <h5 style="margin: 0; font-weight: 600; color: var(--text-primary);">
-                            <?php echo $flow_title; ?>
-                        </h5>
+                        <i class="fas <?php echo $flow_icon; ?>" style="color: <?php echo $flow_color; ?>; font-size: 20px;"></i>
+                        <h5 style="margin: 0; font-weight: 600; color: var(--text-primary);"><?php echo $booking_flow === 'pay_first' ? 'Pay First Booking' : 'Approve First Booking'; ?></h5>
                     </div>
-                    
                     <p style="margin: 0 0 12px 0; font-size: 13px; color: var(--text-secondary); line-height: 1.5;">
                         <?php if ($booking_flow === 'pay_first'): ?>
-                            <i class="fas fa-check-circle" style="color: var(--primary); font-size: 12px;"></i> 
-                            You will pay the downpayment <strong>immediately</strong> after booking.<br>
-                            <i class="fas fa-check-circle" style="color: var(--primary); font-size: 12px;"></i> 
-                            Clinic will review and approve after payment.
+                            <i class="fas fa-check-circle" style="color: var(--primary); font-size: 12px;"></i> You will pay the downpayment <strong>immediately</strong> after booking.<br>
+                            <i class="fas fa-check-circle" style="color: var(--primary); font-size: 12px;"></i> Clinic will review and approve after payment.
                         <?php else: ?>
-                            <i class="fas fa-check-circle" style="color: var(--warning); font-size: 12px;"></i> 
-                            Clinic will review your appointment first.<br>
-                            <i class="fas fa-check-circle" style="color: var(--warning); font-size: 12px;"></i> 
-                            You will pay <strong>after</strong> the clinic approves.
+                            <i class="fas fa-check-circle" style="color: var(--warning); font-size: 12px;"></i> Clinic will review your appointment first.<br>
+                            <i class="fas fa-check-circle" style="color: var(--warning); font-size: 12px;"></i> You will pay <strong>after</strong> the clinic approves.
                         <?php endif; ?>
                     </p>
                     
                     <div style="margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border-color);">
-                        
                         <?php if ($payment_type === 'downpayment'): ?>
                             <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 8px;">
                                 <span style="color: var(--text-secondary);">Total Amount:</span>
@@ -2603,33 +1690,24 @@ $step1_completed = ($selected_item !== null);
                                 <span style="color: var(--text-secondary);">Balance at clinic:</span>
                                 <strong style="color: var(--warning);">₱<?php echo number_format($display_payment['balance_amount'], 2); ?></strong>
                             </div>
-                            
                         <?php elseif ($payment_type === 'full'): ?>
                             <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px; background: var(--primary-light); padding: 8px; border-radius: var(--radius-sm);">
                                 <span style="font-weight: 600;">Total Amount Due:</span>
                                 <strong style="color: var(--primary); font-size: 16px;">₱<?php echo number_format($display_payment['total_amount'], 2); ?></strong>
                             </div>
-                            <p style="font-size: 12px; color: var(--text-muted); margin-top: 5px;">
-                                <i class="fas fa-info-circle"></i> Full payment required
-                            </p>
-                            
+                            <p style="font-size: 12px; color: var(--text-muted); margin-top: 5px;"><i class="fas fa-info-circle"></i> Full payment required</p>
                         <?php elseif ($payment_type === 'onsite'): ?>
                             <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px; background: var(--bg-secondary); padding: 8px; border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
                                 <span style="font-weight: 600;">Pay at Clinic:</span>
                                 <strong style="color: var(--warning); font-size: 16px;">₱<?php echo number_format($display_payment['total_amount'], 2); ?></strong>
                             </div>
-                            <p style="font-size: 12px; color: var(--text-muted); margin-top: 5px;">
-                                <i class="fas fa-store"></i> No online payment required
-                            </p>
-                            
+                            <p style="font-size: 12px; color: var(--text-muted); margin-top: 5px;"><i class="fas fa-store"></i> No online payment required</p>
                         <?php elseif ($payment_type === 'free'): ?>
                             <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px; background: var(--success); color: white; padding: 8px; border-radius: var(--radius-sm);">
                                 <span style="font-weight: 600;">FREE SERVICE</span>
                                 <strong>₱0.00</strong>
                             </div>
-                            <p style="font-size: 12px; color: var(--text-muted); margin-top: 5px;">
-                                <i class="fas fa-check-circle"></i> No payment required
-                            </p>
+                            <p style="font-size: 12px; color: var(--text-muted); margin-top: 5px;"><i class="fas fa-check-circle"></i> No payment required</p>
                         <?php endif; ?>
                         
                         <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
@@ -2667,6 +1745,18 @@ $step1_completed = ($selected_item !== null);
                         </span>
                     </div>
                     <div class="summary-item">
+                        <span class="summary-label">Lens:</span>
+                        <span class="summary-value" id="summaryLens">—</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-label">Color:</span>
+                        <span class="summary-value" id="summaryColor">—</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-label">Size:</span>
+                        <span class="summary-value" id="summarySize">—</span>
+                    </div>
+                    <div class="summary-item">
                         <span class="summary-label">Doctor:</span>
                         <span class="summary-value" id="summaryDoctor">Any Available Doctor</span>
                     </div>
@@ -2682,7 +1772,17 @@ $step1_completed = ($selected_item !== null);
                         <span class="summary-label">Contact:</span>
                         <span class="summary-value" id="summaryContact">—</span>
                     </div>
-                    <div class="total-price" id="totalPrice">
+                    <div class="summary-item" id="deliveryMethodRow" style="display: none;">
+                        <span class="summary-label">Delivery Method:</span>
+                        <span class="summary-value" id="deliveryMethodDisplay">
+                            <i class="fas fa-store"></i> Pickup
+                        </span>
+                    </div>
+                    <div class="summary-item" id="deliveryFeeRow" style="display: none;">
+                        <span class="summary-label">Delivery Fee:</span>
+                        <span class="summary-value" id="deliveryFeeDisplay">+₱0.00</span>
+                    </div>
+                    <div class="total-price" id="totalPrice" data-base-total="<?php echo $item_price; ?>">
                         <?php echo $selected_item ? '₱' . number_format($selected_item['price'], 2) : '₱0.00'; ?>
                     </div>
                 </div>
@@ -2694,30 +1794,14 @@ $step1_completed = ($selected_item !== null);
 
                 <!-- Quick Info -->
                 <div class="quick-info">
-                    <p>
-                        <i class="fas fa-info-circle"></i>
-                        Grayed out times are break hours
-                    </p>
-                    <p>
-                        <i class="fas fa-clock"></i>
-                        Red times are already booked
-                    </p>
-                    <p>
-                        <i class="fas fa-exclamation-triangle"></i>
-                        Max 3 appointments per day
-                    </p>
-                    <p>
-                        <i class="fas fa-stethoscope"></i>
-                        Services require doctor selection
-                    </p>
-                    <p>
-                        <i class="fas fa-box"></i>
-                        Products don't need a doctor
-                    </p>
-                    <p>
-                        <i class="fas fa-layer-group"></i>
-                        You may combine some services in one booking
-                    </p>
+                    <p><i class="fas fa-info-circle"></i> Grayed out times are break hours</p>
+                    <p><i class="fas fa-clock"></i> Red times are already booked</p>
+                    <p><i class="fas fa-exclamation-triangle"></i> Max 3 appointments per day</p>
+                    <p><i class="fas fa-stethoscope"></i> Services require doctor selection</p>
+                    <p><i class="fas fa-box"></i> Products don't need a doctor</p>
+                    <p><i class="fas fa-layer-group"></i> You may combine some services in one booking</p>
+                    <p id="quickDeliveryInfo" style="display: none; color: var(--primary);"><i class="fas fa-truck"></i> Delivery available for selected product</p>
+                    <p id="quickClinicVisitInfo" style="display: none; color: var(--warning);"><i class="fas fa-store"></i> Clinic visit required for this item</p>
                 </div>
             </div>
         </div>
@@ -2734,6 +1818,8 @@ $step1_completed = ($selected_item !== null);
                 <li>You can only book up to 3 appointments per day.</li>
                 <li>Services require a doctor, products can be booked without one.</li>
                 <li>Not all services can be combined in one booking — treatment and repair services must be booked separately.</li>
+                <li id="deliveryInfoFooter" style="display: none;"><strong>Delivery is available for selected products.</strong> Additional fee may apply.</li>
+                <li id="clinicVisitFooter" style="display: none;"><strong>Clinic visit required for this item.</strong> Please visit the clinic.</li>
             </ul>
         </div>
 
@@ -2741,43 +1827,27 @@ $step1_completed = ($selected_item !== null);
     </div>
 
     <script>
-        // Toast Notification Function
+        // ============================================
+        // TOAST & LOADING
+        // ============================================
         function showToast(message, type = 'success') {
             const container = document.getElementById('toastContainer');
             const toast = document.createElement('div');
             toast.className = `toast-notification ${type}`;
-            
             let icon = 'check-circle';
             if (type === 'error') icon = 'exclamation-circle';
             if (type === 'info') icon = 'info-circle';
-            
-            toast.innerHTML = `
-                <i class="fas fa-${icon}"></i>
-                <span>${message}</span>
-            `;
-            
+            toast.innerHTML = `<i class="fas fa-${icon}"></i><span>${message}</span>`;
             container.appendChild(toast);
-            
-            setTimeout(() => {
-                toast.style.animation = 'fadeOut 0.3s ease';
-                setTimeout(() => toast.remove(), 300);
-            }, 3000);
+            setTimeout(() => { toast.style.animation = 'fadeOut 0.3s ease'; setTimeout(() => toast.remove(), 300); }, 3000);
         }
 
-        // Loading Overlay
-        function showLoading() {
-            document.getElementById('loadingOverlay').style.display = 'flex';
-        }
+        function showLoading() { document.getElementById('loadingOverlay').style.display = 'flex'; }
+        function hideLoading() { document.getElementById('loadingOverlay').style.display = 'none'; }
 
-        function hideLoading() {
-            document.getElementById('loadingOverlay').style.display = 'none';
-        }
-
-        // Theme Toggle
         function toggleTheme() {
             const html = document.documentElement;
             const themeIcon = document.querySelector('#themeToggle i');
-            
             if (html.classList.contains('theme-dark')) {
                 html.classList.remove('theme-dark');
                 localStorage.setItem('theme', 'light');
@@ -2791,203 +1861,921 @@ $step1_completed = ($selected_item !== null);
             }
         }
 
-        // Load saved theme
-        document.addEventListener('DOMContentLoaded', function() {
-            const savedTheme = localStorage.getItem('theme') || 'light';
-            const themeIcon = document.querySelector('#themeToggle i');
-            
-            if (savedTheme === 'dark') {
-                document.documentElement.classList.add('theme-dark');
-                if (themeIcon) themeIcon.className = 'fas fa-sun';
-            } else {
-                document.documentElement.classList.remove('theme-dark');
-                if (themeIcon) themeIcon.className = 'fas fa-moon';
-            }
-            
-            // Initialize booking page (pre-selected service via URL, if any)
-            if (step1Completed && selectedItemType === 'service' && selectedServices.length > 0) {
-                updateServiceSummary();
-
-                document.querySelector('.progress-step.step2').classList.remove('disabled');
-                document.getElementById('step2').classList.remove('locked');
-                document.getElementById('step2').classList.add('active');
-                document.getElementById('step2-status').textContent = 'Required';
-                document.getElementById('step2-status').className = 'step-status-badge status-pending';
-                document.getElementById('step2-content').classList.remove('disabled-content');
-            } else if (step1Completed && selectedItemType === 'product') {
-                document.getElementById('summaryItem').textContent = selectedItem;
-                document.getElementById('summaryType').textContent = 'Product';
-                document.getElementById('totalPrice').textContent = '₱' + selectedPrice.toFixed(2);
-
-                document.querySelector('.progress-step.step2').classList.remove('disabled');
-                document.getElementById('step2').classList.remove('locked');
-                document.getElementById('step2').classList.add('active');
-                document.getElementById('step2-status').textContent = 'Required';
-                document.getElementById('step2-status').className = 'step-status-badge status-pending';
-                document.getElementById('step2-content').classList.remove('disabled-content');
-            }
-            
-            // Initially select "Any Doctor" if not product
-            if (document.getElementById('anyDoctor')) {
-                document.getElementById('anyDoctor').checked = true;
-            }
-            
-            // Initialize calendar
-            initCalendar();
-        });
-
-        // FAB Menu
-        function toggleFabMenu() {
-            document.getElementById('fabMenu').classList.toggle('show');
-            document.getElementById('fab').classList.toggle('active');
-        }
-
-        // Close FAB menu when clicking outside
-        document.addEventListener('click', function(event) {
-            const fab = document.getElementById('fab');
-            const fabMenu = document.getElementById('fabMenu');
-            
-            if (fab && fabMenu && !fab.contains(event.target) && !fabMenu.contains(event.target)) {
-                fabMenu.classList.remove('show');
-                fab.classList.remove('active');
-            }
-        });
-
-        // Scroll to step
+        // ============================================
+        // SCROLL TO STEP
+        // ============================================
         function scrollToStep(stepId) {
             const section = document.getElementById(stepId);
-            if (section) {
-                section.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            if (section) section.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        // ============================================
+        // CLEAR ERROR MESSAGE - improved
+        // ============================================
+        function clearErrorMessage() {
+            // Remove alert error
+            const errorAlert = document.getElementById('errorAlert');
+            if (errorAlert) {
+                errorAlert.style.display = 'none';
+                errorAlert.textContent = '';
+                errorAlert.innerHTML = '';
+            }
+            // Remove all toasts
+            const toastContainer = document.getElementById('toastContainer');
+            if (toastContainer) {
+                toastContainer.innerHTML = '';
             }
         }
 
-        // Tab switching
-        function switchTab(tab) {
-            const servicesTab = document.getElementById('services-tab');
-            const productsTab = document.getElementById('products-tab');
-            const servicesBtn = document.getElementById('servicesTab');
-            const productsBtn = document.getElementById('productsTab');
-            
-            if (tab === 'services') {
-                servicesTab.classList.add('active');
-                productsTab.classList.remove('active');
-                servicesBtn.classList.add('active');
-                productsBtn.classList.remove('active');
-            } else {
-                servicesTab.classList.remove('active');
-                productsTab.classList.add('active');
-                servicesBtn.classList.remove('active');
-                productsBtn.classList.add('active');
-
-                // Switching to products clears any selected services (mutually exclusive item_type)
-                if (selectedServices.length > 0) {
-                    selectedServices = [];
-                    document.querySelectorAll('.service-checkbox').forEach(cb => cb.checked = false);
-                    document.querySelectorAll('.service-card').forEach(card => card.classList.remove('selected'));
-                    refreshServiceLocks();
-                }
-            }
-        }
-
-        // Store data from PHP
+        // ============================================
+        // STORE DATA FROM PHP
+        // ============================================
         const clinicBreaks = <?php echo json_encode($clinic_breaks); ?>;
         const clinicHours = '<?php echo $clinic['hours']; ?>';
         const bookedSlots = <?php echo json_encode($booked_slots); ?>;
-        const doctorsData = <?php echo json_encode($doctors_list); ?>;
-        
-        // State management
+        const clinicDeliveryFee = <?php echo $clinic['delivery_fee'] ?? 0; ?>;
+        const clinicOffersDelivery = <?php echo $clinic['offers_delivery'] ?? 0; ?>;
+        const productDeliverability = <?php echo json_encode($product_deliverability); ?>;
+        const eyewearProducts = <?php echo json_encode($eyewear_products); ?>;
+        const contactLensProducts = <?php echo json_encode($contact_lens_products); ?>;
+        const accessoryProducts = <?php echo json_encode($accessory_products); ?>;
+
+        // ============================================
+        // STATE
+        // ============================================
         let step1Completed = <?php echo $step1_completed ? 'true' : 'false'; ?>;
         let step2Completed = false;
         let step3Completed = false;
-        let selectedItem = <?php echo $selected_item ? json_encode($selected_item['name']) : 'null'; ?>;
-        let selectedPrice = <?php echo $selected_item ? $selected_item['price'] : '0'; ?>;
         let selectedItemType = '<?php echo $selected_item_type; ?>';
+        let selectedItemId = <?php echo $selected_item_id; ?>;
+        let selectedPrice = <?php echo $item_price; ?>;
         let selectedDoctor = 'Any Available Doctor';
         let selectedDoctorId = 'any';
         let selectedDoctorSchedule = null;
         let selectedDate = '';
         let selectedTime = '';
         let currentMonth = new Date();
+        let isCurrentProductDeliverable = false;
+        let currentProductDeliveryFee = 0;
+        let isFreeDelivery = false;
 
-        // ✅ NEW: Buffer (minutes) bago ang oras ngayon — pumipigil sa pag-book ng
-        // slot na napakalapit na sa kasalukuyang oras. Hindi nito binabago ang
-        // umiiral na logic, dagdag lang na pagsala base sa oras ngayon.
-        const BOOKING_BUFFER_MINUTES = 30;
+        // NEW: Lens, color, size state
+        let selectedEyewearLens = null;
+        let selectedContactLens = 'daily';
+        let selectedColorCode = '';
+        let selectedColorName = '';
+        let selectedFrameSize = '';
+        let currentProductColors = [];
+        let currentProductSizes = [];
+        let selectedEyewearProductId = null;
+        let selectedContactProductId = null;
+        let selectedAccessoryProductId = null;
 
-        // ✅ NEW: kunin ang YYYY-MM-DD ng "today" base sa LOCAL time ng browser
-        function getTodayDateStr() {
-            const now = new Date();
-            return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
+        // Pagination state
+        const ITEMS_PER_PAGE = 6;
+        let currentPages = {
+            services: 1,
+            eyewear: 1,
+            contact_lenses: 1,
+            accessories: 1
+        };
+        let currentEyewearFilter = 'all';
+        let currentContactLensFilter = 'all';
+
+        // ============================================
+        // HELPER: HTML Special Characters
+        // ============================================
+        function htmlspecialchars(str) {
+            if (!str) return '';
+            return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         }
 
-        // ✅ NEW: parse ng clinicHours string papuntang { startMinutes, endMinutes } (24h)
-        function getClinicHoursRangeMinutes() {
-            const hoursMatch = clinicHours.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
-            if (!hoursMatch) return null;
-
-            let sHour = parseInt(hoursMatch[1]);
-            let sMin = hoursMatch[2] ? parseInt(hoursMatch[2]) : 0;
-            let sAmPm = hoursMatch[3] ? hoursMatch[3].toLowerCase() : 'am';
-            let eHour = parseInt(hoursMatch[4]);
-            let eMin = hoursMatch[5] ? parseInt(hoursMatch[5]) : 0;
-            let eAmPm = hoursMatch[6] ? hoursMatch[6].toLowerCase() : 'pm';
-
-            if (sAmPm === 'pm' && sHour !== 12) sHour += 12;
-            if (sAmPm === 'am' && sHour === 12) sHour = 0;
-            if (eAmPm === 'pm' && eHour !== 12) eHour += 12;
-            if (eAmPm === 'am' && eHour === 12) eHour = 0;
-
-            return { startMinutes: (sHour * 60) + sMin, endMinutes: (eHour * 60) + eMin };
+        function in_array(needle, haystack) {
+            return haystack.indexOf(needle) !== -1;
         }
 
-        // ✅ NEW: base sa napiling doctor (o "any"/product), kunin ang pinaka-huling
-        // available na oras (end minutes) para sa ibinigay na araw ng linggo
-        function getEffectiveEndMinutesForDay(dayOfWeek) {
-            const clinicRange = getClinicHoursRangeMinutes();
-            if (!clinicRange) return null;
+        // ============================================
+        // ✅ CHECK IF STEP 1 IS COMPLETE (central function)
+        // ============================================
+        function checkStep1Complete() {
+            const activeTab = document.querySelector('.main-tab-btn.active')?.dataset.tab;
+            let isComplete = false;
 
-            let effectiveEnd = clinicRange.endMinutes;
-
-            if (selectedItemType === 'service' && selectedDoctorId !== 'any' && selectedDoctorSchedule && selectedDoctorSchedule[dayOfWeek]) {
-                const ranges = selectedDoctorSchedule[dayOfWeek];
-                if (!Array.isArray(ranges) || ranges.length === 0) {
-                    return null; // walang schedule ang doctor sa araw na ito
+            if (selectedItemType === 'service') {
+                isComplete = (selectedServices.length > 0);
+            } else if (selectedItemType === 'product') {
+                if (activeTab === 'eyewear' && selectedEyewearProductId) {
+                    if (selectedEyewearLens) {
+                        let lensOk = true;
+                        if (selectedEyewearLens === 'frame_only') {
+                            const hasColors = currentProductColors && currentProductColors.length > 0;
+                            const hasSizes = currentProductSizes && currentProductSizes.length > 0;
+                            if (hasColors) lensOk = lensOk && (selectedColorCode && selectedColorName);
+                            if (hasSizes) lensOk = lensOk && (selectedFrameSize);
+                        } else {
+                            const hasColors = currentProductColors && currentProductColors.length > 0;
+                            const hasSizes = currentProductSizes && currentProductSizes.length > 0;
+                            if (hasColors) lensOk = lensOk && (selectedColorCode && selectedColorName);
+                            if (hasSizes) lensOk = lensOk && (selectedFrameSize);
+                        }
+                        isComplete = lensOk;
+                    } else {
+                        isComplete = false;
+                    }
+                } else if (activeTab === 'contact_lenses' && selectedContactProductId) {
+                    let ok = true;
+                    if (selectedContactLens) {
+                        const hasColors = currentProductColors && currentProductColors.length > 0;
+                        if (hasColors) ok = ok && (selectedColorCode && selectedColorName);
+                        isComplete = ok;
+                    } else {
+                        isComplete = false;
+                    }
+                } else if (activeTab === 'accessories' && selectedAccessoryProductId) {
+                    isComplete = true;
+                } else {
+                    isComplete = false;
                 }
-                let latestEnd = 0;
-                ranges.forEach(r => {
-                    const parts = r.split('-');
-                    if (parts.length < 2) return;
-                    const endParts = parts[1].split(':');
-                    const eh = parseInt(endParts[0]);
-                    const em = parseInt(endParts[1] || '0');
-                    const mins = (eh * 60) + em;
-                    if (mins > latestEnd) latestEnd = mins;
-                });
-                effectiveEnd = Math.min(effectiveEnd, latestEnd);
+            } else {
+                isComplete = false;
             }
 
-            return effectiveEnd;
+            step1Completed = isComplete;
+            const statusEl = document.getElementById('step1-status');
+            const step1El = document.getElementById('step1');
+            const progressStep1 = document.querySelector('.progress-step.step1');
+
+            if (isComplete) {
+                statusEl.textContent = '✓ Completed';
+                statusEl.className = 'step-status-badge status-completed';
+                step1El.classList.add('completed');
+                step1El.classList.remove('active');
+                progressStep1.classList.add('completed');
+                progressStep1.classList.remove('active');
+                
+                if (selectedItemType === 'service') {
+                    document.getElementById('step2').classList.remove('locked');
+                    document.getElementById('step2').classList.add('active');
+                    document.getElementById('step2-status').textContent = 'Required';
+                    document.getElementById('step2-status').className = 'step-status-badge status-pending';
+                    document.getElementById('step2-content').classList.remove('disabled-content');
+                    document.querySelector('.progress-step.step2').classList.remove('disabled');
+                    document.querySelector('.progress-step.step2').classList.add('active');
+                    document.getElementById('doctorsGrid').style.display = 'grid';
+                    document.getElementById('product-message').style.display = 'none';
+                } else {
+                    step2Completed = true;
+                    document.getElementById('step2-status').textContent = '✓ Completed (Not needed)';
+                    document.getElementById('step2-status').className = 'step-status-badge status-completed';
+                    document.getElementById('step2').classList.add('completed');
+                    document.getElementById('step2').classList.remove('active');
+                    document.querySelector('.progress-step.step2').classList.add('completed');
+                    document.querySelector('.progress-step.step2').classList.remove('active');
+                    document.getElementById('doctorsGrid').style.display = 'none';
+                    document.getElementById('product-message').style.display = 'block';
+
+                    document.getElementById('step3').classList.remove('locked');
+                    document.getElementById('step3').classList.add('active');
+                    document.getElementById('step3-status').textContent = 'Required';
+                    document.getElementById('step3-status').className = 'step-status-badge status-pending';
+                    document.getElementById('step3-content').classList.remove('disabled-content');
+                    document.querySelector('.progress-step.step3').classList.remove('disabled');
+                    document.querySelector('.progress-step.step3').classList.add('active');
+                    
+                    selectedDate = ''; selectedTime = '';
+                    document.getElementById('selectedDate').value = '';
+                    document.getElementById('selectedTime').value = '';
+                    document.getElementById('summaryDate').textContent = '—';
+                    document.getElementById('summaryTime').textContent = '—';
+                    renderCalendar(currentMonth);
+                    document.getElementById('timeSlotsContainer').innerHTML = `<div class="text-center" style="padding:20px;color:var(--text-muted);"><i class="fas fa-clock"></i> Select a date to see available time slots</div>`;
+                }
+            } else {
+                statusEl.textContent = 'Required';
+                statusEl.className = 'step-status-badge status-pending';
+                step1El.classList.remove('completed');
+                step1El.classList.add('active');
+                progressStep1.classList.remove('completed');
+                progressStep1.classList.add('active');
+                
+                document.getElementById('step2').classList.add('locked');
+                document.getElementById('step2').classList.remove('active');
+                document.getElementById('step2-status').textContent = '🔒 Locked';
+                document.getElementById('step2-status').className = 'step-status-badge status-locked';
+                document.querySelector('.progress-step.step2').classList.add('disabled');
+                document.querySelector('.progress-step.step2').classList.remove('active');
+                document.getElementById('step3').classList.add('locked');
+                document.getElementById('step3').classList.remove('active');
+                document.getElementById('step3-status').textContent = '🔒 Locked';
+                document.getElementById('step3-status').className = 'step-status-badge status-locked';
+                document.querySelector('.progress-step.step3').classList.add('disabled');
+                document.querySelector('.progress-step.step3').classList.remove('active');
+                document.getElementById('step4').classList.add('locked');
+                document.getElementById('step4').classList.remove('active');
+                document.getElementById('step4-status').textContent = '🔒 Locked';
+                document.getElementById('step4-status').className = 'step-status-badge status-locked';
+                document.querySelector('.progress-step.step4').classList.add('disabled');
+                document.querySelector('.progress-step.step4').classList.remove('active');
+                document.getElementById('confirmBtn').disabled = true;
+            }
+            return isComplete;
         }
 
-        // ✅ NEW: kung "today" ang dateStr, may matitira pa bang future slot
-        // (base sa kasalukuyang oras + buffer) bago mag-close ang clinic/doctor?
-        function hasFutureSlotToday(dateStr, dayOfWeek) {
-            const todayStr = getTodayDateStr();
-            if (dateStr !== todayStr) return true; // hindi today, walang epekto ang oras ngayon
-
-            const now = new Date();
-            const nowMinutes = now.getHours() * 60 + now.getMinutes();
-
-            const effectiveEnd = getEffectiveEndMinutesForDay(dayOfWeek);
-            if (effectiveEnd === null) return false; // walang schedule
-
-            return (nowMinutes + BOOKING_BUFFER_MINUTES) < effectiveEnd;
+        // ============================================
+        // ✅ BUILD PRODUCT CARD
+        // ============================================
+        function buildProductCard(prod, isSelected) {
+            let imgHtml = '<div class="img-fallback"><i class="fas fa-box"></i></div>';
+            let imagePath = null;
+            if (prod.images_json) {
+                try { const imgs = JSON.parse(prod.images_json); if (imgs && imgs.length > 0) imagePath = imgs[0]; } catch(e) {}
+            }
+            if (!imagePath && prod.images) {
+                try { const imgs = JSON.parse(prod.images); if (imgs && imgs.length > 0) imagePath = imgs[0]; } catch(e) {}
+            }
+            if (!imagePath && prod.image) imagePath = prod.image;
+            if (imagePath) {
+                let cleanPath = imagePath.replace(/^uploads\/uploads\//, 'uploads/');
+                if (cleanPath.startsWith('uploads/')) imgHtml = `<img src="/${cleanPath}" alt="">`;
+                else if (cleanPath.startsWith('/uploads/')) imgHtml = `<img src="${cleanPath}" alt="">`;
+                else if (cleanPath.startsWith('http')) imgHtml = `<img src="${cleanPath}" alt="">`;
+                else imgHtml = `<img src="/assets/images/products/${cleanPath}" alt="">`;
+            }
+            return `
+                <div class="product-card ${isSelected ? 'selected' : ''}" data-product-id="${prod.id}" onclick="selectProduct('${prod.category}', ${prod.id}, '${htmlspecialchars(prod.name)}', ${prod.price})">
+                    <div class="product-img-thumb">${imgHtml}</div>
+                    <div class="product-name">${htmlspecialchars(prod.name)}</div>
+                    <div class="product-category">${htmlspecialchars(prod.category)}</div>
+                    <div class="product-price">₱${Number(prod.price).toFixed(2)}</div>
+                </div>
+            `;
         }
 
-        // NEW: holds multiple selected services -> { id, name, price, group, max }
+        // ============================================
+        // ✅ UNIFIED PRODUCT SELECTION
+        // ============================================
+        function selectProduct(category, productId, name, price) {
+            const activeTab = document.querySelector('.main-tab-btn.active')?.dataset.tab;
+            if (activeTab === 'eyewear') {
+                selectEyewearProduct(productId, name, price);
+            } else if (activeTab === 'contact_lenses') {
+                selectContactProduct(productId, name, price);
+            } else if (activeTab === 'accessories') {
+                selectAccessory(productId, name, price);
+            }
+        }
+
+        // ============================================
+        // ✅ EYEWEAR PRODUCT SELECTION
+        // ============================================
+        function selectEyewearProduct(productId, name, price) {
+            document.querySelectorAll('#eyewearGrid .product-card').forEach(c => c.classList.remove('selected'));
+            const card = document.querySelector(`#eyewearGrid .product-card[data-product-id="${productId}"]`);
+            if (card) card.classList.add('selected');
+
+            selectedEyewearProductId = productId;
+            selectedItemId = productId;
+            selectedPrice = price;
+            selectedItemType = 'product';
+            document.getElementById('selectedItemType').value = 'product';
+            document.getElementById('selectedItemId').value = productId;
+
+            const lensBox = document.getElementById('eyewearLensSelection');
+            if (lensBox) lensBox.classList.add('visible');
+
+            selectedEyewearLens = null;
+            document.querySelectorAll('#eyewearLensOptions .lens-option-btn').forEach(b => b.classList.remove('selected'));
+
+            document.getElementById('eyewearDeliverySection').classList.remove('visible');
+            document.getElementById('eyewearClinicVisit').classList.remove('visible');
+            document.getElementById('eyewearColorSize').classList.remove('visible');
+
+            fetch(`?ajax_get_product_details=1&product_id=${productId}`)
+                .then(r => r.json())
+                .then(data => {
+                    currentProductColors = data.colors || [];
+                    currentProductSizes = data.sizes || [];
+                    renderEyewearColors(currentProductColors);
+                    renderEyewearSizes(currentProductSizes);
+                })
+                .catch(err => console.error('Error fetching product details:', err));
+
+            document.getElementById('summaryItem').textContent = name;
+            document.getElementById('summaryType').textContent = 'Product';
+            document.getElementById('summaryLens').textContent = '—';
+            document.getElementById('summaryColor').textContent = '—';
+            document.getElementById('summarySize').textContent = '—';
+            document.getElementById('totalPrice').dataset.baseTotal = price;
+            document.getElementById('totalPrice').textContent = '₱' + price.toFixed(2);
+
+            selectedColorCode = '';
+            selectedColorName = '';
+            selectedFrameSize = '';
+            document.getElementById('selectedColorCode').value = '';
+            document.getElementById('selectedColorName').value = '';
+            document.getElementById('selectedFrameSize').value = '';
+
+            document.getElementById('quickDeliveryInfo').style.display = 'none';
+            document.getElementById('quickClinicVisitInfo').style.display = 'none';
+
+            checkStep1Complete();
+            setTimeout(() => lensBox.scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);
+        }
+
+        // ============================================
+        // ✅ EYEWEAR LENS SELECTION
+        // ============================================
+        const LENS_PRICES = { frame_only: 0, single_vision: 500, progressive: 1500, blue_cut: 800 };
+
+        function selectEyewearLens(btn) {
+            document.querySelectorAll('#eyewearLensOptions .lens-option-btn').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            selectedEyewearLens = btn.dataset.lens;
+            document.getElementById('selectedLensType').value = selectedEyewearLens;
+
+            const isFrameOnly = (selectedEyewearLens === 'frame_only');
+            const basePrice = selectedPrice;
+            const lensPrice = LENS_PRICES[selectedEyewearLens] || 0;
+            const totalPrice = basePrice + lensPrice;
+
+            const totalDisplay = document.getElementById('totalPrice');
+            if (totalDisplay) {
+                totalDisplay.dataset.baseTotal = totalPrice;
+                totalDisplay.textContent = '₱' + totalPrice.toFixed(2);
+            }
+
+            const lensNames = { frame_only: 'Frame Only', single_vision: 'Single Vision', progressive: 'Progressive', blue_cut: 'Blue Cut' };
+            document.getElementById('summaryLens').textContent = lensNames[selectedEyewearLens] || selectedEyewearLens;
+
+            const deliverySection = document.getElementById('eyewearDeliverySection');
+            const clinicVisit = document.getElementById('eyewearClinicVisit');
+
+            if (isFrameOnly) {
+                deliverySection.classList.add('visible');
+                clinicVisit.classList.remove('visible');
+                document.getElementById('eyewearColorSize').classList.add('visible');
+                isCurrentProductDeliverable = true;
+                currentProductDeliveryFee = clinicDeliveryFee;
+                document.getElementById('quickDeliveryInfo').style.display = 'block';
+                document.getElementById('quickClinicVisitInfo').style.display = 'none';
+                document.getElementById('deliveryInfoFooter').style.display = 'block';
+                document.getElementById('clinicVisitFooter').style.display = 'none';
+                document.querySelectorAll('#eyewearDeliverySection input[name="delivery_type"]').forEach(r => r.disabled = false);
+                const freeMin = <?php echo $clinic['free_delivery_minimum'] ?? 0; ?>;
+                isFreeDelivery = freeMin > 0 && totalPrice >= freeMin;
+                updateDeliveryFeeLabel('eyewear');
+                document.querySelector('#eyewearDeliverySection input[name="delivery_type"][value="pickup"]').checked = true;
+                toggleDeliveryFields('eyewear');
+                document.getElementById('deliveryMethodRow').style.display = 'flex';
+                document.getElementById('deliveryFeeRow').style.display = 'flex';
+            } else {
+                deliverySection.classList.remove('visible');
+                clinicVisit.classList.add('visible');
+                document.getElementById('eyewearColorSize').classList.add('visible');
+                isCurrentProductDeliverable = false;
+                document.getElementById('quickDeliveryInfo').style.display = 'none';
+                document.getElementById('quickClinicVisitInfo').style.display = 'block';
+                document.getElementById('deliveryInfoFooter').style.display = 'none';
+                document.getElementById('clinicVisitFooter').style.display = 'block';
+                document.querySelectorAll('#eyewearDeliverySection input[name="delivery_type"]').forEach(r => r.disabled = true);
+                document.getElementById('deliveryMethodRow').style.display = 'none';
+                document.getElementById('deliveryFeeRow').style.display = 'none';
+            }
+
+            checkStep1Complete();
+        }
+
+        // ============================================
+        // ✅ EYEWEAR COLORS & SIZES
+        // ============================================
+        function renderEyewearColors(colors) {
+            const container = document.getElementById('eyewearColorBtns');
+            const hint = document.getElementById('eyewearColorHint');
+            const label = document.getElementById('eyewearColorSelected');
+            if (!container) return;
+            container.innerHTML = '';
+            if (!colors || colors.length === 0) {
+                container.innerHTML = '<p style="color:var(--text-muted);font-size:13px;">No color variants available.</p>';
+                if (hint) hint.style.display = 'none';
+                selectedColorCode = 'default';
+                selectedColorName = 'Default';
+                document.getElementById('selectedColorCode').value = 'default';
+                document.getElementById('selectedColorName').value = 'Default';
+                document.getElementById('eyewearColorSelected').textContent = 'Default (No variants)';
+                document.getElementById('summaryColor').textContent = 'Default';
+                checkStep1Complete();
+                return;
+            }
+            const hasStock = colors.some(c => c.quantity > 0);
+            colors.forEach(color => {
+                const oos = color.quantity <= 0;
+                const btn = document.createElement('button');
+                btn.className = `color-btn ${oos ? 'oos' : ''}`;
+                btn.dataset.code = color.color_code;
+                btn.dataset.name = color.color_name;
+                btn.dataset.qty = color.quantity;
+                btn.innerHTML = `
+                    ${color.color_code && color.color_code.length >= 4 ? `<span class="color-dot" style="background:${color.color_code}"></span>` : ''}
+                    <span class="color-btn-name">${color.color_name}</span>
+                    ${oos ? '<span class="color-btn-qty oos-label">Out of Stock</span>' : (color.quantity <= 5 ? `<span class="color-btn-qty low">${color.quantity} left</span>` : `<span class="color-btn-qty">${color.quantity} left</span>`)}
+                `;
+                btn.onclick = () => selectEyewearColor(btn);
+                container.appendChild(btn);
+            });
+            if (hint) {
+                hint.style.display = hasStock ? 'block' : 'none';
+                hint.innerHTML = hasStock ? '<i class="fas fa-info-circle"></i> Please select a color to continue.' : '<i class="fas fa-exclamation-triangle"></i> All variants are out of stock.';
+            }
+            if (label) label.textContent = '— Select a color';
+        }
+
+        function selectEyewearColor(btn) {
+            if (btn.classList.contains('oos')) return;
+            document.querySelectorAll('#eyewearColorBtns .color-btn').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            selectedColorCode = btn.dataset.code;
+            selectedColorName = btn.dataset.name;
+            document.getElementById('selectedColorCode').value = selectedColorCode;
+            document.getElementById('selectedColorName').value = selectedColorName;
+            document.getElementById('eyewearColorSelected').textContent = selectedColorName;
+            document.getElementById('eyewearColorHint').style.display = 'none';
+            document.getElementById('summaryColor').textContent = selectedColorName;
+            checkStep1Complete();
+        }
+
+        function renderEyewearSizes(sizes) {
+            const container = document.getElementById('eyewearSizeBtns');
+            const hint = document.getElementById('eyewearSizeHint');
+            const label = document.getElementById('eyewearSizeSelected');
+            if (!container) return;
+            container.innerHTML = '';
+            if (!sizes || sizes.length === 0) {
+                container.innerHTML = '<p style="color:var(--text-muted);font-size:13px;">No size options available.</p>';
+                if (hint) hint.style.display = 'none';
+                selectedFrameSize = 'Default';
+                document.getElementById('selectedFrameSize').value = 'Default';
+                document.getElementById('eyewearSizeSelected').textContent = 'Default (No variants)';
+                document.getElementById('summarySize').textContent = 'Default';
+                checkStep1Complete();
+                return;
+            }
+            sizes.forEach(size => {
+                const btn = document.createElement('button');
+                btn.className = 'size-btn';
+                btn.dataset.size = size;
+                btn.textContent = size;
+                btn.onclick = () => selectEyewearSize(btn);
+                container.appendChild(btn);
+            });
+            if (hint) hint.style.display = 'block';
+            if (label) label.textContent = '— Select a size';
+        }
+
+        function selectEyewearSize(btn) {
+            document.querySelectorAll('#eyewearSizeBtns .size-btn').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            selectedFrameSize = btn.dataset.size;
+            document.getElementById('selectedFrameSize').value = selectedFrameSize;
+            document.getElementById('eyewearSizeSelected').textContent = selectedFrameSize;
+            document.getElementById('eyewearSizeHint').style.display = 'none';
+            document.getElementById('summarySize').textContent = selectedFrameSize;
+            checkStep1Complete();
+        }
+
+        // ============================================
+        // ✅ CONTACT LENS PRODUCT SELECTION
+        // ============================================
+        function selectContactProduct(productId, name, price) {
+            document.querySelectorAll('#contactLensGrid .product-card').forEach(c => c.classList.remove('selected'));
+            const card = document.querySelector(`#contactLensGrid .product-card[data-product-id="${productId}"]`);
+            if (card) card.classList.add('selected');
+
+            selectedContactProductId = productId;
+            selectedItemId = productId;
+            selectedPrice = price;
+            selectedItemType = 'product';
+            document.getElementById('selectedItemType').value = 'product';
+            document.getElementById('selectedItemId').value = productId;
+
+            const lensBox = document.getElementById('contactLensSelection');
+            if (lensBox) lensBox.classList.add('visible');
+
+            selectedContactLens = 'daily';
+            document.querySelectorAll('#contactLensSelection .lens-option-btn').forEach(b => b.classList.remove('selected'));
+            document.querySelector('#contactLensSelection .lens-option-btn[data-lens="daily"]').classList.add('selected');
+            document.getElementById('selectedLensType').value = 'daily';
+
+            fetch(`?ajax_get_product_details=1&product_id=${productId}`)
+                .then(r => r.json())
+                .then(data => {
+                    currentProductColors = data.colors || [];
+                    renderContactLensColors(currentProductColors);
+                })
+                .catch(err => console.error('Error fetching product details:', err));
+
+            document.getElementById('summaryItem').textContent = name;
+            document.getElementById('summaryType').textContent = 'Product';
+            document.getElementById('summaryLens').textContent = 'Daily Disposable';
+            document.getElementById('summaryColor').textContent = '—';
+            document.getElementById('summarySize').textContent = '—';
+            document.getElementById('totalPrice').dataset.baseTotal = price;
+            document.getElementById('totalPrice').textContent = '₱' + price.toFixed(2);
+
+            const isDeliverable = productDeliverability[productId]?.deliverable || false;
+            const deliverySection = document.getElementById('contactLensDeliverySection');
+            const clinicVisit = document.getElementById('contactLensClinicVisit');
+
+            if (isDeliverable && clinicOffersDelivery) {
+                deliverySection.classList.add('visible');
+                clinicVisit.classList.remove('visible');
+                isCurrentProductDeliverable = true;
+                currentProductDeliveryFee = clinicDeliveryFee;
+                document.getElementById('quickDeliveryInfo').style.display = 'block';
+                document.getElementById('quickClinicVisitInfo').style.display = 'none';
+                document.querySelectorAll('#contactLensDeliverySection input[name="delivery_type"]').forEach(r => r.disabled = false);
+                const freeMin = <?php echo $clinic['free_delivery_minimum'] ?? 0; ?>;
+                isFreeDelivery = freeMin > 0 && price >= freeMin;
+                updateDeliveryFeeLabel('cl');
+                document.querySelector('#contactLensDeliverySection input[name="delivery_type"][value="pickup"]').checked = true;
+                toggleDeliveryFields('cl');
+                document.getElementById('deliveryMethodRow').style.display = 'flex';
+                document.getElementById('deliveryFeeRow').style.display = 'flex';
+            } else {
+                deliverySection.classList.remove('visible');
+                clinicVisit.classList.add('visible');
+                isCurrentProductDeliverable = false;
+                document.getElementById('quickDeliveryInfo').style.display = 'none';
+                document.getElementById('quickClinicVisitInfo').style.display = 'block';
+                document.querySelectorAll('#contactLensDeliverySection input[name="delivery_type"]').forEach(r => r.disabled = true);
+                document.getElementById('deliveryMethodRow').style.display = 'none';
+                document.getElementById('deliveryFeeRow').style.display = 'none';
+            }
+
+            selectedColorCode = '';
+            selectedColorName = '';
+            document.getElementById('selectedColorCode').value = '';
+            document.getElementById('selectedColorName').value = '';
+
+            checkStep1Complete();
+        }
+
+        function selectContactLens(btn) {
+            document.querySelectorAll('#contactLensSelection .lens-option-btn').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            selectedContactLens = btn.dataset.lens;
+            document.getElementById('selectedLensType').value = selectedContactLens;
+            document.getElementById('summaryLens').textContent = selectedContactLens === 'daily' ? 'Daily Disposable' : 'Monthly Wear';
+            checkStep1Complete();
+        }
+
+        function renderContactLensColors(colors) {
+            const container = document.getElementById('contactLensColorBtns');
+            const hint = document.getElementById('clColorHint');
+            const label = document.getElementById('clColorSelected');
+            if (!container) return;
+            container.innerHTML = '';
+            if (!colors || colors.length === 0) {
+                container.innerHTML = '<p style="color:var(--text-muted);font-size:13px;">No color variants available.</p>';
+                if (hint) hint.style.display = 'none';
+                selectedColorCode = 'default';
+                selectedColorName = 'Default';
+                document.getElementById('selectedColorCode').value = 'default';
+                document.getElementById('selectedColorName').value = 'Default';
+                document.getElementById('clColorSelected').textContent = 'Default (No variants)';
+                document.getElementById('summaryColor').textContent = 'Default';
+                checkStep1Complete();
+                return;
+            }
+            const hasStock = colors.some(c => c.quantity > 0);
+            colors.forEach(color => {
+                const oos = color.quantity <= 0;
+                const btn = document.createElement('button');
+                btn.className = `color-btn ${oos ? 'oos' : ''}`;
+                btn.dataset.code = color.color_code;
+                btn.dataset.name = color.color_name;
+                btn.innerHTML = `
+                    ${color.color_code && color.color_code.length >= 4 ? `<span class="color-dot" style="background:${color.color_code}"></span>` : ''}
+                    <span class="color-btn-name">${color.color_name}</span>
+                    ${oos ? '<span class="color-btn-qty oos-label">Out of Stock</span>' : (color.quantity <= 5 ? `<span class="color-btn-qty low">${color.quantity} left</span>` : `<span class="color-btn-qty">${color.quantity} left</span>`)}
+                `;
+                btn.onclick = () => selectContactLensColor(btn);
+                container.appendChild(btn);
+            });
+            if (hint) {
+                hint.style.display = hasStock ? 'block' : 'none';
+                hint.innerHTML = hasStock ? '<i class="fas fa-info-circle"></i> Please select a color to continue.' : '<i class="fas fa-exclamation-triangle"></i> All variants are out of stock.';
+            }
+            if (label) label.textContent = '— Select a color';
+            document.getElementById('contactLensColorSize').classList.add('visible');
+        }
+
+        function selectContactLensColor(btn) {
+            if (btn.classList.contains('oos')) return;
+            document.querySelectorAll('#contactLensColorBtns .color-btn').forEach(b => b.classList.remove('selected'));
+            btn.classList.add('selected');
+            selectedColorCode = btn.dataset.code;
+            selectedColorName = btn.dataset.name;
+            document.getElementById('selectedColorCode').value = selectedColorCode;
+            document.getElementById('selectedColorName').value = selectedColorName;
+            document.getElementById('clColorSelected').textContent = selectedColorName;
+            document.getElementById('clColorHint').style.display = 'none';
+            document.getElementById('summaryColor').textContent = selectedColorName;
+            checkStep1Complete();
+        }
+
+        // ============================================
+        // ✅ ACCESSORIES: Select product, show delivery
+        // ============================================
+        function selectAccessory(productId, name, price) {
+            document.querySelectorAll('#accessoryGrid .product-card').forEach(c => c.classList.remove('selected'));
+            const card = document.querySelector(`#accessoryGrid .product-card[data-product-id="${productId}"]`);
+            if (card) card.classList.add('selected');
+
+            selectedAccessoryProductId = productId;
+            selectedItemId = productId;
+            selectedPrice = price;
+            selectedItemType = 'product';
+            document.getElementById('selectedItemType').value = 'product';
+            document.getElementById('selectedItemId').value = productId;
+            document.getElementById('summaryItem').textContent = name;
+            document.getElementById('summaryType').textContent = 'Product';
+            document.getElementById('summaryLens').textContent = '—';
+            document.getElementById('summaryColor').textContent = '—';
+            document.getElementById('summarySize').textContent = '—';
+            document.getElementById('totalPrice').dataset.baseTotal = price;
+            document.getElementById('totalPrice').textContent = '₱' + price.toFixed(2);
+
+            const deliverySection = document.getElementById('accessoryDeliverySection');
+            const isDeliverable = productDeliverability[productId]?.deliverable || false;
+            if (isDeliverable && clinicOffersDelivery) {
+                deliverySection.classList.add('visible');
+                isCurrentProductDeliverable = true;
+                currentProductDeliveryFee = clinicDeliveryFee;
+                document.getElementById('quickDeliveryInfo').style.display = 'block';
+                document.getElementById('quickClinicVisitInfo').style.display = 'none';
+                document.querySelectorAll('#accessoryDeliverySection input[name="delivery_type"]').forEach(r => r.disabled = false);
+                const freeMin = <?php echo $clinic['free_delivery_minimum'] ?? 0; ?>;
+                isFreeDelivery = freeMin > 0 && price >= freeMin;
+                updateDeliveryFeeLabel('acc');
+                document.querySelector('#accessoryDeliverySection input[name="delivery_type"][value="pickup"]').checked = true;
+                toggleDeliveryFields('acc');
+                document.getElementById('deliveryMethodRow').style.display = 'flex';
+                document.getElementById('deliveryFeeRow').style.display = 'flex';
+                document.getElementById('deliveryInfoFooter').style.display = 'block';
+                document.getElementById('clinicVisitFooter').style.display = 'none';
+            } else {
+                deliverySection.classList.remove('visible');
+                isCurrentProductDeliverable = false;
+                document.getElementById('quickDeliveryInfo').style.display = 'none';
+                document.getElementById('quickClinicVisitInfo').style.display = 'block';
+                document.querySelectorAll('#accessoryDeliverySection input[name="delivery_type"]').forEach(r => r.disabled = true);
+                document.getElementById('deliveryMethodRow').style.display = 'none';
+                document.getElementById('deliveryFeeRow').style.display = 'none';
+                document.getElementById('deliveryInfoFooter').style.display = 'none';
+                document.getElementById('clinicVisitFooter').style.display = 'block';
+                const notice = document.getElementById('clinicVisitNotice');
+                if (notice) notice.style.display = 'flex';
+            }
+
+            checkStep1Complete();
+        }
+
+        // ============================================
+        // ✅ DELIVERY TOGGLE FUNCTIONS
+        // ============================================
+        function updateDeliveryFeeLabel(section = 'eyewear') {
+            let feeLabel, freeInfo;
+            if (section === 'eyewear') {
+                feeLabel = document.getElementById('deliveryFeeLabel');
+                freeInfo = document.getElementById('freeDeliveryInfo');
+            } else if (section === 'cl') {
+                feeLabel = document.getElementById('deliveryFeeLabelCL');
+                freeInfo = document.getElementById('freeDeliveryInfoCL');
+            } else if (section === 'acc') {
+                feeLabel = document.getElementById('deliveryFeeLabelAcc');
+                freeInfo = document.getElementById('freeDeliveryInfoAcc');
+            }
+            if (!feeLabel) return;
+            if (isFreeDelivery) {
+                feeLabel.textContent = '🎉 FREE';
+                feeLabel.style.color = 'var(--success)';
+                if (freeInfo) freeInfo.style.display = 'inline';
+            } else if (currentProductDeliveryFee > 0) {
+                feeLabel.textContent = '+₱' + currentProductDeliveryFee.toFixed(2);
+                feeLabel.style.color = 'var(--primary)';
+                if (freeInfo) freeInfo.style.display = 'none';
+            } else {
+                feeLabel.textContent = 'FREE';
+                feeLabel.style.color = 'var(--success)';
+                if (freeInfo) freeInfo.style.display = 'inline';
+            }
+        }
+
+        function toggleDeliveryFields(section = 'eyewear') {
+            let deliveryRadio, addressForm, methodRow, methodDisplay, feeRow, feeDisplay, totalDisplay;
+            if (section === 'eyewear') {
+                deliveryRadio = document.querySelector('#eyewearDeliverySection input[name="delivery_type"][value="delivery"]');
+                addressForm = document.getElementById('deliveryAddressForm');
+                methodRow = document.getElementById('deliveryMethodRow');
+                methodDisplay = document.getElementById('deliveryMethodDisplay');
+                feeRow = document.getElementById('deliveryFeeRow');
+                feeDisplay = document.getElementById('deliveryFeeDisplay');
+                totalDisplay = document.getElementById('totalPrice');
+            } else if (section === 'cl') {
+                deliveryRadio = document.querySelector('#contactLensDeliverySection input[name="delivery_type"][value="delivery"]');
+                addressForm = document.getElementById('deliveryAddressFormCL');
+                methodRow = document.getElementById('deliveryMethodRow');
+                methodDisplay = document.getElementById('deliveryMethodDisplay');
+                feeRow = document.getElementById('deliveryFeeRow');
+                feeDisplay = document.getElementById('deliveryFeeDisplay');
+                totalDisplay = document.getElementById('totalPrice');
+            } else if (section === 'acc') {
+                deliveryRadio = document.querySelector('#accessoryDeliverySection input[name="delivery_type"][value="delivery"]');
+                addressForm = document.getElementById('deliveryAddressFormAcc');
+                methodRow = document.getElementById('deliveryMethodRow');
+                methodDisplay = document.getElementById('deliveryMethodDisplay');
+                feeRow = document.getElementById('deliveryFeeRow');
+                feeDisplay = document.getElementById('deliveryFeeDisplay');
+                totalDisplay = document.getElementById('totalPrice');
+            }
+            if (!deliveryRadio) return;
+            const isDelivery = deliveryRadio.checked;
+            if (addressForm) addressForm.classList.toggle('show', isDelivery);
+            if (methodRow) methodRow.style.display = 'flex';
+            if (methodDisplay) {
+                methodDisplay.innerHTML = isDelivery ? '<i class="fas fa-truck"></i> Delivery' : '<i class="fas fa-store"></i> Pickup';
+            }
+            if (totalDisplay) {
+                const baseTotal = parseFloat(totalDisplay.dataset.baseTotal) || 0;
+                if (isDelivery && isCurrentProductDeliverable) {
+                    const fee = isFreeDelivery ? 0 : currentProductDeliveryFee;
+                    totalDisplay.textContent = '₱' + (baseTotal + fee).toFixed(2);
+                    if (feeRow) feeRow.style.display = 'flex';
+                    if (feeDisplay) feeDisplay.textContent = isFreeDelivery ? '🎉 FREE!' : '+₱' + fee.toFixed(2);
+                } else {
+                    totalDisplay.textContent = '₱' + baseTotal.toFixed(2);
+                    if (feeRow) feeRow.style.display = 'none';
+                }
+            }
+        }
+
+        // ============================================
+        // ✅ RENDER FUNCTIONS
+        // ============================================
+        function renderServices() {
+            const grid = document.getElementById('servicesGrid');
+            const pagination = document.getElementById('servicesPagination');
+            if (!grid || !pagination) return;
+            const items = grid.querySelectorAll('.service-card');
+            const totalItems = items.length;
+            const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE) || 1;
+            const page = Math.min(currentPages.services, totalPages);
+            const start = (page - 1) * ITEMS_PER_PAGE;
+            const end = Math.min(start + ITEMS_PER_PAGE, totalItems);
+            items.forEach((item, i) => {
+                item.style.display = (i >= start && i < end) ? 'block' : 'none';
+            });
+            buildPagination(pagination, page, totalPages, 'services');
+        }
+
+        function renderEyewear() {
+            const grid = document.getElementById('eyewearGrid');
+            const pagination = document.getElementById('eyewearPagination');
+            if (!grid || !pagination) return;
+            let filtered = eyewearProducts;
+            if (currentEyewearFilter === 'with_rx') {
+                filtered = filtered.filter(p => {
+                    const cat = p.category || '';
+                    if (['Frames', 'Eyeglasses', 'Lenses'].includes(cat)) return true;
+                    if (cat === 'Sunglasses' && p.extra_fields_json) {
+                        try { const extra = JSON.parse(p.extra_fields_json); if (extra.has_prescription && extra.has_prescription == 1) return true; } catch(e) {}
+                    }
+                    return false;
+                });
+            } else if (currentEyewearFilter === 'without_rx') {
+                filtered = filtered.filter(p => {
+                    const cat = p.category || '';
+                    if (cat === 'Sunglasses' && p.extra_fields_json) {
+                        try { const extra = JSON.parse(p.extra_fields_json); if (extra.has_prescription && extra.has_prescription == 1) return false; } catch(e) {}
+                        return true;
+                    }
+                    return false;
+                });
+            }
+            const totalItems = filtered.length;
+            const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE) || 1;
+            const page = Math.min(currentPages.eyewear, totalPages);
+            const start = (page - 1) * ITEMS_PER_PAGE;
+            const end = Math.min(start + ITEMS_PER_PAGE, totalItems);
+            let html = '';
+            for (let i = start; i < end; i++) {
+                const prod = filtered[i];
+                const isSelected = (selectedItemId == prod.id && selectedItemType === 'product');
+                html += buildProductCard(prod, isSelected);
+            }
+            if (filtered.length === 0) html = '<div class="no-slots-message" style="grid-column:1/-1;"><i class="fas fa-glasses"></i><h4>No products found</h4><p>Try adjusting your filter.</p></div>';
+            grid.innerHTML = html;
+            buildPagination(pagination, page, totalPages, 'eyewear');
+        }
+
+        function renderContactLenses() {
+            const grid = document.getElementById('contactLensGrid');
+            const pagination = document.getElementById('contactLensPagination');
+            if (!grid || !pagination) return;
+            let filtered = contactLensProducts;
+            if (currentContactLensFilter === 'plano') {
+                filtered = filtered.filter(p => {
+                    if (p.requires_prescription && p.requires_prescription == 0) return true;
+                    if (p.lens_power) { const power = String(p.lens_power).trim(); if (['plano','0','0.00'].includes(power)) return true; }
+                    return false;
+                });
+            } else if (currentContactLensFilter === 'with_power') {
+                filtered = filtered.filter(p => {
+                    if (p.requires_prescription && p.requires_prescription == 1) return true;
+                    if (p.lens_power) { const power = String(p.lens_power).trim(); if (!['plano','0','0.00'].includes(power)) return true; }
+                    return false;
+                });
+            }
+            const totalItems = filtered.length;
+            const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE) || 1;
+            const page = Math.min(currentPages.contact_lenses, totalPages);
+            const start = (page - 1) * ITEMS_PER_PAGE;
+            const end = Math.min(start + ITEMS_PER_PAGE, totalItems);
+            let html = '';
+            for (let i = start; i < end; i++) {
+                const prod = filtered[i];
+                const isSelected = (selectedItemId == prod.id && selectedItemType === 'product');
+                html += buildProductCard(prod, isSelected);
+            }
+            if (filtered.length === 0) html = '<div class="no-slots-message" style="grid-column:1/-1;"><i class="fas fa-eye"></i><h4>No products found</h4><p>Try adjusting your filter.</p></div>';
+            grid.innerHTML = html;
+            buildPagination(pagination, page, totalPages, 'contact_lenses');
+        }
+
+        function renderAccessories() {
+            const grid = document.getElementById('accessoryGrid');
+            const pagination = document.getElementById('accessoryPagination');
+            if (!grid || !pagination) return;
+            const filtered = accessoryProducts;
+            const totalItems = filtered.length;
+            const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE) || 1;
+            const page = Math.min(currentPages.accessories, totalPages);
+            const start = (page - 1) * ITEMS_PER_PAGE;
+            const end = Math.min(start + ITEMS_PER_PAGE, totalItems);
+            let html = '';
+            for (let i = start; i < end; i++) {
+                const prod = filtered[i];
+                const isSelected = (selectedItemId == prod.id && selectedItemType === 'product');
+                html += buildProductCard(prod, isSelected);
+            }
+            if (filtered.length === 0) html = '<div class="no-slots-message" style="grid-column:1/-1;"><i class="fas fa-tag"></i><h4>No products available</h4></div>';
+            grid.innerHTML = html;
+            buildPagination(pagination, page, totalPages, 'accessories');
+        }
+
+        function buildPagination(container, page, totalPages, tab) {
+            if (totalPages <= 1) { container.innerHTML = ''; return; }
+            let html = '';
+            html += `<button onclick="goToPage('${tab}', ${page - 1})" ${page <= 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i></button>`;
+            for (let i = 1; i <= totalPages; i++) {
+                html += `<button onclick="goToPage('${tab}', ${i})" class="${i === page ? 'active' : ''}">${i}</button>`;
+            }
+            html += `<button onclick="goToPage('${tab}', ${page + 1})" ${page >= totalPages ? 'disabled' : ''}><i class="fas fa-chevron-right"></i></button>`;
+            container.innerHTML = html;
+        }
+
+        function goToPage(tab, page) {
+            if (tab === 'services') { currentPages.services = Math.max(1, page); renderServices(); }
+            else if (tab === 'eyewear') { currentPages.eyewear = Math.max(1, page); renderEyewear(); }
+            else if (tab === 'contact_lenses') { currentPages.contact_lenses = Math.max(1, page); renderContactLenses(); }
+            else if (tab === 'accessories') { currentPages.accessories = Math.max(1, page); renderAccessories(); }
+        }
+
+        // ============================================
+        // FILTERS
+        // ============================================
+        function filterEyewear(filter) {
+            currentEyewearFilter = filter;
+            document.querySelectorAll('#prescriptionFilter .sub-tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelector(`#prescriptionFilter .sub-tab-btn[data-filter="${filter}"]`).classList.add('active');
+            currentPages.eyewear = 1;
+            renderEyewear();
+        }
+
+        function filterContactLenses(filter) {
+            currentContactLensFilter = filter;
+            document.querySelectorAll('#contactLensFilter .sub-tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelector(`#contactLensFilter .sub-tab-btn[data-filter="${filter}"]`).classList.add('active');
+            currentPages.contact_lenses = 1;
+            renderContactLenses();
+        }
+
+        // ============================================
+        // ✅ SERVICE SELECTION
+        // ============================================
         let selectedServices = <?php
             if ($selected_item && $selected_item_type === 'service') {
-                echo json_encode([[
+                echo json_encode([[ 
                     'id' => (string)$selected_item['id'],
                     'name' => $selected_item['name'],
                     'price' => (float)$selected_item['price'],
@@ -2999,9 +2787,6 @@ $step1_completed = ($selected_item !== null);
             }
         ?>;
 
-        // ============================================
-        // NEW: Multiple-service selection logic
-        // ============================================
         function handleServiceSelection(checkbox) {
             const id = checkbox.value;
             const group = checkbox.getAttribute('data-group') || '';
@@ -3013,123 +2798,82 @@ $step1_completed = ($selected_item !== null);
 
             if (checkbox.checked) {
                 const hasStandaloneSelected = selectedServices.some(s => (s.group === 'treatment' || s.group === 'repair' || s.group === ''));
-
                 if (hasStandaloneSelected && selectedServices.length > 0) {
                     checkbox.checked = false;
                     showToast('That service cannot be combined with your current selection. Please book it alone.', 'error');
                     return;
                 }
-
                 if (isStandalone && selectedServices.length > 0) {
                     checkbox.checked = false;
                     showToast('This service must be booked alone. Uncheck other services first.', 'error');
                     return;
                 }
-
                 const countInGroup = selectedServices.filter(s => s.group === group).length;
                 if (countInGroup >= maxPer) {
                     checkbox.checked = false;
                     showToast(`Only ${maxPer} '${group}' service(s) allowed per booking.`, 'error');
                     return;
                 }
-
                 selectedServices.push({ id, name, price, group, max: maxPer });
                 card.classList.add('selected');
             } else {
                 selectedServices = selectedServices.filter(s => s.id !== id);
                 card.classList.remove('selected');
             }
-
+            
             refreshServiceLocks();
             updateServiceSummary();
-
             selectedItemType = 'service';
             document.getElementById('selectedItemType').value = 'service';
+            document.getElementById('selectedItemId').value = '';
 
-            if (selectedServices.length > 0) {
-                step1Completed = true;
-
-                document.getElementById('step1-status').textContent = '✓ Completed';
-                document.getElementById('step1-status').className = 'step-status-badge status-completed';
-                document.getElementById('step1').classList.add('completed');
-                document.getElementById('step1').classList.remove('active');
-
-                document.querySelector('.progress-step.step1').classList.add('completed');
-                document.querySelector('.progress-step.step1').classList.remove('active');
-                document.querySelector('.progress-step.step2').classList.remove('disabled');
-                document.querySelector('.progress-step.step2').classList.add('active');
-
-                document.getElementById('doctorsGrid').style.display = 'grid';
-                document.getElementById('product-message').style.display = 'none';
-
-                document.getElementById('step2').classList.remove('locked');
-                document.getElementById('step2').classList.add('active');
-                document.getElementById('step2-status').textContent = 'Required';
-                document.getElementById('step2-status').className = 'step-status-badge status-pending';
-                document.getElementById('step2-content').classList.remove('disabled-content');
-
-                setTimeout(() => scrollToStep('step2'), 300);
-            } else {
-                step1Completed = false;
-                document.getElementById('step1-status').textContent = 'Required';
-                document.getElementById('step1-status').className = 'step-status-badge status-pending';
-                document.getElementById('step1').classList.remove('completed');
-                document.getElementById('step1').classList.add('active');
-            }
+            checkStep1Complete();
         }
 
-        // Grey-out / disable checkboxes that would break the combination rule
         function refreshServiceLocks() {
             const hasStandaloneSelected = selectedServices.some(s => (s.group === 'treatment' || s.group === 'repair' || s.group === ''));
-
             document.querySelectorAll('.service-checkbox').forEach(cb => {
                 const card = cb.closest('.service-card');
                 const group = cb.getAttribute('data-group') || '';
                 const maxPer = parseInt(cb.getAttribute('data-max')) || 1;
                 const isStandalone = (group === 'treatment' || group === 'repair' || group === '');
                 const alreadySelected = selectedServices.some(s => s.id === cb.value);
-
-                if (alreadySelected) {
-                    card.classList.remove('blocked');
-                    return;
-                }
-
+                if (alreadySelected) { card.classList.remove('blocked'); return; }
                 let blocked = false;
-
                 if (selectedServices.length > 0) {
-                    if (hasStandaloneSelected) {
-                        blocked = true;
-                    } else if (isStandalone) {
-                        blocked = true;
-                    } else {
+                    if (hasStandaloneSelected) blocked = true;
+                    else if (isStandalone) blocked = true;
+                    else {
                         const countInGroup = selectedServices.filter(s => s.group === group).length;
                         if (countInGroup >= maxPer) blocked = true;
                     }
                 }
-
                 cb.disabled = blocked;
                 card.classList.toggle('blocked', blocked);
             });
         }
 
-        // Update sidebar summary for multiple services
         function updateServiceSummary() {
             const wrap = document.getElementById('summaryServicesWrap');
             const list = document.getElementById('summaryServicesList');
             const singleRow = document.getElementById('summarySingleItemRow');
-
+            const totalDisplay = document.getElementById('totalPrice');
+            const summaryLens = document.getElementById('summaryLens');
+            const summaryColor = document.getElementById('summaryColor');
+            const summarySize = document.getElementById('summarySize');
             if (selectedServices.length === 0) {
                 wrap.style.display = 'none';
                 singleRow.style.display = 'flex';
                 document.getElementById('summaryItem').textContent = 'Not selected';
                 document.getElementById('summaryType').textContent = '—';
-                document.getElementById('totalPrice').textContent = '₱0.00';
+                if (summaryLens) summaryLens.textContent = '—';
+                if (summaryColor) summaryColor.textContent = '—';
+                if (summarySize) summarySize.textContent = '—';
+                if (totalDisplay) totalDisplay.textContent = '₱0.00';
                 return;
             }
-
             singleRow.style.display = 'none';
             wrap.style.display = 'block';
-
             let total = 0;
             list.innerHTML = '';
             selectedServices.forEach(s => {
@@ -3139,115 +2883,32 @@ $step1_completed = ($selected_item !== null);
                 row.innerHTML = `<span>${s.name}</span><span>₱${s.price.toFixed(2)}</span>`;
                 list.appendChild(row);
             });
-
             document.getElementById('summaryType').textContent = 'Service';
-            document.getElementById('totalPrice').textContent = '₱' + total.toFixed(2);
-
+            if (summaryLens) summaryLens.textContent = '—';
+            if (summaryColor) summaryColor.textContent = '—';
+            if (summarySize) summarySize.textContent = '—';
+            if (totalDisplay) {
+                totalDisplay.dataset.baseTotal = total;
+                totalDisplay.textContent = '₱' + total.toFixed(2);
+            }
             selectedPrice = total;
-            selectedItem = selectedServices.map(s => s.name).join(' + ');
         }
 
-        function handleItemSelection(radio) {
-            // This now only fires for PRODUCT radios (services use handleServiceSelection)
-            document.querySelectorAll('#products-tab .doctor-card').forEach(card => {
-                card.classList.remove('selected');
-            });
-
-            radio.closest('.doctor-card').classList.add('selected');
-
-            const itemType = radio.getAttribute('data-type');
-            const itemName = radio.getAttribute('data-name');
-            const itemPrice = parseFloat(radio.getAttribute('data-price'));
-
-            // Selecting a product clears any selected services
-            selectedServices = [];
-            document.querySelectorAll('.service-checkbox').forEach(cb => cb.checked = false);
-            document.querySelectorAll('.service-card').forEach(card => card.classList.remove('selected'));
-            refreshServiceLocks();
-            document.getElementById('summaryServicesWrap').style.display = 'none';
-            document.getElementById('summarySingleItemRow').style.display = 'flex';
-
-            selectedItem = itemName;
-            selectedPrice = itemPrice;
-            selectedItemType = itemType;
-
-            document.getElementById('selectedItemType').value = itemType;
-
-            step1Completed = true;
-
-            // Update UI
-            document.getElementById('step1-status').textContent = '✓ Completed';
-            document.getElementById('step1-status').className = 'step-status-badge status-completed';
-            document.getElementById('step1').classList.add('completed');
-            document.getElementById('step1').classList.remove('active');
-
-            document.querySelector('.progress-step.step1').classList.add('completed');
-            document.querySelector('.progress-step.step1').classList.remove('active');
-            document.querySelector('.progress-step.step2').classList.remove('disabled');
-            document.querySelector('.progress-step.step2').classList.add('active');
-
-            document.getElementById('step2').classList.remove('locked');
-            document.getElementById('step2').classList.add('active');
-            document.getElementById('step2-status').textContent = 'Required';
-            document.getElementById('step2-status').className = 'step-status-badge status-pending';
-            document.getElementById('step2-content').classList.remove('disabled-content');
-
-            // Update summary
-            document.getElementById('summaryItem').textContent = itemName;
-            document.getElementById('summaryType').textContent = 'Product';
-            document.getElementById('totalPrice').textContent = '₱' + itemPrice.toFixed(2);
-
-            // Products: hide doctor selection and show message, auto-complete step 2
-            document.getElementById('doctorsGrid').style.display = 'none';
-            document.getElementById('product-message').style.display = 'block';
-
-            step2Completed = true;
-            document.getElementById('step2-status').textContent = '✓ Completed (Not needed)';
-            document.getElementById('step2-status').className = 'step-status-badge status-completed';
-            document.getElementById('step2').classList.add('completed');
-            document.getElementById('step2').classList.remove('active');
-
-            document.querySelector('.progress-step.step2').classList.add('completed');
-            document.querySelector('.progress-step.step2').classList.remove('active');
-            document.querySelector('.progress-step.step3').classList.remove('disabled');
-            document.querySelector('.progress-step.step3').classList.add('active');
-
-            document.getElementById('step3').classList.remove('locked');
-            document.getElementById('step3').classList.add('active');
-            document.getElementById('step3-status').textContent = 'Required';
-            document.getElementById('step3-status').className = 'step-status-badge status-pending';
-            document.getElementById('step3-content').classList.remove('disabled-content');
-
-            selectedDoctor = 'Not needed';
-            selectedDoctorId = 'any';
-            document.getElementById('summaryDoctor').textContent = 'Not needed';
-
-            setTimeout(() => {
-                scrollToStep('step3');
-            }, 300);
-        }
-
+        // ============================================
+        // DOCTOR SELECTION
+        // ============================================
         function handleDoctorSelection(radio) {
             const doctorCard = radio.closest('.doctor-card');
-            
             if (doctorCard.classList.contains('no-schedule')) {
                 alert('This doctor has no schedule set. Please choose another doctor.');
                 document.getElementById('anyDoctor').checked = true;
-                document.querySelectorAll('.doctor-card').forEach(card => {
-                    card.classList.remove('selected');
-                });
+                document.querySelectorAll('.doctor-card').forEach(card => card.classList.remove('selected'));
                 document.getElementById('anyDoctorCard').classList.add('selected');
                 return false;
             }
-            
-            document.querySelectorAll('#doctorsGrid .doctor-card').forEach(card => {
-                card.classList.remove('selected');
-            });
-            
+            document.querySelectorAll('.doctor-card').forEach(card => card.classList.remove('selected'));
             doctorCard.classList.add('selected');
-            
             const isAnyDoctor = radio.value === 'any';
-            
             if (isAnyDoctor) {
                 selectedDoctor = 'Any Available Doctor';
                 selectedDoctorId = 'any';
@@ -3259,54 +2920,86 @@ $step1_completed = ($selected_item !== null);
                 selectedDoctorId = radio.value;
                 document.getElementById('summaryDoctor').textContent = selectedDoctor;
                 document.getElementById('selectedDoctorName').value = selectedDoctor;
-                
                 const scheduleData = doctorCard.getAttribute('data-schedule');
                 if (scheduleData && scheduleData !== 'null' && scheduleData !== '[]') {
-                    try {
-                        selectedDoctorSchedule = JSON.parse(scheduleData);
-                    } catch(e) {
-                        console.log('Error parsing schedule, using empty object');
-                        selectedDoctorSchedule = {};
-                    }
-                } else {
-                    selectedDoctorSchedule = {};
-                }
+                    try { selectedDoctorSchedule = JSON.parse(scheduleData); } catch(e) { selectedDoctorSchedule = {}; }
+                } else { selectedDoctorSchedule = {}; }
             }
-            
             step2Completed = true;
-            
             document.getElementById('step2-status').textContent = '✓ Completed';
             document.getElementById('step2-status').className = 'step-status-badge status-completed';
             document.getElementById('step2').classList.add('completed');
             document.getElementById('step2').classList.remove('active');
-            
             document.querySelector('.progress-step.step2').classList.add('completed');
             document.querySelector('.progress-step.step2').classList.remove('active');
             document.querySelector('.progress-step.step3').classList.remove('disabled');
             document.querySelector('.progress-step.step3').classList.add('active');
-            
             document.getElementById('step3').classList.remove('locked');
             document.getElementById('step3').classList.add('active');
             document.getElementById('step3-status').textContent = 'Required';
             document.getElementById('step3-status').className = 'step-status-badge status-pending';
             document.getElementById('step3-content').classList.remove('disabled-content');
-            
-            selectedDate = '';
-            selectedTime = '';
+            selectedDate = ''; selectedTime = '';
             document.getElementById('selectedDate').value = '';
             document.getElementById('selectedTime').value = '';
             document.getElementById('summaryDate').textContent = '—';
             document.getElementById('summaryTime').textContent = '—';
-            
             renderCalendar(currentMonth);
-            
-            document.getElementById('timeSlotsContainer').innerHTML = `
-                <div class="text-center" style="padding: 20px; color: var(--text-muted);">
-                    <i class="fas fa-clock"></i> Select a date to see available time slots
-                </div>
-            `;
-            
+            document.getElementById('timeSlotsContainer').innerHTML = `<div class="text-center" style="padding:20px;color:var(--text-muted);"><i class="fas fa-clock"></i> Select a date to see available time slots</div>`;
             setTimeout(() => scrollToStep('step3'), 300);
+        }
+
+        // ============================================
+        // CALENDAR FUNCTIONS
+        // ============================================
+        const BOOKING_BUFFER_MINUTES = 30;
+
+        function getTodayDateStr() {
+            const now = new Date();
+            return now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
+        }
+
+        function getClinicHoursRangeMinutes() {
+            const hoursMatch = clinicHours.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+            if (!hoursMatch) return null;
+            let sHour = parseInt(hoursMatch[1]), sMin = parseInt(hoursMatch[2]||0), sAmPm = (hoursMatch[3]||'am').toLowerCase();
+            let eHour = parseInt(hoursMatch[4]), eMin = parseInt(hoursMatch[5]||0), eAmPm = (hoursMatch[6]||'pm').toLowerCase();
+            if (sAmPm==='pm' && sHour!==12) sHour+=12;
+            if (sAmPm==='am' && sHour===12) sHour=0;
+            if (eAmPm==='pm' && eHour!==12) eHour+=12;
+            if (eAmPm==='am' && eHour===12) eHour=0;
+            return { startMinutes: sHour*60+sMin, endMinutes: eHour*60+eMin };
+        }
+
+        function getEffectiveEndMinutesForDay(dayOfWeek) {
+            const clinicRange = getClinicHoursRangeMinutes();
+            if (!clinicRange) return null;
+            let effectiveEnd = clinicRange.endMinutes;
+            if (selectedItemType==='service' && selectedDoctorId!=='any' && selectedDoctorSchedule && selectedDoctorSchedule[dayOfWeek]) {
+                const ranges = selectedDoctorSchedule[dayOfWeek];
+                if (!Array.isArray(ranges) || ranges.length===0) return null;
+                let latestEnd=0;
+                ranges.forEach(r => {
+                    const parts = r.split('-');
+                    if (parts.length<2) return;
+                    const endParts = parts[1].split(':');
+                    const eh = parseInt(endParts[0]), em = parseInt(endParts[1]||0);
+                    const mins = eh*60+em;
+                    if (mins>latestEnd) latestEnd = mins;
+                });
+                effectiveEnd = Math.min(effectiveEnd, latestEnd);
+            }
+            return effectiveEnd;
+        }
+
+        function hasFutureSlotToday(dateStr, dayOfWeek) {
+            const todayStr = getTodayDateStr();
+            if (dateStr !== todayStr) return true;
+            const now = new Date();
+            const nowMinutes = now.getHours()*60 + now.getMinutes();
+            const effectiveEnd = getEffectiveEndMinutesForDay(dayOfWeek);
+            if (effectiveEnd === null) return false;
+            return (nowMinutes + BOOKING_BUFFER_MINUTES) < effectiveEnd;
         }
 
         function initCalendar() {
@@ -3315,533 +3008,411 @@ $step1_completed = ($selected_item !== null);
         }
 
         function renderCalendar(date) {
-            const year = date.getFullYear();
-            const month = date.getMonth();
-            
+            const year = date.getFullYear(), month = date.getMonth();
             const firstDay = new Date(year, month, 1);
-            const lastDay = new Date(year, month + 1, 0);
-            
+            const lastDay = new Date(year, month+1, 0);
             const daysInMonth = lastDay.getDate();
             const startingDay = firstDay.getDay();
-            
-            let startOffset = startingDay === 0 ? 6 : startingDay - 1;
-            
-            const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
-                               'July', 'August', 'September', 'October', 'November', 'December'];
-            
+            let startOffset = startingDay===0 ? 6 : startingDay-1;
+            const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
             let html = `
                 <div class="calendar-header">
                     <button class="calendar-nav-btn" onclick="changeMonth(-1)">←</button>
                     <h4>${monthNames[month]} ${year}</h4>
                     <button class="calendar-nav-btn" onclick="changeMonth(1)">→</button>
                 </div>
-                <div class="calendar-weekdays">
-                    <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
-                </div>
+                <div class="calendar-weekdays"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div>
                 <div class="calendar-days">
             `;
-            
-            for (let i = 0; i < startOffset; i++) {
-                html += '<div class="calendar-day empty"></div>';
-            }
-            
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-            
-            for (let day = 1; day <= daysInMonth; day++) {
-                const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+            for (let i=0; i<startOffset; i++) html += '<div class="calendar-day empty"></div>';
+            const today = new Date(); today.setHours(0,0,0,0);
+            for (let day=1; day<=daysInMonth; day++) {
+                const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
                 const cellDate = new Date(year, month, day);
-                
                 const isPast = cellDate < today;
-                const dayOfWeek = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'][cellDate.getDay()];
-                
-                let canSelect = false;
-                
-                if (!isPast) {
-                    if (selectedItemType === 'product' || selectedDoctorId === 'any') {
-                        canSelect = true;
-                    } else if (selectedDoctorSchedule && typeof selectedDoctorSchedule === 'object') {
-                        if (selectedDoctorSchedule[dayOfWeek] && 
-                            Array.isArray(selectedDoctorSchedule[dayOfWeek]) && 
-                            selectedDoctorSchedule[dayOfWeek].length > 0) {
-                            canSelect = true;
-                        }
-                    }
-                }
-
+                const dayOfWeek = ['sun','mon','tue','wed','thu','fri','sat'][cellDate.getDay()];
                 const isToday = cellDate.toDateString() === today.toDateString();
-
-                // ✅ NEW: kung "today" ang date at wala nang matitirang oras
-                // (nakalampas na ang lahat ng available hours), i-disable ito.
-                // Idinagdag lang ito bilang karagdagang kondisyon — hindi
-                // binago ang orihinal na canSelect logic sa itaas.
-                if (canSelect && isToday && !hasFutureSlotToday(dateStr, dayOfWeek)) {
-                    canSelect = false;
+                let canSelect = false;
+                if (!isPast) {
+                    if (selectedItemType==='product' || selectedDoctorId==='any') canSelect = true;
+                    else if (selectedDoctorSchedule && typeof selectedDoctorSchedule==='object' && selectedDoctorSchedule[dayOfWeek] && Array.isArray(selectedDoctorSchedule[dayOfWeek]) && selectedDoctorSchedule[dayOfWeek].length>0) canSelect = true;
                 }
-                
+                if (canSelect && isToday && !hasFutureSlotToday(dateStr, dayOfWeek)) canSelect = false;
                 const isSelected = selectedDate === dateStr;
-                
                 let classes = 'calendar-day';
                 if (canSelect) classes += ' available';
                 if (isPast || !canSelect) classes += ' unavailable';
                 if (isToday) classes += ' today';
                 if (isSelected) classes += ' selected';
-                
-                let onclick = canSelect ? `selectDate('${dateStr}', '${dayOfWeek}')` : '';
-                
-                html += `
-                    <div class="${classes}" ${onclick ? `onclick="${onclick}"` : ''}>
-                        ${day}
-                    </div>
-                `;
+                let onclick = canSelect ? `selectDate('${dateStr}','${dayOfWeek}')` : '';
+                html += `<div class="${classes}" ${onclick ? `onclick="${onclick}"` : ''}>${day}</div>`;
             }
-            
             html += '</div>';
-            
             document.getElementById('calendarContainer').innerHTML = html;
         }
 
         function changeMonth(delta) {
-            currentMonth.setMonth(currentMonth.getMonth() + delta);
+            currentMonth.setMonth(currentMonth.getMonth()+delta);
             renderCalendar(currentMonth);
         }
 
         function selectDate(dateStr, dayOfWeek) {
-            if (selectedItemType === 'service' && selectedDoctorId !== 'any' && selectedDoctorSchedule) {
-                if (!selectedDoctorSchedule[dayOfWeek] || 
-                    !Array.isArray(selectedDoctorSchedule[dayOfWeek]) || 
-                    selectedDoctorSchedule[dayOfWeek].length === 0) {
-                    
+            if (selectedItemType==='service' && selectedDoctorId!=='any' && selectedDoctorSchedule) {
+                if (!selectedDoctorSchedule[dayOfWeek] || !Array.isArray(selectedDoctorSchedule[dayOfWeek]) || selectedDoctorSchedule[dayOfWeek].length===0) {
                     alert('Doctor is not available on this date');
                     return;
                 }
             }
-
-            // ✅ NEW: huling check kung "today" at nakalampas na ang lahat ng oras
-            // (karagdagang guard lang — hindi pinapalitan ang umiiral na checks sa itaas)
             if (!hasFutureSlotToday(dateStr, dayOfWeek)) {
                 alert('No more available time slots for today. Please select another date.');
                 return;
             }
-            
             selectedDate = dateStr;
             document.getElementById('selectedDate').value = dateStr;
-            
             renderCalendar(currentMonth);
-            
             const dateObj = new Date(dateStr);
-            const formattedDate = dateObj.toLocaleDateString('en-US', { 
-                year: 'numeric', month: 'long', day: 'numeric' 
-            });
-            document.getElementById('summaryDate').textContent = formattedDate;
-            
+            document.getElementById('summaryDate').textContent = dateObj.toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
             selectedTime = '';
             document.getElementById('selectedTime').value = '';
             document.getElementById('summaryTime').textContent = '—';
-            
             loadTimeSlots(dateStr, dayOfWeek);
         }
 
         function loadTimeSlots(date, dayOfWeek) {
             document.getElementById('timeSlotsContainer').innerHTML = `
-                <div class="time-slots-header">
-                    <h4>Available Time Slots</h4>
-                    <span>${new Date(date).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}</span>
-                </div>
-                <div class="text-center" style="padding: 20px;">
-                    <div class="loading-spinner" style="margin: 0 auto 10px;"></div>
-                    <p style="color: var(--text-muted);">Loading available time slots...</p>
-                </div>
+                <div class="time-slots-header"><h4>Available Time Slots</h4><span>${new Date(date).toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})}</span></div>
+                <div class="text-center" style="padding:20px;"><div class="loading-spinner" style="margin:0 auto 10px;"></div><p style="color:var(--text-muted);">Loading available time slots...</p></div>
             `;
-            
-            setTimeout(() => {
-                generateTimeSlots(date, dayOfWeek);
-            }, 500);
+            setTimeout(() => generateTimeSlots(date, dayOfWeek), 500);
         }
 
-       function generateTimeSlots(date, dayOfWeek) {
-    // Check if clinic hours is empty or invalid
-    if (!clinicHours || clinicHours.trim() === '') {
-        document.getElementById('timeSlotsContainer').innerHTML = `
-            <div class="no-slots-message">
-                <i class="fas fa-exclamation-triangle"></i>
-                <h4>Clinic hours not set</h4>
-                <p>Please contact the clinic directly to schedule your appointment.</p>
-                <a href="clinic-details.php?id=<?php echo $clinic_id; ?>" class="btn-primary" style="margin-top: 15px; display: inline-block;">
-                    <i class="fas fa-phone"></i> Contact Clinic
-                </a>
-            </div>`;
-        return;
-    }
-    
-    // Check for 24/7 or special hours
-    const lowerHours = clinicHours.toLowerCase();
-    if (lowerHours.includes('24/7') || lowerHours.includes('24 hours') || lowerHours.includes('always open')) {
-        // Use default hours 9 AM to 8 PM
-        var clinicStartHour = 9;
-        var clinicStartMinute = 0;
-        var clinicStartAmPm = 'am';
-        var clinicEndHour = 8;
-        var clinicEndMinute = 0;
-        var clinicEndAmPm = 'pm';
-    } else {
-        // Try to parse hours using multiple patterns
-        let hoursMatch = null;
-        
-        // Pattern 1: 9:00 AM - 8:00 PM
-        hoursMatch = clinicHours.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
-        
-        // Pattern 2: 9am-8pm (no spaces)
-        if (!hoursMatch) {
-            hoursMatch = clinicHours.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
-        }
-        
-        // Pattern 3: 09:00 to 20:00 (24-hour format)
-        if (!hoursMatch) {
-            hoursMatch = clinicHours.match(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/i);
-            if (hoursMatch) {
-                clinicStartHour = parseInt(hoursMatch[1]);
-                clinicStartMinute = parseInt(hoursMatch[2]);
-                clinicEndHour = parseInt(hoursMatch[3]);
-                clinicEndMinute = parseInt(hoursMatch[4]);
-                // Use default 9 AM - 8 PM if parsing fails
-                if (isNaN(clinicStartHour)) clinicStartHour = 9;
-                if (isNaN(clinicStartMinute)) clinicStartMinute = 0;
-                if (isNaN(clinicEndHour)) clinicEndHour = 20;
-                if (isNaN(clinicEndMinute)) clinicEndMinute = 0;
-                
-                // Use default hours for time slot generation
-                var startMins = clinicStartHour * 60 + clinicStartMinute;
-                var endMins = clinicEndHour * 60 + clinicEndMinute;
-                generateSlotsFromMinutes(startMins, endMins, date, dayOfWeek);
+        function generateTimeSlots(date, dayOfWeek) {
+            if (!clinicHours || clinicHours.trim()==='') {
+                document.getElementById('timeSlotsContainer').innerHTML = `<div class="no-slots-message"><i class="fas fa-exclamation-triangle"></i><h4>Clinic hours not set</h4><p>Please contact the clinic directly.</p></div>`;
                 return;
             }
-        }
-        
-        if (!hoursMatch) {
-            // Default to 9 AM - 8 PM if parsing fails
-            var clinicStartHour = 9;
-            var clinicStartMinute = 0;
-            var clinicStartAmPm = 'am';
-            var clinicEndHour = 8;
-            var clinicEndMinute = 0;
-            var clinicEndAmPm = 'pm';
-        } else {
-            var clinicStartHour = parseInt(hoursMatch[1]);
-            var clinicStartMinute = hoursMatch[2] ? parseInt(hoursMatch[2]) : 0;
-            var clinicStartAmPm = hoursMatch[3] ? hoursMatch[3].toLowerCase() : 'am';
-            var clinicEndHour = parseInt(hoursMatch[4]);
-            var clinicEndMinute = hoursMatch[5] ? parseInt(hoursMatch[5]) : 0;
-            var clinicEndAmPm = hoursMatch[6] ? hoursMatch[6].toLowerCase() : 'pm';
-        }
-    }
-    
-    // Convert to 24-hour format
-    let startHour24 = clinicStartHour;
-    let endHour24 = clinicEndHour;
-    
-    if (clinicStartAmPm === 'pm' && clinicStartHour !== 12) startHour24 = clinicStartHour + 12;
-    if (clinicStartAmPm === 'am' && clinicStartHour === 12) startHour24 = 0;
-    if (clinicEndAmPm === 'pm' && clinicEndHour !== 12) endHour24 = clinicEndHour + 12;
-    if (clinicEndAmPm === 'am' && clinicEndHour === 12) endHour24 = 0;
-    
-    const clinicStartMinutes = (startHour24 * 60) + clinicStartMinute;
-    const clinicEndMinutes = (endHour24 * 60) + clinicEndMinute;
-    
-    generateSlotsFromMinutes(clinicStartMinutes, clinicEndMinutes, date, dayOfWeek);
-}
-
-function generateSlotsFromMinutes(startMins, endMins, date, dayOfWeek) {
-    let doctorTimeRanges = [];
-    if (selectedItemType === 'service' && selectedDoctorId !== 'any' && selectedDoctorSchedule && selectedDoctorSchedule[dayOfWeek]) {
-        doctorTimeRanges = selectedDoctorSchedule[dayOfWeek];
-    }
-
-    // ✅ NEW: kung "today" ang piniling petsa, kunin ang current time
-    // para masabing anong mga oras ang nakalipas na
-    const todayStrForSlots = getTodayDateStr();
-    const isDateToday = (date === todayStrForSlots);
-    const nowForSlots = new Date();
-    const nowMinutesForSlots = nowForSlots.getHours() * 60 + nowForSlots.getMinutes();
-    
-    let availableSlots = [];
-    let breakSlots = [];
-    let bookedSlotsForDate = [];
-    let unavailableSlots = [];
-    let pastSlots = []; // ✅ NEW: mga oras na nakalipas na (kung "today")
-    
-    for (let mins = startMins; mins < endMins; mins += 30) {
-        const hour = Math.floor(mins / 60);
-        const minute = mins % 60;
-        
-        const ampm = hour >= 12 ? 'PM' : 'AM';
-        const displayHour = hour % 12 === 0 ? 12 : hour % 12;
-        const displayTime = displayHour + ':' + (minute < 10 ? '0' + minute : minute) + ' ' + ampm;
-        const time24h = (hour < 10 ? '0' + hour : hour) + ':' + (minute < 10 ? '0' + minute : minute) + ':00';
-
-        // ✅ NEW: skip/disable kung "today" at nakalipas na (may buffer) ang oras na ito.
-        // Idinagdag lang ito bago ang mga umiiral na checks — hindi binago ang mga ito.
-        if (isDateToday && mins < (nowMinutesForSlots + BOOKING_BUFFER_MINUTES)) {
-            pastSlots.push({ time: displayTime });
-            continue;
-        }
-        
-        const isBooked = bookedSlots.some(slot => 
-            slot.appointment_date === date && 
-            slot.appointment_time === time24h
-        );
-        
-        if (isBooked) {
-            bookedSlotsForDate.push({ time: displayTime, time24h: time24h });
-            continue;
-        }
-        
-        let isBreak = false;
-        let breakName = '';
-        
-        if (clinicBreaks && clinicBreaks.length > 0) {
-            clinicBreaks.forEach(breakItem => {
-                const startMatch = breakItem.break_start.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
-                const endMatch = breakItem.break_end.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
-                
-                if (startMatch && endMatch) {
-                    let bsHour = parseInt(startMatch[1]);
-                    let bsMinute = startMatch[2] ? parseInt(startMatch[2]) : 0;
-                    let bsAmPm = startMatch[3].toLowerCase();
-                    
-                    let beHour = parseInt(endMatch[1]);
-                    let beMinute = endMatch[2] ? parseInt(endMatch[2]) : 0;
-                    let beAmPm = endMatch[3].toLowerCase();
-                    
-                    if (bsAmPm === 'pm' && bsHour !== 12) bsHour += 12;
-                    if (bsAmPm === 'am' && bsHour === 12) bsHour = 0;
-                    if (beAmPm === 'pm' && beHour !== 12) beHour += 12;
-                    if (beAmPm === 'am' && beHour === 12) beHour = 0;
-                    
-                    const breakStartMins = (bsHour * 60) + bsMinute;
-                    const breakEndMins = (beHour * 60) + beMinute;
-                    
-                    if (mins >= breakStartMins && mins < breakEndMins) {
-                        isBreak = true;
-                        breakName = breakItem.break_name;
+            const lowerHours = clinicHours.toLowerCase();
+            let clinicStartHour, clinicStartMinute, clinicStartAmPm, clinicEndHour, clinicEndMinute, clinicEndAmPm;
+            if (lowerHours.includes('24/7') || lowerHours.includes('24 hours')) {
+                clinicStartHour=9; clinicStartMinute=0; clinicStartAmPm='am';
+                clinicEndHour=8; clinicEndMinute=0; clinicEndAmPm='pm';
+            } else {
+                let hoursMatch = clinicHours.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+                if (!hoursMatch) hoursMatch = clinicHours.match(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/i);
+                if (hoursMatch) {
+                    if (hoursMatch[1] && hoursMatch[4]) {
+                        clinicStartHour = parseInt(hoursMatch[1]); clinicStartMinute = parseInt(hoursMatch[2]||0); clinicStartAmPm = hoursMatch[3] ? hoursMatch[3].toLowerCase() : 'am';
+                        clinicEndHour = parseInt(hoursMatch[4]); clinicEndMinute = parseInt(hoursMatch[5]||0); clinicEndAmPm = hoursMatch[6] ? hoursMatch[6].toLowerCase() : 'pm';
+                    } else {
+                        clinicStartHour = parseInt(hoursMatch[1]); clinicStartMinute = parseInt(hoursMatch[2]||0);
+                        clinicEndHour = parseInt(hoursMatch[3]); clinicEndMinute = parseInt(hoursMatch[4]||0);
+                        clinicStartAmPm = (clinicStartHour >= 12) ? 'pm' : 'am';
+                        clinicEndAmPm = (clinicEndHour >= 12) ? 'pm' : 'am';
                     }
-                }
-            });
-        }
-        
-        if (isBreak) {
-            breakSlots.push({ time: displayTime, breakName: breakName });
-            continue;
-        }
-        
-        if (selectedItemType === 'service' && selectedDoctorId !== 'any' && doctorTimeRanges.length > 0) {
-            let isWithinDoctorSchedule = false;
-            
-            for (const timeRange of doctorTimeRanges) {
-                const [rangeStart, rangeEnd] = timeRange.split('-');
-                
-                const startParts = rangeStart.split(':');
-                const endParts = rangeEnd.split(':');
-                
-                const rangeStartHour = parseInt(startParts[0]);
-                const rangeStartMin = parseInt(startParts[1] || '0');
-                const rangeEndHour = parseInt(endParts[0]);
-                const rangeEndMin = parseInt(endParts[1] || '0');
-                
-                const rangeStartMins = rangeStartHour * 60 + rangeStartMin;
-                const rangeEndMins = rangeEndHour * 60 + rangeEndMin;
-                
-                if (mins >= rangeStartMins && mins < rangeEndMins) {
-                    isWithinDoctorSchedule = true;
-                    break;
+                } else {
+                    clinicStartHour=9; clinicStartMinute=0; clinicStartAmPm='am';
+                    clinicEndHour=8; clinicEndMinute=0; clinicEndAmPm='pm';
                 }
             }
+            let startHour24 = clinicStartHour, endHour24 = clinicEndHour;
+            if (clinicStartAmPm==='pm' && clinicStartHour!==12) startHour24 += 12;
+            if (clinicStartAmPm==='am' && clinicStartHour===12) startHour24 = 0;
+            if (clinicEndAmPm==='pm' && clinicEndHour!==12) endHour24 += 12;
+            if (clinicEndAmPm==='am' && clinicEndHour===12) endHour24 = 0;
+            const clinicStartMinutes = startHour24*60 + clinicStartMinute;
+            const clinicEndMinutes = endHour24*60 + clinicEndMinute;
             
-            if (!isWithinDoctorSchedule) {
-                unavailableSlots.push({ time: displayTime, reason: 'Outside doctor hours' });
-                continue;
+            let doctorTimeRanges = [];
+            if (selectedItemType==='service' && selectedDoctorId!=='any' && selectedDoctorSchedule && selectedDoctorSchedule[dayOfWeek]) {
+                doctorTimeRanges = selectedDoctorSchedule[dayOfWeek];
             }
+            const todayStrForSlots = getTodayDateStr();
+            const isDateToday = (date === todayStrForSlots);
+            const nowForSlots = new Date();
+            const nowMinutesForSlots = nowForSlots.getHours()*60 + nowForSlots.getMinutes();
+            
+            let availableSlots=[], breakSlots=[], bookedSlotsForDate=[], unavailableSlots=[], pastSlots=[];
+            for (let mins = clinicStartMinutes; mins < clinicEndMinutes; mins += 30) {
+                const hour = Math.floor(mins/60), minute = mins%60;
+                const ampm = hour>=12 ? 'PM' : 'AM';
+                const displayHour = hour%12===0 ? 12 : hour%12;
+                const displayTime = displayHour+':'+(minute<10?'0'+minute:minute)+' '+ampm;
+                const time24h = (hour<10?'0'+hour:hour)+':'+(minute<10?'0'+minute:minute)+':00';
+                if (isDateToday && mins < (nowMinutesForSlots + BOOKING_BUFFER_MINUTES)) { pastSlots.push({time:displayTime}); continue; }
+                const isBooked = bookedSlots.some(slot => slot.appointment_date === date && slot.appointment_time === time24h);
+                if (isBooked) { bookedSlotsForDate.push({time:displayTime,time24h:time24h}); continue; }
+                let isBreak=false, breakName='';
+                if (clinicBreaks && clinicBreaks.length>0) {
+                    clinicBreaks.forEach(breakItem => {
+                        const startMatch = breakItem.break_start.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
+                        const endMatch = breakItem.break_end.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
+                        if (startMatch && endMatch) {
+                            let bsHour = parseInt(startMatch[1]), bsMin = parseInt(startMatch[2]||0), bsAmPm = startMatch[3].toLowerCase();
+                            let beHour = parseInt(endMatch[1]), beMin = parseInt(endMatch[2]||0), beAmPm = endMatch[3].toLowerCase();
+                            if (bsAmPm==='pm' && bsHour!==12) bsHour+=12;
+                            if (bsAmPm==='am' && bsHour===12) bsHour=0;
+                            if (beAmPm==='pm' && beHour!==12) beHour+=12;
+                            if (beAmPm==='am' && beHour===12) beHour=0;
+                            const breakStartMins = bsHour*60+bsMin, breakEndMins = beHour*60+beMin;
+                            if (mins >= breakStartMins && mins < breakEndMins) { isBreak=true; breakName = breakItem.break_name; }
+                        }
+                    });
+                }
+                if (isBreak) { breakSlots.push({time:displayTime, breakName:breakName}); continue; }
+                if (selectedItemType==='service' && selectedDoctorId!=='any' && doctorTimeRanges.length>0) {
+                    let isWithinDoctorSchedule = false;
+                    for (const timeRange of doctorTimeRanges) {
+                        const [rangeStart, rangeEnd] = timeRange.split('-');
+                        const startParts = rangeStart.split(':'), endParts = rangeEnd.split(':');
+                        const rangeStartHour = parseInt(startParts[0]), rangeStartMin = parseInt(startParts[1]||0);
+                        const rangeEndHour = parseInt(endParts[0]), rangeEndMin = parseInt(endParts[1]||0);
+                        const rangeStartMins = rangeStartHour*60+rangeStartMin, rangeEndMins = rangeEndHour*60+rangeEndMin;
+                        if (mins >= rangeStartMins && mins < rangeEndMins) { isWithinDoctorSchedule = true; break; }
+                    }
+                    if (!isWithinDoctorSchedule) { unavailableSlots.push({time:displayTime}); continue; }
+                }
+                availableSlots.push({time:displayTime, time24h:time24h});
+            }
+            let html = `<div class="time-slots-header"><h4>Available Time Slots</h4><span>${new Date(date).toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})}</span></div>`;
+            if (availableSlots.length>0) {
+                html += '<div class="time-slots-grid">';
+                availableSlots.forEach(slot => { html += `<div class="time-slot-card available" onclick="selectTime('${slot.time}','${slot.time24h}',this)">${slot.time}</div>`; });
+                html += '</div>';
+            }
+            if (pastSlots.length>0) {
+                html += '<h5 style="margin:15px 0 5px;color:var(--text-muted);">Already Passed</h5><div class="time-slots-grid">';
+                pastSlots.forEach(slot => { html += `<div class="time-slot-card disabled" title="This time has already passed">${slot.time}<span class="slot-label">Passed</span></div>`; });
+                html += '</div>';
+            }
+            if (unavailableSlots.length>0) {
+                html += '<h5 style="margin:15px 0 5px;color:var(--danger);">Outside Doctor Hours</h5><div class="time-slots-grid">';
+                unavailableSlots.forEach(slot => { html += `<div class="time-slot-card unavailable" title="Outside doctor\'s working hours">${slot.time}<span class="slot-label">Not available</span></div>`; });
+                html += '</div>';
+            }
+            if (bookedSlotsForDate.length>0) {
+                html += '<h5 style="margin:15px 0 5px;color:var(--danger);">Already Booked</h5><div class="time-slots-grid">';
+                bookedSlotsForDate.forEach(slot => { html += `<div class="time-slot-card booked" title="Already booked">${slot.time}<span class="slot-label">Booked</span></div>`; });
+                html += '</div>';
+            }
+            if (breakSlots.length>0) {
+                html += '<h5 style="margin:15px 0 5px;color:var(--warning);">Break Times</h5><div class="time-slots-grid">';
+                breakSlots.forEach(slot => { html += `<div class="time-slot-card disabled" title="${slot.breakName}">${slot.time}<span class="slot-label">${slot.breakName}</span></div>`; });
+                html += '</div>';
+            }
+            if (availableSlots.length===0 && breakSlots.length===0 && bookedSlotsForDate.length===0 && unavailableSlots.length===0 && pastSlots.length===0) {
+                html = '<div class="no-slots-message"><i class="fas fa-calendar-times"></i><h4>No available slots</h4><p>Please select another date.</p></div>';
+            }
+            if (availableSlots.length===0 && isDateToday && pastSlots.length>0 && unavailableSlots.length===0 && bookedSlotsForDate.length===0) {
+                html = `<div class="time-slots-header"><h4>Available Time Slots</h4><span>${new Date(date).toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})}</span></div>
+                        <div class="no-slots-message"><i class="fas fa-clock"></i><h4>No more slots today</h4><p>All remaining time slots for today have passed. Please select another date.</p></div>`;
+            }
+            document.getElementById('timeSlotsContainer').innerHTML = html;
         }
-        
-        availableSlots.push({ time: displayTime, time24h: time24h });
-    }
-    
-    let html = `
-        <div class="time-slots-header">
-            <h4>Available Time Slots</h4>
-            <span>${new Date(date).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}</span>
-        </div>
-    `;
-    
-    if (availableSlots.length > 0) {
-        html += '<div class="time-slots-grid">';
-        availableSlots.forEach(slot => {
-            html += `<div class="time-slot-card available" onclick="selectTime('${slot.time}', '${slot.time24h}', this)">${slot.time}</div>`;
-        });
-        html += '</div>';
-    }
 
-    // ✅ NEW: ipakita ang mga oras na nakalipas na (para malinaw sa user)
-    if (pastSlots.length > 0) {
-        html += '<h5 style="margin: 15px 0 5px; color: var(--text-muted);">Already Passed</h5>';
-        html += '<div class="time-slots-grid">';
-        pastSlots.forEach(slot => {
-            html += `<div class="time-slot-card disabled" title="This time has already passed">${slot.time}<span class="slot-label">Passed</span></div>`;
-        });
-        html += '</div>';
-    }
-    
-    if (unavailableSlots.length > 0) {
-        html += '<h5 style="margin: 15px 0 5px; color: var(--danger);">Outside Doctor Hours</h5>';
-        html += '<div class="time-slots-grid">';
-        unavailableSlots.forEach(slot => {
-            html += `<div class="time-slot-card unavailable" title="Outside doctor's working hours">${slot.time}<span class="slot-label">Not available</span></div>`;
-        });
-        html += '</div>';
-    }
-    
-    if (bookedSlotsForDate.length > 0) {
-        html += '<h5 style="margin: 15px 0 5px; color: var(--danger);">Already Booked</h5>';
-        html += '<div class="time-slots-grid">';
-        bookedSlotsForDate.forEach(slot => {
-            html += `<div class="time-slot-card booked" title="Already booked">${slot.time}<span class="slot-label">Booked</span></div>`;
-        });
-        html += '</div>';
-    }
-    
-    if (breakSlots.length > 0) {
-        html += '<h5 style="margin: 15px 0 5px; color: var(--warning);">Break Times</h5>';
-        html += '<div class="time-slots-grid">';
-        breakSlots.forEach(slot => {
-            html += `<div class="time-slot-card disabled" title="${slot.breakName}">${slot.time}<span class="slot-label">${slot.breakName}</span></div>`;
-        });
-        html += '</div>';
-    }
-    
-    if (availableSlots.length === 0 && breakSlots.length === 0 && bookedSlotsForDate.length === 0 && unavailableSlots.length === 0 && pastSlots.length === 0) {
-        html = '<div class="no-slots-message"><i class="fas fa-calendar-times"></i><h4>No available slots</h4><p>Please select another date.</p></div>';
-    }
-
-    // ✅ NEW: kung wala nang natitirang available slot dahil lahat ay nakalipas
-    // na (today) at walang break/booked/unavailable, palitan ang message
-    if (availableSlots.length === 0 && isDateToday && pastSlots.length > 0 &&
-        unavailableSlots.length === 0 && bookedSlotsForDate.length === 0) {
-        html = `
-            <div class="time-slots-header">
-                <h4>Available Time Slots</h4>
-                <span>${new Date(date).toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })}</span>
-            </div>
-            <div class="no-slots-message">
-                <i class="fas fa-clock"></i>
-                <h4>No more slots today</h4>
-                <p>All remaining time slots for today have passed. Please select another date.</p>
-            </div>
-        `;
-    }
-    
-    document.getElementById('timeSlotsContainer').innerHTML = html;
-}
-       
         function selectTime(displayTime, time24h, element) {
-            document.querySelectorAll('.time-slot-card').forEach(slot => {
-                slot.classList.remove('selected');
-            });
-            
+            document.querySelectorAll('.time-slot-card').forEach(slot => slot.classList.remove('selected'));
             element.classList.add('selected');
-            
             document.getElementById('selectedTime').value = time24h;
             selectedTime = displayTime;
-            
             document.getElementById('summaryTime').textContent = displayTime;
-            
             step3Completed = true;
-            
             document.getElementById('step3-status').textContent = '✓ Completed';
             document.getElementById('step3-status').className = 'step-status-badge status-completed';
             document.getElementById('step3').classList.add('completed');
             document.getElementById('step3').classList.remove('active');
-            
             document.querySelector('.progress-step.step3').classList.add('completed');
             document.querySelector('.progress-step.step3').classList.remove('active');
             document.querySelector('.progress-step.step4').classList.remove('disabled');
             document.querySelector('.progress-step.step4').classList.add('active');
-            
             document.getElementById('step4').classList.remove('locked');
             document.getElementById('step4').classList.add('active');
             document.getElementById('step4-status').textContent = 'Required';
             document.getElementById('step4-status').className = 'step-status-badge status-pending';
             document.getElementById('step4-content').classList.remove('disabled-content');
-            
             document.querySelector('input[name="contact_number"]').disabled = false;
             document.querySelector('textarea[name="notes"]').disabled = false;
-            
-            setTimeout(() => {
-                scrollToStep('step4');
-            }, 300);
+            handleContactInput();
+            setTimeout(() => scrollToStep('step4'), 300);
         }
 
         function handleContactInput() {
             const contact = document.querySelector('input[name="contact_number"]').value;
-            
-            const itemReady = selectedItemType === 'product' ? step1Completed : selectedServices.length > 0;
-
+            const itemReady = (selectedItemType === 'service') ? selectedServices.length > 0 : step1Completed;
             if (contact && itemReady && (step2Completed || selectedItemType === 'product') && step3Completed && selectedTime) {
                 document.getElementById('step4-status').textContent = '✓ Ready';
                 document.getElementById('step4-status').className = 'step-status-badge status-completed';
                 document.getElementById('step4').classList.add('completed');
                 document.getElementById('step4').classList.remove('active');
-                
                 document.querySelector('.progress-step.step4').classList.add('completed');
                 document.querySelector('.progress-step.step4').classList.remove('active');
-                
                 document.getElementById('confirmBtn').disabled = false;
             } else {
                 document.getElementById('confirmBtn').disabled = true;
             }
-            
             document.getElementById('summaryContact').textContent = contact || '—';
         }
 
-        // Form validation
+        // ============================================
+        // ✅ SWITCH MAIN TAB - No validation, just UI
+        // ============================================
+        function switchMainTab(tab) {
+            // Clear any error messages and toasts
+            clearErrorMessage();
+
+            // Update active tab button
+            document.querySelectorAll('.main-tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelector(`.main-tab-btn[data-tab="${tab}"]`).classList.add('active');
+
+            // Show the correct tab content
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+            document.getElementById('tab-' + tab).classList.add('active');
+
+            // Render products/services
+            if (tab === 'eyewear') renderEyewear();
+            else if (tab === 'contact_lenses') renderContactLenses();
+            else if (tab === 'accessories') renderAccessories();
+            else if (tab === 'services') renderServices();
+
+            // Update step 2 UI based on tab
+            if (tab === 'services') {
+                document.getElementById('doctorsGrid').style.display = 'grid';
+                document.getElementById('product-message').style.display = 'none';
+            } else {
+                document.getElementById('doctorsGrid').style.display = 'none';
+                document.getElementById('product-message').style.display = 'block';
+                if (step1Completed) {
+                    document.getElementById('step2-status').textContent = '✓ Completed (Not needed)';
+                    document.getElementById('step2-status').className = 'step-status-badge status-completed';
+                    document.getElementById('step2').classList.add('completed');
+                    document.getElementById('step2').classList.remove('active');
+                    document.querySelector('.progress-step.step2').classList.add('completed');
+                    document.querySelector('.progress-step.step2').classList.remove('active');
+                }
+            }
+
+            // Reset date/time if not yet completed
+            if (!step3Completed) {
+                selectedDate = '';
+                selectedTime = '';
+                document.getElementById('selectedDate').value = '';
+                document.getElementById('selectedTime').value = '';
+                document.getElementById('summaryDate').textContent = '—';
+                document.getElementById('summaryTime').textContent = '—';
+                renderCalendar(currentMonth);
+                document.getElementById('timeSlotsContainer').innerHTML = `<div class="text-center" style="padding:20px;color:var(--text-muted);"><i class="fas fa-clock"></i> Select a date to see available time slots</div>`;
+            }
+        }
+
+        // ============================================
+        // FORM VALIDATION
+        // ============================================
         document.getElementById('bookingForm').addEventListener('submit', function(e) {
             const contactInput = document.querySelector('input[name="contact_number"]');
-            const itemReady = selectedItemType === 'product' ? step1Completed : selectedServices.length > 0;
+            const itemReady = (selectedItemType === 'service') ? selectedServices.length > 0 : step1Completed;
+
+            if (selectedItemType === 'product' && itemReady) {
+                const deliveryRadio = document.querySelector('input[name="delivery_type"][value="delivery"]');
+                if (deliveryRadio && deliveryRadio.checked) {
+                    let addressInput = document.getElementById('deliveryAddressInput');
+                    if (!addressInput || !addressInput.value.trim()) {
+                        e.preventDefault();
+                        showToast('Please enter your delivery address.', 'error');
+                        addressInput.style.borderColor = 'var(--danger)';
+                        addressInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        return;
+                    }
+                }
+            }
 
             if (!itemReady || !step3Completed || !selectedTime || !contactInput.value) {
                 e.preventDefault();
                 showToast('Please complete all steps before confirming your booking.', 'error');
-                
-                if (!itemReady) {
-                    scrollToStep('step1');
-                } else if (selectedItemType === 'service' && !step2Completed) {
-                    scrollToStep('step2');
-                } else if (!step3Completed || !selectedTime) {
-                    scrollToStep('step3');
-                } else if (!contactInput.value) {
-                    scrollToStep('step4');
-                    contactInput.style.borderColor = 'var(--danger)';
-                }
+                if (!itemReady) scrollToStep('step1');
+                else if (selectedItemType === 'service' && !step2Completed) scrollToStep('step2');
+                else if (!step3Completed || !selectedTime) scrollToStep('step3');
+                else if (!contactInput.value) { scrollToStep('step4'); contactInput.style.borderColor='var(--danger)'; }
                 return;
             }
-
-            // ✅ NEW: huling client-side check bago mag-submit — kung sakaling
-            // nakaupo lang ang user sa page at nakalipas na ang piniling oras.
-            // Karagdagang guard lang ito; hindi nito binabago ang itaas na validation.
             const selDate = document.getElementById('selectedDate').value;
             const selTimeVal = document.getElementById('selectedTime').value;
             const todayStrSubmit = getTodayDateStr();
-
             if (selDate === todayStrSubmit && selTimeVal) {
                 const nowSubmit = new Date();
-                const nowMinutesSubmit = nowSubmit.getHours() * 60 + nowSubmit.getMinutes();
+                const nowMinutesSubmit = nowSubmit.getHours()*60 + nowSubmit.getMinutes();
                 const [hSubmit, mSubmit] = selTimeVal.split(':').map(Number);
-                const selMinutesSubmit = (hSubmit * 60) + mSubmit;
-
+                const selMinutesSubmit = hSubmit*60 + mSubmit;
                 if (selMinutesSubmit < nowMinutesSubmit) {
                     e.preventDefault();
                     showToast('That time has already passed. Please choose another time.', 'error');
                     scrollToStep('step3');
                 }
+            }
+        });
+
+        // ============================================
+        // INIT
+        // ============================================
+        document.addEventListener('DOMContentLoaded', function() {
+            clearErrorMessage();
+            const savedTheme = localStorage.getItem('theme') || 'light';
+            if (savedTheme === 'dark') {
+                document.documentElement.classList.add('theme-dark');
+                const themeToggle = document.querySelector('#themeToggle i');
+                if (themeToggle) themeToggle.className = 'fas fa-sun';
+            }
+            initCalendar();
+            
+            document.querySelectorAll('#eyewearDeliverySection input[name="delivery_type"], #contactLensDeliverySection input[name="delivery_type"], #accessoryDeliverySection input[name="delivery_type"]').forEach(radio => {
+                radio.addEventListener('change', function() {
+                    let section = 'eyewear';
+                    if (this.closest('#contactLensDeliverySection')) section = 'cl';
+                    else if (this.closest('#accessoryDeliverySection')) section = 'acc';
+                    toggleDeliveryFields(section);
+                });
+            });
+
+            if (selectedItemType === 'product' && selectedItemId) {
+                const inEyewear = eyewearProducts.some(p => p.id == selectedItemId);
+                const inContact = contactLensProducts.some(p => p.id == selectedItemId);
+                const inAccessory = accessoryProducts.some(p => p.id == selectedItemId);
+                let targetTab = 'eyewear';
+                if (inContact) targetTab = 'contact_lenses';
+                else if (inAccessory) targetTab = 'accessories';
+                switchMainTab(targetTab);
+                if (inAccessory) {
+                    setTimeout(() => {
+                        const prod = accessoryProducts.find(p => p.id == selectedItemId);
+                        if (prod) selectAccessory(prod.id, prod.name, prod.price);
+                    }, 300);
+                } else if (inEyewear) {
+                    setTimeout(() => {
+                        const prod = eyewearProducts.find(p => p.id == selectedItemId);
+                        if (prod) selectEyewearProduct(prod.id, prod.name, prod.price);
+                    }, 300);
+                } else if (inContact) {
+                    setTimeout(() => {
+                        const prod = contactLensProducts.find(p => p.id == selectedItemId);
+                        if (prod) selectContactProduct(prod.id, prod.name, prod.price);
+                    }, 300);
+                }
+            } else if (selectedItemType === 'service' && selectedServices.length > 0) {
+                switchMainTab('services');
+                updateServiceSummary();
+                checkStep1Complete();
+                document.getElementById('step2').classList.remove('locked');
+                document.getElementById('step2').classList.add('active');
+                document.getElementById('step2-status').textContent = 'Required';
+                document.getElementById('step2-status').className = 'step-status-badge status-pending';
+                document.getElementById('step2-content').classList.remove('disabled-content');
+                document.querySelector('.progress-step.step2').classList.remove('disabled');
+                document.querySelector('.progress-step.step2').classList.add('active');
+                document.getElementById('doctorsGrid').style.display = 'grid';
+                document.getElementById('product-message').style.display = 'none';
+            } else {
+                switchMainTab('services');
+            }
+            if (document.getElementById('anyDoctor')) {
+                document.getElementById('anyDoctor').checked = true;
             }
         });
     </script>

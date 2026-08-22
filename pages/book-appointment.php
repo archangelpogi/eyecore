@@ -14,7 +14,7 @@ $user_id = $_SESSION['user_id'];
 // ============================================
 // GET BOOKING TYPE FROM URL
 // ============================================
-$booking_type = isset($_GET['type']) ? $_GET['type'] : 'service'; // default: service
+$booking_type = isset($_GET['type']) ? $_GET['type'] : 'service';
 
 // Get clinic ID from URL
 $clinic_id = isset($_GET['clinic_id']) ? (int)$_GET['clinic_id'] : 0;
@@ -81,31 +81,36 @@ function isProductDeliverable($product, $clinic) {
 // ✅ CHECK IF PRODUCT IS PRESCRIPTION
 // ============================================
 function isPrescriptionProduct($product) {
-    // Check requires_prescription flag
+    $category = $product['category'] ?? '';
+    
+    if (in_array($category, ['Service', 'Eye Exam', 'Treatment', 'Screening'])) {
+        return false;
+    }
+    
+    if (in_array($category, ['Frames', 'Accessories', 'Parts', 'Cleaning Kits'])) {
+        return false;
+    }
+    
     if (isset($product['requires_prescription']) && $product['requires_prescription'] == 1) {
         return true;
     }
     
-    // Check lens_power
     if (isset($product['lens_power']) && !empty($product['lens_power'])) {
         $power = trim($product['lens_power']);
         if ($power !== 'plano' && $power !== '0' && $power !== '0.00') {
             return true;
         }
+        return false;
     }
     
-    // Check lens_type
     if (isset($product['lens_type']) && in_array($product['lens_type'], ['prescription', 'rx', 'graded'])) {
         return true;
     }
     
-    // Check category - Frames and Accessories are non-prescription by default
-    $category = $product['category'] ?? '';
-    if (in_array($category, ['Frames', 'Accessories', 'Parts', 'Cleaning Kits'])) {
-        return false;
+    if (in_array($category, ['Eyeglasses', 'Lenses'])) {
+        return true;
     }
     
-    // Default: treat as non-prescription
     return false;
 }
 
@@ -144,7 +149,7 @@ if ($item_id > 0 && $item_type_param == 'service') {
     $selected_item_id = $item_id;
 }
 
-// Get all services - always show for service mode
+// Get all services
 $services_query = mysqli_query($conn, "SELECT s.*, 
                                         GROUP_CONCAT(d.name SEPARATOR ', ') as available_doctors
                                         FROM services s
@@ -158,7 +163,7 @@ $services_query = mysqli_query($conn, "SELECT s.*,
 $all_products_query = mysqli_query($conn, "SELECT *, 'product' as type FROM products WHERE clinic_id = $clinic_id ORDER BY category, name");
 
 // ============================================
-// ✅ CATEGORIZE PRODUCTS FOR TABS (based on booking type)
+// ✅ CATEGORIZE PRODUCTS FOR TABS
 // ============================================
 $eyewear_products = [];
 $contact_lens_products = [];
@@ -168,19 +173,35 @@ while($prod = mysqli_fetch_assoc($all_products_query)) {
     $cat = $prod['category'] ?? '';
     $is_prescription = isPrescriptionProduct($prod);
     
-    // Filter based on booking type
+    $show_product = false;
+    
     if ($booking_type === 'service') {
-        // Service mode: show services + prescription products only
-        // Skip non-prescription products
-        if (!$is_prescription && !in_array($cat, ['Service', 'Eye Exam', 'Treatment', 'Screening'])) {
+        if (in_array($cat, ['Service', 'Eye Exam', 'Treatment', 'Screening'])) {
             continue;
+        }
+        if ($is_prescription) {
+            $show_product = true;
+        }
+        if (in_array($cat, ['Eyeglasses', 'Lenses'])) {
+            $show_product = true;
         }
     } else {
-        // Product mode: show non-prescription products only
-        // Skip prescription products and services
-        if ($is_prescription || in_array($cat, ['Service', 'Eye Exam', 'Treatment', 'Screening'])) {
+        if (in_array($cat, ['Service', 'Eye Exam', 'Treatment', 'Screening'])) {
             continue;
         }
+        if (!$is_prescription) {
+            $show_product = true;
+        }
+        if (in_array($cat, ['Frames', 'Accessories', 'Parts', 'Cleaning Kits'])) {
+            $show_product = true;
+        }
+        if ($cat === 'Sunglasses' && !$is_prescription) {
+            $show_product = true;
+        }
+    }
+    
+    if (!$show_product) {
+        continue;
     }
     
     if (in_array($cat, ['Frames', 'Eyeglasses', 'Sunglasses', 'Lenses'])) {
@@ -206,9 +227,6 @@ foreach (array_merge($eyewear_products, $contact_lens_products, $accessory_produ
         'free_delivery_minimum' => $clinic['free_delivery_minimum'] ?? 0
     ];
 }
-
-// Reset products query for display
-mysqli_data_seek($all_products_query, 0);
 
 // Get doctors - only needed for service mode
 $doctors_list = [];
@@ -277,6 +295,8 @@ if ($selected_item_type === 'product') {
     } elseif (in_array($cat, ['Accessories', 'Parts', 'Cleaning Kits'])) {
         $active_tab = 'accessories';
     }
+} elseif ($selected_item_type === 'service') {
+    $active_tab = 'services';
 }
 
 // ============================================
@@ -286,7 +306,6 @@ if (isset($_GET['ajax_get_product_details']) && isset($_GET['product_id'])) {
     header('Content-Type: application/json');
     $product_id = (int)$_GET['product_id'];
 
-    // Get colors
     $colors = [];
     $colors_query = mysqli_query($conn, "
         SELECT color_code, color_name, quantity
@@ -298,7 +317,6 @@ if (isset($_GET['ajax_get_product_details']) && isset($_GET['product_id'])) {
         $colors[] = $c;
     }
 
-    // Get extra fields (for sizes)
     $extra_fields = [];
     $prod_query = mysqli_query($conn, "SELECT extra_fields_json FROM products WHERE id = $product_id");
     $prod_data = mysqli_fetch_assoc($prod_query);
@@ -333,6 +351,15 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
     $selected_color_code = mysqli_real_escape_string($conn, $_POST['selected_color_code'] ?? '');
     $selected_color_name = mysqli_real_escape_string($conn, $_POST['selected_color_name'] ?? '');
     $selected_frame_size = mysqli_real_escape_string($conn, $_POST['selected_frame_size'] ?? '');
+    
+    // Prescription fields from the working product-view
+    $prescription_knowledge = mysqli_real_escape_string($conn, $_POST['prescription_knowledge'] ?? '');
+    $od_sph = mysqli_real_escape_string($conn, $_POST['od_sph'] ?? '');
+    $od_cyl = mysqli_real_escape_string($conn, $_POST['od_cyl'] ?? '');
+    $od_axis = mysqli_real_escape_string($conn, $_POST['od_axis'] ?? '');
+    $os_sph = mysqli_real_escape_string($conn, $_POST['os_sph'] ?? '');
+    $os_cyl = mysqli_real_escape_string($conn, $_POST['os_cyl'] ?? '');
+    $os_axis = mysqli_real_escape_string($conn, $_POST['os_axis'] ?? '');
 
     $selected_service_ids = [];
     $selected_product_id = 0;
@@ -345,7 +372,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
 
     $hasSelection = ($item_type_db === 'service') ? !empty($selected_service_ids) : $selected_product_id > 0;
 
-    // For product mode, appointment_date and appointment_time are optional (not required)
     $is_service_mode = ($booking_type === 'service');
     $is_product_mode = ($booking_type === 'product');
 
@@ -521,6 +547,13 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 }
                 
                 $notes_final = $notes . ' | Lens: ' . $selected_lens_type . ' | Color: ' . $selected_color_name . ' | Size: ' . $selected_frame_size;
+                if (!empty($prescription_knowledge)) {
+                    $notes_final .= ' | Prescription: ' . $prescription_knowledge;
+                    if ($prescription_knowledge === 'know') {
+                        $notes_final .= ' | OD: ' . $od_sph . '/' . $od_cyl . 'x' . $od_axis;
+                        $notes_final .= ' | OS: ' . $os_sph . '/' . $os_cyl . 'x' . $os_axis;
+                    }
+                }
 
                 $insert_order = mysqli_query($conn, "
                     INSERT INTO customer_orders (
@@ -627,8 +660,14 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 if (!empty($selected_lens_type)) $appointment_notes .= ' | Lens: ' . $selected_lens_type;
                 if (!empty($selected_color_name)) $appointment_notes .= ' | Color: ' . $selected_color_name;
                 if (!empty($selected_frame_size)) $appointment_notes .= ' | Size: ' . $selected_frame_size;
+                if (!empty($prescription_knowledge)) {
+                    $appointment_notes .= ' | Prescription: ' . $prescription_knowledge;
+                    if ($prescription_knowledge === 'know') {
+                        $appointment_notes .= ' | OD: ' . $od_sph . '/' . $od_cyl . 'x' . $od_axis;
+                        $appointment_notes .= ' | OS: ' . $os_sph . '/' . $os_cyl . 'x' . $os_axis;
+                    }
+                }
 
-                // For product mode, we still need to insert into appointments but with NULL date/time
                 if ($is_product_mode) {
                     $appointment_date = 'NULL';
                     $appointment_time = 'NULL';
@@ -671,7 +710,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                     }
 
                     if ($is_product_mode) {
-                        // For product mode, redirect to orders page
                         $success_message = 'Order placed successfully!';
                         $_POST = array();
                     } else {
@@ -707,9 +745,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
     <title><?php echo $booking_type === 'service' ? 'Book Service' : 'Shop Products'; ?> - <?php echo $clinic['name']; ?></title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
-        /* ============================================
-           ALL STYLES - SAME AS BEFORE
-           ============================================ */
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
         html, body { margin: 0 !important; padding: 0 !important; width: 100%; overflow-x: hidden; background: var(--bg-primary); }
         body { min-height: 100vh; transition: background-color 0.3s, color 0.3s; }
@@ -807,7 +842,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         .progress-step.active .step-label { color: var(--primary); }
         .progress-step.completed .step-label { color: var(--success); }
 
-        /* Hide steps based on booking type */
         <?php if ($booking_type === 'product'): ?>
         .progress-step.step2, .progress-step.step3 {
             display: none !important;
@@ -876,8 +910,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             display: none;
         }
         .lens-selection-box.visible { display: block; animation: fadeIn 0.3s ease; }
+
         .lens-options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
         @media (max-width: 500px) { .lens-options-grid { grid-template-columns: 1fr; } }
+
         .lens-option-btn {
             padding: 14px 12px;
             border: 2px solid var(--border-color);
@@ -896,6 +932,146 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         .lens-option-btn .ln { font-weight: 700; font-size: 14px; color: var(--text-primary); }
         .lens-option-btn .lp { font-size: 12px; color: var(--primary); font-weight: 600; }
         .lens-option-btn .ld { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+        /* ============================================ */
+        /* RX SECTION - COPIED FROM PRODUCT-VIEW */
+        /* ============================================ */
+        .rx-toggle {
+            display: flex;
+            gap: 12px;
+            margin: 16px 0 10px;
+            flex-wrap: wrap;
+        }
+        .rx-option {
+            flex: 1;
+            min-width: 140px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 16px;
+            border: 2px solid var(--border-color);
+            border-radius: var(--radius-md);
+            cursor: pointer;
+            background: var(--bg-primary);
+            transition: all 0.2s;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+        }
+        .rx-option input[type="radio"] { display: none; }
+        .rx-option:has(input:checked) {
+            border-color: var(--primary);
+            background: var(--primary-light);
+            color: var(--primary);
+        }
+        .rx-option .icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 8px;
+            background: var(--border-light);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 15px;
+            flex-shrink: 0;
+        }
+        .rx-option:has(input:checked) .icon { background: var(--primary); color: white; }
+
+        .rx-form {
+            background: var(--bg-primary);
+            border-radius: var(--radius-md);
+            padding: 18px;
+            margin-top: 12px;
+            border: 1px solid var(--border-light);
+        }
+        .rx-form h4 {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 14px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .rx-eyes {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+        }
+        @media (max-width: 500px) { .rx-eyes { grid-template-columns: 1fr; } }
+
+        .rx-eye-box {
+            background: var(--bg-secondary);
+            border-radius: 10px;
+            padding: 12px;
+            border: 1px solid var(--border-light);
+        }
+        .rx-eye-label {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .rx-eye-label span {
+            background: var(--primary);
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+        }
+        .rx-inputs { display: flex; gap: 6px; }
+        .rx-input-group { flex: 1; }
+        .rx-input-group label { 
+            font-size: 9px; 
+            color: var(--text-muted); 
+            text-transform: uppercase; 
+            display: block; 
+            margin-bottom: 3px; 
+            font-weight: 600; 
+            letter-spacing: 0.5px; 
+        }
+        .rx-input-group input {
+            width: 100%;
+            padding: 8px 6px;
+            border: 1.5px solid var(--border-color);
+            border-radius: 8px;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-size: 13px;
+            text-align: center;
+            transition: border-color 0.2s;
+        }
+        .rx-input-group input:focus { outline: none; border-color: var(--primary); }
+
+        .rx-note {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 12px;
+            text-align: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 5px;
+        }
+        .rx-note i { color: var(--primary); }
+
+        .eye-exam-box {
+            background: var(--primary-light);
+            border: 1px solid rgba(0,183,97,0.2);
+            border-radius: var(--radius-md);
+            padding: 16px;
+            margin-top: 12px;
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+        .eye-exam-box i { font-size: 28px; color: var(--primary); }
+        .eye-exam-box p { font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
 
         .color-size-selector {
             background: var(--bg-primary);
@@ -967,9 +1143,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         .clinic-visit-required i { color: var(--warning); font-size: 20px; flex-shrink: 0; }
         .theme-dark .clinic-visit-required { background: #3B2F0F; border-color: #7F6B1D; }
 
-        /* ============================================ */
-        /* ✅ DELIVERY SECTION - PROFESSIONAL UI */
-        /* ============================================ */
         .delivery-section {
             background: var(--bg-secondary);
             border-radius: var(--radius-md);
@@ -1019,11 +1192,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             gap: 12px;
             margin-bottom: 16px;
         }
-        @media (max-width: 500px) {
-            .delivery-options-grid {
-                grid-template-columns: 1fr;
-            }
-        }
+        @media (max-width: 500px) { .delivery-options-grid { grid-template-columns: 1fr; } }
 
         .delivery-option-card {
             display: flex;
@@ -1037,21 +1206,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             transition: all 0.25s ease;
             position: relative;
         }
-        .delivery-option-card:hover {
-            border-color: var(--primary);
-            background: var(--primary-light);
-        }
-        .delivery-option-card.active {
-            border-color: var(--primary);
-            background: var(--primary-light);
-            box-shadow: 0 0 0 3px rgba(0,183,97,0.08);
-        }
-        .delivery-option-card input[type="radio"] {
-            position: absolute;
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
+        .delivery-option-card:hover { border-color: var(--primary); background: var(--primary-light); }
+        .delivery-option-card.active { border-color: var(--primary); background: var(--primary-light); box-shadow: 0 0 0 3px rgba(0,183,97,0.08); }
+        .delivery-option-card input[type="radio"] { position: absolute; opacity: 0; width: 0; height: 0; }
         .option-icon {
             width: 38px;
             height: 38px;
@@ -1066,26 +1223,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             border: 1px solid var(--border-light);
             transition: all 0.2s;
         }
-        .delivery-option-card.active .option-icon {
-            background: var(--primary);
-            color: white;
-            border-color: var(--primary);
-        }
-        .option-content {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-        }
-        .option-title {
-            font-size: 13px;
-            font-weight: 600;
-            color: var(--text-primary);
-        }
-        .option-desc {
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
+        .delivery-option-card.active .option-icon { background: var(--primary); color: white; border-color: var(--primary); }
+        .option-content { flex: 1; display: flex; flex-direction: column; gap: 2px; }
+        .option-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+        .option-desc { font-size: 12px; color: var(--text-secondary); }
         .option-badge {
             font-size: 10px;
             font-weight: 700;
@@ -1102,10 +1243,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             transition: all 0.2s;
             opacity: 0;
         }
-        .delivery-option-card.active .option-check {
-            color: var(--primary);
-            opacity: 1;
-        }
+        .delivery-option-card.active .option-check { color: var(--primary); opacity: 1; }
 
         .delivery-address-form {
             margin-top: 16px;
@@ -1126,10 +1264,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             color: var(--text-primary);
             margin-bottom: 12px;
         }
-        .delivery-address-header i {
-            color: var(--primary);
-            font-size: 16px;
-        }
+        .delivery-address-header i { color: var(--primary); font-size: 16px; }
         .delivery-address-hint {
             font-size: 12px;
             color: var(--text-muted);
@@ -1138,10 +1273,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             align-items: flex-start;
             gap: 6px;
         }
-        .delivery-address-hint i {
-            color: var(--primary);
-            margin-top: 2px;
-        }
+        .delivery-address-hint i { color: var(--primary); margin-top: 2px; }
 
         .delivery-fee-summary {
             display: flex;
@@ -1161,9 +1293,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             color: var(--text-primary);
             font-size: 15px;
         }
-        .delivery-fee-summary .fee-amount.free {
-            color: var(--success);
-        }
+        .delivery-fee-summary .fee-amount.free { color: var(--success); }
 
         .pagination-container { display: flex; justify-content: center; align-items: center; gap: 6px; margin-top: 20px; padding: 10px 0; flex-wrap: wrap; }
         .pagination-container button { padding: 6px 12px; border: 1px solid var(--border-color); background: var(--bg-secondary); border-radius: var(--radius-md); cursor: pointer; font-size: 13px; font-weight: 500; transition: all 0.2s; color: var(--text-secondary); min-width: 32px; }
@@ -1308,6 +1438,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             .products-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
             .main-tab-btn { font-size: 12px; padding: 6px 12px; }
             .delivery-options-grid { grid-template-columns: 1fr; }
+            .rx-eyes { grid-template-columns: 1fr; }
+            .rx-option { min-width: 100%; }
         }
     </style>
 </head>
@@ -1420,6 +1552,15 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                     <input type="hidden" name="selected_frame_size" id="selectedFrameSize" value="">
                     <input type="hidden" name="item_id" id="selectedItemId" value="<?php echo $selected_item_id; ?>">
                     
+                    <!-- Prescription fields (from product-view) -->
+                    <input type="hidden" name="prescription_knowledge" id="prescriptionKnowledge" value="">
+                    <input type="hidden" name="od_sph" id="od_sph_hidden" value="">
+                    <input type="hidden" name="od_cyl" id="od_cyl_hidden" value="">
+                    <input type="hidden" name="od_axis" id="od_axis_hidden" value="">
+                    <input type="hidden" name="os_sph" id="os_sph_hidden" value="">
+                    <input type="hidden" name="os_cyl" id="os_cyl_hidden" value="">
+                    <input type="hidden" name="os_axis" id="os_axis_hidden" value="">
+                    
                     <!-- STEP 1 -->
                     <div id="step1" class="step-section <?php echo $step1_completed ? 'completed' : 'active'; ?>">
                         <div class="step-header">
@@ -1430,7 +1571,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                         </div>
 
                         <div class="main-tabs" id="mainTabs">
-                            <?php if ($booking_type === 'service'): ?>
+                            <?php if ($booking_type === 'service' && mysqli_num_rows($services_query) > 0): ?>
                             <button type="button" class="main-tab-btn <?php echo $active_tab === 'services' ? 'active' : ''; ?>" data-tab="services" onclick="switchMainTab('services')">
                                 <i class="fas fa-stethoscope"></i> Services <span class="tab-badge"><?php echo mysqli_num_rows($services_query); ?></span>
                             </button>
@@ -1452,7 +1593,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                             <?php endif; ?>
                         </div>
 
-                        <?php if ($booking_type === 'service'): ?>
+                        <?php if ($booking_type === 'service' && mysqli_num_rows($services_query) > 0): ?>
                         <!-- SERVICES TAB -->
                         <div id="tab-services" class="tab-content <?php echo $active_tab === 'services' ? 'active' : ''; ?>">
                             <div class="service-combine-note">
@@ -1512,13 +1653,99 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                             <div class="pagination-container" id="eyewearPagination"></div>
 
                             <div id="eyewearLensSelection" class="lens-selection-box">
+                                <?php if ($booking_type === 'service'): ?>
+                                <!-- Service mode: prescription lens options -->
                                 <div class="lens-options-grid" id="eyewearLensOptions">
-                                    <button type="button" class="lens-option-btn" data-lens="frame_only" onclick="selectEyewearLens(this)"><span class="ln">Frame Only</span><span class="lp">+₱0</span><span class="ld">No lenses included</span></button>
                                     <button type="button" class="lens-option-btn" data-lens="single_vision" onclick="selectEyewearLens(this)"><span class="ln">Single Vision</span><span class="lp">+₱500</span><span class="ld">For near or far sight</span></button>
                                     <button type="button" class="lens-option-btn" data-lens="progressive" onclick="selectEyewearLens(this)"><span class="ln">Progressive</span><span class="lp">+₱1,500</span><span class="ld">Near, mid & far vision</span></button>
                                     <button type="button" class="lens-option-btn" data-lens="blue_cut" onclick="selectEyewearLens(this)"><span class="ln">Blue Cut</span><span class="lp">+₱800</span><span class="ld">Reduces screen glare</span></button>
                                 </div>
 
+                                <!-- ============================================ -->
+                                <!-- ✅ PRESCRIPTION SECTION (COPIED FROM PRODUCT-VIEW) -->
+                                <!-- ============================================ -->
+                                <div id="rxSection" style="display: none; margin-top: 16px;">
+                                    <div style="font-size: 14px; font-weight: 700; color: var(--text-primary); margin-bottom: 10px; display: flex; align-items: center; gap: 8px;">
+                                        <i class="fas fa-prescription" style="color: var(--primary);"></i> Your Prescription
+                                    </div>
+
+                                    <div class="rx-toggle">
+                                        <label class="rx-option">
+                                            <input type="radio" name="rx_know" value="know" onchange="handleRxKnowledge(this)">
+                                            <div class="icon"><i class="fas fa-check"></i></div>
+                                            <span>I know my prescription</span>
+                                        </label>
+                                        <label class="rx-option">
+                                            <input type="radio" name="rx_know" value="dont_know" onchange="handleRxKnowledge(this)">
+                                            <div class="icon"><i class="fas fa-question"></i></div>
+                                            <span>I need an eye exam</span>
+                                        </label>
+                                    </div>
+
+                                    <div id="rxFormBox" class="rx-form" style="display:none;">
+                                        <h4><i class="fas fa-edit" style="color:var(--primary)"></i> Enter Your Prescription</h4>
+                                        <div class="rx-eyes">
+                                            <div class="rx-eye-box">
+                                                <div class="rx-eye-label">Right Eye <span>OD</span></div>
+                                                <div class="rx-inputs">
+                                                    <div class="rx-input-group">
+                                                        <label>SPH</label>
+                                                        <input type="text" id="od_sph" placeholder="e.g. -1.50" oninput="updatePrescriptionFields()">
+                                                    </div>
+                                                    <div class="rx-input-group">
+                                                        <label>CYL</label>
+                                                        <input type="text" id="od_cyl" placeholder="e.g. -0.50" oninput="updatePrescriptionFields()">
+                                                    </div>
+                                                    <div class="rx-input-group">
+                                                        <label>AXIS</label>
+                                                        <input type="text" id="od_axis" placeholder="e.g. 180" oninput="updatePrescriptionFields()">
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="rx-eye-box">
+                                                <div class="rx-eye-label">Left Eye <span>OS</span></div>
+                                                <div class="rx-inputs">
+                                                    <div class="rx-input-group">
+                                                        <label>SPH</label>
+                                                        <input type="text" id="os_sph" placeholder="e.g. -1.25" oninput="updatePrescriptionFields()">
+                                                    </div>
+                                                    <div class="rx-input-group">
+                                                        <label>CYL</label>
+                                                        <input type="text" id="os_cyl" placeholder="e.g. -0.25" oninput="updatePrescriptionFields()">
+                                                    </div>
+                                                    <div class="rx-input-group">
+                                                        <label>AXIS</label>
+                                                        <input type="text" id="os_axis" placeholder="e.g. 175" oninput="updatePrescriptionFields()">
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <p class="rx-note">
+                                            <i class="fas fa-shield-alt"></i>
+                                            Your prescription will be verified by the optometrist upon visit.
+                                        </p>
+                                    </div>
+
+                                    <div id="rxExamBox" class="eye-exam-box" style="display:none;">
+                                        <i class="fas fa-calendar-check"></i>
+                                        <strong style="color:var(--primary)">Eye Exam Required</strong>
+                                        <p>We'll schedule an appointment for you. Our optometrist will check your vision and recommend the right prescription for your lenses.</p>
+                                    </div>
+                                </div>
+
+                                <!-- Clinic Visit Required Notice -->
+                                <div id="eyewearClinicVisit" class="clinic-visit-required visible">
+                                    <i class="fas fa-info-circle"></i>
+                                    <div><strong>Clinic Visit Required</strong><br>Please visit the clinic on your scheduled appointment. Your prescription will be verified by the optometrist.</div>
+                                </div>
+
+                                <?php else: ?>
+                                <!-- Product mode: frame only -->
+                                <div class="lens-options-grid" id="eyewearLensOptions">
+                                    <button type="button" class="lens-option-btn selected" data-lens="frame_only" onclick="selectEyewearLens(this)"><span class="ln">Frame Only</span><span class="lp">+₱0</span><span class="ld">No lenses included</span></button>
+                                </div>
+
+                                <!-- Color/Size selector -->
                                 <div id="eyewearColorSize" class="color-size-selector">
                                     <div class="cs-title"><i class="fas fa-palette"></i> Color / Variant <span class="cs-selected-label" id="eyewearColorSelected">— Select a color</span></div>
                                     <div class="color-btns" id="eyewearColorBtns"></div>
@@ -1530,12 +1757,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                                     </div>
                                 </div>
 
+                                <!-- Clinic Visit Required Notice -->
                                 <div id="eyewearClinicVisit" class="clinic-visit-required">
                                     <i class="fas fa-info-circle"></i>
                                     <div><strong>Clinic Visit Required</strong><br>This product requires a prescription lens. Please visit the clinic on your scheduled appointment. Delivery is not available.</div>
                                 </div>
 
-                                <?php if ($booking_type === 'product'): ?>
                                 <!-- EYEWEAR DELIVERY SECTION -->
                                 <div id="eyewearDeliverySection" class="delivery-section">
                                     <div class="delivery-header">
@@ -2192,6 +2419,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
     let selectedEyewearProductId = null;
     let selectedContactProductId = null;
     let selectedAccessoryProductId = null;
+    
+    // Prescription state (from product-view)
+    let rxKnowledge = null;
 
     const ITEMS_PER_PAGE = 6;
     let currentPages = {
@@ -2207,7 +2437,38 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
     }
 
     // ============================================
-    // CHECK STEP 1 COMPLETE
+    // PRESCRIPTION FUNCTIONS (from product-view)
+    // ============================================
+    function handleRxKnowledge(radio) {
+        rxKnowledge = radio.value;
+        document.getElementById('prescriptionKnowledge').value = rxKnowledge;
+        document.getElementById('rxFormBox').style.display = (rxKnowledge === 'know') ? 'block' : 'none';
+        document.getElementById('rxExamBox').style.display = (rxKnowledge === 'dont_know') ? 'block' : 'none';
+        checkStep1Complete();
+    }
+
+    function updatePrescriptionFields() {
+        // Get values from inputs
+        const od_sph = document.getElementById('od_sph')?.value || '';
+        const od_cyl = document.getElementById('od_cyl')?.value || '';
+        const od_axis = document.getElementById('od_axis')?.value || '';
+        const os_sph = document.getElementById('os_sph')?.value || '';
+        const os_cyl = document.getElementById('os_cyl')?.value || '';
+        const os_axis = document.getElementById('os_axis')?.value || '';
+        
+        // Store in hidden fields
+        document.getElementById('od_sph_hidden').value = od_sph;
+        document.getElementById('od_cyl_hidden').value = od_cyl;
+        document.getElementById('od_axis_hidden').value = od_axis;
+        document.getElementById('os_sph_hidden').value = os_sph;
+        document.getElementById('os_cyl_hidden').value = os_cyl;
+        document.getElementById('os_axis_hidden').value = os_axis;
+        
+        checkStep1Complete();
+    }
+
+    // ============================================
+    // CHECK STEP 1 COMPLETE (updated with prescription)
     // ============================================
     function checkStep1Complete() {
         const activeTab = document.querySelector('.main-tab-btn.active')?.dataset.tab;
@@ -2219,6 +2480,19 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             if (activeTab === 'eyewear' && selectedEyewearProductId) {
                 if (selectedEyewearLens) {
                     let lensOk = true;
+                    // Check prescription completion for service mode
+                    if (bookingType === 'service') {
+                        // Need prescription knowledge and if 'know', need at least one eye's SPH
+                        if (!rxKnowledge) {
+                            lensOk = false;
+                        } else if (rxKnowledge === 'know') {
+                            const od_sph = document.getElementById('od_sph')?.value || '';
+                            const os_sph = document.getElementById('os_sph')?.value || '';
+                            if (!od_sph && !os_sph) {
+                                lensOk = false;
+                            }
+                        }
+                    }
                     if (selectedEyewearLens === 'frame_only') {
                         const hasColors = currentProductColors && currentProductColors.length > 0;
                         const hasSizes = currentProductSizes && currentProductSizes.length > 0;
@@ -2415,6 +2689,16 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         <?php endif; ?>
         document.getElementById('eyewearClinicVisit').classList.remove('visible');
         document.getElementById('eyewearColorSize').classList.remove('visible');
+        
+        // Hide RX section
+        const rxSection = document.getElementById('rxSection');
+        if (rxSection) rxSection.style.display = 'none';
+        // Reset RX state
+        rxKnowledge = null;
+        document.querySelectorAll('input[name="rx_know"]').forEach(r => r.checked = false);
+        document.getElementById('rxFormBox').style.display = 'none';
+        document.getElementById('rxExamBox').style.display = 'none';
+        document.getElementById('prescriptionKnowledge').value = '';
 
         fetch(`?ajax_get_product_details=1&product_id=${productId}`)
             .then(r => r.json())
@@ -2470,7 +2754,29 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         const lensNames = { frame_only: 'Frame Only', single_vision: 'Single Vision', progressive: 'Progressive', blue_cut: 'Blue Cut' };
         document.getElementById('summaryLens').textContent = lensNames[selectedEyewearLens] || selectedEyewearLens;
 
-        <?php if ($booking_type === 'product'): ?>
+        <?php if ($booking_type === 'service'): ?>
+        // Service mode - show prescription section and clinic visit
+        const rxSection = document.getElementById('rxSection');
+        if (rxSection) {
+            rxSection.style.display = isFrameOnly ? 'none' : 'block';
+        }
+        // If frame_only, reset RX state
+        if (isFrameOnly) {
+            rxKnowledge = null;
+            document.querySelectorAll('input[name="rx_know"]').forEach(r => r.checked = false);
+            document.getElementById('rxFormBox').style.display = 'none';
+            document.getElementById('rxExamBox').style.display = 'none';
+            document.getElementById('prescriptionKnowledge').value = '';
+        }
+        
+        // Show clinic visit
+        const clinicVisit = document.getElementById('eyewearClinicVisit');
+        clinicVisit.classList.add('visible');
+        
+        // Show color/size
+        document.getElementById('eyewearColorSize').classList.add('visible');
+        <?php else: ?>
+        // Product mode
         const deliverySection = document.getElementById('eyewearDeliverySection');
         const clinicVisit = document.getElementById('eyewearClinicVisit');
 
@@ -2505,15 +2811,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             document.getElementById('deliveryMethodRow').style.display = 'none';
             document.getElementById('deliveryFeeRow').style.display = 'none';
         }
-        <?php else: ?>
-        // Service mode - just show clinic visit
-        const clinicVisit = document.getElementById('eyewearClinicVisit');
-        if (!isFrameOnly) {
-            clinicVisit.classList.add('visible');
-        } else {
-            clinicVisit.classList.remove('visible');
-        }
-        document.getElementById('eyewearColorSize').classList.add('visible');
         <?php endif; ?>
 
         checkStep1Complete();
@@ -2521,20 +2818,1196 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
 
     // ============================================
     // THE REST OF THE JAVASCRIPT FUNCTIONS
-    // (renderEyewearColors, renderEyewearSizes, selectEyewearColor, selectEyewearSize,
+    // ============================================
+    // [renderEyewearColors, renderEyewearSizes, selectEyewearColor, selectEyewearSize,
     //  selectContactProduct, selectContactLens, renderContactLensColors, selectContactLensColor,
     //  selectAccessory, updateDeliveryFeeLabel, toggleDeliveryFields,
     //  renderServices, renderEyewear, renderContactLenses, renderAccessories,
     //  buildPagination, goToPage, handleServiceSelection, refreshServiceLocks,
     //  updateServiceSummary, handleDoctorSelection, initCalendar, renderCalendar,
     //  changeMonth, selectDate, loadTimeSlots, generateTimeSlots, selectTime,
-    //  handleContactInput, switchMainTab, form validation, and init)
+    //  handleContactInput, switchMainTab, form validation, and init]
     // ============================================
-    // [SAME AS BEFORE - KEEP ALL EXISTING FUNCTIONS]
+
     // ============================================
-    // NOTE: Due to the length of this file, I've kept the structure complete.
-    // The full JavaScript from your original file should be inserted here.
-    // For brevity, I'm showing the key functions that need to be aware of bookingType.
+    // RENDER EYEWEAR COLORS
+    // ============================================
+    function renderEyewearColors(colors) {
+        const container = document.getElementById('eyewearColorBtns');
+        const hint = document.getElementById('eyewearColorHint');
+        const label = document.getElementById('eyewearColorSelected');
+        if (!container) return;
+        container.innerHTML = '';
+        if (!colors || colors.length === 0) {
+            container.innerHTML = '<p style="color:var(--text-muted);font-size:13px;">No color variants available.</p>';
+            if (hint) hint.style.display = 'none';
+            selectedColorCode = 'default';
+            selectedColorName = 'Default';
+            document.getElementById('selectedColorCode').value = 'default';
+            document.getElementById('selectedColorName').value = 'Default';
+            document.getElementById('eyewearColorSelected').textContent = 'Default (No variants)';
+            document.getElementById('summaryColor').textContent = 'Default';
+            checkStep1Complete();
+            return;
+        }
+        const hasStock = colors.some(c => c.quantity > 0);
+        colors.forEach(color => {
+            const oos = color.quantity <= 0;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = `color-btn ${oos ? 'oos' : ''}`;
+            btn.dataset.code = color.color_code;
+            btn.dataset.name = color.color_name;
+            btn.dataset.qty = color.quantity;
+            btn.innerHTML = `
+                ${color.color_code && color.color_code.length >= 4 ? `<span class="color-dot" style="background:${color.color_code}"></span>` : ''}
+                <span class="color-btn-name">${color.color_name}</span>
+                ${oos ? '<span class="color-btn-qty oos-label">Out of Stock</span>' : (color.quantity <= 5 ? `<span class="color-btn-qty low">${color.quantity} left</span>` : `<span class="color-btn-qty">${color.quantity} left</span>`)}
+            `;
+            btn.onclick = () => selectEyewearColor(btn);
+            container.appendChild(btn);
+        });
+        if (hint) {
+            hint.style.display = hasStock ? 'block' : 'none';
+            hint.innerHTML = hasStock ? '<i class="fas fa-info-circle"></i> Please select a color to continue.' : '<i class="fas fa-exclamation-triangle"></i> All variants are out of stock.';
+        }
+        if (label) label.textContent = '— Select a color';
+    }
+
+    function selectEyewearColor(btn) {
+        if (btn.classList.contains('oos')) return;
+        document.querySelectorAll('#eyewearColorBtns .color-btn').forEach(b => b.classList.remove('selected'));
+        btn.classList.add('selected');
+        selectedColorCode = btn.dataset.code;
+        selectedColorName = btn.dataset.name;
+        document.getElementById('selectedColorCode').value = selectedColorCode;
+        document.getElementById('selectedColorName').value = selectedColorName;
+        document.getElementById('eyewearColorSelected').textContent = selectedColorName;
+        document.getElementById('eyewearColorHint').style.display = 'none';
+        document.getElementById('summaryColor').textContent = selectedColorName;
+        checkStep1Complete();
+    }
+
+    function renderEyewearSizes(sizes) {
+        const container = document.getElementById('eyewearSizeBtns');
+        const hint = document.getElementById('eyewearSizeHint');
+        const label = document.getElementById('eyewearSizeSelected');
+        if (!container) return;
+        container.innerHTML = '';
+        if (!sizes || sizes.length === 0) {
+            container.innerHTML = '<p style="color:var(--text-muted);font-size:13px;">No size options available.</p>';
+            if (hint) hint.style.display = 'none';
+            selectedFrameSize = 'Default';
+            document.getElementById('selectedFrameSize').value = 'Default';
+            document.getElementById('eyewearSizeSelected').textContent = 'Default (No variants)';
+            document.getElementById('summarySize').textContent = 'Default';
+            checkStep1Complete();
+            return;
+        }
+        sizes.forEach(size => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'size-btn';
+            btn.dataset.size = size;
+            btn.textContent = size;
+            btn.onclick = () => selectEyewearSize(btn);
+            container.appendChild(btn);
+        });
+        if (hint) hint.style.display = 'block';
+        if (label) label.textContent = '— Select a size';
+    }
+
+    function selectEyewearSize(btn) {
+        document.querySelectorAll('#eyewearSizeBtns .size-btn').forEach(b => b.classList.remove('selected'));
+        btn.classList.add('selected');
+        selectedFrameSize = btn.dataset.size;
+        document.getElementById('selectedFrameSize').value = selectedFrameSize;
+        document.getElementById('eyewearSizeSelected').textContent = selectedFrameSize;
+        document.getElementById('eyewearSizeHint').style.display = 'none';
+        document.getElementById('summarySize').textContent = selectedFrameSize;
+        checkStep1Complete();
+    }
+
+    // ============================================
+    // CONTACT LENSES
+    // ============================================
+    function selectContactProduct(productId, name, price) {
+        document.querySelectorAll('#contactLensGrid .product-card').forEach(c => c.classList.remove('selected'));
+        const card = document.querySelector(`#contactLensGrid .product-card[data-product-id="${productId}"]`);
+        if (card) card.classList.add('selected');
+
+        selectedContactProductId = productId;
+        selectedItemId = productId;
+        selectedPrice = price;
+        selectedItemType = 'product';
+        document.getElementById('selectedItemType').value = 'product';
+        document.getElementById('selectedItemId').value = productId;
+
+        const lensBox = document.getElementById('contactLensSelection');
+        if (lensBox) lensBox.classList.add('visible');
+
+        selectedContactLens = 'daily';
+        document.querySelectorAll('#contactLensSelection .lens-option-btn').forEach(b => b.classList.remove('selected'));
+        document.querySelector('#contactLensSelection .lens-option-btn[data-lens="daily"]').classList.add('selected');
+        document.getElementById('selectedLensType').value = 'daily';
+
+        fetch(`?ajax_get_product_details=1&product_id=${productId}`)
+            .then(r => r.json())
+            .then(data => {
+                currentProductColors = data.colors || [];
+                renderContactLensColors(currentProductColors);
+            })
+            .catch(err => console.error('Error fetching product details:', err));
+
+        document.getElementById('summaryItem').textContent = name;
+        document.getElementById('summaryType').textContent = 'Product';
+        document.getElementById('summaryLens').textContent = 'Daily Disposable';
+        document.getElementById('summaryColor').textContent = '—';
+        document.getElementById('summarySize').textContent = '—';
+        document.getElementById('totalPrice').dataset.baseTotal = price;
+        document.getElementById('totalPrice').textContent = '₱' + price.toFixed(2);
+
+        <?php if ($booking_type === 'product'): ?>
+        const isDeliverable = productDeliverability[productId]?.deliverable || false;
+        const deliverySection = document.getElementById('contactLensDeliverySection');
+        const clinicVisit = document.getElementById('contactLensClinicVisit');
+
+        if (isDeliverable && clinicOffersDelivery) {
+            deliverySection.classList.add('visible');
+            clinicVisit.classList.remove('visible');
+            isCurrentProductDeliverable = true;
+            currentProductDeliveryFee = clinicDeliveryFee;
+            document.getElementById('quickDeliveryInfo').style.display = 'block';
+            document.getElementById('quickClinicVisitInfo').style.display = 'none';
+            document.querySelectorAll('#contactLensDeliverySection input[name="delivery_type"]').forEach(r => r.disabled = false);
+            const freeMin = <?php echo $clinic['free_delivery_minimum'] ?? 0; ?>;
+            isFreeDelivery = freeMin > 0 && price >= freeMin;
+            updateDeliveryFeeLabel('cl');
+            document.querySelector('#contactLensDeliverySection input[name="delivery_type"][value="pickup"]').checked = true;
+            toggleDeliveryFields('cl');
+            document.getElementById('deliveryMethodRow').style.display = 'flex';
+            document.getElementById('deliveryFeeRow').style.display = 'flex';
+        } else {
+            deliverySection.classList.remove('visible');
+            clinicVisit.classList.add('visible');
+            isCurrentProductDeliverable = false;
+            document.getElementById('quickDeliveryInfo').style.display = 'none';
+            document.getElementById('quickClinicVisitInfo').style.display = 'block';
+            document.querySelectorAll('#contactLensDeliverySection input[name="delivery_type"]').forEach(r => r.disabled = true);
+            document.getElementById('deliveryMethodRow').style.display = 'none';
+            document.getElementById('deliveryFeeRow').style.display = 'none';
+        }
+        <?php else: ?>
+        const clinicVisit = document.getElementById('contactLensClinicVisit');
+        clinicVisit.classList.add('visible');
+        <?php endif; ?>
+
+        selectedColorCode = '';
+        selectedColorName = '';
+        document.getElementById('selectedColorCode').value = '';
+        document.getElementById('selectedColorName').value = '';
+
+        checkStep1Complete();
+    }
+
+    function selectContactLens(btn) {
+        document.querySelectorAll('#contactLensSelection .lens-option-btn').forEach(b => b.classList.remove('selected'));
+        btn.classList.add('selected');
+        selectedContactLens = btn.dataset.lens;
+        document.getElementById('selectedLensType').value = selectedContactLens;
+        document.getElementById('summaryLens').textContent = selectedContactLens === 'daily' ? 'Daily Disposable' : 'Monthly Wear';
+        checkStep1Complete();
+    }
+
+    function renderContactLensColors(colors) {
+        const container = document.getElementById('contactLensColorBtns');
+        const hint = document.getElementById('clColorHint');
+        const label = document.getElementById('clColorSelected');
+        if (!container) return;
+        container.innerHTML = '';
+        if (!colors || colors.length === 0) {
+            container.innerHTML = '<p style="color:var(--text-muted);font-size:13px;">No color variants available.</p>';
+            if (hint) hint.style.display = 'none';
+            selectedColorCode = 'default';
+            selectedColorName = 'Default';
+            document.getElementById('selectedColorCode').value = 'default';
+            document.getElementById('selectedColorName').value = 'Default';
+            document.getElementById('clColorSelected').textContent = 'Default (No variants)';
+            document.getElementById('summaryColor').textContent = 'Default';
+            checkStep1Complete();
+            return;
+        }
+        const hasStock = colors.some(c => c.quantity > 0);
+        colors.forEach(color => {
+            const oos = color.quantity <= 0;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = `color-btn ${oos ? 'oos' : ''}`;
+            btn.dataset.code = color.color_code;
+            btn.dataset.name = color.color_name;
+            btn.innerHTML = `
+                ${color.color_code && color.color_code.length >= 4 ? `<span class="color-dot" style="background:${color.color_code}"></span>` : ''}
+                <span class="color-btn-name">${color.color_name}</span>
+                ${oos ? '<span class="color-btn-qty oos-label">Out of Stock</span>' : (color.quantity <= 5 ? `<span class="color-btn-qty low">${color.quantity} left</span>` : `<span class="color-btn-qty">${color.quantity} left</span>`)}
+            `;
+            btn.onclick = () => selectContactLensColor(btn);
+            container.appendChild(btn);
+        });
+        if (hint) {
+            hint.style.display = hasStock ? 'block' : 'none';
+            hint.innerHTML = hasStock ? '<i class="fas fa-info-circle"></i> Please select a color to continue.' : '<i class="fas fa-exclamation-triangle"></i> All variants are out of stock.';
+        }
+        if (label) label.textContent = '— Select a color';
+        document.getElementById('contactLensColorSize').classList.add('visible');
+    }
+
+    function selectContactLensColor(btn) {
+        if (btn.classList.contains('oos')) return;
+        document.querySelectorAll('#contactLensColorBtns .color-btn').forEach(b => b.classList.remove('selected'));
+        btn.classList.add('selected');
+        selectedColorCode = btn.dataset.code;
+        selectedColorName = btn.dataset.name;
+        document.getElementById('selectedColorCode').value = selectedColorCode;
+        document.getElementById('selectedColorName').value = selectedColorName;
+        document.getElementById('clColorSelected').textContent = selectedColorName;
+        document.getElementById('clColorHint').style.display = 'none';
+        document.getElementById('summaryColor').textContent = selectedColorName;
+        checkStep1Complete();
+    }
+
+    // ============================================
+    // ACCESSORIES
+    // ============================================
+    function selectAccessory(productId, name, price) {
+        document.querySelectorAll('#accessoryGrid .product-card').forEach(c => c.classList.remove('selected'));
+        const card = document.querySelector(`#accessoryGrid .product-card[data-product-id="${productId}"]`);
+        if (card) card.classList.add('selected');
+
+        selectedAccessoryProductId = productId;
+        selectedItemId = productId;
+        selectedPrice = price;
+        selectedItemType = 'product';
+        document.getElementById('selectedItemType').value = 'product';
+        document.getElementById('selectedItemId').value = productId;
+        document.getElementById('summaryItem').textContent = name;
+        document.getElementById('summaryType').textContent = 'Product';
+        document.getElementById('summaryLens').textContent = '—';
+        document.getElementById('summaryColor').textContent = '—';
+        document.getElementById('summarySize').textContent = '—';
+        document.getElementById('totalPrice').dataset.baseTotal = price;
+        document.getElementById('totalPrice').textContent = '₱' + price.toFixed(2);
+
+        <?php if ($booking_type === 'product'): ?>
+        const deliverySection = document.getElementById('accessoryDeliverySection');
+        const isDeliverable = productDeliverability[productId]?.deliverable || false;
+        if (isDeliverable && clinicOffersDelivery) {
+            deliverySection.classList.add('visible');
+            isCurrentProductDeliverable = true;
+            currentProductDeliveryFee = clinicDeliveryFee;
+            document.getElementById('quickDeliveryInfo').style.display = 'block';
+            document.getElementById('quickClinicVisitInfo').style.display = 'none';
+            document.querySelectorAll('#accessoryDeliverySection input[name="delivery_type"]').forEach(r => r.disabled = false);
+            const freeMin = <?php echo $clinic['free_delivery_minimum'] ?? 0; ?>;
+            isFreeDelivery = freeMin > 0 && price >= freeMin;
+            updateDeliveryFeeLabel('acc');
+            document.querySelector('#accessoryDeliverySection input[name="delivery_type"][value="pickup"]').checked = true;
+            toggleDeliveryFields('acc');
+            document.getElementById('deliveryMethodRow').style.display = 'flex';
+            document.getElementById('deliveryFeeRow').style.display = 'flex';
+            document.getElementById('deliveryInfoFooter').style.display = 'block';
+            document.getElementById('clinicVisitFooter').style.display = 'none';
+        } else {
+            deliverySection.classList.remove('visible');
+            isCurrentProductDeliverable = false;
+            document.getElementById('quickDeliveryInfo').style.display = 'none';
+            document.getElementById('quickClinicVisitInfo').style.display = 'block';
+            document.querySelectorAll('#accessoryDeliverySection input[name="delivery_type"]').forEach(r => r.disabled = true);
+            document.getElementById('deliveryMethodRow').style.display = 'none';
+            document.getElementById('deliveryFeeRow').style.display = 'none';
+            document.getElementById('deliveryInfoFooter').style.display = 'none';
+            document.getElementById('clinicVisitFooter').style.display = 'block';
+            const notice = document.getElementById('clinicVisitNotice');
+            if (notice) notice.style.display = 'flex';
+        }
+        <?php else: ?>
+        // Service mode - accessories are not shown in service mode
+        <?php endif; ?>
+
+        checkStep1Complete();
+    }
+
+    // ============================================
+    // DELIVERY FUNCTIONS
+    // ============================================
+    function updateDeliveryFeeLabel(section) {
+        let feeLabel, freeBadge, feeAmount;
+        if (section === 'eyewear') {
+            feeLabel = document.getElementById('deliveryFeeLabelEyewear');
+            freeBadge = document.getElementById('freeDeliveryBadgeEyewear');
+            feeAmount = document.getElementById('feeAmountEyewear');
+        } else if (section === 'cl') {
+            feeLabel = document.getElementById('deliveryFeeLabelCL');
+            freeBadge = document.getElementById('freeDeliveryBadgeCL');
+            feeAmount = document.getElementById('feeAmountCL');
+        } else if (section === 'acc') {
+            feeLabel = document.getElementById('deliveryFeeLabelAcc');
+            freeBadge = document.getElementById('freeDeliveryBadgeAcc');
+            feeAmount = document.getElementById('feeAmountAcc');
+        }
+        if (!feeLabel) return;
+        
+        const fee = isFreeDelivery ? 0 : currentProductDeliveryFee;
+        if (isFreeDelivery) {
+            feeLabel.textContent = '🎉 FREE';
+            feeLabel.style.color = 'var(--success)';
+            if (freeBadge) freeBadge.style.display = 'inline-block';
+            if (feeAmount) {
+                feeAmount.textContent = 'FREE';
+                feeAmount.className = 'fee-amount free';
+            }
+        } else if (currentProductDeliveryFee > 0) {
+            feeLabel.textContent = '+₱' + currentProductDeliveryFee.toFixed(2);
+            feeLabel.style.color = 'var(--primary)';
+            if (freeBadge) freeBadge.style.display = 'none';
+            if (feeAmount) {
+                feeAmount.textContent = '+₱' + currentProductDeliveryFee.toFixed(2);
+                feeAmount.className = 'fee-amount';
+            }
+        } else {
+            feeLabel.textContent = 'FREE';
+            feeLabel.style.color = 'var(--success)';
+            if (freeBadge) freeBadge.style.display = 'inline-block';
+            if (feeAmount) {
+                feeAmount.textContent = 'FREE';
+                feeAmount.className = 'fee-amount free';
+            }
+        }
+    }
+
+    function toggleDeliveryFields(section) {
+        let deliveryRadio, addressForm, methodRow, methodDisplay, feeRow, feeDisplay, totalDisplay;
+        let feeSummary, optionCardDelivery, optionCardPickup, feeAmount;
+        
+        if (section === 'eyewear') {
+            deliveryRadio = document.querySelector('#eyewearDeliverySection input[name="delivery_type"][value="delivery"]');
+            addressForm = document.getElementById('deliveryAddressForm');
+            methodRow = document.getElementById('deliveryMethodRow');
+            methodDisplay = document.getElementById('deliveryMethodDisplay');
+            feeRow = document.getElementById('deliveryFeeRow');
+            feeDisplay = document.getElementById('deliveryFeeDisplay');
+            totalDisplay = document.getElementById('totalPrice');
+            feeSummary = document.getElementById('deliveryFeeSummaryEyewear');
+            optionCardDelivery = document.getElementById('deliveryOptionEyewear');
+            optionCardPickup = document.getElementById('pickupOptionEyewear');
+            feeAmount = document.getElementById('feeAmountEyewear');
+        } else if (section === 'cl') {
+            deliveryRadio = document.querySelector('#contactLensDeliverySection input[name="delivery_type"][value="delivery"]');
+            addressForm = document.getElementById('deliveryAddressFormCL');
+            methodRow = document.getElementById('deliveryMethodRow');
+            methodDisplay = document.getElementById('deliveryMethodDisplay');
+            feeRow = document.getElementById('deliveryFeeRow');
+            feeDisplay = document.getElementById('deliveryFeeDisplay');
+            totalDisplay = document.getElementById('totalPrice');
+            feeSummary = document.getElementById('deliveryFeeSummaryCL');
+            optionCardDelivery = document.getElementById('deliveryOptionCL');
+            optionCardPickup = document.getElementById('pickupOptionCL');
+            feeAmount = document.getElementById('feeAmountCL');
+        } else if (section === 'acc') {
+            deliveryRadio = document.querySelector('#accessoryDeliverySection input[name="delivery_type"][value="delivery"]');
+            addressForm = document.getElementById('deliveryAddressFormAcc');
+            methodRow = document.getElementById('deliveryMethodRow');
+            methodDisplay = document.getElementById('deliveryMethodDisplay');
+            feeRow = document.getElementById('deliveryFeeRow');
+            feeDisplay = document.getElementById('deliveryFeeDisplay');
+            totalDisplay = document.getElementById('totalPrice');
+            feeSummary = document.getElementById('deliveryFeeSummaryAcc');
+            optionCardDelivery = document.getElementById('deliveryOptionAcc');
+            optionCardPickup = document.getElementById('pickupOptionAcc');
+            feeAmount = document.getElementById('feeAmountAcc');
+        }
+        
+        if (!deliveryRadio) return;
+        
+        const isDelivery = deliveryRadio.checked;
+        
+        if (optionCardDelivery) {
+            optionCardDelivery.classList.toggle('active', isDelivery);
+            optionCardPickup.classList.toggle('active', !isDelivery);
+        }
+        
+        if (addressForm) addressForm.classList.toggle('show', isDelivery);
+        if (feeSummary) feeSummary.style.display = isDelivery && isCurrentProductDeliverable ? 'flex' : 'none';
+        
+        if (feeAmount && isDelivery && isCurrentProductDeliverable) {
+            const fee = isFreeDelivery ? 0 : currentProductDeliveryFee;
+            if (isFreeDelivery) {
+                feeAmount.textContent = 'FREE';
+                feeAmount.className = 'fee-amount free';
+            } else {
+                feeAmount.textContent = '+₱' + fee.toFixed(2);
+                feeAmount.className = 'fee-amount';
+            }
+        }
+        
+        if (methodRow) methodRow.style.display = 'flex';
+        if (methodDisplay) {
+            methodDisplay.innerHTML = isDelivery ? '<i class="fas fa-truck"></i> Delivery' : '<i class="fas fa-store"></i> Pickup';
+        }
+        
+        if (totalDisplay) {
+            const baseTotal = parseFloat(totalDisplay.dataset.baseTotal) || 0;
+            if (isDelivery && isCurrentProductDeliverable) {
+                const fee = isFreeDelivery ? 0 : currentProductDeliveryFee;
+                totalDisplay.textContent = '₱' + (baseTotal + fee).toFixed(2);
+                if (feeRow) {
+                    feeRow.style.display = 'flex';
+                    if (feeDisplay) {
+                        feeDisplay.textContent = isFreeDelivery ? '🎉 FREE!' : '+₱' + fee.toFixed(2);
+                        feeDisplay.style.color = isFreeDelivery ? 'var(--success)' : '';
+                    }
+                }
+            } else {
+                totalDisplay.textContent = '₱' + baseTotal.toFixed(2);
+                if (feeRow) feeRow.style.display = 'none';
+            }
+        }
+    }
+
+    // ============================================
+    // RENDER FUNCTIONS
+    // ============================================
+    function renderServices() {
+        const grid = document.getElementById('servicesGrid');
+        const pagination = document.getElementById('servicesPagination');
+        if (!grid || !pagination) return;
+        const items = grid.querySelectorAll('.service-card');
+        const totalItems = items.length;
+        const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE) || 1;
+        const page = Math.min(currentPages.services, totalPages);
+        const start = (page - 1) * ITEMS_PER_PAGE;
+        const end = Math.min(start + ITEMS_PER_PAGE, totalItems);
+        items.forEach((item, i) => {
+            item.style.display = (i >= start && i < end) ? 'block' : 'none';
+        });
+        buildPagination(pagination, page, totalPages, 'services');
+    }
+
+    function renderEyewear() {
+        const grid = document.getElementById('eyewearGrid');
+        const pagination = document.getElementById('eyewearPagination');
+        if (!grid || !pagination) return;
+        const filtered = eyewearProducts;
+        const totalItems = filtered.length;
+        const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE) || 1;
+        const page = Math.min(currentPages.eyewear, totalPages);
+        const start = (page - 1) * ITEMS_PER_PAGE;
+        const end = Math.min(start + ITEMS_PER_PAGE, totalItems);
+        let html = '';
+        for (let i = start; i < end; i++) {
+            const prod = filtered[i];
+            const isSelected = (selectedItemId == prod.id && selectedItemType === 'product');
+            html += buildProductCard(prod, isSelected);
+        }
+        if (filtered.length === 0) html = '<div class="no-slots-message" style="grid-column:1/-1;"><i class="fas fa-glasses"></i><h4>No products found</h4></div>';
+        grid.innerHTML = html;
+        buildPagination(pagination, page, totalPages, 'eyewear');
+    }
+
+    function renderContactLenses() {
+        const grid = document.getElementById('contactLensGrid');
+        const pagination = document.getElementById('contactLensPagination');
+        if (!grid || !pagination) return;
+        const filtered = contactLensProducts;
+        const totalItems = filtered.length;
+        const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE) || 1;
+        const page = Math.min(currentPages.contact_lenses, totalPages);
+        const start = (page - 1) * ITEMS_PER_PAGE;
+        const end = Math.min(start + ITEMS_PER_PAGE, totalItems);
+        let html = '';
+        for (let i = start; i < end; i++) {
+            const prod = filtered[i];
+            const isSelected = (selectedItemId == prod.id && selectedItemType === 'product');
+            html += buildProductCard(prod, isSelected);
+        }
+        if (filtered.length === 0) html = '<div class="no-slots-message" style="grid-column:1/-1;"><i class="fas fa-eye"></i><h4>No products found</h4></div>';
+        grid.innerHTML = html;
+        buildPagination(pagination, page, totalPages, 'contact_lenses');
+    }
+
+    function renderAccessories() {
+        const grid = document.getElementById('accessoryGrid');
+        const pagination = document.getElementById('accessoryPagination');
+        if (!grid || !pagination) return;
+        const filtered = accessoryProducts;
+        const totalItems = filtered.length;
+        const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE) || 1;
+        const page = Math.min(currentPages.accessories, totalPages);
+        const start = (page - 1) * ITEMS_PER_PAGE;
+        const end = Math.min(start + ITEMS_PER_PAGE, totalItems);
+        let html = '';
+        for (let i = start; i < end; i++) {
+            const prod = filtered[i];
+            const isSelected = (selectedItemId == prod.id && selectedItemType === 'product');
+            html += buildProductCard(prod, isSelected);
+        }
+        if (filtered.length === 0) html = '<div class="no-slots-message" style="grid-column:1/-1;"><i class="fas fa-tag"></i><h4>No products available</h4></div>';
+        grid.innerHTML = html;
+        buildPagination(pagination, page, totalPages, 'accessories');
+    }
+
+    function buildPagination(container, page, totalPages, tab) {
+        if (totalPages <= 1) { container.innerHTML = ''; return; }
+        let html = '';
+        html += `<button type="button" onclick="goToPage('${tab}', ${page - 1})" ${page <= 1 ? 'disabled' : ''}><i class="fas fa-chevron-left"></i></button>`;
+        for (let i = 1; i <= totalPages; i++) {
+            html += `<button type="button" onclick="goToPage('${tab}', ${i})" class="${i === page ? 'active' : ''}">${i}</button>`;
+        }
+        html += `<button type="button" onclick="goToPage('${tab}', ${page + 1})" ${page >= totalPages ? 'disabled' : ''}><i class="fas fa-chevron-right"></i></button>`;
+        container.innerHTML = html;
+    }
+
+    function goToPage(tab, page) {
+        if (tab === 'services') { currentPages.services = Math.max(1, page); renderServices(); }
+        else if (tab === 'eyewear') { currentPages.eyewear = Math.max(1, page); renderEyewear(); }
+        else if (tab === 'contact_lenses') { currentPages.contact_lenses = Math.max(1, page); renderContactLenses(); }
+        else if (tab === 'accessories') { currentPages.accessories = Math.max(1, page); renderAccessories(); }
+    }
+
+    // ============================================
+    // SERVICE SELECTION
+    // ============================================
+    let selectedServices = <?php
+        if ($selected_item && $selected_item_type === 'service') {
+            echo json_encode([[ 
+                'id' => (string)$selected_item['id'],
+                'name' => $selected_item['name'],
+                'price' => (float)$selected_item['price'],
+                'group' => $selected_item['booking_group'] ?? '',
+                'max' => (int)($selected_item['max_per_booking'] ?? 1)
+            ]]);
+        } else {
+            echo '[]';
+        }
+    ?>;
+
+    function handleServiceSelection(checkbox) {
+        const id = checkbox.value;
+        const group = checkbox.getAttribute('data-group') || '';
+        const maxPer = parseInt(checkbox.getAttribute('data-max')) || 1;
+        const name = checkbox.getAttribute('data-name');
+        const price = parseFloat(checkbox.getAttribute('data-price'));
+        const card = checkbox.closest('.service-card');
+        const isStandalone = (group === 'treatment' || group === 'repair' || group === '');
+
+        if (checkbox.checked) {
+            const hasStandaloneSelected = selectedServices.some(s => (s.group === 'treatment' || s.group === 'repair' || s.group === ''));
+            if (hasStandaloneSelected && selectedServices.length > 0) {
+                checkbox.checked = false;
+                showToast('That service cannot be combined with your current selection. Please book it alone.', 'error');
+                return;
+            }
+            if (isStandalone && selectedServices.length > 0) {
+                checkbox.checked = false;
+                showToast('This service must be booked alone. Uncheck other services first.', 'error');
+                return;
+            }
+            const countInGroup = selectedServices.filter(s => s.group === group).length;
+            if (countInGroup >= maxPer) {
+                checkbox.checked = false;
+                showToast(`Only ${maxPer} '${group}' service(s) allowed per booking.`, 'error');
+                return;
+            }
+            selectedServices.push({ id, name, price, group, max: maxPer });
+            card.classList.add('selected');
+        } else {
+            selectedServices = selectedServices.filter(s => s.id !== id);
+            card.classList.remove('selected');
+        }
+        
+        refreshServiceLocks();
+        updateServiceSummary();
+        selectedItemType = 'service';
+        document.getElementById('selectedItemType').value = 'service';
+        document.getElementById('selectedItemId').value = '';
+
+        checkStep1Complete();
+    }
+
+    function refreshServiceLocks() {
+        const hasStandaloneSelected = selectedServices.some(s => (s.group === 'treatment' || s.group === 'repair' || s.group === ''));
+        document.querySelectorAll('.service-checkbox').forEach(cb => {
+            const card = cb.closest('.service-card');
+            const group = cb.getAttribute('data-group') || '';
+            const maxPer = parseInt(cb.getAttribute('data-max')) || 1;
+            const isStandalone = (group === 'treatment' || group === 'repair' || group === '');
+            const alreadySelected = selectedServices.some(s => s.id === cb.value);
+            if (alreadySelected) { card.classList.remove('blocked'); return; }
+            let blocked = false;
+            if (selectedServices.length > 0) {
+                if (hasStandaloneSelected) blocked = true;
+                else if (isStandalone) blocked = true;
+                else {
+                    const countInGroup = selectedServices.filter(s => s.group === group).length;
+                    if (countInGroup >= maxPer) blocked = true;
+                }
+            }
+            cb.disabled = blocked;
+            card.classList.toggle('blocked', blocked);
+        });
+    }
+
+    function updateServiceSummary() {
+        const wrap = document.getElementById('summaryServicesWrap');
+        const list = document.getElementById('summaryServicesList');
+        const singleRow = document.getElementById('summarySingleItemRow');
+        const totalDisplay = document.getElementById('totalPrice');
+        if (selectedServices.length === 0) {
+            wrap.style.display = 'none';
+            singleRow.style.display = 'flex';
+            document.getElementById('summaryItem').textContent = 'Not selected';
+            document.getElementById('summaryType').textContent = '—';
+            document.getElementById('summaryLens').textContent = '—';
+            document.getElementById('summaryColor').textContent = '—';
+            document.getElementById('summarySize').textContent = '—';
+            if (totalDisplay) totalDisplay.textContent = '₱0.00';
+            return;
+        }
+        singleRow.style.display = 'none';
+        wrap.style.display = 'block';
+        let total = 0;
+        list.innerHTML = '';
+        selectedServices.forEach(s => {
+            total += s.price;
+            const row = document.createElement('div');
+            row.className = 'summary-service-row';
+            row.innerHTML = `<span>${s.name}</span><span>₱${s.price.toFixed(2)}</span>`;
+            list.appendChild(row);
+        });
+        document.getElementById('summaryType').textContent = 'Service';
+        document.getElementById('summaryLens').textContent = '—';
+        document.getElementById('summaryColor').textContent = '—';
+        document.getElementById('summarySize').textContent = '—';
+        if (totalDisplay) {
+            totalDisplay.dataset.baseTotal = total;
+            totalDisplay.textContent = '₱' + total.toFixed(2);
+        }
+        selectedPrice = total;
+    }
+
+    // ============================================
+    // DOCTOR SELECTION
+    // ============================================
+    function handleDoctorSelection(radio) {
+        const doctorCard = radio.closest('.doctor-card');
+        if (doctorCard.classList.contains('no-schedule')) {
+            alert('This doctor has no schedule set. Please choose another doctor.');
+            document.getElementById('anyDoctor').checked = true;
+            document.querySelectorAll('.doctor-card').forEach(card => card.classList.remove('selected'));
+            document.getElementById('anyDoctorCard').classList.add('selected');
+            return false;
+        }
+        document.querySelectorAll('.doctor-card').forEach(card => card.classList.remove('selected'));
+        doctorCard.classList.add('selected');
+        const isAnyDoctor = radio.value === 'any';
+        if (isAnyDoctor) {
+            selectedDoctor = 'Any Available Doctor';
+            selectedDoctorId = 'any';
+            selectedDoctorSchedule = null;
+            document.getElementById('summaryDoctor').textContent = 'Any Available Doctor';
+            document.getElementById('selectedDoctorName').value = '';
+        } else {
+            selectedDoctor = doctorCard.querySelector('.doctor-name').textContent;
+            selectedDoctorId = radio.value;
+            document.getElementById('summaryDoctor').textContent = selectedDoctor;
+            document.getElementById('selectedDoctorName').value = selectedDoctor;
+            const scheduleData = doctorCard.getAttribute('data-schedule');
+            if (scheduleData && scheduleData !== 'null' && scheduleData !== '[]') {
+                try { selectedDoctorSchedule = JSON.parse(scheduleData); } catch(e) { selectedDoctorSchedule = {}; }
+            } else { selectedDoctorSchedule = {}; }
+        }
+        step2Completed = true;
+        document.getElementById('step2-status').textContent = '✓ Completed';
+        document.getElementById('step2-status').className = 'step-status-badge status-completed';
+        document.getElementById('step2').classList.add('completed');
+        document.getElementById('step2').classList.remove('active');
+        document.querySelector('.progress-step.step2').classList.add('completed');
+        document.querySelector('.progress-step.step2').classList.remove('active');
+        document.querySelector('.progress-step.step3').classList.remove('disabled');
+        document.querySelector('.progress-step.step3').classList.add('active');
+        document.getElementById('step3').classList.remove('locked');
+        document.getElementById('step3').classList.add('active');
+        document.getElementById('step3-status').textContent = 'Required';
+        document.getElementById('step3-status').className = 'step-status-badge status-pending';
+        document.getElementById('step3-content').classList.remove('disabled-content');
+        selectedDate = ''; selectedTime = '';
+        document.getElementById('selectedDate').value = '';
+        document.getElementById('selectedTime').value = '';
+        document.getElementById('summaryDate').textContent = '—';
+        document.getElementById('summaryTime').textContent = '—';
+        renderCalendar(currentMonth);
+        document.getElementById('timeSlotsContainer').innerHTML = `<div class="text-center" style="padding:20px;color:var(--text-muted);"><i class="fas fa-clock"></i> Select a date to see available time slots</div>`;
+        setTimeout(() => scrollToStep('step3'), 300);
+    }
+
+    // ============================================
+    // CALENDAR FUNCTIONS
+    // ============================================
+    const BOOKING_BUFFER_MINUTES = 30;
+
+    function getTodayDateStr() {
+        const now = new Date();
+        return now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0') + '-' + String(now.getDate()).padStart(2,'0');
+    }
+
+    function getClinicHoursRangeMinutes() {
+        const hoursMatch = clinicHours.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+        if (!hoursMatch) return null;
+        let sHour = parseInt(hoursMatch[1]), sMin = parseInt(hoursMatch[2]||0), sAmPm = (hoursMatch[3]||'am').toLowerCase();
+        let eHour = parseInt(hoursMatch[4]), eMin = parseInt(hoursMatch[5]||0), eAmPm = (hoursMatch[6]||'pm').toLowerCase();
+        if (sAmPm==='pm' && sHour!==12) sHour+=12;
+        if (sAmPm==='am' && sHour===12) sHour=0;
+        if (eAmPm==='pm' && eHour!==12) eHour+=12;
+        if (eAmPm==='am' && eHour===12) eHour=0;
+        return { startMinutes: sHour*60+sMin, endMinutes: eHour*60+eMin };
+    }
+
+    function getEffectiveEndMinutesForDay(dayOfWeek) {
+        const clinicRange = getClinicHoursRangeMinutes();
+        if (!clinicRange) return null;
+        let effectiveEnd = clinicRange.endMinutes;
+        if (selectedItemType==='service' && selectedDoctorId!=='any' && selectedDoctorSchedule && selectedDoctorSchedule[dayOfWeek]) {
+            const ranges = selectedDoctorSchedule[dayOfWeek];
+            if (!Array.isArray(ranges) || ranges.length===0) return null;
+            let latestEnd=0;
+            ranges.forEach(r => {
+                const parts = r.split('-');
+                if (parts.length<2) return;
+                const endParts = parts[1].split(':');
+                const eh = parseInt(endParts[0]), em = parseInt(endParts[1]||0);
+                const mins = eh*60+em;
+                if (mins>latestEnd) latestEnd = mins;
+            });
+            effectiveEnd = Math.min(effectiveEnd, latestEnd);
+        }
+        return effectiveEnd;
+    }
+
+    function hasFutureSlotToday(dateStr, dayOfWeek) {
+        const todayStr = getTodayDateStr();
+        if (dateStr !== todayStr) return true;
+        const now = new Date();
+        const nowMinutes = now.getHours()*60 + now.getMinutes();
+        const effectiveEnd = getEffectiveEndMinutesForDay(dayOfWeek);
+        if (effectiveEnd === null) return false;
+        return (nowMinutes + BOOKING_BUFFER_MINUTES) < effectiveEnd;
+    }
+
+    function initCalendar() {
+        currentMonth = new Date();
+        renderCalendar(currentMonth);
+    }
+
+    function renderCalendar(date) {
+        const year = date.getFullYear(), month = date.getMonth();
+        const firstDay = new Date(year, month, 1);
+        const lastDay = new Date(year, month+1, 0);
+        const daysInMonth = lastDay.getDate();
+        const startingDay = firstDay.getDay();
+        let startOffset = startingDay===0 ? 6 : startingDay-1;
+        const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+        
+        document.getElementById('calendarMonthYear').textContent = monthNames[month] + ' ' + year;
+        
+        let html = '';
+        for (let i=0; i<startOffset; i++) html += '<div class="calendar-day empty"></div>';
+        const today = new Date(); today.setHours(0,0,0,0);
+        for (let day=1; day<=daysInMonth; day++) {
+            const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+            const cellDate = new Date(year, month, day);
+            const isPast = cellDate < today;
+            const dayOfWeek = ['sun','mon','tue','wed','thu','fri','sat'][cellDate.getDay()];
+            const isToday = cellDate.toDateString() === today.toDateString();
+            let canSelect = false;
+            if (!isPast) {
+                if (selectedItemType==='product' || selectedDoctorId==='any') canSelect = true;
+                else if (selectedDoctorSchedule && typeof selectedDoctorSchedule==='object' && selectedDoctorSchedule[dayOfWeek] && Array.isArray(selectedDoctorSchedule[dayOfWeek]) && selectedDoctorSchedule[dayOfWeek].length>0) canSelect = true;
+            }
+            if (canSelect && isToday && !hasFutureSlotToday(dateStr, dayOfWeek)) canSelect = false;
+            const isSelected = selectedDate === dateStr;
+            let classes = 'calendar-day';
+            if (canSelect) classes += ' available';
+            if (isPast || !canSelect) classes += ' unavailable';
+            if (isToday) classes += ' today';
+            if (isSelected) classes += ' selected';
+            let onclick = canSelect ? `selectDate('${dateStr}','${dayOfWeek}')` : '';
+            html += `<div class="${classes}" ${onclick ? `onclick="${onclick}"` : ''}>${day}</div>`;
+        }
+        document.getElementById('calendarDays').innerHTML = html;
+    }
+
+    function changeMonth(delta) {
+        currentMonth.setMonth(currentMonth.getMonth()+delta);
+        renderCalendar(currentMonth);
+    }
+
+    function selectDate(dateStr, dayOfWeek) {
+        if (selectedItemType==='service' && selectedDoctorId!=='any' && selectedDoctorSchedule) {
+            if (!selectedDoctorSchedule[dayOfWeek] || !Array.isArray(selectedDoctorSchedule[dayOfWeek]) || selectedDoctorSchedule[dayOfWeek].length===0) {
+                alert('Doctor is not available on this date');
+                return;
+            }
+        }
+        if (!hasFutureSlotToday(dateStr, dayOfWeek)) {
+            alert('No more available time slots for today. Please select another date.');
+            return;
+        }
+        selectedDate = dateStr;
+        document.getElementById('selectedDate').value = dateStr;
+        renderCalendar(currentMonth);
+        const dateObj = new Date(dateStr);
+        document.getElementById('summaryDate').textContent = dateObj.toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
+        selectedTime = '';
+        document.getElementById('selectedTime').value = '';
+        document.getElementById('summaryTime').textContent = '—';
+        loadTimeSlots(dateStr, dayOfWeek);
+    }
+
+    function loadTimeSlots(date, dayOfWeek) {
+        document.getElementById('timeSlotsContainer').innerHTML = `
+            <div class="time-slots-header"><h4>Available Time Slots</h4><span>${new Date(date).toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})}</span></div>
+            <div class="text-center" style="padding:20px;"><div class="loading-spinner" style="margin:0 auto 10px;"></div><p style="color:var(--text-muted);">Loading available time slots...</p></div>
+        `;
+        setTimeout(() => generateTimeSlots(date, dayOfWeek), 500);
+    }
+
+    function generateTimeSlots(date, dayOfWeek) {
+        if (!clinicHours || clinicHours.trim()==='') {
+            document.getElementById('timeSlotsContainer').innerHTML = `<div class="no-slots-message"><i class="fas fa-exclamation-triangle"></i><h4>Clinic hours not set</h4><p>Please contact the clinic directly.</p></div>`;
+            return;
+        }
+        const lowerHours = clinicHours.toLowerCase();
+        let clinicStartHour, clinicStartMinute, clinicStartAmPm, clinicEndHour, clinicEndMinute, clinicEndAmPm;
+        if (lowerHours.includes('24/7') || lowerHours.includes('24 hours')) {
+            clinicStartHour=9; clinicStartMinute=0; clinicStartAmPm='am';
+            clinicEndHour=8; clinicEndMinute=0; clinicEndAmPm='pm';
+        } else {
+            let hoursMatch = clinicHours.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+            if (!hoursMatch) hoursMatch = clinicHours.match(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/i);
+            if (hoursMatch) {
+                if (hoursMatch[1] && hoursMatch[4]) {
+                    clinicStartHour = parseInt(hoursMatch[1]); clinicStartMinute = parseInt(hoursMatch[2]||0); clinicStartAmPm = hoursMatch[3] ? hoursMatch[3].toLowerCase() : 'am';
+                    clinicEndHour = parseInt(hoursMatch[4]); clinicEndMinute = parseInt(hoursMatch[5]||0); clinicEndAmPm = hoursMatch[6] ? hoursMatch[6].toLowerCase() : 'pm';
+                } else {
+                    clinicStartHour = parseInt(hoursMatch[1]); clinicStartMinute = parseInt(hoursMatch[2]||0);
+                    clinicEndHour = parseInt(hoursMatch[3]); clinicEndMinute = parseInt(hoursMatch[4]||0);
+                    clinicStartAmPm = (clinicStartHour >= 12) ? 'pm' : 'am';
+                    clinicEndAmPm = (clinicEndHour >= 12) ? 'pm' : 'am';
+                }
+            } else {
+                clinicStartHour=9; clinicStartMinute=0; clinicStartAmPm='am';
+                clinicEndHour=8; clinicEndMinute=0; clinicEndAmPm='pm';
+            }
+        }
+        let startHour24 = clinicStartHour, endHour24 = clinicEndHour;
+        if (clinicStartAmPm==='pm' && clinicStartHour!==12) startHour24 += 12;
+        if (clinicStartAmPm==='am' && clinicStartHour===12) startHour24 = 0;
+        if (clinicEndAmPm==='pm' && clinicEndHour!==12) endHour24 += 12;
+        if (clinicEndAmPm==='am' && clinicEndHour===12) endHour24 = 0;
+        const clinicStartMinutes = startHour24*60 + clinicStartMinute;
+        const clinicEndMinutes = endHour24*60 + clinicEndMinute;
+        
+        let doctorTimeRanges = [];
+        if (selectedItemType==='service' && selectedDoctorId!=='any' && selectedDoctorSchedule && selectedDoctorSchedule[dayOfWeek]) {
+            doctorTimeRanges = selectedDoctorSchedule[dayOfWeek];
+        }
+        const todayStrForSlots = getTodayDateStr();
+        const isDateToday = (date === todayStrForSlots);
+        const nowForSlots = new Date();
+        const nowMinutesForSlots = nowForSlots.getHours()*60 + nowForSlots.getMinutes();
+        
+        let availableSlots=[], breakSlots=[], bookedSlotsForDate=[], unavailableSlots=[], pastSlots=[];
+        for (let mins = clinicStartMinutes; mins < clinicEndMinutes; mins += 30) {
+            const hour = Math.floor(mins/60), minute = mins%60;
+            const ampm = hour>=12 ? 'PM' : 'AM';
+            const displayHour = hour%12===0 ? 12 : hour%12;
+            const displayTime = displayHour+':'+(minute<10?'0'+minute:minute)+' '+ampm;
+            const time24h = (hour<10?'0'+hour:hour)+':'+(minute<10?'0'+minute:minute)+':00';
+            if (isDateToday && mins < (nowMinutesForSlots + BOOKING_BUFFER_MINUTES)) { pastSlots.push({time:displayTime}); continue; }
+            const isBooked = bookedSlots.some(slot => slot.appointment_date === date && slot.appointment_time === time24h);
+            if (isBooked) { bookedSlotsForDate.push({time:displayTime,time24h:time24h}); continue; }
+            let isBreak=false, breakName='';
+            if (clinicBreaks && clinicBreaks.length>0) {
+                clinicBreaks.forEach(breakItem => {
+                    const startMatch = breakItem.break_start.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
+                    const endMatch = breakItem.break_end.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
+                    if (startMatch && endMatch) {
+                        let bsHour = parseInt(startMatch[1]), bsMin = parseInt(startMatch[2]||0), bsAmPm = startMatch[3].toLowerCase();
+                        let beHour = parseInt(endMatch[1]), beMin = parseInt(endMatch[2]||0), beAmPm = endMatch[3].toLowerCase();
+                        if (bsAmPm==='pm' && bsHour!==12) bsHour+=12;
+                        if (bsAmPm==='am' && bsHour===12) bsHour=0;
+                        if (beAmPm==='pm' && beHour!==12) beHour+=12;
+                        if (beAmPm==='am' && beHour===12) beHour=0;
+                        const breakStartMins = bsHour*60+bsMin, breakEndMins = beHour*60+beMin;
+                        if (mins >= breakStartMins && mins < breakEndMins) { isBreak=true; breakName = breakItem.break_name; }
+                    }
+                });
+            }
+            if (isBreak) { breakSlots.push({time:displayTime, breakName:breakName}); continue; }
+            if (selectedItemType==='service' && selectedDoctorId!=='any' && doctorTimeRanges.length>0) {
+                let isWithinDoctorSchedule = false;
+                for (const timeRange of doctorTimeRanges) {
+                    const [rangeStart, rangeEnd] = timeRange.split('-');
+                    const startParts = rangeStart.split(':'), endParts = rangeEnd.split(':');
+                    const rangeStartHour = parseInt(startParts[0]), rangeStartMin = parseInt(startParts[1]||0);
+                    const rangeEndHour = parseInt(endParts[0]), rangeEndMin = parseInt(endParts[1]||0);
+                    const rangeStartMins = rangeStartHour*60+rangeStartMin, rangeEndMins = rangeEndHour*60+rangeEndMin;
+                    if (mins >= rangeStartMins && mins < rangeEndMins) { isWithinDoctorSchedule = true; break; }
+                }
+                if (!isWithinDoctorSchedule) { unavailableSlots.push({time:displayTime}); continue; }
+            }
+            availableSlots.push({time:displayTime, time24h:time24h});
+        }
+        let html = `<div class="time-slots-header"><h4>Available Time Slots</h4><span>${new Date(date).toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})}</span></div>`;
+        if (availableSlots.length>0) {
+            html += '<div class="time-slots-grid">';
+            availableSlots.forEach(slot => { html += `<div class="time-slot-card available" onclick="selectTime('${slot.time}','${slot.time24h}',this)">${slot.time}</div>`; });
+            html += '</div>';
+        }
+        if (pastSlots.length>0) {
+            html += '<h5 style="margin:15px 0 5px;color:var(--text-muted);">Already Passed</h5><div class="time-slots-grid">';
+            pastSlots.forEach(slot => { html += `<div class="time-slot-card disabled" title="This time has already passed">${slot.time}<span class="slot-label">Passed</span></div>`; });
+            html += '</div>';
+        }
+        if (unavailableSlots.length>0) {
+            html += '<h5 style="margin:15px 0 5px;color:var(--danger);">Outside Doctor Hours</h5><div class="time-slots-grid">';
+            unavailableSlots.forEach(slot => { html += `<div class="time-slot-card unavailable" title="Outside doctor\'s working hours">${slot.time}<span class="slot-label">Not available</span></div>`; });
+            html += '</div>';
+        }
+        if (bookedSlotsForDate.length>0) {
+            html += '<h5 style="margin:15px 0 5px;color:var(--danger);">Already Booked</h5><div class="time-slots-grid">';
+            bookedSlotsForDate.forEach(slot => { html += `<div class="time-slot-card booked" title="Already booked">${slot.time}<span class="slot-label">Booked</span></div>`; });
+            html += '</div>';
+        }
+        if (breakSlots.length>0) {
+            html += '<h5 style="margin:15px 0 5px;color:var(--warning);">Break Times</h5><div class="time-slots-grid">';
+            breakSlots.forEach(slot => { html += `<div class="time-slot-card disabled" title="${slot.breakName}">${slot.time}<span class="slot-label">${slot.breakName}</span></div>`; });
+            html += '</div>';
+        }
+        if (availableSlots.length===0 && breakSlots.length===0 && bookedSlotsForDate.length===0 && unavailableSlots.length===0 && pastSlots.length===0) {
+            html = '<div class="no-slots-message"><i class="fas fa-calendar-times"></i><h4>No available slots</h4><p>Please select another date.</p></div>';
+        }
+        if (availableSlots.length===0 && isDateToday && pastSlots.length>0 && unavailableSlots.length===0 && bookedSlotsForDate.length===0) {
+            html = `<div class="time-slots-header"><h4>Available Time Slots</h4><span>${new Date(date).toLocaleDateString('en-US',{weekday:'long',month:'short',day:'numeric'})}</span></div>
+                    <div class="no-slots-message"><i class="fas fa-clock"></i><h4>No more slots today</h4><p>All remaining time slots for today have passed. Please select another date.</p></div>`;
+        }
+        document.getElementById('timeSlotsContainer').innerHTML = html;
+    }
+
+    function selectTime(displayTime, time24h, element) {
+        document.querySelectorAll('.time-slot-card').forEach(slot => slot.classList.remove('selected'));
+        element.classList.add('selected');
+        document.getElementById('selectedTime').value = time24h;
+        selectedTime = displayTime;
+        document.getElementById('summaryTime').textContent = displayTime;
+        step3Completed = true;
+        document.getElementById('step3-status').textContent = '✓ Completed';
+        document.getElementById('step3-status').className = 'step-status-badge status-completed';
+        document.getElementById('step3').classList.add('completed');
+        document.getElementById('step3').classList.remove('active');
+        document.querySelector('.progress-step.step3').classList.add('completed');
+        document.querySelector('.progress-step.step3').classList.remove('active');
+        document.querySelector('.progress-step.step4').classList.remove('disabled');
+        document.querySelector('.progress-step.step4').classList.add('active');
+        document.getElementById('step4').classList.remove('locked');
+        document.getElementById('step4').classList.add('active');
+        document.getElementById('step4-status').textContent = 'Required';
+        document.getElementById('step4-status').className = 'step-status-badge status-pending';
+        document.getElementById('step4-content').classList.remove('disabled-content');
+        document.querySelector('input[name="contact_number"]').disabled = false;
+        document.querySelector('textarea[name="notes"]').disabled = false;
+        handleContactInput();
+        setTimeout(() => scrollToStep('step4'), 300);
+    }
+
+    function handleContactInput() {
+        const contact = document.querySelector('input[name="contact_number"]').value;
+        const itemReady = (selectedItemType === 'service') ? selectedServices.length > 0 : step1Completed;
+        if (contact && itemReady && (step2Completed || selectedItemType === 'product') && step3Completed && selectedTime) {
+            document.getElementById('step4-status').textContent = '✓ Ready';
+            document.getElementById('step4-status').className = 'step-status-badge status-completed';
+            document.getElementById('step4').classList.add('completed');
+            document.getElementById('step4').classList.remove('active');
+            document.querySelector('.progress-step.step4').classList.add('completed');
+            document.querySelector('.progress-step.step4').classList.remove('active');
+            document.getElementById('confirmBtn').disabled = false;
+        } else {
+            document.getElementById('confirmBtn').disabled = true;
+        }
+        document.getElementById('summaryContact').textContent = contact || '—';
+    }
+
+    // ============================================
+    // SWITCH MAIN TAB
+    // ============================================
+    function switchMainTab(tab) {
+        clearErrorMessage();
+        
+        document.querySelectorAll('.main-tab-btn').forEach(btn => btn.classList.remove('active'));
+        const activeBtn = document.querySelector(`.main-tab-btn[data-tab="${tab}"]`);
+        if (activeBtn) activeBtn.classList.add('active');
+        
+        document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+        const targetContent = document.getElementById('tab-' + tab);
+        if (targetContent) targetContent.classList.add('active');
+        
+        if (tab === 'eyewear') renderEyewear();
+        else if (tab === 'contact_lenses') renderContactLenses();
+        else if (tab === 'accessories') renderAccessories();
+        else if (tab === 'services') renderServices();
+        
+        if (tab === 'services') {
+            document.getElementById('doctorsGrid').style.display = 'grid';
+            document.getElementById('product-message').style.display = 'none';
+        } else {
+            document.getElementById('doctorsGrid').style.display = 'none';
+            document.getElementById('product-message').style.display = 'block';
+            if (step1Completed) {
+                document.getElementById('step2-status').textContent = '✓ Completed (Not needed)';
+                document.getElementById('step2-status').className = 'step-status-badge status-completed';
+                document.getElementById('step2').classList.add('completed');
+                document.getElementById('step2').classList.remove('active');
+                document.querySelector('.progress-step.step2').classList.add('completed');
+                document.querySelector('.progress-step.step2').classList.remove('active');
+            }
+        }
+        
+        if (!step3Completed && bookingType === 'service') {
+            selectedDate = '';
+            selectedTime = '';
+            document.getElementById('selectedDate').value = '';
+            document.getElementById('selectedTime').value = '';
+            document.getElementById('summaryDate').textContent = '—';
+            document.getElementById('summaryTime').textContent = '—';
+            renderCalendar(currentMonth);
+            document.getElementById('timeSlotsContainer').innerHTML = `<div class="text-center" style="padding:20px;color:var(--text-muted);"><i class="fas fa-clock"></i> Select a date to see available time slots</div>`;
+        }
+    }
+
+    // ============================================
+    // FORM VALIDATION - ONLY ON SUBMIT
+    // ============================================
+    document.getElementById('bookingForm').addEventListener('submit', function(e) {
+        const contactInput = document.querySelector('input[name="contact_number"]');
+        const itemReady = (selectedItemType === 'service') ? selectedServices.length > 0 : step1Completed;
+
+        if (bookingType === 'product' && selectedItemType === 'product' && itemReady) {
+            const deliveryRadio = document.querySelector('input[name="delivery_type"][value="delivery"]');
+            if (deliveryRadio && deliveryRadio.checked) {
+                let addressInput = document.getElementById('deliveryAddressInput');
+                if (!addressInput || !addressInput.value.trim()) {
+                    e.preventDefault();
+                    showToast('Please enter your delivery address.', 'error');
+                    addressInput.style.borderColor = 'var(--danger)';
+                    addressInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    return;
+                }
+            }
+        }
+
+        if (!itemReady || (bookingType === 'service' && (!step3Completed || !selectedTime)) || !contactInput.value) {
+            e.preventDefault();
+            showToast('Please complete all steps before confirming your booking.', 'error');
+            if (!itemReady) scrollToStep('step1');
+            else if (bookingType === 'service' && !step2Completed) scrollToStep('step2');
+            else if (bookingType === 'service' && (!step3Completed || !selectedTime)) scrollToStep('step3');
+            else if (!contactInput.value) { scrollToStep('step4'); contactInput.style.borderColor='var(--danger)'; }
+            return;
+        }
+        
+        if (bookingType === 'service') {
+            const selDate = document.getElementById('selectedDate').value;
+            const selTimeVal = document.getElementById('selectedTime').value;
+            const todayStrSubmit = getTodayDateStr();
+            if (selDate === todayStrSubmit && selTimeVal) {
+                const nowSubmit = new Date();
+                const nowMinutesSubmit = nowSubmit.getHours()*60 + nowSubmit.getMinutes();
+                const [hSubmit, mSubmit] = selTimeVal.split(':').map(Number);
+                const selMinutesSubmit = hSubmit*60 + mSubmit;
+                if (selMinutesSubmit < nowMinutesSubmit) {
+                    e.preventDefault();
+                    showToast('That time has already passed. Please choose another time.', 'error');
+                    scrollToStep('step3');
+                }
+            }
+        }
+    });
+
+    // ============================================
+    // INIT
+    // ============================================
+    document.addEventListener('DOMContentLoaded', function() {
+        clearErrorMessage();
+        const savedTheme = localStorage.getItem('theme') || 'light';
+        if (savedTheme === 'dark') {
+            document.documentElement.classList.add('theme-dark');
+            const themeToggle = document.querySelector('#themeToggle i');
+            if (themeToggle) themeToggle.className = 'fas fa-sun';
+        }
+        initCalendar();
+        
+        document.querySelectorAll('#eyewearDeliverySection input[name="delivery_type"], #contactLensDeliverySection input[name="delivery_type"], #accessoryDeliverySection input[name="delivery_type"]').forEach(radio => {
+            radio.addEventListener('change', function() {
+                let section = 'eyewear';
+                if (this.closest('#contactLensDeliverySection')) section = 'cl';
+                else if (this.closest('#accessoryDeliverySection')) section = 'acc';
+                toggleDeliveryFields(section);
+            });
+        });
+
+        if (selectedItemType === 'product' && selectedItemId) {
+            const inEyewear = eyewearProducts.some(p => p.id == selectedItemId);
+            const inContact = contactLensProducts.some(p => p.id == selectedItemId);
+            const inAccessory = accessoryProducts.some(p => p.id == selectedItemId);
+            let targetTab = 'eyewear';
+            if (inContact) targetTab = 'contact_lenses';
+            else if (inAccessory) targetTab = 'accessories';
+            switchMainTab(targetTab);
+            if (inAccessory) {
+                setTimeout(() => {
+                    const prod = accessoryProducts.find(p => p.id == selectedItemId);
+                    if (prod) selectAccessory(prod.id, prod.name, prod.price);
+                }, 300);
+            } else if (inEyewear) {
+                setTimeout(() => {
+                    const prod = eyewearProducts.find(p => p.id == selectedItemId);
+                    if (prod) selectEyewearProduct(prod.id, prod.name, prod.price);
+                }, 300);
+            } else if (inContact) {
+                setTimeout(() => {
+                    const prod = contactLensProducts.find(p => p.id == selectedItemId);
+                    if (prod) selectContactProduct(prod.id, prod.name, prod.price);
+                }, 300);
+            }
+        } else if (selectedItemType === 'service' && selectedServices.length > 0) {
+            switchMainTab('services');
+            updateServiceSummary();
+            checkStep1Complete();
+            document.getElementById('step2').classList.remove('locked');
+            document.getElementById('step2').classList.add('active');
+            document.getElementById('step2-status').textContent = 'Required';
+            document.getElementById('step2-status').className = 'step-status-badge status-pending';
+            document.getElementById('step2-content').classList.remove('disabled-content');
+            document.querySelector('.progress-step.step2').classList.remove('disabled');
+            document.querySelector('.progress-step.step2').classList.add('active');
+            document.getElementById('doctorsGrid').style.display = 'grid';
+            document.getElementById('product-message').style.display = 'none';
+        } else {
+            switchMainTab('services');
+        }
+        if (document.getElementById('anyDoctor')) {
+            document.getElementById('anyDoctor').checked = true;
+        }
+    });
     </script>
 </body>
 </html>

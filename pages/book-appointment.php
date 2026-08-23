@@ -11,11 +11,6 @@ if (!isset($_SESSION['user_id'])) {
 
 $user_id = $_SESSION['user_id'];
 
-// ============================================
-// GET BOOKING TYPE FROM URL
-// ============================================
-$booking_type = isset($_GET['type']) ? $_GET['type'] : 'service';
-
 // Get clinic ID from URL
 $clinic_id = isset($_GET['clinic_id']) ? (int)$_GET['clinic_id'] : 0;
 $item_id = isset($_GET['item_id']) ? (int)$_GET['item_id'] : 0;
@@ -36,65 +31,27 @@ if (!$clinic) {
 }
 
 // ============================================
-// ✅ CHECK IF PRODUCT IS DELIVERABLE
-// ============================================
-function isProductDeliverable($product, $clinic) {
-    $category = $product['category'] ?? '';
-    
-    if (empty($clinic['offers_delivery']) || $clinic['offers_delivery'] != 1) {
-        return false;
-    }
-    
-    $deliverable_categories = ['Accessories', 'Parts', 'Cleaning Kits'];
-    if (in_array($category, $deliverable_categories)) {
-        return true;
-    }
-    
-    if ($category === 'Sunglasses') {
-        return true;
-    }
-    
-    if (in_array($category, ['Contact Lenses', 'Contact Lens'])) {
-        if (isset($product['requires_prescription']) && $product['requires_prescription'] == 1) {
-            return false;
-        }
-        if (isset($product['lens_power']) && !empty($product['lens_power'])) {
-            $power = trim($product['lens_power']);
-            if ($power !== 'plano' && $power !== '0' && $power !== '0.00') {
-                return false;
-            }
-        }
-        if (isset($product['lens_type']) && in_array($product['lens_type'], ['prescription', 'rx', 'graded'])) {
-            return false;
-        }
-        return true;
-    }
-    
-    if (isset($product['is_deliverable']) && $product['is_deliverable'] !== '') {
-        return (int)$product['is_deliverable'] === 1;
-    }
-    
-    return false;
-}
-
-// ============================================
 // ✅ CHECK IF PRODUCT IS PRESCRIPTION
 // ============================================
 function isPrescriptionProduct($product) {
     $category = $product['category'] ?? '';
     
+    // Services are not products
     if (in_array($category, ['Service', 'Eye Exam', 'Treatment', 'Screening'])) {
         return false;
     }
     
+    // Frames and Accessories are NOT prescription by default
     if (in_array($category, ['Frames', 'Accessories', 'Parts', 'Cleaning Kits'])) {
         return false;
     }
     
+    // Check requires_prescription flag
     if (isset($product['requires_prescription']) && $product['requires_prescription'] == 1) {
         return true;
     }
     
+    // Check lens_power
     if (isset($product['lens_power']) && !empty($product['lens_power'])) {
         $power = trim($product['lens_power']);
         if ($power !== 'plano' && $power !== '0' && $power !== '0.00') {
@@ -103,14 +60,17 @@ function isPrescriptionProduct($product) {
         return false;
     }
     
+    // Check lens_type
     if (isset($product['lens_type']) && in_array($product['lens_type'], ['prescription', 'rx', 'graded'])) {
         return true;
     }
     
+    // Check category - Eyeglasses and Lenses are typically prescription
     if (in_array($category, ['Eyeglasses', 'Lenses'])) {
         return true;
     }
     
+    // Default: treat as non-prescription
     return false;
 }
 
@@ -127,7 +87,6 @@ while($break = mysqli_fetch_assoc($breaks_query)) {
 // Get user details
 $user_query = mysqli_query($conn, "SELECT * FROM users WHERE id = $user_id");
 $user = mysqli_fetch_assoc($user_query);
-$user_delivery_address = $user['delivery_address'] ?? '';
 
 // Get item if selected from URL
 $selected_item = null;
@@ -163,79 +122,46 @@ $services_query = mysqli_query($conn, "SELECT s.*,
 $all_products_query = mysqli_query($conn, "SELECT *, 'product' as type FROM products WHERE clinic_id = $clinic_id ORDER BY category, name");
 
 // ============================================
-// ✅ CATEGORIZE PRODUCTS FOR TABS
+// ✅ CATEGORIZE PRODUCTS FOR TABS (Appointment Only - Prescription Only)
 // ============================================
 $eyewear_products = [];
 $contact_lens_products = [];
-$accessory_products = [];
 
 while($prod = mysqli_fetch_assoc($all_products_query)) {
     $cat = $prod['category'] ?? '';
     $is_prescription = isPrescriptionProduct($prod);
     
-    $show_product = false;
-    
-    if ($booking_type === 'service') {
-        if (in_array($cat, ['Service', 'Eye Exam', 'Treatment', 'Screening'])) {
-            continue;
-        }
-        if ($is_prescription) {
-            $show_product = true;
-        }
-        if (in_array($cat, ['Eyeglasses', 'Lenses'])) {
-            $show_product = true;
-        }
-    } else {
-        if (in_array($cat, ['Service', 'Eye Exam', 'Treatment', 'Screening'])) {
-            continue;
-        }
-        if (!$is_prescription) {
-            $show_product = true;
-        }
-        if (in_array($cat, ['Frames', 'Accessories', 'Parts', 'Cleaning Kits'])) {
-            $show_product = true;
-        }
-        if ($cat === 'Sunglasses' && !$is_prescription) {
-            $show_product = true;
-        }
-    }
-    
-    if (!$show_product) {
+    // SKIP: Services (handled separately), non-prescription products, and accessories
+    if (in_array($cat, ['Service', 'Eye Exam', 'Treatment', 'Screening'])) {
         continue;
     }
     
+    // Only show prescription products
+    if (!$is_prescription) {
+        continue;
+    }
+    
+    // Skip accessories (not needed for appointments)
+    if (in_array($cat, ['Accessories', 'Parts', 'Cleaning Kits'])) {
+        continue;
+    }
+    
+    // Categorize
     if (in_array($cat, ['Frames', 'Eyeglasses', 'Sunglasses', 'Lenses'])) {
         $eyewear_products[] = $prod;
     } elseif (in_array($cat, ['Contact Lenses', 'Contact Lens'])) {
         $contact_lens_products[] = $prod;
-    } elseif (in_array($cat, ['Accessories', 'Parts', 'Cleaning Kits'])) {
-        $accessory_products[] = $prod;
     } else {
         $eyewear_products[] = $prod;
     }
 }
 
-// ============================================
-// ✅ BUILD PRODUCT DELIVERABILITY DATA
-// ============================================
-$product_deliverability = [];
-foreach (array_merge($eyewear_products, $contact_lens_products, $accessory_products) as $prod) {
-    $deliverable = isProductDeliverable($prod, $clinic);
-    $product_deliverability[$prod['id']] = [
-        'deliverable' => $deliverable,
-        'delivery_fee' => $deliverable ? ($clinic['delivery_fee'] ?? 0) : 0,
-        'free_delivery_minimum' => $clinic['free_delivery_minimum'] ?? 0
-    ];
-}
-
-// Get doctors - only needed for service mode
+// Get doctors
+$doctors_query = mysqli_query($conn, "SELECT * FROM doctors WHERE clinic_id = $clinic_id AND is_active = 1 ORDER BY name");
 $doctors_list = [];
-if ($booking_type === 'service') {
-    $doctors_query = mysqli_query($conn, "SELECT * FROM doctors WHERE clinic_id = $clinic_id AND is_active = 1 ORDER BY name");
-    while($doc = mysqli_fetch_assoc($doctors_query)) {
-        $doc['schedule'] = json_decode($doc['schedule'], true);
-        $doctors_list[] = $doc;
-    }
+while($doc = mysqli_fetch_assoc($doctors_query)) {
+    $doc['schedule'] = json_decode($doc['schedule'], true);
+    $doctors_list[] = $doc;
 }
 
 // Get user avatar
@@ -268,20 +194,18 @@ $clinic_hours = $clinic['hours'];
 $min_date = date('Y-m-d');
 $max_date = date('Y-m-d', strtotime('+30 days'));
 
-// Get booked slots - only needed for service mode
+// Get booked slots
+$booked_slots_query = mysqli_query($conn, "
+    SELECT appointment_date, appointment_time
+    FROM appointments 
+    WHERE clinic_id = $clinic_id 
+    AND appointment_date >= '$min_date'
+    AND appointment_date <= '$max_date'
+    AND status != 'cancelled'
+");
 $booked_slots = [];
-if ($booking_type === 'service') {
-    $booked_slots_query = mysqli_query($conn, "
-        SELECT appointment_date, appointment_time
-        FROM appointments 
-        WHERE clinic_id = $clinic_id 
-        AND appointment_date >= '$min_date'
-        AND appointment_date <= '$max_date'
-        AND status != 'cancelled'
-    ");
-    while ($row = mysqli_fetch_assoc($booked_slots_query)) {
-        $booked_slots[] = $row;
-    }
+while ($row = mysqli_fetch_assoc($booked_slots_query)) {
+    $booked_slots[] = $row;
 }
 
 // Determine active tab from pre-selected item
@@ -292,11 +216,7 @@ if ($selected_item_type === 'product') {
         $active_tab = 'eyewear';
     } elseif (in_array($cat, ['Contact Lenses', 'Contact Lens'])) {
         $active_tab = 'contact_lenses';
-    } elseif (in_array($cat, ['Accessories', 'Parts', 'Cleaning Kits'])) {
-        $active_tab = 'accessories';
     }
-} elseif ($selected_item_type === 'service') {
-    $active_tab = 'services';
 }
 
 // ============================================
@@ -306,6 +226,7 @@ if (isset($_GET['ajax_get_product_details']) && isset($_GET['product_id'])) {
     header('Content-Type: application/json');
     $product_id = (int)$_GET['product_id'];
 
+    // Get colors
     $colors = [];
     $colors_query = mysqli_query($conn, "
         SELECT color_code, color_name, quantity
@@ -317,6 +238,7 @@ if (isset($_GET['ajax_get_product_details']) && isset($_GET['product_id'])) {
         $colors[] = $c;
     }
 
+    // Get extra fields (for sizes)
     $extra_fields = [];
     $prod_query = mysqli_query($conn, "SELECT extra_fields_json FROM products WHERE id = $product_id");
     $prod_data = mysqli_fetch_assoc($prod_query);
@@ -343,16 +265,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
     $notes = mysqli_real_escape_string($conn, $_POST['notes']);
     $contact_number = mysqli_real_escape_string($conn, $_POST['contact_number']);
 
-    $delivery_type = isset($_POST['delivery_type']) ? $_POST['delivery_type'] : 'pickup';
-    $delivery_address = mysqli_real_escape_string($conn, $_POST['delivery_address'] ?? '');
-    $delivery_notes = mysqli_real_escape_string($conn, $_POST['delivery_notes'] ?? '');
-
     $selected_lens_type = mysqli_real_escape_string($conn, $_POST['selected_lens_type'] ?? '');
     $selected_color_code = mysqli_real_escape_string($conn, $_POST['selected_color_code'] ?? '');
     $selected_color_name = mysqli_real_escape_string($conn, $_POST['selected_color_name'] ?? '');
     $selected_frame_size = mysqli_real_escape_string($conn, $_POST['selected_frame_size'] ?? '');
     
-    // Prescription fields from the working product-view
+    // Prescription fields
     $prescription_knowledge = mysqli_real_escape_string($conn, $_POST['prescription_knowledge'] ?? '');
     $od_sph = mysqli_real_escape_string($conn, $_POST['od_sph'] ?? '');
     $od_cyl = mysqli_real_escape_string($conn, $_POST['od_cyl'] ?? '');
@@ -372,15 +290,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
 
     $hasSelection = ($item_type_db === 'service') ? !empty($selected_service_ids) : $selected_product_id > 0;
 
-    $is_service_mode = ($booking_type === 'service');
-    $is_product_mode = ($booking_type === 'product');
-
-    if (!$hasSelection) {
-        $error_message = 'Please select an item before confirming.';
-    } elseif ($is_service_mode && (empty($appointment_date) || empty($appointment_time) || empty($contact_number))) {
+    if (!$hasSelection || empty($appointment_date) || empty($appointment_time) || empty($contact_number)) {
         $error_message = 'Please complete all steps before confirming';
-    } elseif ($is_product_mode && empty($contact_number)) {
-        $error_message = 'Please enter your contact number.';
     } else {
         $is_product = ($item_type_db === 'product' && $selected_product_id > 0);
         $selected_product_data = null;
@@ -390,12 +301,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             $selected_product_data = mysqli_fetch_assoc($prod_query);
         }
 
-        if ($is_product && $delivery_type === 'delivery' && empty($delivery_address)) {
-            $error_message = 'Please enter your delivery address.';
-        }
-
-        // Past date check only for service mode
-        if (empty($error_message) && $is_service_mode && !$is_product) {
+        // Past date check
+        if (empty($error_message)) {
             $tz = new DateTimeZone('Asia/Manila');
             $now_server = new DateTime('now', $tz);
             $appointment_datetime = DateTime::createFromFormat('Y-m-d H:i:s', $appointment_date . ' ' . $appointment_time, $tz);
@@ -407,8 +314,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             }
         }
 
-        // Conflict checks only for service mode
-        if (empty($error_message) && $is_service_mode && !$is_product) {
+        // Conflict checks
+        if (empty($error_message)) {
             $conflict_query = mysqli_query($conn, "
                 SELECT a.*, c.name as clinic_name 
                 FROM appointments a
@@ -427,7 +334,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             }
         }
 
-        if (empty($error_message) && $is_service_mode && !$is_product) {
+        if (empty($error_message)) {
             $daily_count_query = mysqli_query($conn, "
                 SELECT COUNT(*) as total 
                 FROM appointments 
@@ -442,7 +349,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             }
         }
 
-        if (empty($error_message) && $is_service_mode && !$is_product) {
+        if (empty($error_message)) {
             $slot_taken_query = mysqli_query($conn, "
                 SELECT id FROM appointments 
                 WHERE clinic_id = $clinic_id 
@@ -456,7 +363,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             }
         }
 
-        if (empty($error_message) && $is_service_mode && $doctor_id !== 'NULL' && $item_type_db == 'service') {
+        if (empty($error_message) && $doctor_id !== 'NULL' && $item_type_db == 'service') {
             $doctor_query = mysqli_query($conn, "SELECT schedule FROM doctors WHERE id = $doctor_id");
             $doctor = mysqli_fetch_assoc($doctor_query);
             $schedule = json_decode($doctor['schedule'], true);
@@ -490,7 +397,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
 
         // Service combination validation
         $service_rows = [];
-        if (empty($error_message) && $is_service_mode && $item_type_db === 'service' && !empty($selected_service_ids)) {
+        if (empty($error_message) && $item_type_db === 'service' && !empty($selected_service_ids)) {
             $ids_str = implode(',', $selected_service_ids);
             $svc_check = mysqli_query($conn, "SELECT id, name, price, booking_group, max_per_booking FROM services WHERE id IN ($ids_str) AND clinic_id = $clinic_id");
             
@@ -519,7 +426,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                     }
                 }
             }
-        } elseif (empty($error_message) && $is_service_mode && $item_type_db === 'service' && !empty($selected_service_ids)) {
+        } elseif (empty($error_message) && $item_type_db === 'service' && !empty($selected_service_ids)) {
             $ids_str = implode(',', $selected_service_ids);
             $svc_check2 = mysqli_query($conn, "SELECT id, name, price, booking_group, max_per_booking FROM services WHERE id IN ($ids_str) AND clinic_id = $clinic_id");
             while ($svcRow2 = mysqli_fetch_assoc($svc_check2)) {
@@ -529,209 +436,118 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
 
         // Proceed with booking
         if (empty($error_message)) {
-            if ($is_product && $selected_product_data) {
-                // PRODUCT: Save to customer_orders
-                $is_deliverable = isProductDeliverable($selected_product_data, $clinic);
-                $delivery_fee_charged = ($is_deliverable && $delivery_type === 'delivery') ? ($clinic['delivery_fee'] ?? 0) : 0;
-                
-                $free_delivery_minimum = $clinic['free_delivery_minimum'] ?? 0;
-                if ($delivery_type === 'delivery' && $free_delivery_minimum > 0 && $item_price >= $free_delivery_minimum) {
-                    $delivery_fee_charged = 0;
-                }
-                
-                $grand_total = $item_price + $delivery_fee_charged;
-                $order_number = 'ORD-' . strtoupper(substr(uniqid(), -8));
-                
-                if ($delivery_type === 'delivery' && !empty($delivery_address)) {
-                    mysqli_query($conn, "UPDATE users SET delivery_address = '$delivery_address' WHERE id = $user_id");
-                }
-                
-                $notes_final = $notes . ' | Lens: ' . $selected_lens_type . ' | Color: ' . $selected_color_name . ' | Size: ' . $selected_frame_size;
-                if (!empty($prescription_knowledge)) {
-                    $notes_final .= ' | Prescription: ' . $prescription_knowledge;
-                    if ($prescription_knowledge === 'know') {
-                        $notes_final .= ' | OD: ' . $od_sph . '/' . $od_cyl . 'x' . $od_axis;
-                        $notes_final .= ' | OS: ' . $os_sph . '/' . $os_cyl . 'x' . $os_axis;
-                    }
-                }
+            // Save to appointments
+            if ($item_type_db == 'product') {
+                $doctor_id = 'NULL';
+            }
 
-                $insert_order = mysqli_query($conn, "
-                    INSERT INTO customer_orders (
-                        order_number, user_id, clinic_id, delivery_type, delivery_address,
-                        delivery_fee, delivery_notes, subtotal, total_amount,
-                        payment_status, status, notes, created_at
-                    ) VALUES (
-                        '$order_number', $user_id, $clinic_id, '$delivery_type', '$delivery_address',
-                        $delivery_fee_charged, '$delivery_notes', $item_price, $grand_total,
-                        'pending', 'pending', '$notes_final', NOW()
-                    )
-                ");
+            $existingPatientId = null;
+            $userCheck = mysqli_query($conn, "SELECT patient_id FROM users WHERE id = $user_id");
+            if ($userCheck && mysqli_num_rows($userCheck) > 0) {
+                $userData = mysqli_fetch_assoc($userCheck);
+                if ($userData['patient_id']) {
+                    $existingPatientId = $userData['patient_id'];
+                }
+            }
+
+            if (!$existingPatientId) {
+                $userEmail = mysqli_real_escape_string($conn, $user['email'] ?? '');
+                $userContact = mysqli_real_escape_string($conn, $user['contact'] ?? '');
                 
-                if ($insert_order) {
-                    $order_id = mysqli_insert_id($conn);
-                    
-                    mysqli_query($conn, "
-                        INSERT INTO customer_order_items (order_id, product_id, quantity, price, subtotal)
-                        VALUES ($order_id, $selected_product_id, 1, $item_price, $item_price)
+                if ($userEmail || $userContact) {
+                    $patientCheck = mysqli_query($conn, "
+                        SELECT id FROM patients 
+                        WHERE (email = '$userEmail' OR phone = '$userContact') 
+                        AND clinic_id = $clinic_id
+                        LIMIT 1
                     ");
                     
-                    if (function_exists('addNotification')) {
-                        $delivery_text = ($delivery_type === 'delivery') ? " (Delivery: $delivery_address)" : ' (Pickup)';
-                        addNotification($user_id, 'order', 'Order Placed', 
-                            "Your order #$order_number for {$selected_product_data['name']} has been placed.{$delivery_text}",
-                            'my-orders.php'
-                        );
+                    if ($patientCheck && mysqli_num_rows($patientCheck) > 0) {
+                        $existingPatient = mysqli_fetch_assoc($patientCheck);
+                        $existingPatientId = $existingPatient['id'];
+                        mysqli_query($conn, "UPDATE users SET patient_id = $existingPatientId WHERE id = $user_id");
                     }
-                    
-                    $payment_info = calculatePaymentAmounts($conn, $clinic_id, $grand_total);
-                    $booking_flow = $payment_info['booking_flow'] ?? 'approve_first';
-                    
-                    if ($payment_info['requires_payment']) {
-                        if ($booking_flow === 'pay_first') {
-                            header('Location: payment-order.php?order_id=' . $order_id);
-                            exit();
-                        } else {
-                            $success_message = 'Order placed successfully! Please wait for clinic approval before making payment.';
-                            $_POST = array();
-                        }
-                    } else {
-                        mysqli_query($conn, "UPDATE customer_orders SET status = 'confirmed' WHERE id = $order_id");
-                        $success_message = 'Order placed successfully!';
-                        $_POST = array();
-                    }
-                } else {
-                    $error_message = 'Error placing order: ' . mysqli_error($conn);
                 }
-                
+            }
+
+            $isNewPatient = $existingPatientId ? 0 : 1;
+            $total_price = 0;
+            $item_names = [];
+            $primary_item_id = 0;
+
+            if ($item_type_db === 'service') {
+                foreach ($service_rows as $svc) {
+                    $total_price += $svc['price'];
+                    $item_names[] = $svc['name'];
+                }
+                $primary_item_id = $selected_service_ids[0];
             } else {
-                // SERVICE: Save to appointments
-                if ($item_type_db == 'product') {
-                    $doctor_id = 'NULL';
+                $price_row = mysqli_fetch_assoc(mysqli_query($conn, "SELECT name, price FROM products WHERE id = $selected_product_id"));
+                $total_price = $price_row['price'] ?? 0;
+                $item_names[] = $price_row['name'] ?? 'Product';
+                $primary_item_id = $selected_product_id;
+            }
+
+            $appointment_notes = $notes;
+            if (!empty($selected_lens_type)) $appointment_notes .= ' | Lens: ' . $selected_lens_type;
+            if (!empty($selected_color_name)) $appointment_notes .= ' | Color: ' . $selected_color_name;
+            if (!empty($selected_frame_size)) $appointment_notes .= ' | Size: ' . $selected_frame_size;
+            if (!empty($prescription_knowledge)) {
+                $appointment_notes .= ' | Prescription: ' . $prescription_knowledge;
+                if ($prescription_knowledge === 'know') {
+                    $appointment_notes .= ' | OD: ' . $od_sph . '/' . $od_cyl . 'x' . $od_axis;
+                    $appointment_notes .= ' | OS: ' . $os_sph . '/' . $os_cyl . 'x' . $os_axis;
                 }
+            }
 
-                $existingPatientId = null;
-                $userCheck = mysqli_query($conn, "SELECT patient_id FROM users WHERE id = $user_id");
-                if ($userCheck && mysqli_num_rows($userCheck) > 0) {
-                    $userData = mysqli_fetch_assoc($userCheck);
-                    if ($userData['patient_id']) {
-                        $existingPatientId = $userData['patient_id'];
-                    }
-                }
+            $insert_query = "INSERT INTO appointments 
+                (user_id, patient_id, clinic_id, item_id, item_type, doctor_id, 
+                 appointment_date, appointment_time, notes, contact_number, status, is_new_patient, created_at) 
+                VALUES ($user_id, " . ($existingPatientId ?: 'NULL') . ", $clinic_id, $primary_item_id, '$item_type_db', " .
+                ($doctor_id === 'NULL' ? 'NULL' : $doctor_id) . ", 
+                '$appointment_date', '$appointment_time', '$appointment_notes', '$contact_number', 'pending', $isNewPatient, NOW())";
 
-                if (!$existingPatientId) {
-                    $userEmail = mysqli_real_escape_string($conn, $user['email'] ?? '');
-                    $userContact = mysqli_real_escape_string($conn, $user['contact'] ?? '');
-                    
-                    if ($userEmail || $userContact) {
-                        $patientCheck = mysqli_query($conn, "
-                            SELECT id FROM patients 
-                            WHERE (email = '$userEmail' OR phone = '$userContact') 
-                            AND clinic_id = $clinic_id
-                            LIMIT 1
-                        ");
-                        
-                        if ($patientCheck && mysqli_num_rows($patientCheck) > 0) {
-                            $existingPatient = mysqli_fetch_assoc($patientCheck);
-                            $existingPatientId = $existingPatient['id'];
-                            mysqli_query($conn, "UPDATE users SET patient_id = $existingPatientId WHERE id = $user_id");
-                        }
-                    }
-                }
+            if (mysqli_query($conn, $insert_query)) {
+                $new_appointment_id = mysqli_insert_id($conn);
 
-                $isNewPatient = $existingPatientId ? 0 : 1;
-                $total_price = 0;
-                $item_names = [];
-                $primary_item_id = 0;
-
-                if ($item_type_db === 'service') {
+                if ($item_type_db === 'service' && !empty($service_rows)) {
                     foreach ($service_rows as $svc) {
-                        $total_price += $svc['price'];
-                        $item_names[] = $svc['name'];
-                    }
-                    $primary_item_id = $selected_service_ids[0];
-                } else {
-                    $price_row = mysqli_fetch_assoc(mysqli_query($conn, "SELECT name, price FROM products WHERE id = $selected_product_id"));
-                    $total_price = $price_row['price'] ?? 0;
-                    $item_names[] = $price_row['name'] ?? 'Product';
-                    $primary_item_id = $selected_product_id;
-                }
-
-                $appointment_notes = $notes;
-                if (!empty($selected_lens_type)) $appointment_notes .= ' | Lens: ' . $selected_lens_type;
-                if (!empty($selected_color_name)) $appointment_notes .= ' | Color: ' . $selected_color_name;
-                if (!empty($selected_frame_size)) $appointment_notes .= ' | Size: ' . $selected_frame_size;
-                if (!empty($prescription_knowledge)) {
-                    $appointment_notes .= ' | Prescription: ' . $prescription_knowledge;
-                    if ($prescription_knowledge === 'know') {
-                        $appointment_notes .= ' | OD: ' . $od_sph . '/' . $od_cyl . 'x' . $od_axis;
-                        $appointment_notes .= ' | OS: ' . $os_sph . '/' . $os_cyl . 'x' . $os_axis;
+                        $svc_id = (int)$svc['id'];
+                        $svc_price = (float)$svc['price'];
+                        mysqli_query($conn, "INSERT INTO appointment_services (appointment_id, service_id, price) 
+                                              VALUES ($new_appointment_id, $svc_id, $svc_price)");
                     }
                 }
 
-                if ($is_product_mode) {
-                    $appointment_date = 'NULL';
-                    $appointment_time = 'NULL';
-                    $doctor_id = 'NULL';
+                $formatted_date = date('F j, Y', strtotime($appointment_date));
+                $formatted_time = date('g:i A', strtotime($appointment_time));
+                $doctor_text = ($doctor_id === 'NULL' || $item_type_db == 'product') ? '' : ' with Dr. ' . $_POST['doctor_name'];
+                $item_text = implode(' + ', $item_names);
+
+                if (function_exists('addNotification')) {
+                    addNotification($user_id, 'appointment', 'New Appointment Booked',
+                        "Your {$item_text} at {$clinic['name']}{$doctor_text} on {$formatted_date} at {$formatted_time} is pending confirmation.",
+                        'my-appointments.php'
+                    );
                 }
 
-                $insert_query = "INSERT INTO appointments 
-                    (user_id, patient_id, clinic_id, item_id, item_type, doctor_id, 
-                     appointment_date, appointment_time, notes, contact_number, status, is_new_patient, created_at) 
-                    VALUES ($user_id, " . ($existingPatientId ?: 'NULL') . ", $clinic_id, $primary_item_id, '$item_type_db', " .
-                    ($doctor_id === 'NULL' ? 'NULL' : $doctor_id) . ", " .
-                    ($appointment_date === 'NULL' ? 'NULL' : "'$appointment_date'") . ", " .
-                    ($appointment_time === 'NULL' ? 'NULL' : "'$appointment_time'") . ", " .
-                    "'$appointment_notes', '$contact_number', 'pending', $isNewPatient, NOW())";
+                $payment_info = calculatePaymentAmounts($conn, $clinic_id, $total_price);
+                $booking_flow = $payment_info['booking_flow'] ?? 'approve_first';
 
-                if (mysqli_query($conn, $insert_query)) {
-                    $new_appointment_id = mysqli_insert_id($conn);
-
-                    if ($item_type_db === 'service' && !empty($service_rows)) {
-                        foreach ($service_rows as $svc) {
-                            $svc_id = (int)$svc['id'];
-                            $svc_price = (float)$svc['price'];
-                            mysqli_query($conn, "INSERT INTO appointment_services (appointment_id, service_id, price) 
-                                                  VALUES ($new_appointment_id, $svc_id, $svc_price)");
-                        }
-                    }
-
-                    $formatted_date = date('F j, Y', strtotime($appointment_date));
-                    $formatted_time = date('g:i A', strtotime($appointment_time));
-                    $doctor_text = ($doctor_id === 'NULL' || $item_type_db == 'product') ? '' : ' with Dr. ' . $_POST['doctor_name'];
-                    $item_text = implode(' + ', $item_names);
-
-                    if (function_exists('addNotification')) {
-                        $notification_type = $is_product_mode ? 'order' : 'appointment';
-                        $notification_page = $is_product_mode ? 'my-orders.php' : 'my-appointments.php';
-                        addNotification($user_id, $notification_type, 'New ' . ($is_product_mode ? 'Order' : 'Appointment') . ' Booked',
-                            "Your {$item_text} at {$clinic['name']}{$doctor_text} has been placed.",
-                            $notification_page
-                        );
-                    }
-
-                    if ($is_product_mode) {
-                        $success_message = 'Order placed successfully!';
-                        $_POST = array();
+                if ($payment_info['requires_payment']) {
+                    if ($booking_flow === 'pay_first') {
+                        header('Location: payment.php?appointment_id=' . $new_appointment_id);
+                        exit();
                     } else {
-                        $payment_info = calculatePaymentAmounts($conn, $clinic_id, $total_price);
-                        $booking_flow = $payment_info['booking_flow'] ?? 'approve_first';
-
-                        if ($payment_info['requires_payment']) {
-                            if ($booking_flow === 'pay_first') {
-                                header('Location: payment.php?appointment_id=' . $new_appointment_id);
-                                exit();
-                            } else {
-                                $success_message = 'Appointment booked successfully! Please wait for clinic approval before making payment.';
-                                $_POST = array();
-                            }
-                        } else {
-                            $success_message = 'Appointment booked successfully!';
-                            $_POST = array();
-                        }
+                        $success_message = 'Appointment booked successfully! Please wait for clinic approval before making payment.';
+                        $_POST = array();
                     }
                 } else {
-                    $error_message = 'Error booking appointment: ' . mysqli_error($conn);
+                    $success_message = 'Appointment booked successfully!';
+                    $_POST = array();
                 }
+            } else {
+                $error_message = 'Error booking appointment: ' . mysqli_error($conn);
             }
         }
     }
@@ -742,7 +558,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title><?php echo $booking_type === 'service' ? 'Book Service' : 'Shop Products'; ?> - <?php echo $clinic['name']; ?></title>
+    <title>Book Appointment - <?php echo $clinic['name']; ?></title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
@@ -842,16 +658,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         .progress-step.active .step-label { color: var(--primary); }
         .progress-step.completed .step-label { color: var(--success); }
 
-        <?php if ($booking_type === 'product'): ?>
-        .progress-step.step2, .progress-step.step3 {
-            display: none !important;
-        }
-        .booking-progress::before {
-            left: 30px !important;
-            right: 30px !important;
-        }
-        <?php endif; ?>
-
         .step-section { margin-bottom: 30px; padding: 20px; background: var(--bg-primary); border-radius: var(--radius-md); border: 1px solid var(--border-light); transition: all 0.2s; }
         .step-section.active { border-left: 4px solid var(--primary); }
         .step-section.completed { border-left: 4px solid var(--success); }
@@ -910,10 +716,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             display: none;
         }
         .lens-selection-box.visible { display: block; animation: fadeIn 0.3s ease; }
-
         .lens-options-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
         @media (max-width: 500px) { .lens-options-grid { grid-template-columns: 1fr; } }
-
         .lens-option-btn {
             padding: 14px 12px;
             border: 2px solid var(--border-color);
@@ -933,8 +737,78 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         .lens-option-btn .lp { font-size: 12px; color: var(--primary); font-weight: 600; }
         .lens-option-btn .ld { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
+        .color-size-selector {
+            background: var(--bg-primary);
+            border-radius: var(--radius-md);
+            padding: 16px;
+            margin-top: 16px;
+            border: 1px solid var(--border-light);
+            display: none;
+        }
+        .color-size-selector.visible { display: block; }
+        .cs-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--text-primary);
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            margin-bottom: 14px;
+        }
+        .cs-title i { color: var(--primary); }
+        .cs-selected-label { font-weight: 500; color: var(--text-secondary); font-size: 13px; margin-left: auto; }
+        .cs-selected-label.chosen { color: var(--primary); font-weight: 600; }
+        .color-btns, .size-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+        .color-btn {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            padding: 8px 14px;
+            border: 2px solid var(--border-color);
+            border-radius: var(--radius-md);
+            background: var(--bg-secondary);
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+        .color-btn:hover:not(.oos) { border-color: var(--primary); background: var(--primary-light); }
+        .color-btn.selected { border-color: var(--primary); background: var(--primary-light); box-shadow: 0 0 0 3px rgba(0,183,97,0.12); }
+        .color-btn.oos { opacity: 0.45; cursor: not-allowed; border-style: dashed; }
+        .color-dot { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid rgba(0,0,0,0.15); flex-shrink: 0; }
+        .color-btn-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+        .color-btn-qty { font-size: 11px; color: var(--text-muted); margin-left: 2px; }
+        .color-btn-qty.low { color: var(--warning); font-weight: 600; }
+        .color-btn-qty.oos-label { color: var(--danger); font-weight: 600; }
+        .size-btn {
+            padding: 8px 16px;
+            border: 2px solid var(--border-color);
+            border-radius: var(--radius-md);
+            background: var(--bg-secondary);
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+        .size-btn:hover, .size-btn.selected { border-color: var(--primary); background: var(--primary-light); color: var(--primary); }
+        .cs-hint { font-size: 11px; color: var(--text-muted); display: flex; align-items: center; gap: 4px; }
+        .cs-hint i { color: var(--primary); }
+
+        .clinic-visit-required {
+            background: #FEF3C7;
+            border: 1px solid #FDE68A;
+            border-radius: var(--radius-md);
+            padding: 16px;
+            margin-top: 16px;
+            display: none;
+            align-items: flex-start;
+            gap: 12px;
+        }
+        .clinic-visit-required.visible { display: flex; }
+        .clinic-visit-required i { color: var(--warning); font-size: 20px; flex-shrink: 0; }
+        .theme-dark .clinic-visit-required { background: #3B2F0F; border-color: #7F6B1D; }
+
         /* ============================================ */
-        /* RX SECTION - COPIED FROM PRODUCT-VIEW */
+        /* ✅ RX SECTION - From product-view */
         /* ============================================ */
         .rx-toggle {
             display: flex;
@@ -1072,228 +946,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         }
         .eye-exam-box i { font-size: 28px; color: var(--primary); }
         .eye-exam-box p { font-size: 13px; color: var(--text-secondary); line-height: 1.5; }
-
-        .color-size-selector {
-            background: var(--bg-primary);
-            border-radius: var(--radius-md);
-            padding: 16px;
-            margin-top: 16px;
-            border: 1px solid var(--border-light);
-            display: none;
-        }
-        .color-size-selector.visible { display: block; }
-        .cs-title {
-            font-size: 14px;
-            font-weight: 700;
-            color: var(--text-primary);
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            margin-bottom: 14px;
-        }
-        .cs-title i { color: var(--primary); }
-        .cs-selected-label { font-weight: 500; color: var(--text-secondary); font-size: 13px; margin-left: auto; }
-        .cs-selected-label.chosen { color: var(--primary); font-weight: 600; }
-        .color-btns, .size-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
-        .color-btn {
-            display: flex;
-            align-items: center;
-            gap: 7px;
-            padding: 8px 14px;
-            border: 2px solid var(--border-color);
-            border-radius: var(--radius-md);
-            background: var(--bg-secondary);
-            cursor: pointer;
-            transition: all 0.2s;
-            font-family: inherit;
-        }
-        .color-btn:hover:not(.oos) { border-color: var(--primary); background: var(--primary-light); }
-        .color-btn.selected { border-color: var(--primary); background: var(--primary-light); box-shadow: 0 0 0 3px rgba(0,183,97,0.12); }
-        .color-btn.oos { opacity: 0.45; cursor: not-allowed; border-style: dashed; }
-        .color-dot { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid rgba(0,0,0,0.15); flex-shrink: 0; }
-        .color-btn-name { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-        .color-btn-qty { font-size: 11px; color: var(--text-muted); margin-left: 2px; }
-        .color-btn-qty.low { color: var(--warning); font-weight: 600; }
-        .color-btn-qty.oos-label { color: var(--danger); font-weight: 600; }
-        .size-btn {
-            padding: 8px 16px;
-            border: 2px solid var(--border-color);
-            border-radius: var(--radius-md);
-            background: var(--bg-secondary);
-            cursor: pointer;
-            font-weight: 600;
-            font-size: 13px;
-            transition: all 0.2s;
-        }
-        .size-btn:hover, .size-btn.selected { border-color: var(--primary); background: var(--primary-light); color: var(--primary); }
-        .cs-hint { font-size: 11px; color: var(--text-muted); display: flex; align-items: center; gap: 4px; }
-        .cs-hint i { color: var(--primary); }
-
-        .clinic-visit-required {
-            background: #FEF3C7;
-            border: 1px solid #FDE68A;
-            border-radius: var(--radius-md);
-            padding: 16px;
-            margin-top: 16px;
-            display: none;
-            align-items: flex-start;
-            gap: 12px;
-        }
-        .clinic-visit-required.visible { display: flex; }
-        .clinic-visit-required i { color: var(--warning); font-size: 20px; flex-shrink: 0; }
-        .theme-dark .clinic-visit-required { background: #3B2F0F; border-color: #7F6B1D; }
-
-        .delivery-section {
-            background: var(--bg-secondary);
-            border-radius: var(--radius-md);
-            padding: 20px;
-            margin-top: 20px;
-            border: 1px solid var(--border-color);
-            display: none;
-            box-shadow: var(--shadow-sm);
-        }
-        .delivery-section.visible { display: block; }
-
-        .delivery-header {
-            display: flex;
-            align-items: center;
-            gap: 14px;
-            margin-bottom: 18px;
-            padding-bottom: 14px;
-            border-bottom: 1px solid var(--border-light);
-        }
-        .delivery-icon {
-            width: 44px;
-            height: 44px;
-            background: var(--primary-light);
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--primary);
-            font-size: 20px;
-            flex-shrink: 0;
-        }
-        .delivery-title h4 {
-            font-size: 15px;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin: 0;
-        }
-        .delivery-title p {
-            font-size: 12px;
-            color: var(--text-muted);
-            margin: 2px 0 0;
-        }
-
-        .delivery-options-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-            margin-bottom: 16px;
-        }
-        @media (max-width: 500px) { .delivery-options-grid { grid-template-columns: 1fr; } }
-
-        .delivery-option-card {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 14px 16px;
-            border: 2px solid var(--border-color);
-            border-radius: var(--radius-md);
-            background: var(--bg-primary);
-            cursor: pointer;
-            transition: all 0.25s ease;
-            position: relative;
-        }
-        .delivery-option-card:hover { border-color: var(--primary); background: var(--primary-light); }
-        .delivery-option-card.active { border-color: var(--primary); background: var(--primary-light); box-shadow: 0 0 0 3px rgba(0,183,97,0.08); }
-        .delivery-option-card input[type="radio"] { position: absolute; opacity: 0; width: 0; height: 0; }
-        .option-icon {
-            width: 38px;
-            height: 38px;
-            border-radius: 50%;
-            background: var(--bg-secondary);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: var(--primary);
-            font-size: 16px;
-            flex-shrink: 0;
-            border: 1px solid var(--border-light);
-            transition: all 0.2s;
-        }
-        .delivery-option-card.active .option-icon { background: var(--primary); color: white; border-color: var(--primary); }
-        .option-content { flex: 1; display: flex; flex-direction: column; gap: 2px; }
-        .option-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-        .option-desc { font-size: 12px; color: var(--text-secondary); }
-        .option-badge {
-            font-size: 10px;
-            font-weight: 700;
-            color: var(--success);
-            background: rgba(0,183,97,0.12);
-            padding: 1px 10px;
-            border-radius: var(--radius-full);
-            display: inline-block;
-            margin-top: 2px;
-        }
-        .option-check {
-            color: var(--text-muted);
-            font-size: 18px;
-            transition: all 0.2s;
-            opacity: 0;
-        }
-        .delivery-option-card.active .option-check { color: var(--primary); opacity: 1; }
-
-        .delivery-address-form {
-            margin-top: 16px;
-            padding: 16px;
-            background: var(--bg-primary);
-            border-radius: var(--radius-md);
-            border: 1px solid var(--border-light);
-            display: none;
-        }
-        .delivery-address-form.show { display: block; animation: fadeIn 0.3s ease; }
-
-        .delivery-address-header {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            font-size: 13px;
-            font-weight: 600;
-            color: var(--text-primary);
-            margin-bottom: 12px;
-        }
-        .delivery-address-header i { color: var(--primary); font-size: 16px; }
-        .delivery-address-hint {
-            font-size: 12px;
-            color: var(--text-muted);
-            margin-top: 8px;
-            display: flex;
-            align-items: flex-start;
-            gap: 6px;
-        }
-        .delivery-address-hint i { color: var(--primary); margin-top: 2px; }
-
-        .delivery-fee-summary {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 12px 16px;
-            background: var(--bg-secondary);
-            border-radius: var(--radius-sm);
-            border: 1px solid var(--border-light);
-            margin-top: 14px;
-            font-size: 13px;
-            font-weight: 500;
-            color: var(--text-secondary);
-        }
-        .delivery-fee-summary .fee-amount {
-            font-weight: 700;
-            color: var(--text-primary);
-            font-size: 15px;
-        }
-        .delivery-fee-summary .fee-amount.free { color: var(--success); }
 
         .pagination-container { display: flex; justify-content: center; align-items: center; gap: 6px; margin-top: 20px; padding: 10px 0; flex-wrap: wrap; }
         .pagination-container button { padding: 6px 12px; border: 1px solid var(--border-color); background: var(--bg-secondary); border-radius: var(--radius-md); cursor: pointer; font-size: 13px; font-weight: 500; transition: all 0.2s; color: var(--text-secondary); min-width: 32px; }
@@ -1434,12 +1086,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             .calendar-day { font-size: 12px; }
             .time-slots-grid { grid-template-columns: repeat(2, 1fr); }
             .success-actions { flex-direction: column; }
-            .delivery-section .delivery-options { flex-direction: column; }
             .products-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
             .main-tab-btn { font-size: 12px; padding: 6px 12px; }
-            .delivery-options-grid { grid-template-columns: 1fr; }
             .rx-eyes { grid-template-columns: 1fr; }
-            .rx-option { min-width: 100%; }
         }
     </style>
 </head>
@@ -1455,8 +1104,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
     <div class="main-content">
         <div class="page-header">
             <h1>
-                <i class="fas fa-<?php echo $booking_type === 'service' ? 'calendar-plus' : 'shopping-bag'; ?>"></i>
-                <?php echo $booking_type === 'service' ? 'Book Service' : 'Shop Products'; ?>
+                <i class="fas fa-calendar-plus"></i>
+                Book Appointment
             </h1>
             <div class="clinic-badge">
                 <i class="fas fa-clinic-medical"></i> <span><?php echo $clinic['name']; ?></span>
@@ -1474,14 +1123,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             <div class="booking-grid">
                 <div class="success-container">
                     <i class="fas fa-check-circle"></i>
-                    <h2><?php echo $booking_type === 'service' ? 'Appointment' : 'Order'; ?> Confirmed!</h2>
-                    <p>Your <?php echo $booking_type === 'service' ? 'appointment' : 'order'; ?> has been successfully scheduled.</p>
+                    <h2>Appointment Confirmed!</h2>
+                    <p>Your appointment has been successfully scheduled.</p>
                     <div class="success-actions">
-                        <?php if ($booking_type === 'product'): ?>
-                            <a href="my-orders.php" class="btn-primary"><i class="fas fa-box"></i> View Orders</a>
-                        <?php else: ?>
-                            <a href="my-appointments.php" class="btn-primary"><i class="fas fa-calendar-check"></i> View Appointments</a>
-                        <?php endif; ?>
+                        <a href="my-appointments.php" class="btn-primary"><i class="fas fa-calendar-check"></i> View Appointments</a>
                         <a href="clinic-details.php?id=<?php echo $clinic_id; ?>" class="btn-secondary"><i class="fas fa-store"></i> Back to Clinic</a>
                     </div>
                 </div>
@@ -1512,9 +1157,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 <div class="booking-progress">
                     <div class="progress-step step1 <?php echo $step1_completed ? 'completed' : 'active'; ?>" onclick="scrollToStep('step1')">
                         <div class="step-number">1</div>
-                        <div class="step-label"><?php echo $booking_type === 'service' ? 'Select Service' : 'Select Product'; ?></div>
+                        <div class="step-label">Select Item</div>
                     </div>
-                    <?php if ($booking_type === 'service'): ?>
                     <div class="progress-step step2 <?php echo $step1_completed ? '' : 'disabled'; ?>" onclick="scrollToStep('step2')">
                         <div class="step-number">2</div>
                         <div class="step-label">Choose Doctor</div>
@@ -1527,12 +1171,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                         <div class="step-number">4</div>
                         <div class="step-label">Confirm</div>
                     </div>
-                    <?php else: ?>
-                    <div class="progress-step step4 disabled" onclick="scrollToStep('step4')">
-                        <div class="step-number">2</div>
-                        <div class="step-label">Confirm Order</div>
-                    </div>
-                    <?php endif; ?>
                 </div>
 
                 <!-- ERROR - ONLY SHOW ON POST -->
@@ -1552,7 +1190,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                     <input type="hidden" name="selected_frame_size" id="selectedFrameSize" value="">
                     <input type="hidden" name="item_id" id="selectedItemId" value="<?php echo $selected_item_id; ?>">
                     
-                    <!-- Prescription fields (from product-view) -->
+                    <!-- Prescription fields -->
                     <input type="hidden" name="prescription_knowledge" id="prescriptionKnowledge" value="">
                     <input type="hidden" name="od_sph" id="od_sph_hidden" value="">
                     <input type="hidden" name="od_cyl" id="od_cyl_hidden" value="">
@@ -1564,14 +1202,14 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                     <!-- STEP 1 -->
                     <div id="step1" class="step-section <?php echo $step1_completed ? 'completed' : 'active'; ?>">
                         <div class="step-header">
-                            <h3><i class="fas fa-box"></i> <?php echo $booking_type === 'service' ? 'Select Service' : 'Select Product'; ?></h3>
+                            <h3><i class="fas fa-box"></i> Select Service or Product</h3>
                             <span class="step-status-badge <?php echo $step1_completed ? 'status-completed' : 'status-pending'; ?>" id="step1-status">
                                 <?php echo $step1_completed ? '✓ Completed' : 'Required'; ?>
                             </span>
                         </div>
 
                         <div class="main-tabs" id="mainTabs">
-                            <?php if ($booking_type === 'service' && mysqli_num_rows($services_query) > 0): ?>
+                            <?php if (mysqli_num_rows($services_query) > 0): ?>
                             <button type="button" class="main-tab-btn <?php echo $active_tab === 'services' ? 'active' : ''; ?>" data-tab="services" onclick="switchMainTab('services')">
                                 <i class="fas fa-stethoscope"></i> Services <span class="tab-badge"><?php echo mysqli_num_rows($services_query); ?></span>
                             </button>
@@ -1586,15 +1224,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                                 <i class="fas fa-eye"></i> Contact Lenses <span class="tab-badge"><?php echo count($contact_lens_products); ?></span>
                             </button>
                             <?php endif; ?>
-                            <?php if (!empty($accessory_products)): ?>
-                            <button type="button" class="main-tab-btn <?php echo $active_tab === 'accessories' ? 'active' : ''; ?>" data-tab="accessories" onclick="switchMainTab('accessories')">
-                                <i class="fas fa-tag"></i> Accessories <span class="tab-badge"><?php echo count($accessory_products); ?></span>
-                            </button>
-                            <?php endif; ?>
                         </div>
 
-                        <?php if ($booking_type === 'service' && mysqli_num_rows($services_query) > 0): ?>
                         <!-- SERVICES TAB -->
+                        <?php if (mysqli_num_rows($services_query) > 0): ?>
                         <div id="tab-services" class="tab-content <?php echo $active_tab === 'services' ? 'active' : ''; ?>">
                             <div class="service-combine-note">
                                 <i class="fas fa-info-circle"></i>
@@ -1653,16 +1286,32 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                             <div class="pagination-container" id="eyewearPagination"></div>
 
                             <div id="eyewearLensSelection" class="lens-selection-box">
-                                <?php if ($booking_type === 'service'): ?>
-                                <!-- Service mode: prescription lens options -->
                                 <div class="lens-options-grid" id="eyewearLensOptions">
                                     <button type="button" class="lens-option-btn" data-lens="single_vision" onclick="selectEyewearLens(this)"><span class="ln">Single Vision</span><span class="lp">+₱500</span><span class="ld">For near or far sight</span></button>
                                     <button type="button" class="lens-option-btn" data-lens="progressive" onclick="selectEyewearLens(this)"><span class="ln">Progressive</span><span class="lp">+₱1,500</span><span class="ld">Near, mid & far vision</span></button>
                                     <button type="button" class="lens-option-btn" data-lens="blue_cut" onclick="selectEyewearLens(this)"><span class="ln">Blue Cut</span><span class="lp">+₱800</span><span class="ld">Reduces screen glare</span></button>
                                 </div>
 
+                                <!-- Color & Size Selector -->
+                                <div id="eyewearColorSize" class="color-size-selector">
+                                    <div class="cs-title"><i class="fas fa-palette"></i> Color / Variant <span class="cs-selected-label" id="eyewearColorSelected">— Select a color</span></div>
+                                    <div class="color-btns" id="eyewearColorBtns"></div>
+                                    <p class="cs-hint" id="eyewearColorHint"><i class="fas fa-info-circle"></i> Please select a color to continue.</p>
+                                    <div style="margin-top:16px; border-top:1px solid var(--border-light); padding-top:16px;">
+                                        <div class="cs-title"><i class="fas fa-ruler-combined"></i> Frame Size <span class="cs-selected-label" id="eyewearSizeSelected">— Select a size</span></div>
+                                        <div class="size-btns" id="eyewearSizeBtns"></div>
+                                        <p class="cs-hint" id="eyewearSizeHint"><i class="fas fa-info-circle"></i> Please select your preferred frame size.</p>
+                                    </div>
+                                </div>
+
+                                <!-- Clinic Visit Required Notice -->
+                                <div id="eyewearClinicVisit" class="clinic-visit-required visible">
+                                    <i class="fas fa-info-circle"></i>
+                                    <div><strong>Clinic Visit Required</strong><br>Please visit the clinic on your scheduled appointment. Your prescription will be verified by the optometrist.</div>
+                                </div>
+
                                 <!-- ============================================ -->
-                                <!-- ✅ PRESCRIPTION SECTION (COPIED FROM PRODUCT-VIEW) -->
+                                <!-- ✅ PRESCRIPTION SECTION -->
                                 <!-- ============================================ -->
                                 <div id="rxSection" style="display: none; margin-top: 16px;">
                                     <div style="font-size: 14px; font-weight: 700; color: var(--text-primary); margin-bottom: 10px; display: flex; align-items: center; gap: 8px;">
@@ -1732,96 +1381,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                                         <p>We'll schedule an appointment for you. Our optometrist will check your vision and recommend the right prescription for your lenses.</p>
                                     </div>
                                 </div>
-
-                                <!-- Clinic Visit Required Notice -->
-                                <div id="eyewearClinicVisit" class="clinic-visit-required visible">
-                                    <i class="fas fa-info-circle"></i>
-                                    <div><strong>Clinic Visit Required</strong><br>Please visit the clinic on your scheduled appointment. Your prescription will be verified by the optometrist.</div>
-                                </div>
-
-                                <?php else: ?>
-                                <!-- Product mode: frame only -->
-                                <div class="lens-options-grid" id="eyewearLensOptions">
-                                    <button type="button" class="lens-option-btn selected" data-lens="frame_only" onclick="selectEyewearLens(this)"><span class="ln">Frame Only</span><span class="lp">+₱0</span><span class="ld">No lenses included</span></button>
-                                </div>
-
-                                <!-- Color/Size selector -->
-                                <div id="eyewearColorSize" class="color-size-selector">
-                                    <div class="cs-title"><i class="fas fa-palette"></i> Color / Variant <span class="cs-selected-label" id="eyewearColorSelected">— Select a color</span></div>
-                                    <div class="color-btns" id="eyewearColorBtns"></div>
-                                    <p class="cs-hint" id="eyewearColorHint"><i class="fas fa-info-circle"></i> Please select a color to continue.</p>
-                                    <div style="margin-top:16px; border-top:1px solid var(--border-light); padding-top:16px;">
-                                        <div class="cs-title"><i class="fas fa-ruler-combined"></i> Frame Size <span class="cs-selected-label" id="eyewearSizeSelected">— Select a size</span></div>
-                                        <div class="size-btns" id="eyewearSizeBtns"></div>
-                                        <p class="cs-hint" id="eyewearSizeHint"><i class="fas fa-info-circle"></i> Please select your preferred frame size.</p>
-                                    </div>
-                                </div>
-
-                                <!-- Clinic Visit Required Notice -->
-                                <div id="eyewearClinicVisit" class="clinic-visit-required">
-                                    <i class="fas fa-info-circle"></i>
-                                    <div><strong>Clinic Visit Required</strong><br>This product requires a prescription lens. Please visit the clinic on your scheduled appointment. Delivery is not available.</div>
-                                </div>
-
-                                <!-- EYEWEAR DELIVERY SECTION -->
-                                <div id="eyewearDeliverySection" class="delivery-section">
-                                    <div class="delivery-header">
-                                        <div class="delivery-icon"><i class="fas fa-truck"></i></div>
-                                        <div class="delivery-title">
-                                            <h4>Delivery Options</h4>
-                                            <p>Choose how you want to receive your order</p>
-                                        </div>
-                                    </div>
-                                    
-                                    <div class="delivery-options-grid">
-                                        <label class="delivery-option-card active" id="pickupOptionEyewear">
-                                            <input type="radio" name="delivery_type" value="pickup" checked onchange="toggleDeliveryFields('eyewear')">
-                                            <div class="option-icon"><i class="fas fa-store"></i></div>
-                                            <div class="option-content">
-                                                <span class="option-title">Pickup at Clinic</span>
-                                                <span class="option-desc">Free • Collect at the clinic</span>
-                                            </div>
-                                            <span class="option-check"><i class="fas fa-check-circle"></i></span>
-                                        </label>
-                                        
-                                        <label class="delivery-option-card" id="deliveryOptionEyewear">
-                                            <input type="radio" name="delivery_type" value="delivery" onchange="toggleDeliveryFields('eyewear')">
-                                            <div class="option-icon"><i class="fas fa-truck"></i></div>
-                                            <div class="option-content">
-                                                <span class="option-title">Door-to-Door Delivery</span>
-                                                <span class="option-desc" id="deliveryFeeLabelEyewear">+₱<?php echo number_format($clinic['delivery_fee'] ?? 0, 2); ?></span>
-                                                <span class="option-badge" id="freeDeliveryBadgeEyewear" style="display:none;">FREE</span>
-                                            </div>
-                                            <span class="option-check"><i class="fas fa-check-circle"></i></span>
-                                        </label>
-                                    </div>
-
-                                    <div id="deliveryAddressForm" class="delivery-address-form">
-                                        <div class="delivery-address-header">
-                                            <i class="fas fa-map-marker-alt"></i>
-                                            <span>Delivery Address</span>
-                                        </div>
-                                        <textarea name="delivery_address" class="form-control" rows="3" 
-                                                  placeholder="House #, Street, Barangay, City, Province"
-                                                  id="deliveryAddressInput"><?php echo htmlspecialchars($user_delivery_address); ?></textarea>
-                                        <div class="delivery-address-hint">
-                                            <i class="fas fa-info-circle"></i> 
-                                            Please provide a complete and accurate address for successful delivery.
-                                        </div>
-                                        
-                                        <div class="form-group" style="margin-top: 12px;">
-                                            <label><i class="fas fa-sticky-note"></i> Delivery Instructions (Optional)</label>
-                                            <textarea name="delivery_notes" class="form-control" rows="2" 
-                                                      placeholder="Gate code, landmark, contact person, etc."></textarea>
-                                        </div>
-                                        
-                                        <div class="delivery-fee-summary" id="deliveryFeeSummaryEyewear" style="display:none;">
-                                            <span>Delivery Fee:</span>
-                                            <span class="fee-amount" id="feeAmountEyewear">+₱0.00</span>
-                                        </div>
-                                    </div>
-                                </div>
-                                <?php endif; ?>
                             </div>
                         </div>
                         <?php endif; ?>
@@ -1848,137 +1407,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                                     <i class="fas fa-info-circle"></i>
                                     <div><strong>Clinic Visit Required</strong><br>This product requires a prescription. Please visit the clinic on your scheduled appointment. Delivery is not available.</div>
                                 </div>
-
-                                <?php if ($booking_type === 'product'): ?>
-                                <!-- CONTACT LENSES DELIVERY SECTION -->
-                                <div id="contactLensDeliverySection" class="delivery-section">
-                                    <div class="delivery-header">
-                                        <div class="delivery-icon"><i class="fas fa-truck"></i></div>
-                                        <div class="delivery-title">
-                                            <h4>Delivery Options</h4>
-                                            <p>Choose how you want to receive your order</p>
-                                        </div>
-                                    </div>
-                                    
-                                    <div class="delivery-options-grid">
-                                        <label class="delivery-option-card active" id="pickupOptionCL">
-                                            <input type="radio" name="delivery_type" value="pickup" checked onchange="toggleDeliveryFields('cl')">
-                                            <div class="option-icon"><i class="fas fa-store"></i></div>
-                                            <div class="option-content">
-                                                <span class="option-title">Pickup at Clinic</span>
-                                                <span class="option-desc">Free • Collect at the clinic</span>
-                                            </div>
-                                            <span class="option-check"><i class="fas fa-check-circle"></i></span>
-                                        </label>
-                                        
-                                        <label class="delivery-option-card" id="deliveryOptionCL">
-                                            <input type="radio" name="delivery_type" value="delivery" onchange="toggleDeliveryFields('cl')">
-                                            <div class="option-icon"><i class="fas fa-truck"></i></div>
-                                            <div class="option-content">
-                                                <span class="option-title">Door-to-Door Delivery</span>
-                                                <span class="option-desc" id="deliveryFeeLabelCL">+₱<?php echo number_format($clinic['delivery_fee'] ?? 0, 2); ?></span>
-                                                <span class="option-badge" id="freeDeliveryBadgeCL" style="display:none;">FREE</span>
-                                            </div>
-                                            <span class="option-check"><i class="fas fa-check-circle"></i></span>
-                                        </label>
-                                    </div>
-
-                                    <div id="deliveryAddressFormCL" class="delivery-address-form">
-                                        <div class="delivery-address-header">
-                                            <i class="fas fa-map-marker-alt"></i>
-                                            <span>Delivery Address</span>
-                                        </div>
-                                        <textarea name="delivery_address" class="form-control" rows="3" 
-                                                  placeholder="House #, Street, Barangay, City, Province"
-                                                  id="deliveryAddressInputCL"><?php echo htmlspecialchars($user_delivery_address); ?></textarea>
-                                        <div class="delivery-address-hint">
-                                            <i class="fas fa-info-circle"></i> 
-                                            Please provide a complete and accurate address for successful delivery.
-                                        </div>
-                                        
-                                        <div class="form-group" style="margin-top: 12px;">
-                                            <label><i class="fas fa-sticky-note"></i> Delivery Instructions (Optional)</label>
-                                            <textarea name="delivery_notes" class="form-control" rows="2" 
-                                                      placeholder="Gate code, landmark, contact person, etc."></textarea>
-                                        </div>
-                                        
-                                        <div class="delivery-fee-summary" id="deliveryFeeSummaryCL" style="display:none;">
-                                            <span>Delivery Fee:</span>
-                                            <span class="fee-amount" id="feeAmountCL">+₱0.00</span>
-                                        </div>
-                                    </div>
-                                </div>
-                                <?php endif; ?>
                             </div>
-                        </div>
-                        <?php endif; ?>
-
-                        <!-- ACCESSORIES TAB -->
-                        <?php if (!empty($accessory_products)): ?>
-                        <div id="tab-accessories" class="tab-content <?php echo $active_tab === 'accessories' ? 'active' : ''; ?>">
-                            <div class="products-grid" id="accessoryGrid"></div>
-                            <div class="pagination-container" id="accessoryPagination"></div>
-
-                            <?php if ($booking_type === 'product'): ?>
-                            <!-- ACCESSORIES DELIVERY SECTION -->
-                            <div id="accessoryDeliverySection" class="delivery-section">
-                                <div class="delivery-header">
-                                    <div class="delivery-icon"><i class="fas fa-truck"></i></div>
-                                    <div class="delivery-title">
-                                        <h4>Delivery Options</h4>
-                                        <p>Choose how you want to receive your order</p>
-                                    </div>
-                                </div>
-                                
-                                <div class="delivery-options-grid">
-                                    <label class="delivery-option-card active" id="pickupOptionAcc">
-                                        <input type="radio" name="delivery_type" value="pickup" checked onchange="toggleDeliveryFields('acc')">
-                                        <div class="option-icon"><i class="fas fa-store"></i></div>
-                                        <div class="option-content">
-                                            <span class="option-title">Pickup at Clinic</span>
-                                            <span class="option-desc">Free • Collect at the clinic</span>
-                                        </div>
-                                        <span class="option-check"><i class="fas fa-check-circle"></i></span>
-                                    </label>
-                                    
-                                    <label class="delivery-option-card" id="deliveryOptionAcc">
-                                        <input type="radio" name="delivery_type" value="delivery" onchange="toggleDeliveryFields('acc')">
-                                        <div class="option-icon"><i class="fas fa-truck"></i></div>
-                                        <div class="option-content">
-                                            <span class="option-title">Door-to-Door Delivery</span>
-                                            <span class="option-desc" id="deliveryFeeLabelAcc">+₱<?php echo number_format($clinic['delivery_fee'] ?? 0, 2); ?></span>
-                                            <span class="option-badge" id="freeDeliveryBadgeAcc" style="display:none;">FREE</span>
-                                        </div>
-                                        <span class="option-check"><i class="fas fa-check-circle"></i></span>
-                                    </label>
-                                </div>
-
-                                <div id="deliveryAddressFormAcc" class="delivery-address-form">
-                                    <div class="delivery-address-header">
-                                        <i class="fas fa-map-marker-alt"></i>
-                                        <span>Delivery Address</span>
-                                    </div>
-                                    <textarea name="delivery_address" class="form-control" rows="3" 
-                                              placeholder="House #, Street, Barangay, City, Province"
-                                              id="deliveryAddressInputAcc"><?php echo htmlspecialchars($user_delivery_address); ?></textarea>
-                                    <div class="delivery-address-hint">
-                                        <i class="fas fa-info-circle"></i> 
-                                        Please provide a complete and accurate address for successful delivery.
-                                    </div>
-                                    
-                                    <div class="form-group" style="margin-top: 12px;">
-                                        <label><i class="fas fa-sticky-note"></i> Delivery Instructions (Optional)</label>
-                                        <textarea name="delivery_notes" class="form-control" rows="2" 
-                                                  placeholder="Gate code, landmark, contact person, etc."></textarea>
-                                    </div>
-                                    
-                                    <div class="delivery-fee-summary" id="deliveryFeeSummaryAcc" style="display:none;">
-                                        <span>Delivery Fee:</span>
-                                        <span class="fee-amount" id="feeAmountAcc">+₱0.00</span>
-                                    </div>
-                                </div>
-                            </div>
-                            <?php endif; ?>
                         </div>
                         <?php endif; ?>
 
@@ -1986,13 +1415,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                             <i class="fas fa-info-circle"></i>
                             <div>
                                 <strong>Clinic Visit Required</strong><br>
-                                Please visit the clinic on your scheduled appointment to complete your purchase. Delivery is not available for this product.
+                                Please visit the clinic on your scheduled appointment to complete your purchase.
                             </div>
                         </div>
                     </div>
 
-                    <?php if ($booking_type === 'service'): ?>
-                    <!-- STEP 2: Choose Doctor -->
+                    <!-- STEP 2: Choose Doctor (Always required) -->
                     <div id="step2" class="step-section <?php echo $step1_completed ? 'active' : 'locked'; ?>">
                         <div class="step-header">
                             <h3><i class="fas fa-user-md"></i> Choose Your Doctor</h3>
@@ -2050,6 +1478,11 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                                 <p>This clinic hasn't added any doctors yet.</p>
                             </div>
                             <?php endif; ?>
+                            
+                            <div id="product-message" style="display: none; margin-top: 15px; padding: 15px; background: var(--primary-light); border-radius: var(--radius-md);">
+                                <i class="fas fa-info-circle"></i> 
+                                <strong>Products don't require a doctor assignment.</strong> You can proceed to select date and time.
+                            </div>
                         </div>
                     </div>
 
@@ -2108,18 +1541,15 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                             <?php endif; ?>
                         </div>
                     </div>
-                    <?php endif; ?>
 
                     <!-- STEP 4: Confirm -->
-                    <div id="step4" class="step-section <?php echo ($booking_type === 'product' && $step1_completed) ? 'active' : 'locked'; ?>">
+                    <div id="step4" class="step-section locked">
                         <div class="step-header">
-                            <h3><i class="fas fa-check-circle"></i> <?php echo $booking_type === 'service' ? 'Confirm Your Details' : 'Confirm Your Order'; ?></h3>
-                            <span class="step-status-badge <?php echo ($booking_type === 'product' && $step1_completed) ? 'status-pending' : 'status-locked'; ?>" id="step4-status">
-                                <?php echo ($booking_type === 'product' && $step1_completed) ? 'Required' : '🔒 Locked'; ?>
-                            </span>
+                            <h3><i class="fas fa-check-circle"></i> Confirm Your Details</h3>
+                            <span class="step-status-badge status-locked" id="step4-status">🔒 Locked</span>
                         </div>
                         
-                        <div class="<?php echo ($booking_type === 'product' && $step1_completed) ? '' : 'disabled-content'; ?>" id="step4-content">
+                        <div class="disabled-content" id="step4-content">
                             <div class="form-group">
                                 <label><i class="fas fa-user"></i> Full Name</label>
                                 <input type="text" class="form-control" value="<?php echo htmlspecialchars(($user['first_name'] ?? '') . ' ' . ($user['last_name'] ?? '')); ?>" readonly>
@@ -2130,20 +1560,13 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                                 <input type="text" name="contact_number" class="form-control" 
                                        value="<?php echo isset($_POST['contact_number']) ? htmlspecialchars($_POST['contact_number']) : ($user['contact'] ?? ''); ?>" 
                                        placeholder="e.g., 0917-123-4567"
-                                       oninput="handleContactInput()" <?php echo ($booking_type === 'product' && $step1_completed) ? '' : 'disabled'; ?>>
+                                       oninput="handleContactInput()" disabled>
                             </div>
 
-                            <?php if ($booking_type === 'service'): ?>
                             <div class="form-group">
                                 <label><i class="fas fa-sticky-note"></i> Additional Notes (Optional)</label>
                                 <textarea name="notes" class="form-control" placeholder="Any specific concerns?" disabled><?php echo isset($_POST['notes']) ? htmlspecialchars($_POST['notes']) : ''; ?></textarea>
                             </div>
-                            <?php else: ?>
-                            <div class="form-group">
-                                <label><i class="fas fa-sticky-note"></i> Order Notes (Optional)</label>
-                                <textarea name="notes" class="form-control" placeholder="Any special instructions for your order?" disabled><?php echo isset($_POST['notes']) ? htmlspecialchars($_POST['notes']) : ''; ?></textarea>
-                            </div>
-                            <?php endif; ?>
                         </div>
                     </div>
                 </form>
@@ -2169,7 +1592,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 $flow_icon = ($booking_flow === 'pay_first') ? 'fa-credit-card' : 'fa-clock';
                 ?>
                 
-                <?php if ($booking_type === 'service'): ?>
                 <div class="flow-indicator" style="border-left: 4px solid <?php echo $flow_color; ?>;">
                     <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
                         <i class="fas <?php echo $flow_icon; ?>" style="color: <?php echo $flow_color; ?>; font-size: 20px;"></i>
@@ -2233,7 +1655,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                         </div>
                     </div>
                 </div>
-                <?php endif; ?>
 
                 <div class="summary-card">
                     <h4><i class="fas fa-receipt"></i> Booking Summary</h4>
@@ -2249,7 +1670,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                         <span class="summary-label">Type:</span>
                         <span class="summary-value" id="summaryType"><?php echo $selected_item_type ? ucfirst($selected_item_type) : '—'; ?></span>
                     </div>
-                    <?php if ($booking_type === 'product'): ?>
                     <div class="summary-item">
                         <span class="summary-label">Lens:</span>
                         <span class="summary-value" id="summaryLens">—</span>
@@ -2262,15 +1682,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                         <span class="summary-label">Size:</span>
                         <span class="summary-value" id="summarySize">—</span>
                     </div>
-                    <div class="summary-item" id="deliveryMethodRow" style="display: none;">
-                        <span class="summary-label">Delivery Method:</span>
-                        <span class="summary-value" id="deliveryMethodDisplay"><i class="fas fa-store"></i> Pickup</span>
-                    </div>
-                    <div class="summary-item" id="deliveryFeeRow" style="display: none;">
-                        <span class="summary-label">Delivery Fee:</span>
-                        <span class="summary-value" id="deliveryFeeDisplay">+₱0.00</span>
-                    </div>
-                    <?php else: ?>
                     <div class="summary-item">
                         <span class="summary-label">Doctor:</span>
                         <span class="summary-value" id="summaryDoctor">Any Available Doctor</span>
@@ -2283,7 +1694,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                         <span class="summary-label">Time:</span>
                         <span class="summary-value" id="summaryTime">—</span>
                     </div>
-                    <?php endif; ?>
                     <div class="summary-item">
                         <span class="summary-label">Contact:</span>
                         <span class="summary-value" id="summaryContact">—</span>
@@ -2294,21 +1704,14 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 </div>
 
                 <button type="submit" form="bookingForm" name="confirm" class="btn-confirm" id="confirmBtn" disabled>
-                    <i class="fas fa-check-circle"></i> <?php echo $booking_type === 'service' ? 'Confirm Booking' : 'Place Order'; ?>
+                    <i class="fas fa-check-circle"></i> Confirm Booking
                 </button>
 
                 <div class="quick-info">
-                    <?php if ($booking_type === 'service'): ?>
                     <p><i class="fas fa-info-circle"></i> Grayed out times are break hours</p>
                     <p><i class="fas fa-clock"></i> Red times are already booked</p>
                     <p><i class="fas fa-exclamation-triangle"></i> Max 3 appointments per day</p>
-                    <p><i class="fas fa-stethoscope"></i> Services require doctor selection</p>
-                    <?php else: ?>
-                    <p><i class="fas fa-truck"></i> Delivery available for selected products</p>
-                    <p><i class="fas fa-store"></i> Pickup available at the clinic</p>
-                    <p><i class="fas fa-clock"></i> Orders processed within 24 hours</p>
-                    <?php endif; ?>
-                    <p id="quickDeliveryInfo" style="display: none; color: var(--primary);"><i class="fas fa-truck"></i> Delivery available for selected product</p>
+                    <p><i class="fas fa-stethoscope"></i> Services and prescription products require doctor selection</p>
                     <p id="quickClinicVisitInfo" style="display: none; color: var(--warning);"><i class="fas fa-store"></i> Clinic visit required for this item</p>
                 </div>
             </div>
@@ -2317,22 +1720,15 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         <div class="info-card">
             <h2><i class="fas fa-info-circle"></i> Important Information</h2>
             <ul>
-                <?php if ($booking_type === 'service'): ?>
                 <li>Please arrive at least 10 minutes before your scheduled appointment.</li>
                 <li>Bring any previous prescription glasses or medical records if available.</li>
                 <li>Cancellations must be made at least 2 hours before your appointment.</li>
                 <li>For contact lens fitting, please don't wear your lenses 24 hours before the appointment.</li>
                 <li>Payment can be made at the clinic via cash, credit card, or GCash.</li>
                 <li>You can only book up to 3 appointments per day.</li>
-                <li>Services require a doctor, products can be booked without one.</li>
+                <li>Services and prescription products require a doctor selection.</li>
                 <li>Not all services can be combined in one booking — treatment and repair services must be booked separately.</li>
-                <?php else: ?>
-                <li>Orders are processed within 24 hours.</li>
-                <li>For delivery orders, please provide accurate address information.</li>
-                <li>Pickup orders can be collected at the clinic during business hours.</li>
-                <li>You will receive a confirmation once your order is processed.</li>
-                <li>Payment can be made via online or at the clinic.</li>
-                <?php endif; ?>
+                <li id="clinicVisitFooter" style="display: none;"><strong>Clinic visit required for this item.</strong> Please visit the clinic.</li>
             </ul>
         </div>
 
@@ -2382,13 +1778,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
     const clinicBreaks = <?php echo json_encode($clinic_breaks); ?>;
     const clinicHours = '<?php echo $clinic['hours']; ?>';
     const bookedSlots = <?php echo json_encode($booked_slots); ?>;
-    const clinicDeliveryFee = <?php echo $clinic['delivery_fee'] ?? 0; ?>;
-    const clinicOffersDelivery = <?php echo $clinic['offers_delivery'] ?? 0; ?>;
-    const productDeliverability = <?php echo json_encode($product_deliverability); ?>;
     const eyewearProducts = <?php echo json_encode($eyewear_products); ?>;
     const contactLensProducts = <?php echo json_encode($contact_lens_products); ?>;
-    const accessoryProducts = <?php echo json_encode($accessory_products); ?>;
-    const bookingType = '<?php echo $booking_type; ?>';
 
     // ============================================
     // STATE
@@ -2405,9 +1796,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
     let selectedDate = '';
     let selectedTime = '';
     let currentMonth = new Date();
-    let isCurrentProductDeliverable = false;
-    let currentProductDeliveryFee = 0;
-    let isFreeDelivery = false;
 
     let selectedEyewearLens = null;
     let selectedContactLens = 'daily';
@@ -2418,17 +1806,15 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
     let currentProductSizes = [];
     let selectedEyewearProductId = null;
     let selectedContactProductId = null;
-    let selectedAccessoryProductId = null;
     
-    // Prescription state (from product-view)
+    // Prescription state
     let rxKnowledge = null;
 
     const ITEMS_PER_PAGE = 6;
     let currentPages = {
         services: 1,
         eyewear: 1,
-        contact_lenses: 1,
-        accessories: 1
+        contact_lenses: 1
     };
 
     function htmlspecialchars(str) {
@@ -2468,7 +1854,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
     }
 
     // ============================================
-    // CHECK STEP 1 COMPLETE (updated with prescription)
+    // CHECK STEP 1 COMPLETE - FIXED: Doctor is ALWAYS required
     // ============================================
     function checkStep1Complete() {
         const activeTab = document.querySelector('.main-tab-btn.active')?.dataset.tab;
@@ -2480,30 +1866,20 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             if (activeTab === 'eyewear' && selectedEyewearProductId) {
                 if (selectedEyewearLens) {
                     let lensOk = true;
-                    // Check prescription completion for service mode
-                    if (bookingType === 'service') {
-                        // Need prescription knowledge and if 'know', need at least one eye's SPH
-                        if (!rxKnowledge) {
+                    // Need prescription knowledge and if 'know', need at least one eye's SPH
+                    if (!rxKnowledge) {
+                        lensOk = false;
+                    } else if (rxKnowledge === 'know') {
+                        const od_sph = document.getElementById('od_sph')?.value || '';
+                        const os_sph = document.getElementById('os_sph')?.value || '';
+                        if (!od_sph && !os_sph) {
                             lensOk = false;
-                        } else if (rxKnowledge === 'know') {
-                            const od_sph = document.getElementById('od_sph')?.value || '';
-                            const os_sph = document.getElementById('os_sph')?.value || '';
-                            if (!od_sph && !os_sph) {
-                                lensOk = false;
-                            }
                         }
                     }
-                    if (selectedEyewearLens === 'frame_only') {
-                        const hasColors = currentProductColors && currentProductColors.length > 0;
-                        const hasSizes = currentProductSizes && currentProductSizes.length > 0;
-                        if (hasColors) lensOk = lensOk && (selectedColorCode && selectedColorName);
-                        if (hasSizes) lensOk = lensOk && (selectedFrameSize);
-                    } else {
-                        const hasColors = currentProductColors && currentProductColors.length > 0;
-                        const hasSizes = currentProductSizes && currentProductSizes.length > 0;
-                        if (hasColors) lensOk = lensOk && (selectedColorCode && selectedColorName);
-                        if (hasSizes) lensOk = lensOk && (selectedFrameSize);
-                    }
+                    const hasColors = currentProductColors && currentProductColors.length > 0;
+                    const hasSizes = currentProductSizes && currentProductSizes.length > 0;
+                    if (hasColors) lensOk = lensOk && (selectedColorCode && selectedColorName);
+                    if (hasSizes) lensOk = lensOk && (selectedFrameSize);
                     isComplete = lensOk;
                 } else {
                     isComplete = false;
@@ -2517,8 +1893,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 } else {
                     isComplete = false;
                 }
-            } else if (activeTab === 'accessories' && selectedAccessoryProductId) {
-                isComplete = true;
             } else {
                 isComplete = false;
             }
@@ -2539,56 +1913,18 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             progressStep1.classList.add('completed');
             progressStep1.classList.remove('active');
             
-            <?php if ($booking_type === 'service'): ?>
-            if (selectedItemType === 'service') {
-                document.getElementById('step2').classList.remove('locked');
-                document.getElementById('step2').classList.add('active');
-                document.getElementById('step2-status').textContent = 'Required';
-                document.getElementById('step2-status').className = 'step-status-badge status-pending';
-                document.getElementById('step2-content').classList.remove('disabled-content');
-                document.querySelector('.progress-step.step2').classList.remove('disabled');
-                document.querySelector('.progress-step.step2').classList.add('active');
-                document.getElementById('doctorsGrid').style.display = 'grid';
-                document.getElementById('product-message').style.display = 'none';
-            } else {
-                step2Completed = true;
-                document.getElementById('step2-status').textContent = '✓ Completed (Not needed)';
-                document.getElementById('step2-status').className = 'step-status-badge status-completed';
-                document.getElementById('step2').classList.add('completed');
-                document.getElementById('step2').classList.remove('active');
-                document.querySelector('.progress-step.step2').classList.add('completed');
-                document.querySelector('.progress-step.step2').classList.remove('active');
-                document.getElementById('doctorsGrid').style.display = 'none';
-                document.getElementById('product-message').style.display = 'block';
-
-                document.getElementById('step3').classList.remove('locked');
-                document.getElementById('step3').classList.add('active');
-                document.getElementById('step3-status').textContent = 'Required';
-                document.getElementById('step3-status').className = 'step-status-badge status-pending';
-                document.getElementById('step3-content').classList.remove('disabled-content');
-                document.querySelector('.progress-step.step3').classList.remove('disabled');
-                document.querySelector('.progress-step.step3').classList.add('active');
-                
-                selectedDate = ''; selectedTime = '';
-                document.getElementById('selectedDate').value = '';
-                document.getElementById('selectedTime').value = '';
-                document.getElementById('summaryDate').textContent = '—';
-                document.getElementById('summaryTime').textContent = '—';
-                renderCalendar(currentMonth);
-                document.getElementById('timeSlotsContainer').innerHTML = `<div class="text-center" style="padding:20px;color:var(--text-muted);"><i class="fas fa-clock"></i> Select a date to see available time slots</div>`;
-            }
-            <?php else: ?>
-            // Product mode - enable step 4 directly
-            document.getElementById('step4').classList.remove('locked');
-            document.getElementById('step4').classList.add('active');
-            document.getElementById('step4-status').textContent = 'Required';
-            document.getElementById('step4-status').className = 'step-status-badge status-pending';
-            document.getElementById('step4-content').classList.remove('disabled-content');
-            document.querySelector('.progress-step.step4').classList.remove('disabled');
-            document.querySelector('.progress-step.step4').classList.add('active');
-            document.querySelector('input[name="contact_number"]').disabled = false;
-            document.querySelector('textarea[name="notes"]').disabled = false;
-            <?php endif; ?>
+            // ALWAYS enable Step 2 (Doctor) - for both services AND products
+            // Step 2 is required for all appointments
+            document.getElementById('step2').classList.remove('locked');
+            document.getElementById('step2').classList.add('active');
+            document.getElementById('step2-status').textContent = 'Required';
+            document.getElementById('step2-status').className = 'step-status-badge status-pending';
+            document.getElementById('step2-content').classList.remove('disabled-content');
+            document.querySelector('.progress-step.step2').classList.remove('disabled');
+            document.querySelector('.progress-step.step2').classList.add('active');
+            document.getElementById('doctorsGrid').style.display = 'grid';
+            document.getElementById('product-message').style.display = 'none';
+            
         } else {
             statusEl.textContent = 'Required';
             statusEl.className = 'step-status-badge status-pending';
@@ -2597,7 +1933,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             progressStep1.classList.remove('completed');
             progressStep1.classList.add('active');
             
-            <?php if ($booking_type === 'service'): ?>
             document.getElementById('step2').classList.add('locked');
             document.getElementById('step2').classList.remove('active');
             document.getElementById('step2-status').textContent = '🔒 Locked';
@@ -2610,7 +1945,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             document.getElementById('step3-status').className = 'step-status-badge status-locked';
             document.querySelector('.progress-step.step3').classList.add('disabled');
             document.querySelector('.progress-step.step3').classList.remove('active');
-            <?php endif; ?>
             document.getElementById('step4').classList.add('locked');
             document.getElementById('step4').classList.remove('active');
             document.getElementById('step4-status').textContent = '🔒 Locked';
@@ -2658,8 +1992,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             selectEyewearProduct(productId, name, price);
         } else if (activeTab === 'contact_lenses') {
             selectContactProduct(productId, name, price);
-        } else if (activeTab === 'accessories') {
-            selectAccessory(productId, name, price);
         }
     }
 
@@ -2684,16 +2016,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         selectedEyewearLens = null;
         document.querySelectorAll('#eyewearLensOptions .lens-option-btn').forEach(b => b.classList.remove('selected'));
 
-        <?php if ($booking_type === 'product'): ?>
-        document.getElementById('eyewearDeliverySection').classList.remove('visible');
-        <?php endif; ?>
         document.getElementById('eyewearClinicVisit').classList.remove('visible');
         document.getElementById('eyewearColorSize').classList.remove('visible');
         
-        // Hide RX section
+        // Reset RX state
         const rxSection = document.getElementById('rxSection');
         if (rxSection) rxSection.style.display = 'none';
-        // Reset RX state
         rxKnowledge = null;
         document.querySelectorAll('input[name="rx_know"]').forEach(r => r.checked = false);
         document.getElementById('rxFormBox').style.display = 'none';
@@ -2725,14 +2053,13 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         document.getElementById('selectedColorName').value = '';
         document.getElementById('selectedFrameSize').value = '';
 
-        document.getElementById('quickDeliveryInfo').style.display = 'none';
         document.getElementById('quickClinicVisitInfo').style.display = 'none';
 
         checkStep1Complete();
         setTimeout(() => lensBox.scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);
     }
 
-    const LENS_PRICES = { frame_only: 0, single_vision: 500, progressive: 1500, blue_cut: 800 };
+    const LENS_PRICES = { single_vision: 500, progressive: 1500, blue_cut: 800 };
 
     function selectEyewearLens(btn) {
         document.querySelectorAll('#eyewearLensOptions .lens-option-btn').forEach(b => b.classList.remove('selected'));
@@ -2740,7 +2067,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         selectedEyewearLens = btn.dataset.lens;
         document.getElementById('selectedLensType').value = selectedEyewearLens;
 
-        const isFrameOnly = (selectedEyewearLens === 'frame_only');
         const basePrice = selectedPrice;
         const lensPrice = LENS_PRICES[selectedEyewearLens] || 0;
         const totalPrice = basePrice + lensPrice;
@@ -2751,86 +2077,25 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             totalDisplay.textContent = '₱' + totalPrice.toFixed(2);
         }
 
-        const lensNames = { frame_only: 'Frame Only', single_vision: 'Single Vision', progressive: 'Progressive', blue_cut: 'Blue Cut' };
+        const lensNames = { single_vision: 'Single Vision', progressive: 'Progressive', blue_cut: 'Blue Cut' };
         document.getElementById('summaryLens').textContent = lensNames[selectedEyewearLens] || selectedEyewearLens;
 
-        <?php if ($booking_type === 'service'): ?>
-        // Service mode - show prescription section and clinic visit
-        const rxSection = document.getElementById('rxSection');
-        if (rxSection) {
-            rxSection.style.display = isFrameOnly ? 'none' : 'block';
-        }
-        // If frame_only, reset RX state
-        if (isFrameOnly) {
-            rxKnowledge = null;
-            document.querySelectorAll('input[name="rx_know"]').forEach(r => r.checked = false);
-            document.getElementById('rxFormBox').style.display = 'none';
-            document.getElementById('rxExamBox').style.display = 'none';
-            document.getElementById('prescriptionKnowledge').value = '';
-        }
-        
-        // Show clinic visit
+        // Show clinic visit and prescription section
         const clinicVisit = document.getElementById('eyewearClinicVisit');
         clinicVisit.classList.add('visible');
         
         // Show color/size
         document.getElementById('eyewearColorSize').classList.add('visible');
-        <?php else: ?>
-        // Product mode
-        const deliverySection = document.getElementById('eyewearDeliverySection');
-        const clinicVisit = document.getElementById('eyewearClinicVisit');
-
-        if (isFrameOnly) {
-            deliverySection.classList.add('visible');
-            clinicVisit.classList.remove('visible');
-            document.getElementById('eyewearColorSize').classList.add('visible');
-            isCurrentProductDeliverable = true;
-            currentProductDeliveryFee = clinicDeliveryFee;
-            document.getElementById('quickDeliveryInfo').style.display = 'block';
-            document.getElementById('quickClinicVisitInfo').style.display = 'none';
-            document.getElementById('deliveryInfoFooter').style.display = 'block';
-            document.getElementById('clinicVisitFooter').style.display = 'none';
-            document.querySelectorAll('#eyewearDeliverySection input[name="delivery_type"]').forEach(r => r.disabled = false);
-            const freeMin = <?php echo $clinic['free_delivery_minimum'] ?? 0; ?>;
-            isFreeDelivery = freeMin > 0 && totalPrice >= freeMin;
-            updateDeliveryFeeLabel('eyewear');
-            document.querySelector('#eyewearDeliverySection input[name="delivery_type"][value="pickup"]').checked = true;
-            toggleDeliveryFields('eyewear');
-            document.getElementById('deliveryMethodRow').style.display = 'flex';
-            document.getElementById('deliveryFeeRow').style.display = 'flex';
-        } else {
-            deliverySection.classList.remove('visible');
-            clinicVisit.classList.add('visible');
-            document.getElementById('eyewearColorSize').classList.add('visible');
-            isCurrentProductDeliverable = false;
-            document.getElementById('quickDeliveryInfo').style.display = 'none';
-            document.getElementById('quickClinicVisitInfo').style.display = 'block';
-            document.getElementById('deliveryInfoFooter').style.display = 'none';
-            document.getElementById('clinicVisitFooter').style.display = 'block';
-            document.querySelectorAll('#eyewearDeliverySection input[name="delivery_type"]').forEach(r => r.disabled = true);
-            document.getElementById('deliveryMethodRow').style.display = 'none';
-            document.getElementById('deliveryFeeRow').style.display = 'none';
-        }
-        <?php endif; ?>
+        
+        // Show RX section
+        const rxSection = document.getElementById('rxSection');
+        if (rxSection) rxSection.style.display = 'block';
 
         checkStep1Complete();
     }
 
     // ============================================
-    // THE REST OF THE JAVASCRIPT FUNCTIONS
-    // ============================================
-    // [renderEyewearColors, renderEyewearSizes, selectEyewearColor, selectEyewearSize,
-    //  selectContactProduct, selectContactLens, renderContactLensColors, selectContactLensColor,
-    //  selectAccessory, updateDeliveryFeeLabel, toggleDeliveryFields,
-    //  renderServices, renderEyewear, renderContactLenses, renderAccessories,
-    //  buildPagination, goToPage, handleServiceSelection, refreshServiceLocks,
-    //  updateServiceSummary, handleDoctorSelection, initCalendar, renderCalendar,
-    //  changeMonth, selectDate, loadTimeSlots, generateTimeSlots, selectTime,
-    //  handleContactInput, switchMainTab, form validation, and init]
-    // ============================================
-
-    // ============================================
-    // RENDER EYEWEAR COLORS
+    // EYEWEAR COLORS & SIZES
     // ============================================
     function renderEyewearColors(colors) {
         const container = document.getElementById('eyewearColorBtns');
@@ -2967,40 +2232,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         document.getElementById('totalPrice').dataset.baseTotal = price;
         document.getElementById('totalPrice').textContent = '₱' + price.toFixed(2);
 
-        <?php if ($booking_type === 'product'): ?>
-        const isDeliverable = productDeliverability[productId]?.deliverable || false;
-        const deliverySection = document.getElementById('contactLensDeliverySection');
-        const clinicVisit = document.getElementById('contactLensClinicVisit');
-
-        if (isDeliverable && clinicOffersDelivery) {
-            deliverySection.classList.add('visible');
-            clinicVisit.classList.remove('visible');
-            isCurrentProductDeliverable = true;
-            currentProductDeliveryFee = clinicDeliveryFee;
-            document.getElementById('quickDeliveryInfo').style.display = 'block';
-            document.getElementById('quickClinicVisitInfo').style.display = 'none';
-            document.querySelectorAll('#contactLensDeliverySection input[name="delivery_type"]').forEach(r => r.disabled = false);
-            const freeMin = <?php echo $clinic['free_delivery_minimum'] ?? 0; ?>;
-            isFreeDelivery = freeMin > 0 && price >= freeMin;
-            updateDeliveryFeeLabel('cl');
-            document.querySelector('#contactLensDeliverySection input[name="delivery_type"][value="pickup"]').checked = true;
-            toggleDeliveryFields('cl');
-            document.getElementById('deliveryMethodRow').style.display = 'flex';
-            document.getElementById('deliveryFeeRow').style.display = 'flex';
-        } else {
-            deliverySection.classList.remove('visible');
-            clinicVisit.classList.add('visible');
-            isCurrentProductDeliverable = false;
-            document.getElementById('quickDeliveryInfo').style.display = 'none';
-            document.getElementById('quickClinicVisitInfo').style.display = 'block';
-            document.querySelectorAll('#contactLensDeliverySection input[name="delivery_type"]').forEach(r => r.disabled = true);
-            document.getElementById('deliveryMethodRow').style.display = 'none';
-            document.getElementById('deliveryFeeRow').style.display = 'none';
-        }
-        <?php else: ?>
+        // Show clinic visit
         const clinicVisit = document.getElementById('contactLensClinicVisit');
         clinicVisit.classList.add('visible');
-        <?php endif; ?>
 
         selectedColorCode = '';
         selectedColorName = '';
@@ -3076,204 +2310,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
     }
 
     // ============================================
-    // ACCESSORIES
-    // ============================================
-    function selectAccessory(productId, name, price) {
-        document.querySelectorAll('#accessoryGrid .product-card').forEach(c => c.classList.remove('selected'));
-        const card = document.querySelector(`#accessoryGrid .product-card[data-product-id="${productId}"]`);
-        if (card) card.classList.add('selected');
-
-        selectedAccessoryProductId = productId;
-        selectedItemId = productId;
-        selectedPrice = price;
-        selectedItemType = 'product';
-        document.getElementById('selectedItemType').value = 'product';
-        document.getElementById('selectedItemId').value = productId;
-        document.getElementById('summaryItem').textContent = name;
-        document.getElementById('summaryType').textContent = 'Product';
-        document.getElementById('summaryLens').textContent = '—';
-        document.getElementById('summaryColor').textContent = '—';
-        document.getElementById('summarySize').textContent = '—';
-        document.getElementById('totalPrice').dataset.baseTotal = price;
-        document.getElementById('totalPrice').textContent = '₱' + price.toFixed(2);
-
-        <?php if ($booking_type === 'product'): ?>
-        const deliverySection = document.getElementById('accessoryDeliverySection');
-        const isDeliverable = productDeliverability[productId]?.deliverable || false;
-        if (isDeliverable && clinicOffersDelivery) {
-            deliverySection.classList.add('visible');
-            isCurrentProductDeliverable = true;
-            currentProductDeliveryFee = clinicDeliveryFee;
-            document.getElementById('quickDeliveryInfo').style.display = 'block';
-            document.getElementById('quickClinicVisitInfo').style.display = 'none';
-            document.querySelectorAll('#accessoryDeliverySection input[name="delivery_type"]').forEach(r => r.disabled = false);
-            const freeMin = <?php echo $clinic['free_delivery_minimum'] ?? 0; ?>;
-            isFreeDelivery = freeMin > 0 && price >= freeMin;
-            updateDeliveryFeeLabel('acc');
-            document.querySelector('#accessoryDeliverySection input[name="delivery_type"][value="pickup"]').checked = true;
-            toggleDeliveryFields('acc');
-            document.getElementById('deliveryMethodRow').style.display = 'flex';
-            document.getElementById('deliveryFeeRow').style.display = 'flex';
-            document.getElementById('deliveryInfoFooter').style.display = 'block';
-            document.getElementById('clinicVisitFooter').style.display = 'none';
-        } else {
-            deliverySection.classList.remove('visible');
-            isCurrentProductDeliverable = false;
-            document.getElementById('quickDeliveryInfo').style.display = 'none';
-            document.getElementById('quickClinicVisitInfo').style.display = 'block';
-            document.querySelectorAll('#accessoryDeliverySection input[name="delivery_type"]').forEach(r => r.disabled = true);
-            document.getElementById('deliveryMethodRow').style.display = 'none';
-            document.getElementById('deliveryFeeRow').style.display = 'none';
-            document.getElementById('deliveryInfoFooter').style.display = 'none';
-            document.getElementById('clinicVisitFooter').style.display = 'block';
-            const notice = document.getElementById('clinicVisitNotice');
-            if (notice) notice.style.display = 'flex';
-        }
-        <?php else: ?>
-        // Service mode - accessories are not shown in service mode
-        <?php endif; ?>
-
-        checkStep1Complete();
-    }
-
-    // ============================================
-    // DELIVERY FUNCTIONS
-    // ============================================
-    function updateDeliveryFeeLabel(section) {
-        let feeLabel, freeBadge, feeAmount;
-        if (section === 'eyewear') {
-            feeLabel = document.getElementById('deliveryFeeLabelEyewear');
-            freeBadge = document.getElementById('freeDeliveryBadgeEyewear');
-            feeAmount = document.getElementById('feeAmountEyewear');
-        } else if (section === 'cl') {
-            feeLabel = document.getElementById('deliveryFeeLabelCL');
-            freeBadge = document.getElementById('freeDeliveryBadgeCL');
-            feeAmount = document.getElementById('feeAmountCL');
-        } else if (section === 'acc') {
-            feeLabel = document.getElementById('deliveryFeeLabelAcc');
-            freeBadge = document.getElementById('freeDeliveryBadgeAcc');
-            feeAmount = document.getElementById('feeAmountAcc');
-        }
-        if (!feeLabel) return;
-        
-        const fee = isFreeDelivery ? 0 : currentProductDeliveryFee;
-        if (isFreeDelivery) {
-            feeLabel.textContent = '🎉 FREE';
-            feeLabel.style.color = 'var(--success)';
-            if (freeBadge) freeBadge.style.display = 'inline-block';
-            if (feeAmount) {
-                feeAmount.textContent = 'FREE';
-                feeAmount.className = 'fee-amount free';
-            }
-        } else if (currentProductDeliveryFee > 0) {
-            feeLabel.textContent = '+₱' + currentProductDeliveryFee.toFixed(2);
-            feeLabel.style.color = 'var(--primary)';
-            if (freeBadge) freeBadge.style.display = 'none';
-            if (feeAmount) {
-                feeAmount.textContent = '+₱' + currentProductDeliveryFee.toFixed(2);
-                feeAmount.className = 'fee-amount';
-            }
-        } else {
-            feeLabel.textContent = 'FREE';
-            feeLabel.style.color = 'var(--success)';
-            if (freeBadge) freeBadge.style.display = 'inline-block';
-            if (feeAmount) {
-                feeAmount.textContent = 'FREE';
-                feeAmount.className = 'fee-amount free';
-            }
-        }
-    }
-
-    function toggleDeliveryFields(section) {
-        let deliveryRadio, addressForm, methodRow, methodDisplay, feeRow, feeDisplay, totalDisplay;
-        let feeSummary, optionCardDelivery, optionCardPickup, feeAmount;
-        
-        if (section === 'eyewear') {
-            deliveryRadio = document.querySelector('#eyewearDeliverySection input[name="delivery_type"][value="delivery"]');
-            addressForm = document.getElementById('deliveryAddressForm');
-            methodRow = document.getElementById('deliveryMethodRow');
-            methodDisplay = document.getElementById('deliveryMethodDisplay');
-            feeRow = document.getElementById('deliveryFeeRow');
-            feeDisplay = document.getElementById('deliveryFeeDisplay');
-            totalDisplay = document.getElementById('totalPrice');
-            feeSummary = document.getElementById('deliveryFeeSummaryEyewear');
-            optionCardDelivery = document.getElementById('deliveryOptionEyewear');
-            optionCardPickup = document.getElementById('pickupOptionEyewear');
-            feeAmount = document.getElementById('feeAmountEyewear');
-        } else if (section === 'cl') {
-            deliveryRadio = document.querySelector('#contactLensDeliverySection input[name="delivery_type"][value="delivery"]');
-            addressForm = document.getElementById('deliveryAddressFormCL');
-            methodRow = document.getElementById('deliveryMethodRow');
-            methodDisplay = document.getElementById('deliveryMethodDisplay');
-            feeRow = document.getElementById('deliveryFeeRow');
-            feeDisplay = document.getElementById('deliveryFeeDisplay');
-            totalDisplay = document.getElementById('totalPrice');
-            feeSummary = document.getElementById('deliveryFeeSummaryCL');
-            optionCardDelivery = document.getElementById('deliveryOptionCL');
-            optionCardPickup = document.getElementById('pickupOptionCL');
-            feeAmount = document.getElementById('feeAmountCL');
-        } else if (section === 'acc') {
-            deliveryRadio = document.querySelector('#accessoryDeliverySection input[name="delivery_type"][value="delivery"]');
-            addressForm = document.getElementById('deliveryAddressFormAcc');
-            methodRow = document.getElementById('deliveryMethodRow');
-            methodDisplay = document.getElementById('deliveryMethodDisplay');
-            feeRow = document.getElementById('deliveryFeeRow');
-            feeDisplay = document.getElementById('deliveryFeeDisplay');
-            totalDisplay = document.getElementById('totalPrice');
-            feeSummary = document.getElementById('deliveryFeeSummaryAcc');
-            optionCardDelivery = document.getElementById('deliveryOptionAcc');
-            optionCardPickup = document.getElementById('pickupOptionAcc');
-            feeAmount = document.getElementById('feeAmountAcc');
-        }
-        
-        if (!deliveryRadio) return;
-        
-        const isDelivery = deliveryRadio.checked;
-        
-        if (optionCardDelivery) {
-            optionCardDelivery.classList.toggle('active', isDelivery);
-            optionCardPickup.classList.toggle('active', !isDelivery);
-        }
-        
-        if (addressForm) addressForm.classList.toggle('show', isDelivery);
-        if (feeSummary) feeSummary.style.display = isDelivery && isCurrentProductDeliverable ? 'flex' : 'none';
-        
-        if (feeAmount && isDelivery && isCurrentProductDeliverable) {
-            const fee = isFreeDelivery ? 0 : currentProductDeliveryFee;
-            if (isFreeDelivery) {
-                feeAmount.textContent = 'FREE';
-                feeAmount.className = 'fee-amount free';
-            } else {
-                feeAmount.textContent = '+₱' + fee.toFixed(2);
-                feeAmount.className = 'fee-amount';
-            }
-        }
-        
-        if (methodRow) methodRow.style.display = 'flex';
-        if (methodDisplay) {
-            methodDisplay.innerHTML = isDelivery ? '<i class="fas fa-truck"></i> Delivery' : '<i class="fas fa-store"></i> Pickup';
-        }
-        
-        if (totalDisplay) {
-            const baseTotal = parseFloat(totalDisplay.dataset.baseTotal) || 0;
-            if (isDelivery && isCurrentProductDeliverable) {
-                const fee = isFreeDelivery ? 0 : currentProductDeliveryFee;
-                totalDisplay.textContent = '₱' + (baseTotal + fee).toFixed(2);
-                if (feeRow) {
-                    feeRow.style.display = 'flex';
-                    if (feeDisplay) {
-                        feeDisplay.textContent = isFreeDelivery ? '🎉 FREE!' : '+₱' + fee.toFixed(2);
-                        feeDisplay.style.color = isFreeDelivery ? 'var(--success)' : '';
-                    }
-                }
-            } else {
-                totalDisplay.textContent = '₱' + baseTotal.toFixed(2);
-                if (feeRow) feeRow.style.display = 'none';
-            }
-        }
-    }
-
-    // ============================================
     // RENDER FUNCTIONS
     // ============================================
     function renderServices() {
@@ -3334,27 +2370,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         buildPagination(pagination, page, totalPages, 'contact_lenses');
     }
 
-    function renderAccessories() {
-        const grid = document.getElementById('accessoryGrid');
-        const pagination = document.getElementById('accessoryPagination');
-        if (!grid || !pagination) return;
-        const filtered = accessoryProducts;
-        const totalItems = filtered.length;
-        const totalPages = Math.ceil(totalItems / ITEMS_PER_PAGE) || 1;
-        const page = Math.min(currentPages.accessories, totalPages);
-        const start = (page - 1) * ITEMS_PER_PAGE;
-        const end = Math.min(start + ITEMS_PER_PAGE, totalItems);
-        let html = '';
-        for (let i = start; i < end; i++) {
-            const prod = filtered[i];
-            const isSelected = (selectedItemId == prod.id && selectedItemType === 'product');
-            html += buildProductCard(prod, isSelected);
-        }
-        if (filtered.length === 0) html = '<div class="no-slots-message" style="grid-column:1/-1;"><i class="fas fa-tag"></i><h4>No products available</h4></div>';
-        grid.innerHTML = html;
-        buildPagination(pagination, page, totalPages, 'accessories');
-    }
-
     function buildPagination(container, page, totalPages, tab) {
         if (totalPages <= 1) { container.innerHTML = ''; return; }
         let html = '';
@@ -3370,7 +2385,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         if (tab === 'services') { currentPages.services = Math.max(1, page); renderServices(); }
         else if (tab === 'eyewear') { currentPages.eyewear = Math.max(1, page); renderEyewear(); }
         else if (tab === 'contact_lenses') { currentPages.contact_lenses = Math.max(1, page); renderContactLenses(); }
-        else if (tab === 'accessories') { currentPages.accessories = Math.max(1, page); renderAccessories(); }
     }
 
     // ============================================
@@ -3832,7 +2846,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
     function handleContactInput() {
         const contact = document.querySelector('input[name="contact_number"]').value;
         const itemReady = (selectedItemType === 'service') ? selectedServices.length > 0 : step1Completed;
-        if (contact && itemReady && (step2Completed || selectedItemType === 'product') && step3Completed && selectedTime) {
+        if (contact && itemReady && step2Completed && step3Completed && selectedTime) {
             document.getElementById('step4-status').textContent = '✓ Ready';
             document.getElementById('step4-status').className = 'step-status-badge status-completed';
             document.getElementById('step4').classList.add('completed');
@@ -3862,26 +2876,17 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         
         if (tab === 'eyewear') renderEyewear();
         else if (tab === 'contact_lenses') renderContactLenses();
-        else if (tab === 'accessories') renderAccessories();
         else if (tab === 'services') renderServices();
         
         if (tab === 'services') {
             document.getElementById('doctorsGrid').style.display = 'grid';
             document.getElementById('product-message').style.display = 'none';
         } else {
-            document.getElementById('doctorsGrid').style.display = 'none';
-            document.getElementById('product-message').style.display = 'block';
-            if (step1Completed) {
-                document.getElementById('step2-status').textContent = '✓ Completed (Not needed)';
-                document.getElementById('step2-status').className = 'step-status-badge status-completed';
-                document.getElementById('step2').classList.add('completed');
-                document.getElementById('step2').classList.remove('active');
-                document.querySelector('.progress-step.step2').classList.add('completed');
-                document.querySelector('.progress-step.step2').classList.remove('active');
-            }
+            document.getElementById('doctorsGrid').style.display = 'grid'; // Always show doctors for products too
+            document.getElementById('product-message').style.display = 'none';
         }
         
-        if (!step3Completed && bookingType === 'service') {
+        if (!step3Completed) {
             selectedDate = '';
             selectedTime = '';
             document.getElementById('selectedDate').value = '';
@@ -3900,44 +2905,28 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         const contactInput = document.querySelector('input[name="contact_number"]');
         const itemReady = (selectedItemType === 'service') ? selectedServices.length > 0 : step1Completed;
 
-        if (bookingType === 'product' && selectedItemType === 'product' && itemReady) {
-            const deliveryRadio = document.querySelector('input[name="delivery_type"][value="delivery"]');
-            if (deliveryRadio && deliveryRadio.checked) {
-                let addressInput = document.getElementById('deliveryAddressInput');
-                if (!addressInput || !addressInput.value.trim()) {
-                    e.preventDefault();
-                    showToast('Please enter your delivery address.', 'error');
-                    addressInput.style.borderColor = 'var(--danger)';
-                    addressInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    return;
-                }
-            }
-        }
-
-        if (!itemReady || (bookingType === 'service' && (!step3Completed || !selectedTime)) || !contactInput.value) {
+        if (!itemReady || !step2Completed || !step3Completed || !selectedTime || !contactInput.value) {
             e.preventDefault();
             showToast('Please complete all steps before confirming your booking.', 'error');
             if (!itemReady) scrollToStep('step1');
-            else if (bookingType === 'service' && !step2Completed) scrollToStep('step2');
-            else if (bookingType === 'service' && (!step3Completed || !selectedTime)) scrollToStep('step3');
+            else if (!step2Completed) scrollToStep('step2');
+            else if (!step3Completed || !selectedTime) scrollToStep('step3');
             else if (!contactInput.value) { scrollToStep('step4'); contactInput.style.borderColor='var(--danger)'; }
             return;
         }
         
-        if (bookingType === 'service') {
-            const selDate = document.getElementById('selectedDate').value;
-            const selTimeVal = document.getElementById('selectedTime').value;
-            const todayStrSubmit = getTodayDateStr();
-            if (selDate === todayStrSubmit && selTimeVal) {
-                const nowSubmit = new Date();
-                const nowMinutesSubmit = nowSubmit.getHours()*60 + nowSubmit.getMinutes();
-                const [hSubmit, mSubmit] = selTimeVal.split(':').map(Number);
-                const selMinutesSubmit = hSubmit*60 + mSubmit;
-                if (selMinutesSubmit < nowMinutesSubmit) {
-                    e.preventDefault();
-                    showToast('That time has already passed. Please choose another time.', 'error');
-                    scrollToStep('step3');
-                }
+        const selDate = document.getElementById('selectedDate').value;
+        const selTimeVal = document.getElementById('selectedTime').value;
+        const todayStrSubmit = getTodayDateStr();
+        if (selDate === todayStrSubmit && selTimeVal) {
+            const nowSubmit = new Date();
+            const nowMinutesSubmit = nowSubmit.getHours()*60 + nowSubmit.getMinutes();
+            const [hSubmit, mSubmit] = selTimeVal.split(':').map(Number);
+            const selMinutesSubmit = hSubmit*60 + mSubmit;
+            if (selMinutesSubmit < nowMinutesSubmit) {
+                e.preventDefault();
+                showToast('That time has already passed. Please choose another time.', 'error');
+                scrollToStep('step3');
             }
         }
     });
@@ -3954,30 +2943,14 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             if (themeToggle) themeToggle.className = 'fas fa-sun';
         }
         initCalendar();
-        
-        document.querySelectorAll('#eyewearDeliverySection input[name="delivery_type"], #contactLensDeliverySection input[name="delivery_type"], #accessoryDeliverySection input[name="delivery_type"]').forEach(radio => {
-            radio.addEventListener('change', function() {
-                let section = 'eyewear';
-                if (this.closest('#contactLensDeliverySection')) section = 'cl';
-                else if (this.closest('#accessoryDeliverySection')) section = 'acc';
-                toggleDeliveryFields(section);
-            });
-        });
 
         if (selectedItemType === 'product' && selectedItemId) {
             const inEyewear = eyewearProducts.some(p => p.id == selectedItemId);
             const inContact = contactLensProducts.some(p => p.id == selectedItemId);
-            const inAccessory = accessoryProducts.some(p => p.id == selectedItemId);
             let targetTab = 'eyewear';
             if (inContact) targetTab = 'contact_lenses';
-            else if (inAccessory) targetTab = 'accessories';
             switchMainTab(targetTab);
-            if (inAccessory) {
-                setTimeout(() => {
-                    const prod = accessoryProducts.find(p => p.id == selectedItemId);
-                    if (prod) selectAccessory(prod.id, prod.name, prod.price);
-                }, 300);
-            } else if (inEyewear) {
+            if (inEyewear) {
                 setTimeout(() => {
                     const prod = eyewearProducts.find(p => p.id == selectedItemId);
                     if (prod) selectEyewearProduct(prod.id, prod.name, prod.price);

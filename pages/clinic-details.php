@@ -499,56 +499,42 @@ mysqli_data_seek($products_query, 0);
         .rating-stars i.empty { color: var(--rating-empty); }
         .rating-count { color: var(--text-secondary); font-size: 14px; }
 
-        /* ============================================
-           CLINIC ACTIONS - UPDATED WITH TWO BUTTONS
-           ============================================ */
-        .clinic-actions {
-            display: flex;
-            gap: 10px;
-            margin-top: 10px;
-            flex-wrap: wrap;
-            align-items: center;
-        }
+        .clinic-actions { display: flex; gap: 15px; margin-top: 10px; flex-wrap: wrap; }
 
         .btn-favorite {
-            padding: 8px 18px;
+            padding: 12px 25px;
             border: 2px solid var(--favorite-border);
             background: <?php echo $is_favorite ? 'var(--favorite-active-bg)' : 'var(--favorite-bg)'; ?>;
             color: <?php echo $is_favorite ? 'var(--favorite-active-color)' : 'var(--favorite-color)'; ?>;
-            border-radius: 30px;
-            font-size: 13px;
+            border-radius: var(--radius-md);
+            font-size: 14px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s;
-            display: inline-flex;
+            display: flex;
             align-items: center;
-            gap: 6px;
-            white-space: nowrap;
+            gap: 8px;
         }
 
         .btn-favorite:hover { background: var(--primary-gradient); color: white; transform: translateY(-2px); box-shadow: var(--shadow-md); }
 
         .btn-appointment {
-            padding: 8px 18px;
+            padding: 12px 25px;
+            background: var(--primary-gradient);
             color: white;
             border: none;
-            border-radius: 30px;
-            font-size: 13px;
+            border-radius: var(--radius-md);
+            font-size: 14px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s;
-            display: inline-flex;
+            display: flex;
             align-items: center;
-            gap: 6px;
+            gap: 8px;
             text-decoration: none;
-            white-space: nowrap;
         }
 
         .btn-appointment:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
-        .btn-appointment.service-btn { background: var(--primary-gradient); }
-        .btn-appointment.shop-btn { background: linear-gradient(135deg, #0EA5E9, #0284C7); }
-
-        .btn-appointment i { font-size: 13px; }
 
         /* Gallery */
         .gallery-section {
@@ -686,15 +672,19 @@ mysqli_data_seek($products_query, 0);
             border-color: var(--primary);
         }
 
+        /* =============================================
+           PRODUCT IMAGE — Fixed height, no Swiper
+           ============================================= */
         .product-image-container {
             position: relative;
             width: 100%;
-            height: 200px;
+            height: 200px;           /* fixed, no more padding-top trick */
             overflow: hidden;
             background: var(--bg-secondary);
             flex-shrink: 0;
         }
 
+        /* Custom slider track */
         .pc-slider-track {
             display: flex;
             width: 100%;
@@ -703,6 +693,7 @@ mysqli_data_seek($products_query, 0);
             will-change: transform;
         }
 
+        /* Each slide */
         .pc-slide {
             min-width: 100%;
             width: 100%;
@@ -717,11 +708,12 @@ mysqli_data_seek($products_query, 0);
         .pc-slide img {
             width: 100%;
             height: 100%;
-            object-fit: contain;
+            object-fit: contain;   /* show full image, no crop */
             padding: 8px;
             display: block;
         }
 
+        /* Dot pagination */
         .pc-dots {
             position: absolute;
             bottom: 6px;
@@ -749,6 +741,7 @@ mysqli_data_seek($products_query, 0);
             border-radius: 4px;
         }
 
+        /* Prev / Next arrows inside card */
         .pc-arrow {
             position: absolute;
             top: 50%;
@@ -774,6 +767,7 @@ mysqli_data_seek($products_query, 0);
         .pc-arrow.next { right: 6px; }
         .pc-arrow:hover { background: var(--primary); }
 
+        /* Badges */
         .product-badge {
             position: absolute;
             top: 8px;
@@ -801,6 +795,7 @@ mysqli_data_seek($products_query, 0);
             left: auto;
         }
 
+        /* Sale price styles */
         .product-price-block { display: flex; flex-direction: column; gap: 2px; }
         .product-price.sale-color { color: #EF4444; }
         .product-price-original { font-size: 12px; color: var(--text-muted); text-decoration: line-through; }
@@ -839,32 +834,6 @@ mysqli_data_seek($products_query, 0);
             z-index: 15;
             backdrop-filter: blur(2px);
         }
-
-        .btn-fav-product {
-            position: absolute;
-            top: 8px; right: 8px;
-            width: 32px; height: 32px;
-            border-radius: 50%;
-            background: rgba(255,255,255,0.90);
-            border: none;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 25;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.18);
-            transition: all 0.2s;
-            backdrop-filter: blur(4px);
-        }
-        .btn-fav-product i { font-size: 14px; color: #ccc; transition: all 0.2s; }
-        .btn-fav-product.active i { color: #EF4444; }
-        .btn-fav-product:hover { transform: scale(1.15); background: white; }
-        .btn-fav-product:hover i { color: #EF4444; }
-        .btn-fav-product.pop { animation: favPop 0.3s ease; }
-        @keyframes favPop { 0% { transform: scale(1); } 50% { transform: scale(1.35); } 100% { transform: scale(1); } }
-        .theme-dark .btn-fav-product { background: rgba(30,30,30,0.88); }
-        .theme-dark .btn-fav-product i { color: #555; }
-        .theme-dark .btn-fav-product.active i { color: #EF4444; }
 
         /* Product Info */
         .product-info {
@@ -1054,6 +1023,33 @@ mysqli_data_seek($products_query, 0);
         @media (max-width: 480px) {
             .products-grid { grid-template-columns: 1fr; }
         }
+
+        /* ===== PRODUCT FAVORITE HEART BUTTON ===== */
+        .btn-fav-product {
+            position: absolute;
+            top: 8px; right: 8px;
+            width: 32px; height: 32px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.90);
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 25;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+            transition: all 0.2s;
+            backdrop-filter: blur(4px);
+        }
+        .btn-fav-product i { font-size: 14px; color: #ccc; transition: all 0.2s; }
+        .btn-fav-product.active i { color: #EF4444; }
+        .btn-fav-product:hover { transform: scale(1.15); background: white; }
+        .btn-fav-product:hover i { color: #EF4444; }
+        .btn-fav-product.pop { animation: favPop 0.3s ease; }
+        @keyframes favPop { 0% { transform: scale(1); } 50% { transform: scale(1.35); } 100% { transform: scale(1); } }
+        .theme-dark .btn-fav-product { background: rgba(30,30,30,0.88); }
+        .theme-dark .btn-fav-product i { color: #555; }
+        .theme-dark .btn-fav-product.active i { color: #EF4444; }
     </style>
 </head>
 <body>
@@ -1109,20 +1105,13 @@ mysqli_data_seek($products_query, 0);
                     <span class="rating-count"><?php echo $total_reviews; ?> reviews</span>
                 </div>
 
-                <!-- ============================================
-                CLINIC ACTIONS - TWO BUTTONS WITH SAME SIZE
-                ============================================ -->
                 <div class="clinic-actions">
                     <button class="btn-favorite" id="favoriteBtn" data-clinic-id="<?php echo $clinic_id; ?>">
                         <i class="fa<?php echo $is_favorite ? 's' : 'r'; ?> fa-heart"></i>
                         <span><?php echo $is_favorite ? 'Saved to Favorites' : 'Save to Favorites'; ?></span>
                     </button>
-                    
-                    <a href="book-appointment.php?type=service&clinic_id=<?php echo $clinic_id; ?>" class="btn-appointment service-btn">
-                        <i class="fas fa-calendar-plus"></i> Book Service
-                    </a>
-                    <a href="book-appointment.php?type=product&clinic_id=<?php echo $clinic_id; ?>" class="btn-appointment shop-btn">
-                        <i class="fas fa-shopping-bag"></i> Shop Products
+                    <a href="book-appointment.php?clinic_id=<?php echo $clinic_id; ?>" class="btn-appointment">
+                        <i class="fas fa-calendar-plus"></i> Book Appointment
                     </a>
                 </div>
             </div>
@@ -1476,7 +1465,7 @@ mysqli_data_seek($products_query, 0);
 
     <script>
     // ============================================
-    // GALLERY CAROUSEL (clinic photos)
+    // GALLERY CAROUSEL (clinic photos — unchanged)
     // ============================================
     let currentSlide = 0;
     const slides = document.querySelectorAll('.carousel-slide');
@@ -1511,7 +1500,9 @@ mysqli_data_seek($products_query, 0);
     // ============================================
     // PRODUCT CARD CUSTOM SLIDER
     // ============================================
+    // pcState tracks current slide index per product id
     const pcState = {};
+    // pcTotal tracks total slides per product id
     const pcTotal = <?php
         $totals = [];
         foreach ($all_product_images_js as $pid => $imgs) {
@@ -1520,17 +1511,21 @@ mysqli_data_seek($products_query, 0);
         echo json_encode($totals);
     ?>;
 
+    // Initialize state
     Object.keys(pcTotal).forEach(pid => { pcState[pid] = 0; });
 
     function pcGo(pid, index, event) {
         if (event) { event.preventDefault(); event.stopPropagation(); }
         const total = pcTotal[pid] || 1;
+        // Wrap around
         index = ((index % total) + total) % total;
         pcState[pid] = index;
 
+        // Move track
         const track = document.getElementById('track-' + pid);
         if (track) track.style.transform = 'translateX(' + (-index * 100) + '%)';
 
+        // Update dots
         const dotsEl = document.getElementById('dots-' + pid);
         if (dotsEl) {
             dotsEl.querySelectorAll('.pc-dot').forEach((d, i) => {

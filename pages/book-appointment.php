@@ -46,28 +46,30 @@ function isPrescriptionProduct($product) {
         return false;
     }
     
-    // Check requires_prescription flag
-    if (isset($product['requires_prescription']) && $product['requires_prescription'] == 1) {
+    // ============================================
+    // ✅ EYEWEAR & CONTACT LENSES are ALWAYS prescription
+    // Eyeglasses, Lenses, Contact Lenses, Contact Lens
+    // ============================================
+    if (in_array($category, ['Eyeglasses', 'Lenses', 'Contact Lenses', 'Contact Lens'])) {
         return true;
     }
     
-    // Check lens_power
-    if (isset($product['lens_power']) && !empty($product['lens_power'])) {
-        $power = trim($product['lens_power']);
-        if ($power !== 'plano' && $power !== '0' && $power !== '0.00') {
-            return true;
+    // Check extra_fields_json for any prescription indicators
+    if (!empty($product['extra_fields_json'])) {
+        $extra = json_decode($product['extra_fields_json'], true);
+        if (is_array($extra)) {
+            // Check if contact lens has power (for future reference)
+            if (isset($extra['cl_power_range']) && !empty($extra['cl_power_range'])) {
+                return true;
+            }
+            // Check if eyewear has prescription flag
+            if (isset($extra['has_prescription']) && $extra['has_prescription'] == 1) {
+                return true;
+            }
+            if (isset($extra['requires_prescription']) && $extra['requires_prescription'] == 1) {
+                return true;
+            }
         }
-        return false;
-    }
-    
-    // Check lens_type
-    if (isset($product['lens_type']) && in_array($product['lens_type'], ['prescription', 'rx', 'graded'])) {
-        return true;
-    }
-    
-    // Check category - Eyeglasses and Lenses are typically prescription
-    if (in_array($category, ['Eyeglasses', 'Lenses'])) {
-        return true;
     }
     
     // Default: treat as non-prescription
@@ -122,7 +124,7 @@ $services_query = mysqli_query($conn, "SELECT s.*,
 $all_products_query = mysqli_query($conn, "SELECT *, 'product' as type FROM products WHERE clinic_id = $clinic_id ORDER BY category, name");
 
 // ============================================
-// ✅ CATEGORIZE PRODUCTS FOR TABS (Appointment Only - Prescription Only)
+// ✅ CATEGORIZE PRODUCTS FOR TABS
 // ============================================
 $eyewear_products = [];
 $contact_lens_products = [];
@@ -131,18 +133,18 @@ while($prod = mysqli_fetch_assoc($all_products_query)) {
     $cat = $prod['category'] ?? '';
     $is_prescription = isPrescriptionProduct($prod);
     
-    // SKIP: Services (handled separately), non-prescription products, and accessories
+    // SKIP: Services (handled separately)
     if (in_array($cat, ['Service', 'Eye Exam', 'Treatment', 'Screening'])) {
-        continue;
-    }
-    
-    // Only show prescription products
-    if (!$is_prescription) {
         continue;
     }
     
     // Skip accessories (not needed for appointments)
     if (in_array($cat, ['Accessories', 'Parts', 'Cleaning Kits'])) {
+        continue;
+    }
+    
+    // Skip non-prescription products (e.g., Frames, Sunglasses without Rx)
+    if (!$is_prescription) {
         continue;
     }
     
@@ -152,6 +154,7 @@ while($prod = mysqli_fetch_assoc($all_products_query)) {
     } elseif (in_array($cat, ['Contact Lenses', 'Contact Lens'])) {
         $contact_lens_products[] = $prod;
     } else {
+        // Fallback
         $eyewear_products[] = $prod;
     }
 }
@@ -1478,11 +1481,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                                 <p>This clinic hasn't added any doctors yet.</p>
                             </div>
                             <?php endif; ?>
-                            
-                            <div id="product-message" style="display: none; margin-top: 15px; padding: 15px; background: var(--primary-light); border-radius: var(--radius-md);">
-                                <i class="fas fa-info-circle"></i> 
-                                <strong>Products don't require a doctor assignment.</strong> You can proceed to select date and time.
-                            </div>
                         </div>
                     </div>
 
@@ -1854,7 +1852,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
     }
 
     // ============================================
-    // CHECK STEP 1 COMPLETE - FIXED: Doctor is ALWAYS required
+    // CHECK STEP 1 COMPLETE
     // ============================================
     function checkStep1Complete() {
         const activeTab = document.querySelector('.main-tab-btn.active')?.dataset.tab;
@@ -1914,7 +1912,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             progressStep1.classList.remove('active');
             
             // ALWAYS enable Step 2 (Doctor) - for both services AND products
-            // Step 2 is required for all appointments
             document.getElementById('step2').classList.remove('locked');
             document.getElementById('step2').classList.add('active');
             document.getElementById('step2-status').textContent = 'Required';
@@ -2882,7 +2879,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             document.getElementById('doctorsGrid').style.display = 'grid';
             document.getElementById('product-message').style.display = 'none';
         } else {
-            document.getElementById('doctorsGrid').style.display = 'grid'; // Always show doctors for products too
+            document.getElementById('doctorsGrid').style.display = 'grid';
             document.getElementById('product-message').style.display = 'none';
         }
         

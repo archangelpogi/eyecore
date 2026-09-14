@@ -240,6 +240,23 @@ function getCategoryIcon($category) {
     return $icons[$category] ?? 'fa-box';
 }
 
+// ============================================
+// ✅ DELIVERY FEATURE — Delivery status helper
+// ============================================
+function getDeliveryStatusInfo($status) {
+    $map = [
+        'pending'    => ['label' => 'Order Placed',    'class' => 'ds-pending',    'icon' => 'fa-clock',        'step' => 1],
+        'preparing'  => ['label' => 'Preparing',       'class' => 'ds-preparing',  'icon' => 'fa-box',          'step' => 2],
+        'assigned'   => ['label' => 'Rider Assigned',  'class' => 'ds-assigned',   'icon' => 'fa-user-check',   'step' => 3],
+        'picked_up'  => ['label' => 'Picked Up',       'class' => 'ds-picked-up',  'icon' => 'fa-box-open',     'step' => 4],
+        'in_transit' => ['label' => 'In Transit',      'class' => 'ds-in-transit', 'icon' => 'fa-truck',        'step' => 5],
+        'delivered'  => ['label' => 'Delivered',       'class' => 'ds-delivered',  'icon' => 'fa-check-circle', 'step' => 6],
+        'failed'     => ['label' => 'Delivery Failed', 'class' => 'ds-failed',     'icon' => 'fa-times-circle', 'step' => 0],
+        'cancelled'  => ['label' => 'Cancelled',       'class' => 'ds-cancelled',  'icon' => 'fa-ban',          'step' => 0],
+    ];
+    return $map[$status] ?? $map['pending'];
+}
+
 // Include navbar
 $active_nav = 'reservations';
 
@@ -1033,6 +1050,178 @@ mysqli_data_seek($reservations_query, 0);
             transform: translateY(-2px);
             box-shadow: 0 4px 12px rgba(0,183,97,0.3);
         }
+
+        /* ===== ✅ DELIVERY FEATURE STYLES ===== */
+        .delivery-section {
+            background: linear-gradient(135deg, rgba(0,183,97,0.06), rgba(0,183,97,0.02));
+            border: 1px solid rgba(0,183,97,0.2);
+            border-radius: var(--radius-md);
+            padding: 12px 14px;
+            margin-top: 4px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .delivery-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .delivery-header > div {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .delivery-header > div i {
+            color: var(--primary);
+            font-size: 14px;
+        }
+
+        .delivery-status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 10px;
+            border-radius: var(--radius-full);
+            font-size: 11px;
+            font-weight: 700;
+            white-space: nowrap;
+        }
+
+        /* Status color variants */
+        .ds-pending    { background: #F3F4F6; color: #4B5563; }
+        .ds-preparing  { background: #FEF3C7; color: #92400E; }
+        .ds-assigned   { background: #CFFAFE; color: #0E7490; }
+        .ds-picked-up  { background: #DBEAFE; color: #1E40AF; }
+        .ds-in-transit { background: #E9D5FF; color: #6B21A8; }
+        .ds-delivered  { background: #D1FAE5; color: #065F46; }
+        .ds-failed     { background: #FEE2E2; color: #991B1B; }
+        .ds-cancelled  { background: #FEE2E2; color: #991B1B; }
+
+        .theme-dark .ds-pending    { background: #2A2A2A; color: #9CA3AF; }
+        .theme-dark .ds-preparing  { background: #3B2F0F; color: #FDE68A; }
+        .theme-dark .ds-assigned   { background: #0E3A44; color: #67E8F9; }
+        .theme-dark .ds-picked-up  { background: #1E3A5F; color: #93C5FD; }
+        .theme-dark .ds-in-transit { background: #3B1F5C; color: #D8B4FE; }
+        .theme-dark .ds-delivered  { background: #0D2818; color: #6EE7B7; }
+        .theme-dark .ds-failed     { background: #3B0F0F; color: #FCA5A5; }
+        .theme-dark .ds-cancelled  { background: #3B0F0F; color: #FCA5A5; }
+
+        .delivery-address {
+            display: flex;
+            gap: 10px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+            padding: 8px 10px;
+            background: var(--bg-secondary);
+            border-radius: var(--radius-sm);
+        }
+
+        .delivery-address > i {
+            color: var(--primary);
+            font-size: 14px;
+            margin-top: 2px;
+            flex-shrink: 0;
+        }
+
+        .delivery-address strong {
+            color: var(--text-primary);
+            font-size: 12.5px;
+            display: block;
+            margin-bottom: 2px;
+        }
+
+        .delivery-tracking {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            background: var(--bg-secondary);
+            border-radius: var(--radius-sm);
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .delivery-tracking i {
+            color: var(--primary);
+            font-size: 14px;
+        }
+
+        .delivery-tracking strong {
+            color: var(--text-primary);
+            font-family: 'Courier New', monospace;
+            letter-spacing: 0.5px;
+        }
+
+        .delivery-fee-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 12px;
+            padding-top: 6px;
+            border-top: 1px dashed rgba(0,183,97,0.25);
+        }
+
+        .delivery-fee-row span {
+            color: var(--text-muted);
+        }
+
+        .delivery-fee-row strong {
+            color: var(--primary);
+            font-size: 13px;
+        }
+
+        .delivery-fee-row strong.free {
+            color: var(--success);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .fulfillment-badge-pickup {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 6px 12px;
+            background: var(--bg-primary);
+            border-radius: var(--radius-full);
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text-secondary);
+            margin-top: 4px;
+            align-self: flex-start;
+        }
+
+        .fulfillment-badge-pickup i {
+            color: var(--primary);
+            font-size: 12px;
+        }
+
+        /* Progress mini bar for delivery */
+        .delivery-progress {
+            display: flex;
+            gap: 3px;
+            margin-top: 4px;
+        }
+
+        .delivery-progress-step {
+            height: 4px;
+            flex: 1;
+            background: var(--border-color);
+            border-radius: 2px;
+            transition: background 0.3s;
+        }
+
+        .delivery-progress-step.active {
+            background: var(--primary);
+        }
     </style>
 </head>
 <body>
@@ -1192,6 +1381,97 @@ mysqli_data_seek($reservations_query, 0);
                             <div class="product-name">
                                 <?php echo htmlspecialchars($res['product_name']); ?>
                             </div>
+
+                            <!-- ✅ DELIVERY FEATURE — Fulfillment info -->
+                            <?php if (($res['fulfillment_type'] ?? 'pickup') === 'delivery'): ?>
+                                <?php 
+                                    $delivery_info = getDeliveryStatusInfo($res['delivery_status'] ?? 'pending'); 
+                                    $progress_step = $delivery_info['step'];
+                                ?>
+                                <div class="delivery-section">
+                                    <div class="delivery-header">
+                                        <div>
+                                            <i class="fas fa-truck"></i>
+                                            <span>Delivery Order</span>
+                                        </div>
+                                        <span class="delivery-status-badge <?php echo $delivery_info['class']; ?>">
+                                            <i class="fas <?php echo $delivery_info['icon']; ?>"></i>
+                                            <?php echo $delivery_info['label']; ?>
+                                        </span>
+                                    </div>
+
+                                    <!-- Mini progress bar -->
+                                    <?php if ($progress_step > 0): ?>
+                                    <div class="delivery-progress">
+                                        <?php for ($i = 1; $i <= 6; $i++): ?>
+                                            <div class="delivery-progress-step <?php echo ($i <= $progress_step) ? 'active' : ''; ?>"></div>
+                                        <?php endfor; ?>
+                                    </div>
+                                    <?php endif; ?>
+
+                                    <!-- Delivery address -->
+                                    <div class="delivery-address">
+                                        <i class="fas fa-map-marker-alt"></i>
+                                        <div>
+                                            <strong><?php echo htmlspecialchars($res['delivery_name'] ?? ''); ?></strong>
+                                            <?php
+                                            $addr_parts = array_filter([
+                                                $res['delivery_address'] ?? '',
+                                                $res['delivery_barangay'] ?? '',
+                                                $res['delivery_city'] ?? '',
+                                                $res['delivery_province'] ?? '',
+                                                $res['delivery_zip'] ?? '',
+                                            ]);
+                                            echo htmlspecialchars(implode(', ', $addr_parts));
+                                            ?>
+                                            <?php if (!empty($res['delivery_landmark'])): ?>
+                                                <br><small style="color: var(--text-muted);"><i class="fas fa-map-pin"></i> <?php echo htmlspecialchars($res['delivery_landmark']); ?></small>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+
+                                    <!-- Tracking number -->
+                                    <?php if (!empty($res['tracking_number'])): ?>
+                                    <div class="delivery-tracking">
+                                        <i class="fas fa-barcode"></i>
+                                        <span>Tracking #: <strong><?php echo htmlspecialchars($res['tracking_number']); ?></strong></span>
+                                    </div>
+                                    <?php endif; ?>
+
+                                    <!-- Delivered date -->
+                                    <?php if (!empty($res['delivered_at'])): ?>
+                                    <div class="delivery-tracking">
+                                        <i class="fas fa-check-circle" style="color: var(--success);"></i>
+                                        <span>Delivered on <strong><?php echo date('M d, Y g:i A', strtotime($res['delivered_at'])); ?></strong></span>
+                                    </div>
+                                    <?php endif; ?>
+
+                                    <!-- Cancelled reason -->
+                                    <?php if (($res['delivery_status'] ?? '') === 'cancelled' && !empty($res['cancelled_reason'])): ?>
+                                    <div class="delivery-tracking" style="background: rgba(239,68,68,0.08);">
+                                        <i class="fas fa-ban" style="color: var(--danger);"></i>
+                                        <span style="color: var(--danger);">Reason: <?php echo htmlspecialchars($res['cancelled_reason']); ?></span>
+                                    </div>
+                                    <?php endif; ?>
+
+                                    <!-- Delivery fee -->
+                                    <?php if ($res['delivery_fee'] > 0): ?>
+                                    <div class="delivery-fee-row">
+                                        <span>Delivery Fee:</span>
+                                        <strong>₱<?php echo number_format($res['delivery_fee'], 2); ?></strong>
+                                    </div>
+                                    <?php else: ?>
+                                    <div class="delivery-fee-row">
+                                        <span>Delivery Fee:</span>
+                                        <strong class="free">Free</strong>
+                                    </div>
+                                    <?php endif; ?>
+                                </div>
+                            <?php else: ?>
+                                <div class="fulfillment-badge-pickup">
+                                    <i class="fas fa-store"></i> Pickup at Clinic
+                                </div>
+                            <?php endif; ?>
                             
                             <!-- Details -->
                             <div class="reservation-details">

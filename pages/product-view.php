@@ -183,6 +183,20 @@ $clinic_downpayment_percent = (float)($clinic_payment_config['downpayment_percen
 $clinic_booking_flow = $clinic_payment_config['booking_flow'] ?? 'approve_first';
 
 // ============================================
+// DELIVERY FEATURE — Get clinic delivery settings
+// ============================================
+$clinic_delivery_q = mysqli_query($conn, "
+    SELECT offers_delivery, allow_cod, delivery_fee, free_delivery_minimum
+    FROM clinics WHERE id = $clinic_id
+");
+$clinic_delivery = mysqli_fetch_assoc($clinic_delivery_q);
+
+$offers_delivery           = (int)($clinic_delivery['offers_delivery'] ?? 0);
+$allow_cod                 = (int)($clinic_delivery['allow_cod'] ?? 0);
+$clinic_delivery_fee       = (float)($clinic_delivery['delivery_fee'] ?? 0);
+$clinic_free_delivery_min  = (float)($clinic_delivery['free_delivery_minimum'] ?? 0);
+
+// ============================================
 // SALE DETECTION
 // ============================================
 $is_on_sale = !empty($product['is_on_sale'])
@@ -203,6 +217,42 @@ $savings          = $is_on_sale ? ($original_price - $sale_price) : 0;
 // CALCULATE PAYMENT
 // ============================================
 $payment_info = calculatePaymentAmounts($conn, $clinic_id, $display_price);
+
+// ============================================
+// DELIVERY FEATURE — PWD/Senior + VAT breakdown
+// (para mag-match ang modal sa payment.php)
+// ============================================
+$pwd_check_q = mysqli_query($conn, "
+    SELECT status, verification_type, valid_until
+    FROM user_verifications
+    WHERE user_id = $user_id
+      AND clinic_id = $clinic_id
+      AND status = 'verified'
+    LIMIT 1
+");
+$pwd_row = mysqli_fetch_assoc($pwd_check_q);
+
+$is_pwd_senior_display   = false;
+$pwd_senior_type_display = '';
+
+if ($pwd_row && $pwd_row['status'] === 'verified') {
+    $valid_until = $pwd_row['valid_until'] ?? null;
+    if ($valid_until) {
+        if (strtotime($valid_until) >= strtotime('today')) {
+            $is_pwd_senior_display   = true;
+            $pwd_senior_type_display = $pwd_row['verification_type'] ?? 'pwd';
+        }
+    } else {
+        $is_pwd_senior_display   = true;
+        $pwd_senior_type_display = $pwd_row['verification_type'] ?? 'pwd';
+    }
+}
+
+$tax_calc_display        = applyTaxAndDiscount($conn, $display_price, $is_pwd_senior_display);
+$vat_amount_display      = $tax_calc_display['vat_amount'];
+$discount_amount_display = $tax_calc_display['discount_amount'];
+$vat_rate_display        = $tax_calc_display['vat_rate'];
+$discount_rate_display   = $tax_calc_display['discount_rate'];
 
 $requires_downpayment = $payment_info['requires_payment'];
 $downpayment_percent = 0;
@@ -418,13 +468,57 @@ if (isset($_POST['ajax_action'])) {
     $color_name = mysqli_real_escape_string($conn, $_POST['color_name'] ?? '');
     $frame_size = mysqli_real_escape_string($conn, $_POST['frame_size'] ?? '');
 
-    if (!$preferred_date || !$preferred_time) {
-        echo json_encode(['success' => false, 'message' => 'Please select a date and time.']);
-        exit();
-    }
-    if (strtotime($preferred_date) < strtotime('today')) {
-        echo json_encode(['success' => false, 'message' => 'Date must be today or in the future.']);
-        exit();
+    // ============================================
+    // DELIVERY FEATURE — Capture delivery fields
+    // ============================================
+    $fulfillment_type        = mysqli_real_escape_string($conn, $_POST['fulfillment_type'] ?? 'pickup');
+    $delivery_name           = mysqli_real_escape_string($conn, $_POST['delivery_name'] ?? '');
+    $delivery_phone          = mysqli_real_escape_string($conn, $_POST['delivery_phone'] ?? '');
+    $delivery_address        = mysqli_real_escape_string($conn, $_POST['delivery_address'] ?? '');
+    $delivery_barangay       = mysqli_real_escape_string($conn, $_POST['delivery_barangay'] ?? '');
+    $delivery_city           = mysqli_real_escape_string($conn, $_POST['delivery_city'] ?? '');
+    $delivery_province       = mysqli_real_escape_string($conn, $_POST['delivery_province'] ?? '');
+    $delivery_zip            = mysqli_real_escape_string($conn, $_POST['delivery_zip'] ?? '');
+    $delivery_landmark       = mysqli_real_escape_string($conn, $_POST['delivery_landmark'] ?? '');
+    $delivery_date_input     = mysqli_real_escape_string($conn, $_POST['delivery_date'] ?? '');
+    $delivery_payment_method = mysqli_real_escape_string($conn, $_POST['delivery_payment_method'] ?? 'online');
+
+    $is_delivery_order = ($fulfillment_type === 'delivery');
+
+    // ============================================
+    // DELIVERY FEATURE — Conditional date/time validation
+    // ============================================
+    if (!$is_delivery_order) {
+        if (!$preferred_date || !$preferred_time) {
+            echo json_encode(['success' => false, 'message' => 'Please select a date and time.']);
+            exit();
+        }
+        if (strtotime($preferred_date) < strtotime('today')) {
+            echo json_encode(['success' => false, 'message' => 'Date must be today or in the future.']);
+            exit();
+        }
+    } else {
+        // Delivery validation
+        $delivery_allowed = $IS_ACCESSORY || ($lens_type === 'frame_only' && in_array($category, ['Frames', 'Eyeglasses', 'Sunglasses']));
+        if (!$delivery_allowed) {
+            echo json_encode(['success' => false, 'message' => 'Delivery is not available for this product type.']);
+            exit();
+        }
+        if (!$offers_delivery) {
+            echo json_encode(['success' => false, 'message' => 'This clinic does not offer delivery.']);
+            exit();
+        }
+        if (!$delivery_name || !$delivery_phone || !$delivery_address || !$delivery_barangay || !$delivery_city || !$delivery_province || !$delivery_zip) {
+            echo json_encode(['success' => false, 'message' => 'Please complete all required delivery fields.']);
+            exit();
+        }
+        if ($delivery_payment_method === 'cod' && !$allow_cod) {
+            echo json_encode(['success' => false, 'message' => 'Cash on Delivery is not available for this clinic.']);
+            exit();
+        }
+        // Dummy date/time for delivery (para hindi mag-error ang payment.php)
+        if (!$preferred_date) $preferred_date = date('Y-m-d');
+        if (!$preferred_time) $preferred_time = '09:00:00';
     }
 
     $make_appointment = false;
@@ -475,7 +569,6 @@ if (isset($_POST['ajax_action'])) {
 
         $ref_no = 'APP-' . strtoupper(substr(uniqid(), -8));
         $notes_final = $notes ?: ($IS_SERVICE ? 'Service booking' : 'Needs eye exam before lens fitting');
-
         $item_type_db = $IS_SERVICE ? 'service' : 'product';
 
         mysqli_query($conn, "
@@ -492,7 +585,6 @@ if (isset($_POST['ajax_action'])) {
         ");
 
         $appointment_id = mysqli_insert_id($conn);
-
         if ($prescription_id) {
             mysqli_query($conn, "UPDATE user_prescriptions SET appointment_id = $appointment_id WHERE id = $prescription_id");
         }
@@ -529,19 +621,79 @@ if (isset($_POST['ajax_action'])) {
         'contact_monthly' => 0,
     ];
     $lens_price_add = $lens_prices[$lens_type] ?? 0;
-    $total_amount = $product['price'] + $lens_price_add;
 
-    $payment_info = calculatePaymentAmounts($conn, $clinic_id, $total_amount);
+    // ============================================
+    // DELIVERY FEATURE — Compute delivery fee
+    // ============================================
+    $delivery_fee_final = 0;
+    if ($is_delivery_order) {
+        $delivery_fee_final = $clinic_delivery_fee;
+        $base_subtotal = $product['price'] + $lens_price_add;
+        if ($clinic_free_delivery_min > 0 && $base_subtotal >= $clinic_free_delivery_min) {
+            $delivery_fee_final = 0;
+        }
+    }
 
-    $downpayment_amount = $payment_info['downpayment_amount'];
-    $balance_amount = $payment_info['balance_amount'];
-    $requires_payment = $payment_info['requires_payment'];
-    $payment_policy = $payment_info['policy'];
-    $payment_type = $payment_info['payment_type'];
+    // Compute tax/discount sa product + lens lang (WALANG delivery fee)
+$base_subtotal = $product['price'] + $lens_price_add;
+$payment_info = calculatePaymentAmounts($conn, $clinic_id, $base_subtotal, $is_pwd_senior_display);
+
+// Ang taxed_total ay product + lens + VAT - discount (kung PWD)
+$taxed_total = $payment_info['total_amount'];
+// Idagdag ang delivery fee AFTER tax (flat fee, hindi taxed)
+$total_amount = $taxed_total + $delivery_fee_final;
+
+$payment_policy = $payment_info['policy'];
+$payment_type = $payment_info['payment_type'];
+
+// Recompute downpayment including delivery fee (kasi binago natin ang total)
+if ($payment_policy === 'full_payment') {
+    $downpayment_amount = $total_amount;
+    $balance_amount = 0;
+    $payment_type = 'full';
+    $requires_payment = true;
+} elseif ($payment_policy === 'downpayment_30') {
+    $downpayment_amount = round($total_amount * 0.30, 2);
+    $balance_amount = round($total_amount - $downpayment_amount, 2);
+    $payment_type = 'downpayment';
+    $requires_payment = true;
+} elseif ($payment_policy === 'downpayment_custom') {
+    $dp_pct = $clinic_downpayment_percent;
+    $downpayment_amount = round($total_amount * ($dp_pct / 100), 2);
+    $balance_amount = round($total_amount - $downpayment_amount, 2);
+    $payment_type = 'downpayment';
+    $requires_payment = true;
+} elseif ($payment_policy === 'no_payment') {
+    $downpayment_amount = 0;
+    $balance_amount = 0;
+    $payment_type = 'free';
+    $requires_payment = false;
+} else { // pay_on_site
+    $downpayment_amount = 0;
+    $balance_amount = $total_amount;
+    $payment_type = 'onsite';
+    $requires_payment = false;
+}
+
+// Safety: ensure nonzero downpayment kapag required
+if ($requires_payment && $downpayment_amount <= 0 && $total_amount > 0) {
+    $downpayment_amount = $total_amount;
+    $balance_amount = 0;
+    $payment_type = 'full';
+}
 
     $reservation_code = 'RES-' . strtoupper(substr(uniqid(), -8));
 
-    if ($requires_payment) {
+    // ============================================
+    // DELIVERY FEATURE — COD vs Online vs Pickup status
+    // ============================================
+    $is_cod_order = ($is_delivery_order && $delivery_payment_method === 'cod');
+
+    if ($is_cod_order) {
+        $expires_at = date('Y-m-d H:i:s', strtotime('+30 days'));
+        $payment_status = 'cod';
+        $reservation_status = 'confirmed';
+    } elseif ($requires_payment) {
         $expires_at = date('Y-m-d H:i:s', strtotime('+48 hours'));
         $payment_status = 'unpaid';
         $reservation_status = 'pending';
@@ -560,13 +712,27 @@ if (isset($_POST['ajax_action'])) {
         (reservation_code, user_id, product_id, clinic_id, lens_type, prescription_id,
          color_code, color_name, frame_size,
          total_amount, downpayment_amount, balance_amount,
-         preferred_date, preferred_time, notes, status, payment_status, expires_at, created_at)
+         preferred_date, preferred_time, notes, status, payment_status, expires_at, created_at,
+         fulfillment_type, delivery_name, delivery_phone, delivery_address,
+         delivery_barangay, delivery_city, delivery_province, delivery_zip,
+         delivery_landmark, delivery_fee, delivery_date)
         VALUES
         ('$reservation_code', $user_id, $product_id, $clinic_id, '$lens_type',
          " . ($prescription_id ? $prescription_id : 'NULL') . ",
          '$color_code', '$color_name', '$frame_size',
          $total_amount, $downpayment_amount, $balance_amount,
-         '$preferred_date', '$preferred_time', '$notes', '$reservation_status', '$payment_status', '$expires_at', NOW())
+         '$preferred_date', '$preferred_time', '$notes', '$reservation_status', '$payment_status', '$expires_at', NOW(),
+         '$fulfillment_type',
+         " . ($delivery_name       ? "'$delivery_name'"     : "NULL") . ",
+         " . ($delivery_phone      ? "'$delivery_phone'"    : "NULL") . ",
+         " . ($delivery_address    ? "'$delivery_address'"  : "NULL") . ",
+         " . ($delivery_barangay   ? "'$delivery_barangay'" : "NULL") . ",
+         " . ($delivery_city       ? "'$delivery_city'"     : "NULL") . ",
+         " . ($delivery_province   ? "'$delivery_province'" : "NULL") . ",
+         " . ($delivery_zip        ? "'$delivery_zip'"      : "NULL") . ",
+         " . ($delivery_landmark   ? "'$delivery_landmark'" : "NULL") . ",
+         $delivery_fee_final,
+         " . ($delivery_date_input ? "'$delivery_date_input'" : "NULL") . ")
     ";
 
     $result = mysqli_query($conn, $insert_query);
@@ -589,7 +755,14 @@ if (isset($_POST['ajax_action'])) {
         mysqli_query($conn, "UPDATE user_prescriptions SET reservation_id = $reservation_id WHERE id = $prescription_id");
     }
 
-    if ($requires_payment) {
+    // ============================================
+    // DELIVERY FEATURE — Redirect logic (COD vs Online vs Pickup)
+    // ============================================
+    if ($is_cod_order) {
+        $redirect_url = 'my-reservations.php';
+        $message = 'Order placed! You will pay ₱' . number_format($total_amount, 2) . ' upon delivery.';
+        $notification_message = "Your delivery order for {$product['name']} is confirmed. Cash on delivery.";
+    } elseif ($requires_payment) {
         if ($clinic_booking_flow === 'pay_first') {
             $redirect_url = 'payment.php?reservation_id=' . $reservation_id;
             if ($payment_type == 'full') {
@@ -634,7 +807,8 @@ if (isset($_POST['ajax_action'])) {
         'requires_payment' => $requires_payment,
         'payment_policy' => $payment_policy,
         'payment_type' => $payment_type,
-        'booking_flow' => $clinic_booking_flow
+        'booking_flow' => $clinic_booking_flow,
+        'is_cod' => $is_cod_order
     ]);
     exit();
 }
@@ -2083,9 +2257,131 @@ include '../includes/navbar.php';
         line-height: 1.5;
     }
 
-    <?php if ($category === 'Lenses' || $category === 'Contact Lenses'): ?>
+        <?php if ($category === 'Lenses' || $category === 'Contact Lenses'): ?>
     #rxSection { display: block !important; }
     <?php endif; ?>
+
+    /* ===== DELIVERY FEATURE STYLES ===== */
+    .modal-box { max-width: 560px; }
+    .modal-body { padding: 24px; }
+
+    .fulfillment-section {
+        margin-bottom: 22px;
+        padding-bottom: 20px;
+        border-bottom: 1px dashed var(--border-color);
+    }
+    .form-label-big {
+        display: block;
+        font-size: 16px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 12px;
+    }
+    .fulfillment-options {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+    }
+    @media (max-width: 480px) { .fulfillment-options { grid-template-columns: 1fr; } }
+
+    .fulfillment-btn {
+        background: var(--bg-primary);
+        border: 2px solid var(--border-color);
+        border-radius: var(--radius-md);
+        padding: 18px 14px;
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        transition: all 0.2s;
+        font-family: var(--font-main);
+    }
+    .fulfillment-btn i { font-size: 28px; color: var(--text-secondary); }
+    .fulfillment-btn .fulfillment-name { font-size: 16px; font-weight: 700; color: var(--text-primary); }
+    .fulfillment-btn .fulfillment-desc { font-size: 13px; color: var(--text-muted); text-align: center; line-height: 1.3; }
+    .fulfillment-btn:hover { border-color: var(--primary); }
+    .fulfillment-btn.selected {
+        border-color: var(--primary);
+        background: var(--primary-light);
+        box-shadow: 0 0 0 3px rgba(0,183,97,0.12);
+    }
+    .fulfillment-btn.selected i { color: var(--primary); }
+
+    .delivery-section-title {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--text-primary);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 16px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid var(--border-light);
+    }
+    .delivery-section-title i { color: var(--primary); }
+
+    .form-row-2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+    }
+    @media (max-width: 480px) { .form-row-2 { grid-template-columns: 1fr; } }
+
+    .payment-methods-inline { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+    .payment-method-option {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 16px 18px;
+        border: 2px solid var(--border-color);
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        background: var(--bg-primary);
+        transition: all 0.2s;
+    }
+    .payment-method-option:hover { border-color: var(--primary); }
+    .payment-method-option.selected {
+        border-color: var(--primary);
+        background: var(--primary-light);
+        box-shadow: 0 0 0 3px rgba(0,183,97,0.12);
+    }
+    .payment-method-option input { display: none; }
+    .payment-method-option i { font-size: 22px; color: var(--primary); flex-shrink: 0; }
+    .payment-method-option > div { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+    .payment-method-option strong { font-size: 15px; color: var(--text-primary); }
+    .payment-method-option span { font-size: 14px; color: var(--text-secondary); font-weight: 700; }
+
+    .badge-inline {
+        display: inline-block;
+        padding: 1px 8px;
+        border-radius: 10px;
+        font-size: 10px;
+        font-weight: 700;
+        margin-left: 6px;
+    }
+    .badge-success { background: var(--success); color: white; }
+    .badge-warning { background: var(--warning); color: white; }
+
+    .mpb-value.discount-value { color: #EF4444; font-weight: 700; }
+    .mpb-value.vat-value { color: var(--warning); font-weight: 700; }
+
+    /* Bigger, more readable modal fonts */
+    .form-input {
+        font-size: 16px !important;
+        padding: 13px 15px !important;
+    }
+    .form-label {
+        font-size: 14px !important;
+        font-weight: 700 !important;
+        margin-bottom: 8px !important;
+        text-transform: none !important;
+        letter-spacing: 0 !important;
+        color: var(--text-primary) !important;
+    }
+    .btn-modal { font-size: 15px; padding: 14px; }
+    .mpb-row { font-size: 14px; }
+    .mpb-row.total .mpb-value { font-size: 18px; }
     </style>
 </head>
 <body>
@@ -2737,89 +3033,154 @@ include '../includes/navbar.php';
 
 </div>
 
-<!-- SCHEDULE MODAL -->
+<!-- RESERVE MODAL -->
 <div class="modal-overlay" id="scheduleModal">
     <div class="modal-box">
         <div class="modal-head">
-            <h3 id="modalTitle"><i class="fas fa-calendar-alt"></i> Schedule Your Visit</h3>
+            <h3 id="modalTitle"><i class="fas fa-bookmark"></i> Reserve This Product</h3>
             <button class="modal-close" onclick="closeModal()">&times;</button>
         </div>
         <div class="modal-body">
-            <div class="form-group">
-                <label class="form-label">Preferred Date <span style="color:var(--danger)">*</span></label>
-                <input type="date" id="mDate" class="form-input" min="<?php echo date('Y-m-d'); ?>">
+
+            <!-- Fulfillment Selector -->
+            <div class="fulfillment-section" id="fulfillmentSection" style="display: none;">
+                <label class="form-label-big">How would you like to receive your order?</label>
+                <div class="fulfillment-options">
+                    <button type="button" class="fulfillment-btn selected" data-type="pickup" onclick="selectFulfillment('pickup')">
+                        <i class="fas fa-store"></i>
+                        <span class="fulfillment-name">Pickup</span>
+                        <span class="fulfillment-desc">Pick up at the clinic</span>
+                    </button>
+                    <button type="button" class="fulfillment-btn" data-type="delivery" onclick="selectFulfillment('delivery')">
+                        <i class="fas fa-truck"></i>
+                        <span class="fulfillment-name">Delivery</span>
+                        <span class="fulfillment-desc">We deliver to your address</span>
+                    </button>
+                </div>
             </div>
-            <div class="form-group">
-                <label class="form-label">Preferred Time <span style="color:var(--danger)">*</span></label>
-                <input type="time" id="mTime" class="form-input">
+
+            <!-- PICKUP FIELDS -->
+            <div id="pickupFields">
+                <div class="form-group">
+                    <label class="form-label">Preferred Date <span style="color:var(--danger)">*</span></label>
+                    <input type="date" id="mDate" class="form-input" min="<?php echo date('Y-m-d'); ?>">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Preferred Time <span style="color:var(--danger)">*</span></label>
+                    <input type="time" id="mTime" class="form-input">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Contact Number <span style="color:var(--danger)">*</span></label>
+                    <input type="tel" id="mContact" class="form-input" placeholder="09XX XXX XXXX" value="<?php echo htmlspecialchars($user['contact'] ?? ''); ?>">
+                </div>
             </div>
-            <div class="form-group">
-                <label class="form-label">Contact Number <span style="color:var(--danger)">*</span></label>
-                <input type="tel" id="mContact" class="form-input" placeholder="09XX XXX XXXX" value="<?php echo htmlspecialchars($user['contact'] ?? ''); ?>">
+
+            <!-- DELIVERY FIELDS -->
+            <div id="deliveryFields" style="display: none;">
+                <div class="delivery-section-title">
+                    <i class="fas fa-truck"></i> Delivery Information
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Recipient Name <span style="color:var(--danger)">*</span></label>
+                    <input type="text" id="mDeliveryName" class="form-input" placeholder="Juan Dela Cruz" value="<?php echo htmlspecialchars(($user['first_name'] ?? '') . ' ' . ($user['last_name'] ?? '')); ?>">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Contact Number <span style="color:var(--danger)">*</span></label>
+                    <input type="tel" id="mDeliveryPhone" class="form-input" placeholder="09XX XXX XXXX" value="<?php echo htmlspecialchars($user['contact'] ?? ''); ?>">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Street Address <span style="color:var(--danger)">*</span></label>
+                    <input type="text" id="mDeliveryAddress" class="form-input" placeholder="House #, Street Name" value="<?php echo htmlspecialchars($user['address'] ?? ''); ?>">
+                </div>
+                <div class="form-row-2">
+                    <div class="form-group">
+                        <label class="form-label">Barangay <span style="color:var(--danger)">*</span></label>
+                        <input type="text" id="mDeliveryBarangay" class="form-input" placeholder="Barangay">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">City <span style="color:var(--danger)">*</span></label>
+                        <input type="text" id="mDeliveryCity" class="form-input" placeholder="City">
+                    </div>
+                </div>
+                <div class="form-row-2">
+                    <div class="form-group">
+                        <label class="form-label">Province <span style="color:var(--danger)">*</span></label>
+                        <input type="text" id="mDeliveryProvince" class="form-input" placeholder="Province">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">ZIP Code <span style="color:var(--danger)">*</span></label>
+                        <input type="text" id="mDeliveryZip" class="form-input" placeholder="1234">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Landmark (Optional)</label>
+                    <input type="text" id="mDeliveryLandmark" class="form-input" placeholder="Near SM Mall">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Preferred Delivery Date (Optional)</label>
+                    <input type="date" id="mDeliveryDate" class="form-input" min="<?php echo date('Y-m-d'); ?>">
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Payment Method <span style="color:var(--danger)">*</span></label>
+                    <div class="payment-methods-inline">
+                        <label class="payment-method-option selected" data-method="online" onclick="selectDeliveryPayment('online')">
+                            <input type="radio" name="delivery_payment_method" value="online" checked>
+                            <i class="fas fa-credit-card"></i>
+                            <div>
+                                <strong>Pay Online Now</strong>
+                                <span class="pm-total-online">₱0.00</span>
+                            </div>
+                        </label>
+                        <label class="payment-method-option cod-option" data-method="cod" onclick="selectDeliveryPayment('cod')" style="display: none;">
+                            <input type="radio" name="delivery_payment_method" value="cod">
+                            <i class="fas fa-money-bill-wave"></i>
+                            <div>
+                                <strong>Cash on Delivery</strong>
+                                <span class="pm-total-cod">₱0.00</span>
+                            </div>
+                        </label>
+                    </div>
+                </div>
             </div>
+
+            <!-- Shared Notes -->
             <div class="form-group">
                 <label class="form-label">Notes (Optional)</label>
                 <textarea id="mNotes" class="form-input" rows="2" placeholder="Any special requests or additional info..."></textarea>
             </div>
 
+            <!-- Order Summary -->
             <div class="modal-price-box" id="modalPriceBox">
                 <div class="mpb-row">
-                    <span class="mpb-label"><?php echo $is_on_sale ? 'Sale Price' : 'Product Price'; ?></span>
-                    <span class="mpb-value" <?php echo $is_on_sale ? 'style="color:#EF4444"' : ''; ?>>
-                        ₱<?php echo number_format($display_price, 2); ?>
-                    </span>
+                    <span class="mpb-label">Product</span>
+                    <span class="mpb-value" id="summaryProductValue">₱0.00</span>
                 </div>
-                <?php if ($is_on_sale): ?>
-                <div class="mpb-row">
-                    <span class="mpb-label" style="text-decoration:line-through; color:var(--text-muted)">Original</span>
-                    <span class="mpb-value" style="text-decoration:line-through; color:var(--text-muted)">₱<?php echo number_format($original_price, 2); ?></span>
-                </div>
-                <?php endif; ?>
-                <div class="mpb-row" id="mpbLensRow" style="display:none;">
+                <div class="mpb-row" id="mpbLensRow" style="display: none;">
                     <span class="mpb-label">Lens Upgrade</span>
                     <span class="mpb-value" id="mpbLensVal">+₱0</span>
+                </div>
+                <div class="mpb-row" id="mpbDiscountRow" style="display: none;">
+                    <span class="mpb-label">
+                        <span id="summaryDiscountLabel">PWD Discount</span>
+                        <span class="badge-inline badge-success">20%</span>
+                    </span>
+                    <span class="mpb-value discount-value" id="summaryDiscountValue">-₱0.00</span>
+                </div>
+                <div class="mpb-row" id="mpbVatRow" style="display: none;">
+                    <span class="mpb-label">
+                        VAT <span class="badge-inline badge-warning" id="summaryVatRate">12%</span>
+                    </span>
+                    <span class="mpb-value vat-value" id="summaryVatValue">+₱0.00</span>
+                </div>
+                <div class="mpb-row" id="mpbDeliveryRow" style="display: none;">
+                    <span class="mpb-label">Delivery Fee</span>
+                    <span class="mpb-value" id="summaryDeliveryFee">₱0.00</span>
                 </div>
                 <div class="mpb-divider"></div>
                 <div class="mpb-row total">
                     <span class="mpb-label">Total</span>
-                    <span class="mpb-value" id="mpbTotal">₱<?php echo number_format($display_price, 2); ?></span>
-                </div>
-                <?php if ($payment_type_label == 'downpayment'): ?>
-                <div class="mpb-row dp">
-                    <span class="mpb-label">Downpayment (<?php echo $downpayment_percent; ?>%)</span>
-                    <span class="mpb-value" id="mpbDp">₱<?php echo number_format($downpayment_amount_calculated, 2); ?></span>
-                </div>
-                <div class="mpb-row">
-                    <span class="mpb-label">Balance (upon visit)</span>
-                    <span class="mpb-value" id="mpbBal">₱<?php echo number_format($balance_amount_calculated, 2); ?></span>
-                </div>
-                <?php elseif ($payment_type_label == 'full'): ?>
-                <div class="mpb-row dp">
-                    <span class="mpb-label">Full Payment Due</span>
-                    <span class="mpb-value" id="mpbDp" style="color:var(--danger);">₱<?php echo number_format($downpayment_amount_calculated, 2); ?></span>
-                </div>
-                <?php elseif ($payment_type_label == 'onsite'): ?>
-                <div class="mpb-row dp">
-                    <span class="mpb-label">Pay at Clinic</span>
-                    <span class="mpb-value" id="mpbDp" style="color:var(--warning);">₱<?php echo number_format($display_price, 2); ?></span>
-                </div>
-                <?php elseif ($payment_type_label == 'free'): ?>
-                <div class="mpb-row dp">
-                    <span class="mpb-label">FREE</span>
-                    <span class="mpb-value" style="color:var(--success);">₱0.00</span>
-                </div>
-                <?php endif; ?>
-                
-                <div class="mpb-divider"></div>
-                <div class="mpb-row">
-                    <span class="mpb-label">Booking Flow:</span>
-                    <span class="mpb-value">
-                        <?php if ($clinic_booking_flow == 'pay_first'): ?>
-                            <i class="fas fa-credit-card"></i> Pay First, Then Approve
-                        <?php else: ?>
-                            <i class="fas fa-clock"></i> Approve First, Then Pay
-                        <?php endif; ?>
-                    </span>
+                    <span class="mpb-value" id="mpbTotal">₱0.00</span>
                 </div>
             </div>
 
@@ -2894,6 +3255,26 @@ const LENS_PRICES = {
     contact_daily: 0,
     contact_monthly: 0,
 };
+
+// ============================================
+// DELIVERY FEATURE — Constants
+// ============================================
+const OFFERS_DELIVERY         = <?php echo $offers_delivery ? 'true' : 'false'; ?>;
+const ALLOW_COD               = <?php echo $allow_cod ? 'true' : 'false'; ?>;
+const CLINIC_DELIVERY_FEE     = <?php echo $clinic_delivery_fee; ?>;
+const CLINIC_FREE_DELIVERY_MIN = <?php echo $clinic_free_delivery_min; ?>;
+
+const IS_ACCESSORY_CAT        = <?php echo $IS_ACCESSORY ? 'true' : 'false'; ?>;
+const IS_FRAMES_FAMILY        = <?php echo in_array($category, ['Frames','Eyeglasses','Sunglasses']) ? 'true' : 'false'; ?>;
+
+const IS_PWD_SENIOR           = <?php echo $is_pwd_senior_display ? 'true' : 'false'; ?>;
+const PWD_SENIOR_TYPE         = '<?php echo $pwd_senior_type_display; ?>';
+const VAT_RATE                = <?php echo $vat_rate_display; ?>;
+const DISCOUNT_RATE           = <?php echo $discount_rate_display; ?>;
+const PRODUCT_SUBTOTAL        = <?php echo $display_price; ?>;
+
+let selectedFulfillment       = 'pickup';
+let selectedDeliveryPayment   = 'online';
 
 // ============================================
 // SIZE SELECTION
@@ -3113,6 +3494,7 @@ function handleRxKnowledge(radio) {
 // ============================================
 // PRICE DISPLAY
 // ============================================
+
 function getLensPrice() {
     return LENS_PRICES[selectedLens] || 0;
 }
@@ -3121,40 +3503,115 @@ function getTotalPrice() {
     return BASE_PRICE + getLensPrice();
 }
 
-function updatePriceDisplay() {
-    const lp = getLensPrice();
-    const total = getTotalPrice();
+function computeDeliveryFee(subtotal) {
+    if (!OFFERS_DELIVERY) return 0;
+    if (CLINIC_FREE_DELIVERY_MIN > 0 && subtotal >= CLINIC_FREE_DELIVERY_MIN) return 0;
+    return CLINIC_DELIVERY_FEE;
+}
 
+function updatePriceDisplay() {
+    const lensPrice = getLensPrice();
+    const subtotal = PRODUCT_SUBTOTAL + lensPrice;
+
+    // Compute VAT + discount
+    let vatAmount = 0;
+    let discountAmount = 0;
+    if (IS_PWD_SENIOR) {
+        discountAmount = subtotal * DISCOUNT_RATE;
+    } else {
+        vatAmount = subtotal * VAT_RATE;
+    }
+
+    // Delivery fee
+    const deliveryFee = (selectedFulfillment === 'delivery') ? computeDeliveryFee(subtotal) : 0;
+    const finalTotal = subtotal + vatAmount - discountAmount + deliveryFee;
+
+    // Main page price summary
     const lensAddText = document.getElementById('lensAddText');
     const lensAddAmt = document.getElementById('lensAddAmt');
     const totalDisplay = document.getElementById('totalDisplay');
 
     if (lensAddText && lensAddAmt) {
-        lensAddText.style.display = lp > 0 ? 'block' : 'none';
-        if (lensAddAmt) lensAddAmt.textContent = '+₱' + lp.toLocaleString();
+        lensAddText.style.display = lensPrice > 0 ? 'block' : 'none';
+        if (lensAddAmt) lensAddAmt.textContent = '+₱' + lensPrice.toLocaleString();
     }
-    if (totalDisplay) totalDisplay.textContent = '₱' + total.toLocaleString('en-PH', {minimumFractionDigits: 2});
+    if (totalDisplay) totalDisplay.textContent = '₱' + finalTotal.toLocaleString('en-PH', {minimumFractionDigits: 2});
 
+    // Modal breakdown
+    const summaryProductValue = document.getElementById('summaryProductValue');
     const mpbLensRow = document.getElementById('mpbLensRow');
     const mpbLensVal = document.getElementById('mpbLensVal');
+    const mpbDiscountRow = document.getElementById('mpbDiscountRow');
+    const summaryDiscountLabel = document.getElementById('summaryDiscountLabel');
+    const summaryDiscountValue = document.getElementById('summaryDiscountValue');
+    const mpbVatRow = document.getElementById('mpbVatRow');
+    const summaryVatRate = document.getElementById('summaryVatRate');
+    const summaryVatValue = document.getElementById('summaryVatValue');
+    const mpbDeliveryRow = document.getElementById('mpbDeliveryRow');
+    const summaryDeliveryFee = document.getElementById('summaryDeliveryFee');
     const mpbTotal = document.getElementById('mpbTotal');
-    const mpbDp = document.getElementById('mpbDp');
-    const mpbBal = document.getElementById('mpbBal');
 
-    if (mpbLensRow) mpbLensRow.style.display = lp > 0 ? 'flex' : 'none';
-    if (mpbLensVal) mpbLensVal.textContent = '+₱' + lp.toLocaleString();
-    if (mpbTotal) mpbTotal.textContent = '₱' + total.toLocaleString('en-PH', {minimumFractionDigits: 2});
+    if (summaryProductValue) summaryProductValue.textContent = '₱' + subtotal.toLocaleString('en-PH', {minimumFractionDigits: 2});
+    if (mpbLensRow) mpbLensRow.style.display = lensPrice > 0 ? 'flex' : 'none';
+    if (mpbLensVal) mpbLensVal.textContent = '+₱' + lensPrice.toLocaleString();
 
-    if (PAYMENT_TYPE === 'downpayment') {
-        const dpAmount = total * (DOWNPAYMENT_PERCENT / 100);
-        const balAmount = total - dpAmount;
-        if (mpbDp) mpbDp.textContent = '₱' + dpAmount.toLocaleString('en-PH', {minimumFractionDigits: 2});
-        if (mpbBal) mpbBal.textContent = '₱' + balAmount.toLocaleString('en-PH', {minimumFractionDigits: 2});
-    } else if (PAYMENT_TYPE === 'full') {
-        if (mpbDp) mpbDp.textContent = '₱' + total.toLocaleString('en-PH', {minimumFractionDigits: 2});
-    } else if (PAYMENT_TYPE === 'onsite') {
-        if (mpbDp) mpbDp.textContent = '₱' + total.toLocaleString('en-PH', {minimumFractionDigits: 2});
+    if (mpbDiscountRow) {
+        mpbDiscountRow.style.display = (IS_PWD_SENIOR && discountAmount > 0) ? 'flex' : 'none';
     }
+    if (summaryDiscountLabel) summaryDiscountLabel.textContent = (PWD_SENIOR_TYPE === 'senior' ? 'Senior' : 'PWD') + ' Discount';
+    if (summaryDiscountValue) summaryDiscountValue.textContent = '-₱' + discountAmount.toLocaleString('en-PH', {minimumFractionDigits: 2});
+
+    if (mpbVatRow) {
+        mpbVatRow.style.display = (!IS_PWD_SENIOR && vatAmount > 0) ? 'flex' : 'none';
+    }
+    if (summaryVatRate) summaryVatRate.textContent = (VAT_RATE * 100).toFixed(0) + '%';
+    if (summaryVatValue) summaryVatValue.textContent = '+₱' + vatAmount.toLocaleString('en-PH', {minimumFractionDigits: 2});
+
+    if (mpbDeliveryRow) {
+        mpbDeliveryRow.style.display = (selectedFulfillment === 'delivery') ? 'flex' : 'none';
+    }
+    if (summaryDeliveryFee) {
+        summaryDeliveryFee.textContent = deliveryFee === 0 ? 'FREE' : ('₱' + deliveryFee.toLocaleString('en-PH', {minimumFractionDigits: 2}));
+    }
+
+    if (mpbTotal) mpbTotal.textContent = '₱' + finalTotal.toLocaleString('en-PH', {minimumFractionDigits: 2});
+
+    // Update COD/Online payment option total labels
+    document.querySelectorAll('.pm-total-online, .pm-total-cod').forEach(el => {
+        el.textContent = '₱' + finalTotal.toLocaleString('en-PH', {minimumFractionDigits: 2});
+    });
+}
+
+// ============================================
+// Fulfillment selectors
+// ============================================
+function selectFulfillment(type) {
+    selectedFulfillment = type;
+
+    document.querySelectorAll('.fulfillment-btn').forEach(btn => {
+        btn.classList.toggle('selected', btn.dataset.type === type);
+    });
+
+    const pickupFields = document.getElementById('pickupFields');
+    const deliveryFields = document.getElementById('deliveryFields');
+
+    if (type === 'delivery') {
+        pickupFields.style.display = 'none';
+        deliveryFields.style.display = 'block';
+    } else {
+        pickupFields.style.display = 'block';
+        deliveryFields.style.display = 'none';
+    }
+
+    updatePriceDisplay();
+}
+
+function selectDeliveryPayment(method) {
+    selectedDeliveryPayment = method;
+    document.querySelectorAll('.payment-method-option').forEach(opt => {
+        opt.classList.toggle('selected', opt.dataset.method === method);
+    });
+    updatePriceDisplay();
 }
 
 // ============================================
@@ -3316,14 +3773,9 @@ function handleMainAction() {
         return;
     }
     
-    if (isFrameOnly) { 
-        const colorCode = selectedColor ? selectedColor.code : '';
-        window.location.href = 'book-specific-product.php?clinic_id=' + CLINIC_ID
-            + '&product_id=' + PRODUCT_ID
-            + '&rx_knowledge=' + (rxKnowledge === 'know' ? 'know' : 'dont_know')
-            + '&lens=' + encodeURIComponent(selectedLens || '')
-            + '&color=' + encodeURIComponent(colorCode);
-        return; 
+        if (isFrameOnly) {
+        openModal('reservation');
+        return;
     }
 
     if (!rxKnowledge) {
@@ -3381,6 +3833,20 @@ function openModal(type) {
 
     updatePriceDisplay();
 
+    // Show fulfillment selector only if item is deliverable
+    const fulfillmentSection = document.getElementById('fulfillmentSection');
+    const canDeliver = OFFERS_DELIVERY && (IS_ACCESSORY_CAT || (IS_FRAMES_FAMILY && selectedLens === 'frame_only'));
+    if (fulfillmentSection) {
+        fulfillmentSection.style.display = canDeliver ? 'block' : 'none';
+    }
+    if (canDeliver && ALLOW_COD) {
+        const codOption = document.querySelector('.payment-method-option.cod-option');
+        if (codOption) codOption.style.display = 'flex';
+    }
+
+    // Reset fulfillment
+    selectFulfillment('pickup');
+
     if (type === 'appointment') {
         title.innerHTML = '<i class="fas fa-calendar-plus"></i> Book Appointment';
         confirmBtn.innerHTML = '<i class="fas fa-calendar-check"></i> Book Appointment';
@@ -3408,33 +3874,18 @@ function closeModal() {
 // SUBMIT
 // ============================================
 function submitAction() {
-    const date = document.getElementById('mDate').value;
-    const time = document.getElementById('mTime').value;
-    const contact = document.getElementById('mContact').value;
-    const notes = document.getElementById('mNotes').value;
-
-    if (!date) { showToast('Please select a date.', 'error'); return; }
-    if (!time) { showToast('Please select a time.', 'error'); return; }
-    if (!contact) { showToast('Please enter your contact number.', 'error'); return; }
-
     const formData = new FormData();
     formData.append('ajax_action', currentModal === 'appointment' ? 'appointment' : 'reservation');
     formData.append('lens_type', selectedLens || 'frame_only');
     formData.append('prescription_knowledge', rxKnowledge || '');
-    formData.append('preferred_date', date);
-    formData.append('preferred_time', time);
-    formData.append('contact_number', contact);
-    formData.append('notes', notes);
 
     if (selectedColor) {
         formData.append('color_code', selectedColor.code);
         formData.append('color_name', selectedColor.name);
     }
-
     if (selectedSize) {
         formData.append('frame_size', selectedSize);
     }
-
     if (rxKnowledge === 'know') {
         formData.append('od_sph', document.getElementById('od_sph')?.value || '');
         formData.append('od_cyl', document.getElementById('od_cyl')?.value || '');
@@ -3443,6 +3894,51 @@ function submitAction() {
         formData.append('os_cyl', document.getElementById('os_cyl')?.value || '');
         formData.append('os_axis', document.getElementById('os_axis')?.value || '');
     }
+
+    if (selectedFulfillment === 'delivery') {
+        const name = document.getElementById('mDeliveryName')?.value?.trim() || '';
+        const phone = document.getElementById('mDeliveryPhone')?.value?.trim() || '';
+        const address = document.getElementById('mDeliveryAddress')?.value?.trim() || '';
+        const brgy = document.getElementById('mDeliveryBarangay')?.value?.trim() || '';
+        const city = document.getElementById('mDeliveryCity')?.value?.trim() || '';
+        const province = document.getElementById('mDeliveryProvince')?.value?.trim() || '';
+        const zip = document.getElementById('mDeliveryZip')?.value?.trim() || '';
+
+        if (!name || !phone || !address || !brgy || !city || !province || !zip) {
+            showToast('Please complete all required delivery fields.', 'error');
+            return;
+        }
+
+        formData.append('fulfillment_type', 'delivery');
+        formData.append('delivery_name', name);
+        formData.append('delivery_phone', phone);
+        formData.append('delivery_address', address);
+        formData.append('delivery_barangay', brgy);
+        formData.append('delivery_city', city);
+        formData.append('delivery_province', province);
+        formData.append('delivery_zip', zip);
+        formData.append('delivery_landmark', document.getElementById('mDeliveryLandmark')?.value || '');
+        formData.append('delivery_date', document.getElementById('mDeliveryDate')?.value || '');
+        formData.append('delivery_payment_method', selectedDeliveryPayment);
+        formData.append('preferred_date', document.getElementById('mDeliveryDate')?.value || '<?php echo date('Y-m-d'); ?>');
+        formData.append('preferred_time', '09:00:00');
+        formData.append('contact_number', phone);
+    } else {
+        const date = document.getElementById('mDate').value;
+        const time = document.getElementById('mTime').value;
+        const contact = document.getElementById('mContact').value;
+
+        if (!date) { showToast('Please select a date.', 'error'); return; }
+        if (!time) { showToast('Please select a time.', 'error'); return; }
+        if (!contact) { showToast('Please enter your contact number.', 'error'); return; }
+
+        formData.append('fulfillment_type', 'pickup');
+        formData.append('preferred_date', date);
+        formData.append('preferred_time', time);
+        formData.append('contact_number', contact);
+    }
+
+    formData.append('notes', document.getElementById('mNotes')?.value || '');
 
     closeModal();
     showLoading();

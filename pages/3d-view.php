@@ -2,6 +2,7 @@
 // ============================================
 // COMPLETE 3D-VIEW.PHP
 // WITH SIZE SELECTOR + PAYMENT POLICY + VAT/DISCOUNT
+// ✅ ALIGNED with product-view.php flow (Pickup/Delivery + PayMongo)
 // ============================================
 
 include '../includes/config.php';
@@ -58,10 +59,10 @@ $clinic_id = $product['clinic_id'];
 // CATEGORY LOGIC
 // ============================================
 $category = $product['category'];
-$NEEDS_LENS_SELECTION = in_array($category, ['Frames', 'Eyeglasses', 'Sunglasses', 'Lenses', 'Contact Lens']);
+$NEEDS_LENS_SELECTION = in_array($category, ['Frames', 'Eyeglasses', 'Sunglasses', 'Lenses', 'Contact Lenses']);
 $IS_ACCESSORY = in_array($category, ['Accessories', 'Parts', 'Cleaning Kits']);
 $IS_SERVICE = in_array($category, ['Service', 'Eye Exam', 'Treatment', 'Screening']);
-$IS_CONTACT_LENS = ($category === 'Contact Lens');
+$IS_CONTACT_LENS = ($category === 'Contact Lenses');
 $IS_LENS_ONLY = ($category === 'Lenses');
 
 // ============================================
@@ -148,27 +149,26 @@ $fav_check = mysqli_query($conn, "SELECT id FROM favorites WHERE user_id = $user
 $is_product_favorited = mysqli_num_rows($fav_check) > 0;
 
 // ============================================
-// GET USER PWD/SENIOR STATUS
-// ============================================
-$user_status_query = mysqli_query($conn, "
-    SELECT status as pwd_senior_status, verification_type as pwd_senior_type
-    FROM user_verifications
-    WHERE user_id = $user_id 
-    AND clinic_id = $clinic_id
-    AND status = 'verified'
-    LIMIT 1
-");
-$user_status = mysqli_fetch_assoc($user_status_query);
-$is_pwd_senior = ($user_status && $user_status['pwd_senior_status'] === 'verified');
-
-// ============================================
 // GET CLINIC PAYMENT CONFIGURATION
 // ============================================
 $clinic_payment_config = getClinicPaymentPolicy($conn, $clinic_id);
-
 $clinic_payment_policy = $clinic_payment_config['payment_policy'];
 $clinic_downpayment_percent = (float)($clinic_payment_config['downpayment_percentage'] ?? 30);
 $clinic_booking_flow = $clinic_payment_config['booking_flow'] ?? 'approve_first';
+
+// ============================================
+// ✅ DELIVERY FEATURE — Get clinic delivery settings
+// ============================================
+$clinic_delivery_q = mysqli_query($conn, "
+    SELECT offers_delivery, allow_cod, delivery_fee, free_delivery_minimum
+    FROM clinics WHERE id = $clinic_id
+");
+$clinic_delivery = mysqli_fetch_assoc($clinic_delivery_q);
+
+$offers_delivery           = (int)($clinic_delivery['offers_delivery'] ?? 0);
+$allow_cod                 = (int)($clinic_delivery['allow_cod'] ?? 0);
+$clinic_delivery_fee       = (float)($clinic_delivery['delivery_fee'] ?? 0);
+$clinic_free_delivery_min  = (float)($clinic_delivery['free_delivery_minimum'] ?? 0);
 
 // Payment policy display labels
 $policy_labels = [
@@ -181,9 +181,40 @@ $policy_labels = [
 $clinic_payment_policy_display = $policy_labels[$clinic_payment_policy] ?? 'Standard Payment';
 
 // ============================================
+// ✅ DELIVERY FEATURE — PWD/Senior status (with expiry check)
+// ============================================
+$pwd_check_q = mysqli_query($conn, "
+    SELECT status, verification_type, valid_until
+    FROM user_verifications
+    WHERE user_id = $user_id
+      AND clinic_id = $clinic_id
+      AND status = 'verified'
+    LIMIT 1
+");
+$pwd_row = mysqli_fetch_assoc($pwd_check_q);
+
+$is_pwd_senior_display   = false;
+$pwd_senior_type_display = '';
+
+if ($pwd_row && $pwd_row['status'] === 'verified') {
+    $valid_until = $pwd_row['valid_until'] ?? null;
+    if ($valid_until) {
+        if (strtotime($valid_until) >= strtotime('today')) {
+            $is_pwd_senior_display   = true;
+            $pwd_senior_type_display = $pwd_row['verification_type'] ?? 'pwd';
+        }
+    } else {
+        $is_pwd_senior_display   = true;
+        $pwd_senior_type_display = $pwd_row['verification_type'] ?? 'pwd';
+    }
+}
+
+$is_pwd_senior = $is_pwd_senior_display; // For backwards compatibility with existing code
+
+// ============================================
 // CALCULATE TAX AND DISCOUNT
 // ============================================
-$tax_calc = applyTaxAndDiscount($conn, $display_price, $is_pwd_senior);
+$tax_calc = applyTaxAndDiscount($conn, $display_price, $is_pwd_senior_display);
 
 $subtotal = $display_price;
 $discount_amount = $tax_calc['discount_amount'];
@@ -193,11 +224,15 @@ $vat_rate = $tax_calc['vat_rate'];
 $final_total = $tax_calc['final_total'];
 $subtotal_after_discount = $subtotal - $discount_amount;
 
+// Display rate variables
+$vat_rate_display      = $tax_calc['vat_rate'];
+$discount_rate_display = $tax_calc['discount_rate'];
+
 // Get clinic payment info
-$payment_info = getPaymentDisplayInfo($conn, $clinic_id, $final_total);
+$payment_info = getPaymentDisplayInfo($conn, $clinic_id, $final_total, $is_pwd_senior_display);
 $booking_flow = $payment_info['booking_flow'] ?? 'approve_first';
 $payment_type = $payment_info['payment_type'] ?? 'downpayment';
-$downpayment_percent = $product['downpayment_percentage'] ?? 30;
+$downpayment_percent = $clinic_downpayment_percent;
 $downpayment_amount = $payment_info['downpayment_amount'] ?? round($final_total * ($downpayment_percent / 100), 2);
 $balance_amount = $payment_info['balance_amount'] ?? ($final_total - $downpayment_amount);
 $payment_method_online = $payment_info['payment_method_online'] ?? true;
@@ -223,7 +258,7 @@ $reservation_count = $reservation_row_nav['total'] ?? 0;
 $active_nav = 'discover';
 
 // ============================================
-// HANDLE AJAX SUBMISSION
+// HANDLE AJAX SUBMISSION — ALIGNED with product-view.php
 // ============================================
 if (isset($_POST['ajax_action'])) {
     header('Content-Type: application/json');
@@ -245,13 +280,57 @@ if (isset($_POST['ajax_action'])) {
     $color_name      = mysqli_real_escape_string($conn, $_POST['color_name'] ?? '');
     $frame_size      = mysqli_real_escape_string($conn, $_POST['frame_size'] ?? '');
 
-    if (!$preferred_date || !$preferred_time) {
-        echo json_encode(['success' => false, 'message' => 'Please select a date and time.']);
-        exit();
-    }
-    if (strtotime($preferred_date) < strtotime('today')) {
-        echo json_encode(['success' => false, 'message' => 'Date must be today or in the future.']);
-        exit();
+    // ============================================
+    // ✅ DELIVERY FEATURE — Capture delivery fields
+    // ============================================
+    $fulfillment_type        = mysqli_real_escape_string($conn, $_POST['fulfillment_type'] ?? 'pickup');
+    $delivery_name           = mysqli_real_escape_string($conn, $_POST['delivery_name'] ?? '');
+    $delivery_phone          = mysqli_real_escape_string($conn, $_POST['delivery_phone'] ?? '');
+    $delivery_address        = mysqli_real_escape_string($conn, $_POST['delivery_address'] ?? '');
+    $delivery_barangay       = mysqli_real_escape_string($conn, $_POST['delivery_barangay'] ?? '');
+    $delivery_city           = mysqli_real_escape_string($conn, $_POST['delivery_city'] ?? '');
+    $delivery_province       = mysqli_real_escape_string($conn, $_POST['delivery_province'] ?? '');
+    $delivery_zip            = mysqli_real_escape_string($conn, $_POST['delivery_zip'] ?? '');
+    $delivery_landmark       = mysqli_real_escape_string($conn, $_POST['delivery_landmark'] ?? '');
+    $delivery_date_input     = mysqli_real_escape_string($conn, $_POST['delivery_date'] ?? '');
+    $delivery_payment_method = mysqli_real_escape_string($conn, $_POST['delivery_payment_method'] ?? 'online');
+
+    $is_delivery_order = ($fulfillment_type === 'delivery');
+
+    // ============================================
+    // ✅ DELIVERY FEATURE — Conditional date/time validation
+    // ============================================
+    if (!$is_delivery_order) {
+        if (!$preferred_date || !$preferred_time) {
+            echo json_encode(['success' => false, 'message' => 'Please select a date and time.']);
+            exit();
+        }
+        if (strtotime($preferred_date) < strtotime('today')) {
+            echo json_encode(['success' => false, 'message' => 'Date must be today or in the future.']);
+            exit();
+        }
+    } else {
+        // Delivery validation
+        $delivery_allowed = $IS_ACCESSORY || ($lens_type === 'frame_only' && in_array($category, ['Frames', 'Eyeglasses', 'Sunglasses']));
+        if (!$delivery_allowed) {
+            echo json_encode(['success' => false, 'message' => 'Delivery is not available for this product type.']);
+            exit();
+        }
+        if (!$offers_delivery) {
+            echo json_encode(['success' => false, 'message' => 'This clinic does not offer delivery.']);
+            exit();
+        }
+        if (!$delivery_name || !$delivery_phone || !$delivery_address || !$delivery_barangay || !$delivery_city || !$delivery_province || !$delivery_zip) {
+            echo json_encode(['success' => false, 'message' => 'Please complete all required delivery fields.']);
+            exit();
+        }
+        if ($delivery_payment_method === 'cod' && !$allow_cod) {
+            echo json_encode(['success' => false, 'message' => 'Cash on Delivery is not available for this clinic.']);
+            exit();
+        }
+        // Dummy date/time for delivery
+        if (!$preferred_date) $preferred_date = date('Y-m-d');
+        if (!$preferred_time) $preferred_time = '09:00:00';
     }
 
     $make_appointment = false;
@@ -267,72 +346,35 @@ if (isset($_POST['ajax_action'])) {
         }
     }
 
+    // If appointment needed → redirect to book-specific-product.php
+    if ($make_appointment) {
+        echo json_encode([
+            'success'  => false,
+            'redirect_to_booking' => true,
+            'message'  => 'Redirecting to book an appointment...',
+            'redirect' => 'book-specific-product.php?clinic_id=' . $clinic_id
+                        . '&product_id=' . $product_id
+                        . '&rx_knowledge=' . ($prescription_knowledge === 'know' ? 'know' : 'dont_know')
+                        . '&lens=' . urlencode($lens_type)
+                        . '&color=' . urlencode($color_code)
+                        . '&od_sph=' . urlencode($od_sph)
+                        . '&od_cyl=' . urlencode($od_cyl)
+                        . '&od_axis=' . urlencode($od_axis)
+                        . '&os_sph=' . urlencode($os_sph)
+                        . '&os_cyl=' . urlencode($os_cyl)
+                        . '&os_axis=' . urlencode($os_axis)
+        ]);
+        exit();
+    }
+
     $prescription_id = null;
-    if (!$make_appointment && $prescription_knowledge === 'know' && ($od_sph || $os_sph)) {
+    if ($prescription_knowledge === 'know' && ($od_sph || $os_sph)) {
         $insert_pres = mysqli_query($conn, "
             INSERT INTO user_prescriptions
             (user_id, product_id, od_sph, od_cyl, od_axis, os_sph, os_cyl, os_axis, prescription_source)
             VALUES ($user_id, $product_id, '$od_sph', '$od_cyl', '$od_axis', '$os_sph', '$os_cyl', '$os_axis', 'user_input')
         ");
         if ($insert_pres) $prescription_id = mysqli_insert_id($conn);
-    }
-
-    if ($make_appointment) {
-        $dup_apt = mysqli_fetch_assoc(mysqli_query($conn,
-            "SELECT id FROM appointments WHERE user_id = $user_id AND product_id = $product_id AND status IN ('pending','confirmed') LIMIT 1"
-        ));
-        if ($dup_apt) {
-            echo json_encode(['success' => false, 'message' => 'You already have an active appointment for this product.']);
-            exit();
-        }
-
-        $conflict = mysqli_fetch_assoc(mysqli_query($conn,
-            "SELECT a.*, c.name as clinic_name FROM appointments a
-             JOIN clinics c ON a.clinic_id = c.id
-             WHERE a.user_id = $user_id
-             AND a.appointment_date = '$preferred_date'
-             AND a.appointment_time = '$preferred_time'
-             AND a.status != 'cancelled'"
-        ));
-        if ($conflict) {
-            echo json_encode(['success' => false, 'message' => 'You already have an appointment at ' . $conflict['clinic_name'] . ' at that time. Please choose another slot.']);
-            exit();
-        }
-
-        $ref_no = 'APP-' . strtoupper(substr(uniqid(), -8));
-        $notes_final = $notes ?: ($IS_SERVICE ? 'Service booking' : 'Needs eye exam before lens fitting');
-        $item_type_db = $IS_SERVICE ? 'service' : 'product';
-
-        mysqli_query($conn, "
-            INSERT INTO appointments
-            (ref_no, clinic_id, item_id, item_type, user_id, product_id,
-             appointment_date, appointment_time, status, payment_status,
-             appointment_type, total_amount, downpayment_amount, balance_amount,
-             notes, contact_number)
-            VALUES
-            ('$ref_no', $clinic_id, $product_id, '$item_type_db', $user_id, $product_id,
-             '$preferred_date', '$preferred_time', 'pending', 'pending',
-             'online', $final_total, $downpayment_amount, $balance_amount,
-             '$notes_final', '$contact_number')
-        ");
-        $appointment_id = mysqli_insert_id($conn);
-
-        if ($prescription_id) {
-            mysqli_query($conn, "UPDATE user_prescriptions SET appointment_id = $appointment_id WHERE id = $prescription_id");
-        }
-
-        addNotification($user_id, 'appointment', 'Appointment Created',
-            "Your appointment at {$product['clinic_name']} is scheduled for $preferred_date at $preferred_time. Reference: $ref_no",
-            'my-appointments.php'
-        );
-
-        echo json_encode([
-            'success'  => true,
-            'type'     => 'appointment',
-            'message'  => 'Appointment booked! The clinic will confirm your schedule.',
-            'redirect' => 'my-appointments.php'
-        ]);
-        exit();
     }
 
     // RESERVATION FLOW
@@ -352,52 +394,180 @@ if (isset($_POST['ajax_action'])) {
         'contact_daily'   => 0,
         'contact_monthly' => 0,
     ];
-    $lens_price_add   = $lens_prices[$lens_type] ?? 0;
-    $total_before_tax = $display_price + $lens_price_add;
-    
-    $tax_calc_submit = applyTaxAndDiscount($conn, $total_before_tax, $is_pwd_senior);
-    $final_total_submit = $tax_calc_submit['final_total'];
-    $discount_amount_submit = $tax_calc_submit['discount_amount'];
-    $vat_amount_submit = $tax_calc_submit['vat_amount'];
-    
-    $dp_percent       = $product['downpayment_percentage'] ?? 30;
-    $downpayment_amount_submit = round(($final_total_submit * $dp_percent) / 100, 2);
-    $balance_amount_submit   = $final_total_submit - $downpayment_amount_submit;
-    $reservation_code = 'RES-' . strtoupper(substr(uniqid(), -8));
-    $expires_at       = date('Y-m-d H:i:s', strtotime('+48 hours'));
+    $lens_price_add = $lens_prices[$lens_type] ?? 0;
 
-    mysqli_query($conn, "
+    // ✅ Compute delivery fee
+    $delivery_fee_final = 0;
+    if ($is_delivery_order) {
+        $delivery_fee_final = $clinic_delivery_fee;
+        $base_subtotal = $product['price'] + $lens_price_add;
+        if ($clinic_free_delivery_min > 0 && $base_subtotal >= $clinic_free_delivery_min) {
+            $delivery_fee_final = 0;
+        }
+    }
+
+    // ✅ Compute tax/discount sa product + lens LANG
+    $base_subtotal = $product['price'] + $lens_price_add;
+    $payment_info_calc = calculatePaymentAmounts($conn, $clinic_id, $base_subtotal, $is_pwd_senior_display);
+
+    $taxed_total = $payment_info_calc['total_amount'];
+    $total_amount = $taxed_total + $delivery_fee_final;
+
+    $payment_policy = $payment_info_calc['policy'];
+    $payment_type_calc = $payment_info_calc['payment_type'];
+
+    // Recompute downpayment base sa bagong total
+    if ($payment_policy === 'full_payment') {
+        $downpayment_amount = $total_amount;
+        $balance_amount = 0;
+        $payment_type_calc = 'full';
+        $requires_payment = true;
+    } elseif ($payment_policy === 'downpayment_30') {
+        $downpayment_amount = round($total_amount * 0.30, 2);
+        $balance_amount = round($total_amount - $downpayment_amount, 2);
+        $payment_type_calc = 'downpayment';
+        $requires_payment = true;
+    } elseif ($payment_policy === 'downpayment_custom') {
+        $dp_pct = $clinic_downpayment_percent;
+        $downpayment_amount = round($total_amount * ($dp_pct / 100), 2);
+        $balance_amount = round($total_amount - $downpayment_amount, 2);
+        $payment_type_calc = 'downpayment';
+        $requires_payment = true;
+    } elseif ($payment_policy === 'no_payment') {
+        $downpayment_amount = 0;
+        $balance_amount = 0;
+        $payment_type_calc = 'free';
+        $requires_payment = false;
+    } else { // pay_on_site
+        $downpayment_amount = 0;
+        $balance_amount = $total_amount;
+        $payment_type_calc = 'onsite';
+        $requires_payment = false;
+    }
+
+    if ($requires_payment && $downpayment_amount <= 0 && $total_amount > 0) {
+        $downpayment_amount = $total_amount;
+        $balance_amount = 0;
+        $payment_type_calc = 'full';
+    }
+
+    $reservation_code = 'RES-' . strtoupper(substr(uniqid(), -8));
+
+    // ✅ COD vs Online vs Pickup status
+    $is_cod_order = ($is_delivery_order && $delivery_payment_method === 'cod');
+
+    if ($is_cod_order) {
+        $expires_at = date('Y-m-d H:i:s', strtotime('+30 days'));
+        $payment_status = 'cod';
+        $reservation_status = 'confirmed';
+    } elseif ($requires_payment) {
+        $expires_at = date('Y-m-d H:i:s', strtotime('+48 hours'));
+        $payment_status = 'unpaid';
+        $reservation_status = 'pending';
+    } else {
+        $expires_at = date('Y-m-d H:i:s', strtotime('+30 days'));
+        if ($payment_type_calc == 'onsite') {
+            $payment_status = 'onsite';
+        } else {
+            $payment_status = 'free';
+        }
+        $reservation_status = 'confirmed';
+    }
+
+    $insert_query = "
         INSERT INTO reservations
         (reservation_code, user_id, product_id, clinic_id, lens_type, prescription_id,
          color_code, color_name, frame_size,
          total_amount, downpayment_amount, balance_amount,
-         preferred_date, preferred_time, notes, status, payment_status, expires_at, created_at)
+         preferred_date, preferred_time, notes, status, payment_status, expires_at, created_at,
+         fulfillment_type, delivery_name, delivery_phone, delivery_address,
+         delivery_barangay, delivery_city, delivery_province, delivery_zip,
+         delivery_landmark, delivery_fee, delivery_date)
         VALUES
         ('$reservation_code', $user_id, $product_id, $clinic_id, '$lens_type',
          " . ($prescription_id ? $prescription_id : 'NULL') . ",
          '$color_code', '$color_name', '$frame_size',
-         $final_total_submit, $downpayment_amount_submit, $balance_amount_submit,
-         '$preferred_date', '$preferred_time', '$notes', 'pending', 'unpaid', '$expires_at', NOW())
-    ");
+         $total_amount, $downpayment_amount, $balance_amount,
+         '$preferred_date', '$preferred_time', '$notes', '$reservation_status', '$payment_status', '$expires_at', NOW(),
+         '$fulfillment_type',
+         " . ($delivery_name       ? "'$delivery_name'"     : "NULL") . ",
+         " . ($delivery_phone      ? "'$delivery_phone'"    : "NULL") . ",
+         " . ($delivery_address    ? "'$delivery_address'"  : "NULL") . ",
+         " . ($delivery_barangay   ? "'$delivery_barangay'" : "NULL") . ",
+         " . ($delivery_city       ? "'$delivery_city'"     : "NULL") . ",
+         " . ($delivery_province   ? "'$delivery_province'" : "NULL") . ",
+         " . ($delivery_zip        ? "'$delivery_zip'"      : "NULL") . ",
+         " . ($delivery_landmark   ? "'$delivery_landmark'" : "NULL") . ",
+         $delivery_fee_final,
+         " . ($delivery_date_input ? "'$delivery_date_input'" : "NULL") . ")
+    ";
+
+    $result = mysqli_query($conn, $insert_query);
+
+    if (!$result) {
+        error_log("3D-view Reservation INSERT failed: " . mysqli_error($conn));
+        echo json_encode(['success' => false, 'message' => 'Failed to create reservation. Please try again.']);
+        exit();
+    }
+
     $reservation_id = mysqli_insert_id($conn);
+
+    if (!$reservation_id || $reservation_id == 0) {
+        echo json_encode(['success' => false, 'message' => 'Database configuration error. Please contact support.']);
+        exit();
+    }
 
     if ($prescription_id) {
         mysqli_query($conn, "UPDATE user_prescriptions SET reservation_id = $reservation_id WHERE id = $prescription_id");
     }
 
-    addNotification($user_id, 'reservation', 'Reservation Created',
-        "You reserved {$product['name']} at {$product['clinic_name']}. Pay downpayment of ₱" . number_format($downpayment_amount_submit, 2) . " to confirm.",
-        'my-reservations.php'
-    );
+    // ✅ Redirect logic — aligned with product-view.php
+    if ($is_cod_order) {
+        $redirect_url = 'my-reservations.php';
+        $message = 'Order placed! You will pay ₱' . number_format($total_amount, 2) . ' upon delivery.';
+        $notification_message = "Your delivery order for {$product['name']} is confirmed. Cash on delivery.";
+    } elseif ($requires_payment) {
+        if ($clinic_booking_flow === 'pay_first') {
+            $redirect_url = 'payment.php?reservation_id=' . $reservation_id;
+            if ($payment_type_calc == 'full') {
+                $message = 'Reservation created! Please proceed to full payment of ₱' . number_format($downpayment_amount, 2) . '.';
+            } else {
+                $downpayment_percent_display = ($payment_policy == 'downpayment_custom') ? $clinic_downpayment_percent : 30;
+                $message = 'Reservation created! Please proceed to pay ' . $downpayment_percent_display . '% downpayment of ₱' . number_format($downpayment_amount, 2) . '.';
+            }
+            $notification_message = "You reserved {$product['name']} at {$product['clinic_name']}. Please pay to confirm your reservation.";
+        } else {
+            $redirect_url = 'my-reservations.php';
+            $message = 'Reservation created! Please wait for clinic approval.';
+            $notification_message = "You reserved {$product['name']} at {$product['clinic_name']}. Please wait for clinic approval.";
+        }
+    } else {
+        if ($payment_type_calc == 'onsite') {
+            $redirect_url = 'my-reservations.php';
+            $message = 'Reservation confirmed! Please pay ₱' . number_format($total_amount, 2) . ' at the clinic on your visit date.';
+            $notification_message = "You reserved {$product['name']} at {$product['clinic_name']}. Please pay at the clinic on your visit date.";
+        } else {
+            $redirect_url = 'my-reservations.php';
+            $message = 'Reservation confirmed! This is a free service. No payment required.';
+            $notification_message = "You reserved {$product['name']} at {$product['clinic_name']}. This is a free service.";
+        }
+    }
+
+    addNotification($user_id, 'reservation', 'Reservation Created', $notification_message, $redirect_url);
 
     echo json_encode([
-        'success'        => true,
-        'type'           => 'reservation',
-        'message'        => 'Reservation created! Please proceed to payment.',
-        'redirect'       => 'reservation-payment.php?id=' . $reservation_id,
+        'success' => true,
+        'type' => 'reservation',
+        'message' => $message,
+        'redirect' => $redirect_url,
         'reservation_id' => $reservation_id,
-        'downpayment'    => $downpayment_amount_submit,
-        'total'          => $final_total_submit
+        'downpayment' => $downpayment_amount,
+        'total' => $total_amount,
+        'requires_payment' => $requires_payment,
+        'payment_policy' => $payment_policy,
+        'payment_type' => $payment_type_calc,
+        'booking_flow' => $clinic_booking_flow,
+        'is_cod' => $is_cod_order
     ]);
     exit();
 }
@@ -413,6 +583,7 @@ $lens_prices_display = [
     'contact_monthly' => 0,
 ];
 ?>
+
 <!DOCTYPE html>
 <html lang="en" class="<?php echo getThemeClass(); ?>">
 <head>
@@ -1147,6 +1318,109 @@ $lens_prices_display = [
     .spinner { width: 46px; height: 46px; border: 4px solid rgba(255,255,255,0.2); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .hidden { display: none !important; }
+
+        /* ===== ✅ DELIVERY FEATURE STYLES ===== */
+    .fulfillment-section {
+        margin-bottom: 18px;
+        padding-bottom: 16px;
+        border-bottom: 1px dashed var(--border-color);
+    }
+    .form-label-big {
+        display: block;
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 10px;
+    }
+    .fulfillment-options {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+    }
+    @media (max-width: 480px) { .fulfillment-options { grid-template-columns: 1fr; } }
+
+    .fulfillment-btn {
+        background: var(--bg-primary);
+        border: 2px solid var(--border-color);
+        border-radius: var(--radius-md);
+        padding: 14px 12px;
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        transition: all 0.2s;
+        font-family: var(--font-main);
+    }
+    .fulfillment-btn i { font-size: 22px; color: var(--text-secondary); }
+    .fulfillment-btn .fulfillment-name { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+    .fulfillment-btn .fulfillment-desc { font-size: 11px; color: var(--text-muted); text-align: center; line-height: 1.3; }
+    .fulfillment-btn:hover { border-color: var(--primary); }
+    .fulfillment-btn.selected {
+        border-color: var(--primary);
+        background: var(--primary-light);
+        box-shadow: 0 0 0 3px rgba(0,183,97,0.12);
+    }
+    .fulfillment-btn.selected i { color: var(--primary); }
+
+    .delivery-section-title {
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--text-primary);
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-bottom: 14px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid var(--border-light);
+    }
+    .delivery-section-title i { color: var(--primary); }
+
+    .form-row-2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+    }
+    @media (max-width: 480px) { .form-row-2 { grid-template-columns: 1fr; } }
+
+    .payment-methods-inline { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+    .payment-method-option {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 14px;
+        border: 2px solid var(--border-color);
+        border-radius: var(--radius-md);
+        cursor: pointer;
+        background: var(--bg-primary);
+        transition: all 0.2s;
+    }
+    .payment-method-option:hover { border-color: var(--primary); }
+    .payment-method-option.selected {
+        border-color: var(--primary);
+        background: var(--primary-light);
+        box-shadow: 0 0 0 3px rgba(0,183,97,0.12);
+    }
+    .payment-method-option input { display: none; }
+    .payment-method-option i { font-size: 20px; color: var(--primary); flex-shrink: 0; }
+    .payment-method-option > div { display: flex; flex-direction: column; gap: 2px; flex: 1; }
+    .payment-method-option strong { font-size: 13px; color: var(--text-primary); }
+    .payment-method-option span { font-size: 12px; color: var(--text-secondary); font-weight: 700; }
+
+    .badge-inline {
+        display: inline-block;
+        padding: 1px 8px;
+        border-radius: 10px;
+        font-size: 10px;
+        font-weight: 700;
+        margin-left: 6px;
+    }
+    .badge-success { background: var(--success); color: white; }
+    .badge-warning { background: var(--warning); color: white; }
+
+    .mpb-row .mpb-value.discount-value { color: #EF4444; font-weight: 700; }
+    .mpb-row .mpb-value.vat-value { color: var(--warning); font-weight: 700; }
+
     </style>
 </head>
 <body>
@@ -1548,9 +1822,26 @@ $lens_prices_display = [
             <h3 id="modalTitle"><i class="fas fa-calendar-alt"></i> Schedule Your Visit</h3>
             <button class="modal-close" onclick="closeModal()">&times;</button>
         </div>
-        <div class="modal-body">
+                <div class="modal-body">
 
-            <!-- Summary Box -->
+            <!-- Fulfillment Selector -->
+            <div class="fulfillment-section" id="fulfillmentSection" style="display: none;">
+                <label class="form-label-big">How would you like to receive your order?</label>
+                <div class="fulfillment-options">
+                    <button type="button" class="fulfillment-btn selected" data-type="pickup" onclick="selectFulfillment('pickup')">
+                        <i class="fas fa-store"></i>
+                        <span class="fulfillment-name">Pickup</span>
+                        <span class="fulfillment-desc">Pick up at the clinic</span>
+                    </button>
+                    <button type="button" class="fulfillment-btn" data-type="delivery" onclick="selectFulfillment('delivery')">
+                        <i class="fas fa-truck"></i>
+                        <span class="fulfillment-name">Delivery</span>
+                        <span class="fulfillment-desc">We deliver to your address</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Summary Box (Product + Color + Size + Lens info) -->
             <div class="modal-summary-box" id="modalSummaryBox">
                 <div class="ms-row">
                     <span class="ms-label">Product:</span>
@@ -1579,7 +1870,7 @@ $lens_prices_display = [
                     <span class="ms-value"><?php echo htmlspecialchars($product['clinic_city']); ?></span>
                 </div>
                 <?php endif; ?>
-                <?php if ($is_pwd_senior): ?>
+                <?php if ($is_pwd_senior_display): ?>
                 <div class="ms-row">
                     <span class="ms-label">Discount:</span>
                     <span class="ms-value" style="color:var(--primary);">PWD/Senior (20%)</span>
@@ -1587,111 +1878,148 @@ $lens_prices_display = [
                 <?php endif; ?>
             </div>
 
-            <div class="modal-divider" style="height:1px; background:var(--border-color); margin:0 0 14px 0;"></div>
-
-            <!-- Date & Time -->
-            <div class="modal-form-row">
-                <div class="modal-form-group half">
-                    <label class="modal-label"><i class="fas fa-calendar-alt"></i> Date *</label>
-                    <input type="date" id="mDate" class="modal-input" min="<?php echo date('Y-m-d'); ?>">
+            <!-- PICKUP FIELDS -->
+            <div id="pickupFields">
+                <div class="modal-form-row">
+                    <div class="modal-form-group half">
+                        <label class="modal-label"><i class="fas fa-calendar-alt"></i> Date *</label>
+                        <input type="date" id="mDate" class="modal-input" min="<?php echo date('Y-m-d'); ?>">
+                    </div>
+                    <div class="modal-form-group half">
+                        <label class="modal-label"><i class="fas fa-clock"></i> Time *</label>
+                        <input type="time" id="mTime" class="modal-input">
+                    </div>
                 </div>
-                <div class="modal-form-group half">
-                    <label class="modal-label"><i class="fas fa-clock"></i> Time *</label>
-                    <input type="time" id="mTime" class="modal-input">
+
+                <div class="modal-form-group">
+                    <label class="modal-label"><i class="fas fa-phone"></i> Contact Number *</label>
+                    <input type="tel" id="mContact" class="modal-input" placeholder="09XX XXX XXXX" value="<?php echo htmlspecialchars($user['contact'] ?? ''); ?>">
                 </div>
             </div>
 
-            <div class="modal-form-group">
-                <label class="modal-label"><i class="fas fa-phone"></i> Contact Number *</label>
-                <input type="tel" id="mContact" class="modal-input" placeholder="09XX XXX XXXX" value="<?php echo htmlspecialchars($user['contact'] ?? ''); ?>">
+            <!-- DELIVERY FIELDS -->
+            <div id="deliveryFields" style="display: none;">
+                <div class="delivery-section-title">
+                    <i class="fas fa-truck"></i> Delivery Information
+                </div>
+                <div class="modal-form-group">
+                    <label class="modal-label"><i class="fas fa-user"></i> Recipient Name *</label>
+                    <input type="text" id="mDeliveryName" class="modal-input" placeholder="Juan Dela Cruz" value="<?php echo htmlspecialchars(($user['first_name'] ?? '') . ' ' . ($user['last_name'] ?? '')); ?>">
+                </div>
+                <div class="modal-form-group">
+                    <label class="modal-label"><i class="fas fa-phone"></i> Contact Number *</label>
+                    <input type="tel" id="mDeliveryPhone" class="modal-input" placeholder="09XX XXX XXXX" value="<?php echo htmlspecialchars($user['contact'] ?? ''); ?>">
+                </div>
+                <div class="modal-form-group">
+                    <label class="modal-label"><i class="fas fa-home"></i> Street Address *</label>
+                    <input type="text" id="mDeliveryAddress" class="modal-input" placeholder="House #, Street Name" value="<?php echo htmlspecialchars($user['address'] ?? ''); ?>">
+                </div>
+                <div class="form-row-2">
+                    <div class="modal-form-group">
+                        <label class="modal-label">Barangay *</label>
+                        <input type="text" id="mDeliveryBarangay" class="modal-input" placeholder="Barangay">
+                    </div>
+                    <div class="modal-form-group">
+                        <label class="modal-label">City *</label>
+                        <input type="text" id="mDeliveryCity" class="modal-input" placeholder="City">
+                    </div>
+                </div>
+                <div class="form-row-2">
+                    <div class="modal-form-group">
+                        <label class="modal-label">Province *</label>
+                        <input type="text" id="mDeliveryProvince" class="modal-input" placeholder="Province">
+                    </div>
+                    <div class="modal-form-group">
+                        <label class="modal-label">ZIP Code *</label>
+                        <input type="text" id="mDeliveryZip" class="modal-input" placeholder="1234">
+                    </div>
+                </div>
+                <div class="modal-form-group">
+                    <label class="modal-label">Landmark (Optional)</label>
+                    <input type="text" id="mDeliveryLandmark" class="modal-input" placeholder="Near SM Mall">
+                </div>
+                <div class="modal-form-group">
+                    <label class="modal-label">Preferred Delivery Date (Optional)</label>
+                    <input type="date" id="mDeliveryDate" class="modal-input" min="<?php echo date('Y-m-d'); ?>">
+                </div>
+
+                <div class="modal-form-group">
+                    <label class="modal-label">Payment Method *</label>
+                    <div class="payment-methods-inline">
+                        <label class="payment-method-option selected" data-method="online" onclick="selectDeliveryPayment('online')">
+                            <input type="radio" name="delivery_payment_method" value="online" checked>
+                            <i class="fas fa-credit-card"></i>
+                            <div>
+                                <strong>Pay Online Now</strong>
+                                <span class="pm-total-online">₱0.00</span>
+                            </div>
+                        </label>
+                        <label class="payment-method-option cod-option" data-method="cod" onclick="selectDeliveryPayment('cod')" style="display: none;">
+                            <input type="radio" name="delivery_payment_method" value="cod">
+                            <i class="fas fa-money-bill-wave"></i>
+                            <div>
+                                <strong>Cash on Delivery</strong>
+                                <span class="pm-total-cod">₱0.00</span>
+                            </div>
+                        </label>
+                    </div>
+                </div>
             </div>
 
+            <!-- Shared Notes -->
             <div class="modal-form-group">
                 <label class="modal-label"><i class="fas fa-sticky-note"></i> Notes (Optional)</label>
                 <textarea id="mNotes" class="modal-input modal-textarea" rows="2" placeholder="Any special requests..."></textarea>
             </div>
 
-            <div class="modal-divider" style="height:1px; background:var(--border-color); margin:0 0 14px 0;"></div>
-
             <!-- Price Breakdown -->
             <div class="modal-price-box" id="modalPriceBox">
                 <div class="modal-price-title"><i class="fas fa-receipt"></i> Payment Summary</div>
-                
+
                 <div class="mpb-row">
-                    <span class="mpb-label">Subtotal</span>
-                    <span class="mpb-value" id="mpbSubtotal">₱<?php echo number_format($subtotal, 2); ?></span>
+                    <span class="mpb-label">Product</span>
+                    <span class="mpb-value" id="summaryProductValue">₱0.00</span>
                 </div>
-                
-                <?php if ($discount_amount > 0): ?>
-                <div class="mpb-row discount">
-                    <span class="mpb-label"><?php echo $is_pwd_senior ? 'PWD/Senior Discount (20%)' : 'Discount'; ?></span>
-                    <span class="mpb-value">-₱<?php echo number_format($discount_amount, 2); ?></span>
-                </div>
-                <?php endif; ?>
-                
-                <?php if ($discount_amount > 0): ?>
-                <div class="mpb-row">
-                    <span class="mpb-label">Subtotal After Discount</span>
-                    <span class="mpb-value">₱<?php echo number_format($subtotal_after_discount, 2); ?></span>
-                </div>
-                <?php endif; ?>
-                
-                <div class="mpb-row">
-                    <span class="mpb-label">VAT (<?php echo $vat_rate; ?>%)</span>
-                    <span class="mpb-value">₱<?php echo number_format($vat_amount, 2); ?></span>
-                </div>
-                
                 <div class="mpb-row" id="mpbLensRow" style="display:none;">
                     <span class="mpb-label">Lens Upgrade</span>
                     <span class="mpb-value" id="mpbLensVal">+₱0</span>
                 </div>
-                
+                <div class="mpb-row" id="mpbDiscountRow" style="display:none;">
+                    <span class="mpb-label">
+                        <span id="summaryDiscountLabel">PWD Discount</span>
+                        <span class="badge-inline badge-success">20%</span>
+                    </span>
+                    <span class="mpb-value discount-value" id="summaryDiscountValue">-₱0.00</span>
+                </div>
+                <div class="mpb-row" id="mpbVatRow" style="display:none;">
+                    <span class="mpb-label">
+                        VAT <span class="badge-inline badge-warning" id="summaryVatRate">12%</span>
+                    </span>
+                    <span class="mpb-value vat-value" id="summaryVatValue">+₱0.00</span>
+                </div>
+                <div class="mpb-row" id="mpbDeliveryRow" style="display:none;">
+                    <span class="mpb-label">Delivery Fee</span>
+                    <span class="mpb-value" id="summaryDeliveryFee">₱0.00</span>
+                </div>
+
                 <div class="mpb-divider"></div>
-                
+
                 <div class="mpb-row total">
                     <span class="mpb-label" style="font-weight:700;">Total</span>
-                    <span class="mpb-value" id="mpbTotal">₱<?php echo number_format($final_total, 2); ?></span>
-                </div>
-                
-                <div class="mpb-row dp">
-                    <span class="mpb-label">Downpayment (<?php echo $downpayment_percent; ?>%)</span>
-                    <span class="mpb-value" id="mpbDp">₱<?php echo number_format($downpayment_amount, 2); ?></span>
-                </div>
-                
-                <div class="mpb-row balance">
-                    <span class="mpb-label">Balance (upon visit)</span>
-                    <span class="mpb-value" id="mpbBal">₱<?php echo number_format($balance_amount, 2); ?></span>
-                </div>
-                
-                <div style="margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap;">
-                    <?php if ($payment_method_online): ?>
-                    <span style="background: var(--bg-secondary); padding: 3px 10px; border-radius: 20px; font-size: 10px; border: 1px solid var(--border-color);">
-                        <i class="fas fa-mobile-alt" style="color: var(--primary);"></i> Online
-                    </span>
-                    <?php endif; ?>
-                    <?php if ($payment_method_onsite): ?>
-                    <span style="background: var(--bg-secondary); padding: 3px 10px; border-radius: 20px; font-size: 10px; border: 1px solid var(--border-color);">
-                        <i class="fas fa-cash-register" style="color: var(--warning);"></i> On-Site
-                    </span>
-                    <?php endif; ?>
-                    <?php if ($is_pwd_senior): ?>
-                    <span style="background: #FEF3C7; padding: 3px 10px; border-radius: 20px; font-size: 10px; border: 1px solid #FDE68A; color: #92400E;">
-                        <i class="fas fa-id-card"></i> PWD/Senior
-                    </span>
-                    <?php endif; ?>
+                    <span class="mpb-value" id="mpbTotal">₱0.00</span>
                 </div>
             </div>
 
             <div class="modal-apt-notice" id="modalAptNotice" style="display:none;">
                 <i class="fas fa-calendar-check" style="font-size:18px; display:block; margin-bottom:6px;"></i>
                 <strong>Appointment Booking</strong><br>
-                The clinic will confirm your schedule. No downpayment required.
+                You'll be redirected to book an appointment.
             </div>
 
             <div class="modal-exam-notice" id="modalExamNotice" style="display:none;">
                 <i class="fas fa-stethoscope" style="font-size:18px; display:block; margin-bottom:6px;"></i>
                 <strong>Eye Exam Required</strong><br>
-                You indicated you need an eye exam. The doctor will perform one during your visit.
+                You'll be redirected to book an eye exam first.
             </div>
 
         </div>
@@ -1740,7 +2068,27 @@ const NEEDS_LENS         = <?php echo $NEEDS_LENS_SELECTION ? 'true' : 'false'; 
 const HAS_STOCK_TRACKING = <?php echo $has_stock_tracking ? 'true' : 'false'; ?>;
 const HAS_SIZES          = <?php echo $has_sizes ? 'true' : 'false'; ?>;
 const IS_FULLY_SOLD_OUT  = <?php echo $is_fully_sold_out ? 'true' : 'false'; ?>;
-const LENS_PRICES  = { frame_only:0, single_vision:500, progressive:1500, blue_cut:800, contact_daily:0, contact_monthly:0 };
+const LENS_PRICES = { frame_only:0, single_vision:500, progressive:1500, blue_cut:800, contact_daily:0, contact_monthly:0 };
+
+// ============================================
+// ✅ DELIVERY FEATURE — Constants
+// ============================================
+const OFFERS_DELIVERY          = <?php echo $offers_delivery ? 'true' : 'false'; ?>;
+const ALLOW_COD                = <?php echo $allow_cod ? 'true' : 'false'; ?>;
+const CLINIC_DELIVERY_FEE      = <?php echo $clinic_delivery_fee; ?>;
+const CLINIC_FREE_DELIVERY_MIN = <?php echo $clinic_free_delivery_min; ?>;
+
+const IS_ACCESSORY_CAT         = <?php echo $IS_ACCESSORY ? 'true' : 'false'; ?>;
+const IS_FRAMES_FAMILY         = <?php echo in_array($category, ['Frames','Eyeglasses','Sunglasses']) ? 'true' : 'false'; ?>;
+
+const IS_PWD_SENIOR            = <?php echo $is_pwd_senior_display ? 'true' : 'false'; ?>;
+const PWD_SENIOR_TYPE          = '<?php echo $pwd_senior_type_display; ?>';
+const VAT_RATE_TAX             = <?php echo $vat_rate_display; ?>;
+const DISCOUNT_RATE            = <?php echo $discount_rate_display; ?>;
+const PRODUCT_SUBTOTAL         = <?php echo $display_price; ?>;
+
+let selectedFulfillment        = 'pickup';
+let selectedDeliveryPayment    = 'online';
 
 // ============================================
 // SIZE SELECTION
@@ -1750,10 +2098,7 @@ function selectSize(btn) {
     btn.classList.add('selected');
     selectedSize = btn.dataset.size;
     const label = document.getElementById('sizeSelectedLabel');
-    if (label) {
-        label.textContent = selectedSize;
-        label.classList.add('chosen');
-    }
+    if (label) { label.textContent = selectedSize; label.classList.add('chosen'); }
     const hint = document.getElementById('sizeHint');
     if (hint) hint.style.display = 'none';
     updateActionButton();
@@ -1820,27 +2165,21 @@ function handleRxKnowledge(radio) {
 function updateModalSummary() {
     const colorRow = document.getElementById('modalColorRow');
     const colorName = document.getElementById('modalColorName');
-    if (selectedColor) {
+    if (colorRow) {
         colorRow.style.display = 'flex';
-        colorName.textContent = selectedColor.name;
-    } else {
-        colorRow.style.display = 'flex';
-        colorName.textContent = '—';
+        colorName.textContent = selectedColor ? selectedColor.name : '—';
     }
 
     const sizeRow = document.getElementById('modalSizeRow');
     const sizeName = document.getElementById('modalSizeName');
-    if (selectedSize) {
+    if (sizeRow) {
         sizeRow.style.display = 'flex';
-        sizeName.textContent = selectedSize;
-    } else {
-        sizeRow.style.display = 'flex';
-        sizeName.textContent = '—';
+        sizeName.textContent = selectedSize ? selectedSize : '—';
     }
 
     const lensRow = document.getElementById('modalLensRow');
     const lensName = document.getElementById('modalLensName');
-    if (selectedLens) {
+    if (lensRow && selectedLens) {
         const lensLabels = {
             'frame_only': 'Frame Only',
             'single_vision': 'Single Vision',
@@ -1850,8 +2189,6 @@ function updateModalSummary() {
             'contact_monthly': 'Contact Lens (Monthly)'
         };
         lensName.textContent = lensLabels[selectedLens] || selectedLens;
-    } else {
-        lensName.textContent = '—';
     }
 }
 
@@ -1860,32 +2197,93 @@ function updateModalSummary() {
 // ============================================
 function getLensPrice() { return LENS_PRICES[selectedLens] || 0; }
 
+function computeDeliveryFee(subtotal) {
+    if (!OFFERS_DELIVERY) return 0;
+    if (CLINIC_FREE_DELIVERY_MIN > 0 && subtotal >= CLINIC_FREE_DELIVERY_MIN) return 0;
+    return CLINIC_DELIVERY_FEE;
+}
+
 function updatePriceDisplay() {
-    const lp = getLensPrice();
-    const basePrice = BASE_PRICE;
-    const subtotal = basePrice + lp;
-    const discountAmount = DISCOUNT_AMOUNT;
-    let totalAfterDiscount = subtotal - discountAmount;
-    const vatAmount = totalAfterDiscount * (VAT_RATE / 100);
-    const total = totalAfterDiscount + vatAmount;
-    
+    const lensPrice = getLensPrice();
+    const subtotal = PRODUCT_SUBTOTAL + lensPrice;
+
+    let vatAmount = 0;
+    let discountAmount = 0;
+    if (IS_PWD_SENIOR) {
+        discountAmount = subtotal * DISCOUNT_RATE;
+    } else {
+        vatAmount = subtotal * VAT_RATE_TAX;
+    }
+
+    const deliveryFee = (selectedFulfillment === 'delivery') ? computeDeliveryFee(subtotal) : 0;
+    const finalTotal = subtotal + vatAmount - discountAmount + deliveryFee;
+
+    // Modal breakdown
+    const summaryProductValue = document.getElementById('summaryProductValue');
     const mpbLensRow = document.getElementById('mpbLensRow');
     const mpbLensVal = document.getElementById('mpbLensVal');
-    const mpbTotal   = document.getElementById('mpbTotal');
-    const mpbDp      = document.getElementById('mpbDp');
-    const mpbBal     = document.getElementById('mpbBal');
-    const mpbSubtotal = document.getElementById('mpbSubtotal');
-    
-    if (mpbLensRow) mpbLensRow.style.display = lp > 0 ? 'flex' : 'none';
-    if (mpbLensVal) mpbLensVal.textContent = '+₱' + lp.toLocaleString();
-    if (mpbSubtotal) mpbSubtotal.textContent = '₱' + subtotal.toLocaleString('en-PH', {minimumFractionDigits:2});
-    if (mpbTotal) mpbTotal.textContent = '₱' + total.toLocaleString('en-PH', {minimumFractionDigits:2});
-    
-    const dpPercent = DP_PERCENT;
-    const dp = (total * dpPercent) / 100;
-    const bal = total - dp;
-    if (mpbDp) mpbDp.textContent = '₱' + dp.toLocaleString('en-PH', {minimumFractionDigits:2});
-    if (mpbBal) mpbBal.textContent = '₱' + bal.toLocaleString('en-PH', {minimumFractionDigits:2});
+    const mpbDiscountRow = document.getElementById('mpbDiscountRow');
+    const summaryDiscountLabel = document.getElementById('summaryDiscountLabel');
+    const summaryDiscountValue = document.getElementById('summaryDiscountValue');
+    const mpbVatRow = document.getElementById('mpbVatRow');
+    const summaryVatRate = document.getElementById('summaryVatRate');
+    const summaryVatValue = document.getElementById('summaryVatValue');
+    const mpbDeliveryRow = document.getElementById('mpbDeliveryRow');
+    const summaryDeliveryFee = document.getElementById('summaryDeliveryFee');
+    const mpbTotal = document.getElementById('mpbTotal');
+
+    if (summaryProductValue) summaryProductValue.textContent = '₱' + subtotal.toLocaleString('en-PH', {minimumFractionDigits: 2});
+    if (mpbLensRow) mpbLensRow.style.display = lensPrice > 0 ? 'flex' : 'none';
+    if (mpbLensVal) mpbLensVal.textContent = '+₱' + lensPrice.toLocaleString();
+
+    if (mpbDiscountRow) mpbDiscountRow.style.display = (IS_PWD_SENIOR && discountAmount > 0) ? 'flex' : 'none';
+    if (summaryDiscountLabel) summaryDiscountLabel.textContent = (PWD_SENIOR_TYPE === 'senior' ? 'Senior' : 'PWD') + ' Discount';
+    if (summaryDiscountValue) summaryDiscountValue.textContent = '-₱' + discountAmount.toLocaleString('en-PH', {minimumFractionDigits: 2});
+
+    if (mpbVatRow) mpbVatRow.style.display = (!IS_PWD_SENIOR && vatAmount > 0) ? 'flex' : 'none';
+    if (summaryVatRate) summaryVatRate.textContent = (VAT_RATE_TAX * 100).toFixed(0) + '%';
+    if (summaryVatValue) summaryVatValue.textContent = '+₱' + vatAmount.toLocaleString('en-PH', {minimumFractionDigits: 2});
+
+    if (mpbDeliveryRow) mpbDeliveryRow.style.display = (selectedFulfillment === 'delivery') ? 'flex' : 'none';
+    if (summaryDeliveryFee) summaryDeliveryFee.textContent = deliveryFee === 0 ? 'FREE' : ('₱' + deliveryFee.toLocaleString('en-PH', {minimumFractionDigits: 2}));
+
+    if (mpbTotal) mpbTotal.textContent = '₱' + finalTotal.toLocaleString('en-PH', {minimumFractionDigits: 2});
+
+    document.querySelectorAll('.pm-total-online, .pm-total-cod').forEach(el => {
+        el.textContent = '₱' + finalTotal.toLocaleString('en-PH', {minimumFractionDigits: 2});
+    });
+}
+
+// ============================================
+// Fulfillment selectors
+// ============================================
+function selectFulfillment(type) {
+    selectedFulfillment = type;
+
+    document.querySelectorAll('.fulfillment-btn').forEach(btn => {
+        btn.classList.toggle('selected', btn.dataset.type === type);
+    });
+
+    const pickupFields = document.getElementById('pickupFields');
+    const deliveryFields = document.getElementById('deliveryFields');
+
+    if (type === 'delivery') {
+        pickupFields.style.display = 'none';
+        deliveryFields.style.display = 'block';
+    } else {
+        pickupFields.style.display = 'block';
+        deliveryFields.style.display = 'none';
+    }
+
+    updatePriceDisplay();
+}
+
+function selectDeliveryPayment(method) {
+    selectedDeliveryPayment = method;
+    document.querySelectorAll('.payment-method-option').forEach(opt => {
+        opt.classList.toggle('selected', opt.dataset.method === method);
+    });
+    updatePriceDisplay();
 }
 
 // ============================================
@@ -1896,7 +2294,6 @@ function updateActionButton() {
     const helper = document.getElementById('actionHelper');
     if (!btn) return;
 
-    // CHECK SIZE FIRST
     if (HAS_SIZES && !selectedSize && !IS_FULLY_SOLD_OUT && !IS_LENS_ONLY && !IS_CONTACT) {
         btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
         btn.disabled = true;
@@ -1904,7 +2301,6 @@ function updateActionButton() {
         return;
     }
 
-    // CHECK COLOR
     if (HAS_STOCK_TRACKING && !IS_FULLY_SOLD_OUT && !selectedColor) {
         btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
         btn.disabled = true;
@@ -1927,17 +2323,16 @@ function updateActionButton() {
         btn.innerHTML = '<i class="fas fa-calendar-plus"></i> Book Eye Exam';
         btn.className = 'btn-main-action apt';
         btn.disabled = false;
-        if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> We\'ll schedule an eye exam for you.';
+        if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> You\'ll be taken to book an eye exam first.';
     } else {
         btn.innerHTML = '<i class="fas fa-bookmark"></i> Reserve with Prescription';
         btn.className = 'btn-main-action';
         btn.disabled = false;
-        if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> ' + DP_PERCENT + '% downpayment required. Rx verified on visit.';
+        if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> ' + DP_PERCENT + '% downpayment required.';
     }
 }
 
 function handleMainAction() {
-    // CHECK SIZE FIRST
     if (HAS_SIZES && !selectedSize && !IS_FULLY_SOLD_OUT && !IS_LENS_ONLY && !IS_CONTACT) {
         showToast('Please select a frame size first.', 'error');
         document.getElementById('sizeBtns')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1952,18 +2347,48 @@ function handleMainAction() {
 
     const isFrameOnly = (selectedLens === 'frame_only');
     if (isFrameOnly) { openModal('reservation'); return; }
+
     if (!rxKnowledge) {
         showToast('Please choose whether you know your prescription.', 'error');
         return;
     }
-    if (rxKnowledge === 'dont_know') { openModal('appointment'); return; }
-    const od_sph = document.getElementById('od_sph')?.value;
-    const os_sph = document.getElementById('os_sph')?.value;
+
+    if (rxKnowledge === 'dont_know') {
+        // Redirect to book-specific-product.php
+        const colorCode = selectedColor ? selectedColor.code : '';
+        window.location.href = 'book-specific-product.php?clinic_id=' + <?php echo $clinic_id; ?>
+            + '&product_id=' + <?php echo $product_id; ?>
+            + '&rx_knowledge=dont_know'
+            + '&lens=' + encodeURIComponent(selectedLens || '')
+            + '&color=' + encodeURIComponent(colorCode);
+        return;
+    }
+
+    const od_sph = document.getElementById('od_sph')?.value || '';
+    const os_sph = document.getElementById('os_sph')?.value || '';
     if (!od_sph && !os_sph) {
         showToast('Please enter your prescription or select "I need an eye exam".', 'error');
         return;
     }
-    openModal('reservation');
+
+    // Redirect with prescription known
+    const od_cyl  = document.getElementById('od_cyl')?.value  || '';
+    const od_axis = document.getElementById('od_axis')?.value || '';
+    const os_cyl  = document.getElementById('os_cyl')?.value  || '';
+    const os_axis = document.getElementById('os_axis')?.value || '';
+    const colorCode = selectedColor ? selectedColor.code : '';
+
+    window.location.href = 'book-specific-product.php?clinic_id=' + <?php echo $clinic_id; ?>
+        + '&product_id=' + <?php echo $product_id; ?>
+        + '&rx_knowledge=know'
+        + '&lens=' + encodeURIComponent(selectedLens || '')
+        + '&color=' + encodeURIComponent(colorCode)
+        + '&od_sph=' + encodeURIComponent(od_sph)
+        + '&od_cyl=' + encodeURIComponent(od_cyl)
+        + '&od_axis=' + encodeURIComponent(od_axis)
+        + '&os_sph=' + encodeURIComponent(os_sph)
+        + '&os_cyl=' + encodeURIComponent(os_cyl)
+        + '&os_axis=' + encodeURIComponent(os_axis);
 }
 
 // ============================================
@@ -1983,24 +2408,34 @@ function openModal(type) {
     aptNotice.style.display = 'none';
     examNotice.style.display = 'none';
 
+    // Show fulfillment selector only if item is deliverable
+    const fulfillmentSection = document.getElementById('fulfillmentSection');
+    const canDeliver = OFFERS_DELIVERY && (IS_ACCESSORY_CAT || (IS_FRAMES_FAMILY && selectedLens === 'frame_only'));
+    if (fulfillmentSection) {
+        fulfillmentSection.style.display = canDeliver ? 'block' : 'none';
+    }
+    if (canDeliver && ALLOW_COD) {
+        const codOption = document.querySelector('.payment-method-option.cod-option');
+        if (codOption) codOption.style.display = 'flex';
+    }
+
+    // Reset fulfillment
+    selectFulfillment('pickup');
+
     if (type === 'appointment') {
         title.innerHTML = '<i class="fas fa-calendar-plus"></i> Book Appointment';
         confirmBtn.innerHTML = '<i class="fas fa-calendar-check"></i> Book Appointment';
         confirmBtn.className = 'btn-modal confirm apt';
         priceBox.style.display = 'none';
         aptNotice.style.display = 'block';
-        if (rxKnowledge === 'dont_know') {
-            examNotice.style.display = 'block';
-        }
+        if (rxKnowledge === 'dont_know') examNotice.style.display = 'block';
     } else {
         title.innerHTML = '<i class="fas fa-bookmark"></i> Reserve This Product';
         confirmBtn.innerHTML = '<i class="fas fa-check"></i> Confirm Reservation';
         confirmBtn.className = 'btn-modal confirm';
         priceBox.style.display = 'block';
         aptNotice.style.display = 'none';
-        if (rxKnowledge === 'dont_know') {
-            examNotice.style.display = 'block';
-        }
+        if (rxKnowledge === 'dont_know') examNotice.style.display = 'block';
     }
 
     const tomorrow = new Date();
@@ -2020,22 +2455,11 @@ function closeModal() {
 // SUBMIT
 // ============================================
 function submitAction() {
-    const date    = document.getElementById('mDate').value;
-    const time    = document.getElementById('mTime').value;
-    const contact = document.getElementById('mContact').value;
-    const notes   = document.getElementById('mNotes').value;
-    if (!date)    { showToast('Please select a date.', 'error'); return; }
-    if (!time)    { showToast('Please select a time.', 'error'); return; }
-    if (!contact) { showToast('Please enter your contact number.', 'error'); return; }
-
     const formData = new FormData();
     formData.append('ajax_action', currentModal === 'appointment' ? 'appointment' : 'reservation');
     formData.append('lens_type', selectedLens || 'frame_only');
     formData.append('prescription_knowledge', rxKnowledge || '');
-    formData.append('preferred_date', date);
-    formData.append('preferred_time', time);
-    formData.append('contact_number', contact);
-    formData.append('notes', notes);
+
     if (selectedColor) {
         formData.append('color_code', selectedColor.code);
         formData.append('color_name', selectedColor.name);
@@ -2044,13 +2468,58 @@ function submitAction() {
         formData.append('frame_size', selectedSize);
     }
     if (rxKnowledge === 'know') {
-        formData.append('od_sph',  document.getElementById('od_sph')?.value || '');
-        formData.append('od_cyl',  document.getElementById('od_cyl')?.value || '');
+        formData.append('od_sph', document.getElementById('od_sph')?.value || '');
+        formData.append('od_cyl', document.getElementById('od_cyl')?.value || '');
         formData.append('od_axis', document.getElementById('od_axis')?.value || '');
-        formData.append('os_sph',  document.getElementById('os_sph')?.value || '');
-        formData.append('os_cyl',  document.getElementById('os_cyl')?.value || '');
+        formData.append('os_sph', document.getElementById('os_sph')?.value || '');
+        formData.append('os_cyl', document.getElementById('os_cyl')?.value || '');
         formData.append('os_axis', document.getElementById('os_axis')?.value || '');
     }
+
+    if (selectedFulfillment === 'delivery') {
+        const name = document.getElementById('mDeliveryName')?.value?.trim() || '';
+        const phone = document.getElementById('mDeliveryPhone')?.value?.trim() || '';
+        const address = document.getElementById('mDeliveryAddress')?.value?.trim() || '';
+        const brgy = document.getElementById('mDeliveryBarangay')?.value?.trim() || '';
+        const city = document.getElementById('mDeliveryCity')?.value?.trim() || '';
+        const province = document.getElementById('mDeliveryProvince')?.value?.trim() || '';
+        const zip = document.getElementById('mDeliveryZip')?.value?.trim() || '';
+
+        if (!name || !phone || !address || !brgy || !city || !province || !zip) {
+            showToast('Please complete all required delivery fields.', 'error');
+            return;
+        }
+
+        formData.append('fulfillment_type', 'delivery');
+        formData.append('delivery_name', name);
+        formData.append('delivery_phone', phone);
+        formData.append('delivery_address', address);
+        formData.append('delivery_barangay', brgy);
+        formData.append('delivery_city', city);
+        formData.append('delivery_province', province);
+        formData.append('delivery_zip', zip);
+        formData.append('delivery_landmark', document.getElementById('mDeliveryLandmark')?.value || '');
+        formData.append('delivery_date', document.getElementById('mDeliveryDate')?.value || '');
+        formData.append('delivery_payment_method', selectedDeliveryPayment);
+        formData.append('preferred_date', document.getElementById('mDeliveryDate')?.value || '<?php echo date('Y-m-d'); ?>');
+        formData.append('preferred_time', '09:00:00');
+        formData.append('contact_number', phone);
+    } else {
+        const date = document.getElementById('mDate').value;
+        const time = document.getElementById('mTime').value;
+        const contact = document.getElementById('mContact').value;
+
+        if (!date) { showToast('Please select a date.', 'error'); return; }
+        if (!time) { showToast('Please select a time.', 'error'); return; }
+        if (!contact) { showToast('Please enter your contact number.', 'error'); return; }
+
+        formData.append('fulfillment_type', 'pickup');
+        formData.append('preferred_date', date);
+        formData.append('preferred_time', time);
+        formData.append('contact_number', contact);
+    }
+
+    formData.append('notes', document.getElementById('mNotes')?.value || '');
 
     closeModal();
     showLoading();
@@ -2062,11 +2531,66 @@ function submitAction() {
         if (data.success) {
             showToast(data.message, 'success');
             setTimeout(() => { window.location.href = data.redirect; }, 1500);
+        } else if (data.redirect_to_booking && data.redirect) {
+            // Redirect to book-specific-product.php for eye exam / prescription
+            showToast(data.message, 'info');
+            setTimeout(() => { window.location.href = data.redirect; }, 800);
         } else {
             showToast(data.message, 'error');
         }
     })
     .catch(() => { hideLoading(); showToast('Network error. Please try again.', 'error'); });
+}
+
+// ============================================
+// UTILITIES
+// ============================================
+function showToast(msg, type = 'success') {
+    const c = document.getElementById('toastContainer');
+    const t = document.createElement('div');
+    t.className = 'toast ' + type;
+    const icons = { success:'check-circle', error:'exclamation-circle', info:'info-circle' };
+    t.innerHTML = `<i class="fas fa-${icons[type]||'info-circle'}"></i><span>${msg}</span>`;
+    c.appendChild(t);
+    setTimeout(() => { t.style.opacity='0'; t.style.transition='opacity 0.3s'; setTimeout(()=>t.remove(),300); }, 3500);
+}
+
+function showLoading() { document.getElementById('loadingOverlay').classList.remove('hidden'); }
+function hideLoading() { document.getElementById('loadingOverlay').classList.add('hidden'); }
+
+document.addEventListener('keydown', e => { if (e.key==='Escape') closeModal(); });
+document.getElementById('scheduleModal').addEventListener('click', e => { if (e.target===e.currentTarget) closeModal(); });
+
+function toggleProductFav(btn) {
+    const productId = btn.dataset.productId;
+    const isActive  = btn.classList.contains('active');
+    const formData  = new FormData();
+    formData.append('product_id', productId);
+    btn.classList.toggle('active');
+    btn.classList.add('pop');
+    const icon  = btn.querySelector('i');
+    const label = btn.querySelector('span');
+    icon.className    = btn.classList.contains('active') ? 'fas fa-heart' : 'far fa-heart';
+    label.textContent = btn.classList.contains('active') ? 'Saved to Favorites' : 'Save to Favorites';
+    setTimeout(() => btn.classList.remove('pop'), 300);
+    fetch('toggle-product-favorite.php', { method: 'POST', body: formData })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                showToast(data.action === 'added' ? '❤️ Added to favorites!' : 'Removed from favorites', data.action === 'added' ? 'success' : 'info');
+            } else {
+                btn.classList.toggle('active');
+                icon.className    = isActive ? 'fas fa-heart' : 'far fa-heart';
+                label.textContent = isActive ? 'Saved to Favorites' : 'Save to Favorites';
+                showToast('Something went wrong. Please try again.', 'error');
+            }
+        })
+        .catch(() => {
+            btn.classList.toggle('active');
+            icon.className    = isActive ? 'fas fa-heart' : 'far fa-heart';
+            label.textContent = isActive ? 'Saved to Favorites' : 'Save to Favorites';
+            showToast('Network error. Please try again.', 'error');
+        });
 }
 
 // ============================================
@@ -2081,6 +2605,22 @@ document.addEventListener('DOMContentLoaded', function() {
     <?php if ($has_3d): ?>
     init3DViewer('<?php echo addslashes($model_file); ?>');
     <?php endif; ?>
+
+    // ✅ Initialize button state + price display (same as product-view.php)
+    updatePriceDisplay();
+    updateActionButton();
+
+    // ✅ Initialize rx section visibility
+    const rxSection = document.getElementById('rxSection');
+    if (rxSection) {
+        if (IS_LENS_ONLY || IS_CONTACT) {
+            rxSection.style.display = 'block';
+        } else if (NEEDS_LENS && selectedLens !== 'frame_only' && selectedLens !== '') {
+            rxSection.style.display = 'block';
+        } else if (selectedLens === 'frame_only') {
+            rxSection.style.display = 'none';
+        }
+    }
 });
 
 function isLensMaterial(node, material) {
@@ -2300,58 +2840,8 @@ function resetColor() {
         }
     });
     showToast('Original colors restored', 'info');
-}
-
-// ============================================
-// UTILITIES
-// ============================================
-function showToast(msg, type = 'success') {
-    const c = document.getElementById('toastContainer');
-    const t = document.createElement('div');
-    t.className = 'toast ' + type;
-    const icons = { success:'check-circle', error:'exclamation-circle', info:'info-circle' };
-    t.innerHTML = `<i class="fas fa-${icons[type]||'info-circle'}"></i><span>${msg}</span>`;
-    c.appendChild(t);
-    setTimeout(() => { t.style.opacity='0'; t.style.transition='opacity 0.3s'; setTimeout(()=>t.remove(),300); }, 3500);
-}
-
-function showLoading() { document.getElementById('loadingOverlay').classList.remove('hidden'); }
-function hideLoading() { document.getElementById('loadingOverlay').classList.add('hidden'); }
-
-document.addEventListener('keydown', e => { if (e.key==='Escape') closeModal(); });
-document.getElementById('scheduleModal').addEventListener('click', e => { if (e.target===e.currentTarget) closeModal(); });
-
-function toggleProductFav(btn) {
-    const productId = btn.dataset.productId;
-    const isActive  = btn.classList.contains('active');
-    const formData  = new FormData();
-    formData.append('product_id', productId);
-    btn.classList.toggle('active');
-    btn.classList.add('pop');
-    const icon  = btn.querySelector('i');
-    const label = btn.querySelector('span');
-    icon.className    = btn.classList.contains('active') ? 'fas fa-heart' : 'far fa-heart';
-    label.textContent = btn.classList.contains('active') ? 'Saved to Favorites' : 'Save to Favorites';
-    setTimeout(() => btn.classList.remove('pop'), 300);
-    fetch('toggle-product-favorite.php', { method: 'POST', body: formData })
-        .then(r => r.json())
-        .then(data => {
-            if (data.success) {
-                showToast(data.action === 'added' ? '❤️ Added to favorites!' : 'Removed from favorites', data.action === 'added' ? 'success' : 'info');
-            } else {
-                btn.classList.toggle('active');
-                icon.className    = isActive ? 'fas fa-heart' : 'far fa-heart';
-                label.textContent = isActive ? 'Saved to Favorites' : 'Save to Favorites';
-                showToast('Something went wrong. Please try again.', 'error');
-            }
-        })
-        .catch(() => {
-            btn.classList.toggle('active');
-            icon.className    = isActive ? 'fas fa-heart' : 'far fa-heart';
-            label.textContent = isActive ? 'Saved to Favorites' : 'Save to Favorites';
-            showToast('Network error. Please try again.', 'error');
-        });
-}
+    }
+    
 </script>
 </body>
 </html>

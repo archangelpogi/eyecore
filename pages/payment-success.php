@@ -239,6 +239,28 @@ if ($is_reservation) {
     
     $reservation = mysqli_fetch_assoc($query);
     
+    // ============================================
+    // ✅ DELIVERY FEATURE — Detect delivery + get info
+    // ============================================
+    $is_delivery_order  = false;
+    $delivery_info      = null;
+    $delivery_fee_shown = 0;
+
+    if (($reservation['fulfillment_type'] ?? 'pickup') === 'delivery') {
+        $is_delivery_order = true;
+        $delivery_info = [
+            'name'     => $reservation['delivery_name']     ?? '',
+            'phone'    => $reservation['delivery_phone']    ?? '',
+            'address'  => $reservation['delivery_address']  ?? '',
+            'barangay' => $reservation['delivery_barangay'] ?? '',
+            'city'     => $reservation['delivery_city']     ?? '',
+            'province' => $reservation['delivery_province'] ?? '',
+            'zip'      => $reservation['delivery_zip']      ?? '',
+            'landmark' => $reservation['delivery_landmark'] ?? '',
+        ];
+        $delivery_fee_shown = (float)($reservation['delivery_fee'] ?? 0);
+    }
+    
     // Override amount from payments table if available
     if (isset($paid_amount_from_db) && $paid_amount_from_db > 0) {
         $reservation['amount'] = $paid_amount_from_db;
@@ -260,7 +282,12 @@ if ($is_reservation) {
                                    " for {$reservation['product_name']} at {$reservation['clinic_name']} has been confirmed.";
             
             if ($inventory_deducted) {
-                $notification_message .= " Your item is now reserved and ready for pickup.";
+                // ✅ DELIVERY FEATURE — Different message for delivery vs pickup
+                if ($is_delivery_order) {
+                    $notification_message .= " Your item is now reserved and will be prepared for delivery.";
+                } else {
+                    $notification_message .= " Your item is now reserved and ready for pickup.";
+                }
             }
         }
 
@@ -328,7 +355,7 @@ if ($is_reservation) {
                 UPDATE appointments 
                 SET payment_status = 'downpayment_paid', 
                     status = 'confirmed',
-                    amount_paid = downpayment_amount  -- ✅ IDINAGDAG
+                    amount_paid = downpayment_amount
                 WHERE id = $appointment_id AND user_id = $user_id
             ");
             
@@ -807,6 +834,50 @@ $user = mysqli_fetch_assoc($user_query);
                     <span class="detail-label">Time</span>
                     <span class="detail-value"><?php echo date('g:i A', strtotime($appointment_time ?? '00:00:00')); ?></span>
                 </div>
+
+                <?php if ($is_reservation && $is_delivery_order): ?>
+                    <!-- ✅ DELIVERY FEATURE — Delivery info -->
+                    <div class="detail-row" style="align-items: flex-start;">
+                        <span class="detail-label">
+                            <i class="fas fa-truck" style="color: var(--primary);"></i> Delivery To
+                        </span>
+                        <span class="detail-value" style="text-align: right; max-width: 60%;">
+                            <strong><?php echo htmlspecialchars($delivery_info['name']); ?></strong><br>
+                            <span style="font-size: 12px; font-weight: 400; color: var(--text-secondary);">
+                                <?php
+                                $addr_parts = array_filter([
+                                    $delivery_info['address'],
+                                    $delivery_info['barangay'],
+                                    $delivery_info['city'],
+                                    $delivery_info['province'],
+                                    $delivery_info['zip'],
+                                ]);
+                                echo htmlspecialchars(implode(', ', $addr_parts));
+                                ?>
+                            </span>
+                            <?php if (!empty($delivery_info['landmark'])): ?>
+                                <br><span style="font-size: 11px; color: var(--text-muted);">
+                                    <i class="fas fa-map-pin"></i> <?php echo htmlspecialchars($delivery_info['landmark']); ?>
+                                </span>
+                            <?php endif; ?>
+                        </span>
+                    </div>
+                    <div class="detail-row">
+                        <span class="detail-label">
+                            <i class="fas fa-phone" style="color: var(--primary);"></i> Contact
+                        </span>
+                        <span class="detail-value"><?php echo htmlspecialchars($delivery_info['phone']); ?></span>
+                    </div>
+                    <?php if ($delivery_fee_shown > 0): ?>
+                    <div class="detail-row">
+                        <span class="detail-label">
+                            <i class="fas fa-receipt" style="color: var(--primary);"></i> Delivery Fee
+                        </span>
+                        <span class="detail-value">₱<?php echo number_format($delivery_fee_shown, 2); ?></span>
+                    </div>
+                    <?php endif; ?>
+                <?php endif; ?>
+
                 <?php if ($doctor_name): ?>
                 <div class="detail-row">
                     <span class="detail-label">Doctor</span>

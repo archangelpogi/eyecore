@@ -216,22 +216,17 @@ if ($user_status && isset($user_status['pwd_senior_status']) && $user_status['pw
         $expiry->setTime(0, 0, 0);
         
         if ($expiry >= $today) {
-            // ✅ Still valid
             $is_pwd_senior = true;
             $pwd_senior_expired = false;
         } else {
-            // ❌ Expired
             $is_pwd_senior = false;
             $pwd_senior_expired = true;
         }
     } else {
-        // No expiry date set - assume valid (fallback)
         $is_pwd_senior = true;
         $pwd_senior_expired = false;
     }
 }
-
-// ✅ Now proceed with rest of the code...
 
 // ============================================
 // GET ALL SERVICES FOR THIS APPOINTMENT
@@ -306,6 +301,27 @@ if ($lens_price > 0) {
 }
 
 // ============================================
+// ✅ NEW: DELIVERY FEATURE — Fetch delivery info + fee
+// ============================================
+$delivery_fee   = 0;
+$is_delivery    = false;
+$delivery_info  = null;
+
+if ($reservation_id > 0) {
+    $del_q = mysqli_query($conn, "
+        SELECT fulfillment_type, delivery_fee, delivery_name, delivery_phone,
+               delivery_address, delivery_barangay, delivery_city,
+               delivery_province, delivery_zip, delivery_landmark
+        FROM reservations WHERE id = $reservation_id LIMIT 1
+    ");
+    $delivery_info = mysqli_fetch_assoc($del_q);
+    if ($delivery_info && ($delivery_info['fulfillment_type'] ?? 'pickup') === 'delivery') {
+        $is_delivery  = true;
+        $delivery_fee = (float)($delivery_info['delivery_fee'] ?? 0);
+    }
+}
+
+// ============================================
 // APPLY TAX AND DISCOUNT USING HELPER - WITH EXPIRY CHECK
 // ============================================
 $tax_calc = applyTaxAndDiscount($conn, $subtotal, $is_pwd_senior);
@@ -318,7 +334,13 @@ if ($pwd_senior_expired) {
     $tax_calc['is_pwd_senior'] = false;
 }
 
-$total_amount = $tax_calc['final_total'];
+// ============================================
+// ✅ UPDATED: Compute total WITH delivery fee (after tax)
+// ============================================
+$taxed_total = $tax_calc['final_total'];
+// Idagdag ang delivery fee AFTER tax (flat fee, hindi taxed)
+$total_amount = $taxed_total + $delivery_fee;
+
 $discount_amount = $tax_calc['discount_amount'];
 $discount_rate = $tax_calc['discount_rate'];
 $vat_amount = $tax_calc['vat_amount'];
@@ -326,24 +348,52 @@ $vat_rate = $tax_calc['vat_rate'];
 $subtotal_after_discount = $subtotal - $discount_amount;
 
 // ============================================
-// CALCULATE PAYMENT USING HELPER - WITH EXPIRY CHECK
+// ✅ UPDATED: CALCULATE PAYMENT USING HELPER - WITH DELIVERY FEE
 // ============================================
 $payment_info = calculatePaymentAmounts(
     $conn,
     $appointment['clinic_id'],
     $subtotal,
-    $is_pwd_senior  // ✅ This will be false if expired
+    $is_pwd_senior
 );
 
-$downpayment_amount = $payment_info['downpayment_amount'];
-$balance_amount     = $payment_info['balance_amount'];
+$payment_policy     = $payment_info['policy'];
 $payment_type_label = $payment_info['payment_type'];
 $requires_payment   = $payment_info['requires_payment'];
 $booking_flow       = $payment_info['booking_flow'] ?? 'approve_first';
-$subtotal_display   = $payment_info['subtotal'];
+
+// Recompute downpayment BASE sa total na may kasamang delivery fee
+if ($payment_policy === 'full_payment') {
+    $downpayment_amount = $total_amount;
+    $balance_amount     = 0;
+    $payment_type_label = 'full';
+} elseif ($payment_policy === 'downpayment_30') {
+    $downpayment_amount = round($total_amount * 0.30, 2);
+    $balance_amount     = round($total_amount - $downpayment_amount, 2);
+    $payment_type_label = 'downpayment';
+} elseif ($payment_policy === 'downpayment_custom') {
+    $policy_row = getClinicPaymentPolicy($conn, $appointment['clinic_id']);
+    $dp_pct     = (float)($policy_row['downpayment_percentage'] ?? 30);
+    $downpayment_amount = round($total_amount * ($dp_pct / 100), 2);
+    $balance_amount     = round($total_amount - $downpayment_amount, 2);
+    $payment_type_label = 'downpayment';
+} else {
+    // pay_on_site / no_payment
+    $downpayment_amount = $payment_info['downpayment_amount'];
+    $balance_amount     = $payment_info['balance_amount'];
+}
+
+// Safety check
+if ($requires_payment && $downpayment_amount <= 0 && $total_amount > 0) {
+    $downpayment_amount = $total_amount;
+    $balance_amount     = 0;
+    $payment_type_label = 'full';
+}
+
+$subtotal_display        = $payment_info['subtotal'];
 $discount_amount_display = $payment_info['discount_amount'];
-$vat_amount_display = $payment_info['vat_amount'];
-$total_amount_display = $payment_info['total_amount'];
+$vat_amount_display      = $payment_info['vat_amount'];
+$total_amount_display    = $total_amount;  // ← gamitin ang bagong total (may delivery fee)
 
 // ============================================
 // CHECK IF APPROVE FIRST AND NOT YET APPROVED
@@ -520,7 +570,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($error)) {
                     )
                 ");
                 
-// ✅ FIXED: Use $pwd_senior_type instead of $user_status['pwd_senior_type']
 $discount_type = $is_pwd_senior ? ($pwd_senior_type ?: 'pwd') : 'none';
 $discount_percentage = $is_pwd_senior ? ($discount_rate * 100) : 0;
 $discount_clinic_id = $is_pwd_senior ? $clinic_id : 'NULL';
@@ -844,6 +893,8 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
         .breakdown-value.balance { color: var(--balance); }
         .breakdown-value.discount { color: var(--danger); }
         .breakdown-value.vat { color: var(--warning); }
+        .breakdown-value.delivery { color: var(--primary); font-weight: 700; }
+        .breakdown-value.free { color: var(--success); font-weight: 700; }
         .discount-badge { display: inline-block; background: var(--success); color: white; padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; }
         .downpayment-badge { display: inline-block; background: var(--success); color: white; padding: 5px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
         .balance-badge { display: inline-block; background: var(--balance); color: white; padding: 5px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
@@ -894,7 +945,6 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
         .theme-dark .alert-info { background: #1e4a5a; color: #7ac9e0; }
         .alert-success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
 
-        /* ✅ ADDED: PWD/Senior Alert Styles */
         .alert-warning {
             background: #fff3cd;
             color: #856404;
@@ -1291,9 +1341,7 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
                 </div>
             <?php endif; ?>
 
-            <!-- ============================================ -->
-            <!-- ✅ ADDED: PWD/SENIOR EXPIRY WARNING -->
-            <!-- ============================================ -->
+            <!-- PWD/SENIOR EXPIRY WARNING -->
             <?php if ($pwd_senior_expired): ?>
             <div class="alert alert-warning" style="display: flex; align-items: flex-start; gap: 12px;">
                 <i class="fas fa-exclamation-triangle" style="color: #d97706; font-size: 24px; margin-top: 2px;"></i>
@@ -1441,6 +1489,18 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
                             <span class="breakdown-value" style="color: var(--success);">₱0.00</span>
                         </div>
                         <?php endif; ?>
+
+                        <!-- ✅ NEW: Delivery Fee (only if delivery order) -->
+                        <?php if ($is_delivery): ?>
+                        <div class="breakdown-item" style="border-top: 1px dashed var(--border-color); margin-top: 8px; padding-top: 10px;">
+                            <span class="breakdown-label">
+                                <i class="fas fa-truck" style="color: var(--primary);"></i> Delivery Fee:
+                            </span>
+                            <span class="breakdown-value <?php echo $delivery_fee == 0 ? 'free' : 'delivery'; ?>">
+                                <?php echo $delivery_fee == 0 ? 'FREE' : '₱' . number_format($delivery_fee, 2); ?>
+                            </span>
+                        </div>
+                        <?php endif; ?>
                         
                         <div class="breakdown-item" style="border-top: 2px solid var(--border-color); margin-top: 5px; padding-top: 12px;">
                             <span class="breakdown-label" style="font-size: 18px;">Total Amount:</span>
@@ -1476,18 +1536,54 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
                         <?php endif; ?>
                     </div>
 
-                    <!-- Appointment Details -->
+                    <!-- ✅ UPDATED: Appointment / Delivery Details -->
                     <div class="appointment-dates">
-                        <div class="date-row">
-                            <i class="fas fa-calendar"></i>
-                            <span><?php echo $reservation_id > 0 ? 'Preferred Date:' : 'Appointment Date:'; ?></span>
-                            <strong><?php echo date('F j, Y', strtotime($appointment['appointment_date'])); ?></strong>
-                        </div>
-                        <div class="date-row">
-                            <i class="fas fa-clock"></i>
-                            <span>Time:</span>
-                            <strong><?php echo date('g:i A', strtotime($appointment['appointment_time'])); ?></strong>
-                        </div>
+                        <?php if ($is_delivery): ?>
+                            <!-- Delivery order: ipakita ang delivery address -->
+                            <div class="date-row" style="align-items: flex-start;">
+                                <i class="fas fa-truck"></i>
+                                <span>Deliver to:</span>
+                                <strong style="text-align: right;">
+                                    <?php echo htmlspecialchars($delivery_info['delivery_name'] ?? ''); ?><br>
+                                    <span style="font-weight: 400; font-size: 12px; color: var(--text-secondary);">
+                                        <?php
+                                        $addr_parts = array_filter([
+                                            $delivery_info['delivery_address'] ?? '',
+                                            $delivery_info['delivery_barangay'] ?? '',
+                                            $delivery_info['delivery_city'] ?? '',
+                                            $delivery_info['delivery_province'] ?? '',
+                                            $delivery_info['delivery_zip'] ?? '',
+                                        ]);
+                                        echo htmlspecialchars(implode(', ', $addr_parts));
+                                        ?>
+                                    </span>
+                                </strong>
+                            </div>
+                            <div class="date-row">
+                                <i class="fas fa-phone"></i>
+                                <span>Contact:</span>
+                                <strong><?php echo htmlspecialchars($delivery_info['delivery_phone'] ?? ''); ?></strong>
+                            </div>
+                            <?php if (!empty($delivery_info['delivery_landmark'])): ?>
+                            <div class="date-row">
+                                <i class="fas fa-map-pin"></i>
+                                <span>Landmark:</span>
+                                <strong><?php echo htmlspecialchars($delivery_info['delivery_landmark']); ?></strong>
+                            </div>
+                            <?php endif; ?>
+                        <?php else: ?>
+                            <!-- Pickup order: ipakita ang date/time -->
+                            <div class="date-row">
+                                <i class="fas fa-calendar"></i>
+                                <span><?php echo $reservation_id > 0 ? 'Preferred Date:' : 'Appointment Date:'; ?></span>
+                                <strong><?php echo date('F j, Y', strtotime($appointment['appointment_date'])); ?></strong>
+                            </div>
+                            <div class="date-row">
+                                <i class="fas fa-clock"></i>
+                                <span>Time:</span>
+                                <strong><?php echo date('g:i A', strtotime($appointment['appointment_time'])); ?></strong>
+                            </div>
+                        <?php endif; ?>
                         <?php if ($reservation_id > 0 && !empty($appointment['ref_no'])): ?>
                         <div class="date-row">
                             <i class="fas fa-ticket-alt"></i>
@@ -1560,7 +1656,6 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
 
     <!-- JavaScript -->
     <script>
-        // Theme Toggle
         function toggleTheme() {
             const html = document.documentElement;
             const icon = document.querySelector('#themeToggle i');

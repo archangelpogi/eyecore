@@ -1,5 +1,6 @@
 <?php
 
+
 include '../includes/config.php';
 include '../includes/theme.php';
 
@@ -30,7 +31,6 @@ if (!$clinic) {
     exit();
 }
 
-// Get ALL clinic products with stock info
 $products_query = mysqli_query($conn, "
     SELECT p.*,
            (SELECT SUM(quantity) FROM product_color_inventory 
@@ -38,7 +38,12 @@ $products_query = mysqli_query($conn, "
            (SELECT COUNT(*) FROM product_color_inventory 
             WHERE product_id = p.id AND clinic_id = p.clinic_id AND quantity > 0 AND is_available = 1) as available_colors,
            (SELECT MAX(quantity) FROM product_color_inventory 
-            WHERE product_id = p.id AND clinic_id = p.clinic_id AND quantity > 0 AND is_available = 1) as max_available_qty
+            WHERE product_id = p.id AND clinic_id = p.clinic_id AND quantity > 0 AND is_available = 1) as max_available_qty,
+           (SELECT i.stock FROM inventory i
+            WHERE i.id = p.inventory_id
+              AND i.clinic_id = p.clinic_id
+              AND i.is_archived = 0
+            LIMIT 1) as general_stock
     FROM products p
     WHERE p.clinic_id = $clinic_id
     ORDER BY
@@ -53,6 +58,37 @@ $products_query = mysqli_query($conn, "
             ELSE 8
         END, p.price
 ");
+
+// ✅ DEBUG CHECK
+if (!$products_query) {
+    die("
+        <div style='background:#fee;border:3px solid #f00;padding:25px;margin:20px;
+                    font-family:monospace;font-size:14px;border-radius:10px;'>
+            <h2 style='color:#c00;margin:0 0 15px;'>❌ SQL Error</h2>
+            <pre style='background:#fff;padding:15px;border-radius:6px;
+                        overflow:auto;white-space:pre-wrap;'>" 
+                . mysqli_error($conn) . 
+            "</pre>
+            <p><strong>Clinic ID:</strong> " . $clinic_id . "</p>
+        </div>
+    ");
+}
+
+// ✅ DEBUG CHECK
+if (!$products_query) {
+    die("
+        <div style='background:#fee;border:3px solid #f00;padding:25px;margin:20px;
+                    font-family:monospace;font-size:14px;border-radius:10px;'>
+            <h2 style='color:#c00;margin:0 0 15px;'>❌ SQL Error Detected</h2>
+            <p><strong>Error:</strong></p>
+            <pre style='background:#fff;padding:15px;border-radius:6px;
+                        overflow:auto;white-space:pre-wrap;'>" 
+                . mysqli_error($conn) . 
+            "</pre>
+            <p><strong>Clinic ID:</strong> " . $clinic_id . "</p>
+        </div>
+    ");
+}
 
 $appointments_count = mysqli_query($conn, "SELECT COUNT(*) as total FROM appointments WHERE user_id = $user_id AND status = 'pending'");
 $appointments = mysqli_fetch_assoc($appointments_count);
@@ -143,7 +179,7 @@ function formatPrice($price) {
 
 // Store products into array with images
 $service_categories = ['Service', 'Eye Exam', 'Treatment', 'Screening'];
-$product_categories = ['Eyeglasses', 'Frames', 'Sunglasses', 'Contact Lens', 'Accessories', 'Lenses'];
+$product_categories = ['Eyeglasses', 'Frames', 'Sunglasses', 'Contact Lens', 'Contact Lenses', 'Accessories', 'Lenses'];
 
 $products_list = [];
 while ($product = mysqli_fetch_assoc($products_query)) {
@@ -773,19 +809,39 @@ include '../includes/navbar.php';
     </div>
     <?php endif; ?>
 
-    <!-- Products Grid -->
+<!-- Products Grid -->
     <div class="products-grid" id="productsGrid">
         <?php if (!empty($products_list)): ?>
             <?php foreach ($products_list as $product):
+            
                 $pid = $product['id'];
-                $is_service = in_array($product['category'], $service_categories);
-                $is_product = in_array($product['category'], $product_categories);
-                $total_stock = (int)($product['total_stock'] ?? 0);
-                $max_qty = (int)($product['max_available_qty'] ?? 0);
-                $avail_colors = (int)($product['available_colors'] ?? 0);
-                $is_out = $is_product && ($total_stock == 0 || $avail_colors == 0);
-                $is_low = $is_product && !$is_out && $max_qty <= 5 && $max_qty > 0;
+                
+$is_service = in_array($product['category'], $service_categories);
+$is_product = in_array($product['category'], $product_categories);
 
+$total_stock = (int)($product['total_stock'] ?? 0);
+$max_qty = (int)($product['max_available_qty'] ?? 0);
+$avail_colors = (int)($product['available_colors'] ?? 0);
+$general_stock = $product['general_stock'] !== null ? (int)$product['general_stock'] : null;
+
+$has_colors = ($avail_colors > 0);
+
+// ✅ Determine stock value with fallback
+if ($has_colors) {
+    $stock_value = $total_stock;
+    
+    // ✅ Fallback para sa Contact Lenses at iba pang may colors pero walang product_color_inventory
+    if ($stock_value == 0 && $general_stock !== null && $general_stock > 0) {
+        $stock_value = $general_stock;
+    }
+} else {
+    $stock_value = $general_stock;
+}
+
+$is_out = $is_product && $stock_value !== null && $stock_value == 0;
+$is_low = $is_product && !$is_out && $stock_value !== null && $stock_value > 0 && $stock_value <= 5;
+
+                // ✅ Sale logic
                 $is_on_sale = isProductOnSale($product);
                 $sale_price = $is_on_sale ? (float)$product['sale_price'] : 0;
                 $orig_price = (float)$product['price'];
@@ -851,11 +907,11 @@ include '../includes/navbar.php';
                     </div>
                     <?php elseif ($is_low): ?>
                     <div class="product-badge stock-badge low-stock">
-                        <i class="fas fa-exclamation-triangle"></i> Only <?php echo $max_qty; ?> left!
+                        <i class="fas fa-exclamation-triangle"></i> Only <?php echo $stock_value; ?> left!
                     </div>
-                    <?php elseif (!$is_out && $is_product && $total_stock > 0): ?>
+                    <?php elseif (!$is_out && $is_product && $stock_value !== null && $stock_value > 0): ?>
                     <div class="product-badge stock-badge">
-                        <i class="fas fa-box"></i> <?php echo $total_stock; ?> left
+                        <i class="fas fa-box"></i> <?php echo $stock_value; ?> left
                         <?php if ($avail_colors > 1): ?>(<?php echo $avail_colors; ?> colors)<?php endif; ?>
                     </div>
                     <?php endif; ?>

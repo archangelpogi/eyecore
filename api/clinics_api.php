@@ -76,9 +76,12 @@ if ($method === 'GET') {
         case 'send_email':
             sendEmailNotification($pdo, $data);
             break;
-        case 'review_document':
-            reviewDocument($pdo, $data);
-            break;
+case 'review_document':
+    reviewDocument($pdo, $data);
+    break;
+case 'reset_document_attempts':          
+    resetDocumentAttempts($pdo, $data);  
+    break;                               
         default:
             echo json_encode(['success' => false, 'error' => 'Invalid action']);
     }
@@ -406,7 +409,25 @@ function getClinic($pdo, $id) {
             // Get clinic documents
             $docStmt = $pdo->prepare("SELECT * FROM clinic_documents WHERE clinic_id = ?");
             $docStmt->execute([$id]);
-            $clinic['documents'] = $docStmt->fetchAll(PDO::FETCH_ASSOC);
+            $documents = $docStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            // ✅ COMPUTE max_attempts_reached PER DOCUMENT
+            // Max attempts = 3
+            // Ang document ay maxed out LANG kapag:
+            //   - submission_attempts >= 3, AT
+            //   - status === 'Rejected'
+            // Kapag 3rd attempt pero PENDING pa → HINDI pa max, pwede pang i-review
+            foreach ($documents as &$doc) {
+                $attempts = (int)($doc['submission_attempts'] ?? 0);
+                $status   = $doc['status'] ?? 'Pending';
+
+                $doc['max_attempts_reached'] = (
+                    $attempts >= 3 && $status === 'Rejected'
+                ) ? true : false;
+            }
+            unset($doc);
+
+            $clinic['documents'] = $documents;
             
             echo json_encode(['success' => true, 'data' => $clinic]);
         } else {
@@ -599,8 +620,7 @@ function reviewDocument($pdo, $data) {
             return;
         }
 
-        
-        // ── BLOCK RE-REVIEW: kapag naka-Approved o Rejected na, huwag nang payagan ──
+        // ── BLOCK RE-REVIEW ──
         if (in_array($doc['status'], ['Approved', 'Rejected'])) {
             echo json_encode([
                 'success' => false, 
@@ -608,18 +628,20 @@ function reviewDocument($pdo, $data) {
             ]);
             return;
         }
-        
+
         $currentAttempts = (int)($doc['submission_attempts'] ?? 0);
         $docType  = $doc['document_type'];
         $clinicId = $doc['clinic_id'];
 
         define('MAX_ATTEMPTS', 3);
 
-        // ── WALANG BLOCK DITO. Laging pumapasa ang reject. ──
-        // Attempts HINDI dinadagdagan dito — sa upload_documents.php lang siya tumataas.
-        $maxReached = ($currentAttempts >= MAX_ATTEMPTS) ? 1 : 0;
+        // ✅ TAMANG LOGIC:
+        // max reached LANG kapag: Rejected AND attempts >= 3
+        $maxReached = (
+            $status === 'Rejected' && $currentAttempts >= MAX_ATTEMPTS
+        ) ? 1 : 0;
 
-        // ── UPDATE DOCUMENT: status + flag lang, attempts untouched ──
+        // ── UPDATE DOCUMENT ──
         $stmt = $pdo->prepare("UPDATE clinic_documents
             SET 
                 status = ?,
@@ -631,13 +653,16 @@ function reviewDocument($pdo, $data) {
         $stmt->execute([
             $status,
             $status === 'Rejected' ? $reason : null,
-            $status === 'Rejected' ? $maxReached : 0,
+            $maxReached,
             $docId
         ]);
 
-        // ── GET CLINIC INFO FOR NOTIFICATION ─────────────
+        // ── GET CLINIC INFO ──
         $stmt = $pdo->prepare("
-            SELECT c.clinic_name, u.id AS admin_user_id, u.email AS admin_email, u.first_name AS admin_name
+            SELECT c.clinic_name, 
+                   u.id AS admin_user_id, 
+                   u.email AS admin_email, 
+                   u.first_name AS admin_name
             FROM clinics c
             JOIN users u ON c.id = u.clinic_id AND u.role = 'ClinicAdmin'
             WHERE c.id = ?
@@ -645,17 +670,31 @@ function reviewDocument($pdo, $data) {
         $stmt->execute([$clinicId]);
         $info = $stmt->fetch(PDO::FETCH_ASSOC);
 
+        // ============================================================
+        // HANDLE REJECTED
+        // ============================================================
         if ($status === 'Rejected') {
             if ($maxReached) {
-                // ── SPECIAL NOTIFICATION: umabot na sa max attempts ──
+                // ⚠️ 3RD ATTEMPT REJECTED → SUSPEND CLINIC (hindi Reject!)
+                
+                // 1. I-suspend ang clinic
+                $stmt = $pdo->prepare("
+                    UPDATE clinics 
+                    SET status = 'Suspended', updated_at = NOW() 
+                    WHERE id = ?
+                ");
+                $stmt->execute([$clinicId]);
+
+                // 2. Notify clinic admin
                 if (!empty($info['admin_user_id'])) {
                     createNotification(
                         $pdo,
                         $info['admin_user_id'],
-                        'Maximum Attempts Reached',
+                        'Maximum Attempts Reached - Action Required',
                         "Ang dokumentong <b>{$docType}</b> ay na-reject na ng {$currentAttempts} beses. " .
                         "Umabot na ito sa maximum na " . MAX_ATTEMPTS . " attempts. " .
-                        "Hindi na ito puwedeng i-resubmit. Mangyaring makipag-ugnayan sa support.",
+                        "Ang inyong clinic ay pansamantalang na-suspend. " .
+                        "Mangyaring makipag-ugnayan sa <b>support@eyecore.com</b>.",
                         'error'
                     );
                 }
@@ -665,11 +704,36 @@ function reviewDocument($pdo, $data) {
                         $info['admin_name'],
                         $info['clinic_name'],
                         $docType,
-                        $reason . " — MAXIMUM ATTEMPTS (" . MAX_ATTEMPTS . ") REACHED. Please contact support."
+                        $reason . " — MAXIMUM ATTEMPTS (" . MAX_ATTEMPTS . ") REACHED. Please contact support@eyecore.com."
                     );
                 }
+
+                // 3. Notify ALL SuperAdmins (para may action na kailangan)
+                $superAdmins = $pdo->query("
+                    SELECT id FROM users WHERE role = 'SuperAdmin'
+                ")->fetchAll(PDO::FETCH_ASSOC);
+
+                foreach ($superAdmins as $sa) {
+                    createNotification(
+                        $pdo,
+                        $sa['id'],
+                        '⚠️ Clinic Needs Manual Review',
+                        "Ang clinic <b>{$info['clinic_name']}</b> ay umabot na sa max attempts para sa " .
+                        "<b>{$docType}</b> at na-suspend. Kailangan ng manual review: " .
+                        "Reset attempts o Reject clinic?",
+                        'warning'
+                    );
+                }
+
             } else {
-                // ── Normal rejection notification ──
+                // Normal rejection (1st or 2nd attempt) → Reapplying
+                $stmt = $pdo->prepare("
+                    UPDATE clinics 
+                    SET status = 'Reapplying', updated_at = NOW() 
+                    WHERE id = ?
+                ");
+                $stmt->execute([$clinicId]);
+
                 if (!empty($info['admin_email'])) {
                     sendDocumentRejectedEmail(
                         $info['admin_email'],
@@ -680,16 +744,12 @@ function reviewDocument($pdo, $data) {
                     );
                 }
             }
-
-            // Clinic status → Reapplying (kung hindi pa max, puwede pa mag-resubmit)
-            $stmt = $pdo->prepare("UPDATE clinics SET status = 'Reapplying', updated_at = NOW() WHERE id = ?");
-            $stmt->execute([$clinicId]);
         }
 
         echo json_encode([
             'success' => true,
             'message' => $maxReached 
-                ? "Document rejected. Maximum attempts (" . MAX_ATTEMPTS . ") reached." 
+                ? "Document rejected. Clinic suspended. Maximum attempts reached." 
                 : "Document $status (Attempt $currentAttempts of " . MAX_ATTEMPTS . ")",
             'attempts' => $currentAttempts,
             'max_reached' => $maxReached
@@ -697,6 +757,171 @@ function reviewDocument($pdo, $data) {
 
     } catch (Exception $e) {
         echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+}
+
+function resetDocumentAttempts($pdo, $data) {
+    try {
+        $docId  = $data['docId'] ?? 0;
+        $reason = $data['reason'] ?? 'Manual reset by SuperAdmin';
+        $userId = $_SESSION['user_id'] ?? 0;
+
+        if (!$docId) {
+            echo json_encode(['success' => false, 'error' => 'Missing document ID']);
+            return;
+        }
+
+        // Get document info
+        $stmt = $pdo->prepare("
+            SELECT clinic_id, document_type, submission_attempts, status, file_path 
+            FROM clinic_documents WHERE id = ?
+        ");
+        $stmt->execute([$docId]);
+        $doc = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$doc) {
+            echo json_encode(['success' => false, 'error' => 'Document not found']);
+            return;
+        }
+
+        $clinicId = $doc['clinic_id'];
+
+        // ✅ RESET the document — clear ang file para kailangan mag-upload muli
+        $stmt = $pdo->prepare("
+            UPDATE clinic_documents
+            SET 
+                submission_attempts = 0,
+                status = 'Pending',
+                max_attempts_reached = 0,
+                rejection_reason = NULL,
+                reviewed_at = NULL,
+                file_path = NULL
+            WHERE id = ?
+        ");
+        $stmt->execute([$docId]);
+
+        // ✅ Update clinic status → Reapplying (hindi Suspended, hindi Pending)
+        $stmt = $pdo->prepare("
+            UPDATE clinics 
+            SET status = 'Reapplying', updated_at = NOW()
+            WHERE id = ?
+        ");
+        $stmt->execute([$clinicId]);
+
+        // ✅ Log activity
+        logActivity(
+            $pdo,
+            $clinicId,
+            'RESET_ATTEMPTS',
+            'document',
+            "SuperAdmin reset attempts for {$doc['document_type']} (was {$doc['submission_attempts']} attempts). Reason: {$reason}"
+        );
+
+        // ✅ Notify clinic admin — sabihin na kailangan mag-upload muli
+        $stmt = $pdo->prepare("
+            SELECT u.id AS admin_user_id, u.email AS admin_email, u.first_name AS admin_name, c.clinic_name
+            FROM users u
+            JOIN clinics c ON c.id = u.clinic_id
+            WHERE u.clinic_id = ? AND u.role = 'ClinicAdmin'
+            LIMIT 1
+        ");
+        $stmt->execute([$clinicId]);
+        $admin = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($admin) {
+            createNotification(
+                $pdo,
+                $admin['admin_user_id'],
+                'Document Reset — Please Re-upload',
+                "Ang dokumentong <b>{$doc['document_type']}</b> ay binigyan ng bagong chance ng administrator. " .
+                "Mangyaring mag-upload ng <b>bagong corrected document</b> sa inyong dashboard. " .
+                "Reason: {$reason}",
+                'info'
+            );
+
+            // Optional: send email
+            if (!empty($admin['admin_email'])) {
+                sendResetAttemptsEmail(
+                    $admin['admin_email'],
+                    $admin['admin_name'],
+                    $admin['clinic_name'],
+                    $doc['document_type'],
+                    $reason
+                );
+            }
+        }
+
+        echo json_encode([
+            'success' => true,
+            'message' => 'Document attempts reset. Clinic can now re-upload.'
+        ]);
+
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+}
+
+function sendResetAttemptsEmail($toEmail, $adminName, $clinicName, $documentType, $reason) {
+    try {
+        require '../PHPMailer/PHPMailer.php';
+        require '../PHPMailer/SMTP.php';
+        require '../PHPMailer/Exception.php';
+
+        $mail = new PHPMailer\PHPMailer\PHPMailer(true);
+
+        $mail->isSMTP();
+        $mail->Host = 'smtp.gmail.com';
+        $mail->SMTPAuth = true;
+        $mail->Username = 'angelloricanmendoza27@gmail.com';
+        $mail->Password = 'tkyv vypr pxvm pfse';
+        $mail->SMTPSecure = PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port = 587;
+
+        $mail->setFrom('angelloricanmendoza27@gmail.com', 'Eyecore Verification');
+        $mail->addAddress($toEmail, $adminName);
+
+        $mail->isHTML(true);
+        $mail->Subject = "🔄 Document Reset – {$clinicName}";
+
+        $mail->Body = "
+            <div style='font-family: Arial; max-width: 600px; margin: 0 auto;'>
+                <h2 style='color:#f59e0b; text-align:center;'>Document Reset</h2>
+
+                <p>Hello <b>{$adminName}</b>,</p>
+
+                <p>Good news! Your document has been given a <b>fresh chance</b> by our administrator.</p>
+
+                <ul>
+                    <li><b>Clinic:</b> {$clinicName}</li>
+                    <li><b>Document:</b> {$documentType}</li>
+                    <li><b>Status:</b> Ready for re-upload</li>
+                </ul>
+
+                <div style='background:#fffbeb; padding:15px; border-left:5px solid #f59e0b; margin: 20px 0;'>
+                    <b>Admin Note:</b><br>
+                    {$reason}
+                </div>
+
+                <p><b>Next Step:</b> Please log in to your clinic dashboard and upload the <b>corrected version</b> of this document.</p>
+
+                <p style='text-align: center; margin: 30px 0;'>
+                    <a href='http://eyecore.capstone001.com/clinic/documents.php' 
+                       style='background:#3b82f6; color:white; padding:12px 30px; text-decoration:none; border-radius:8px; font-weight:bold; display:inline-block;'>
+                        📄 Go to Documents
+                    </a>
+                </p>
+
+                <br>
+                <small style='color:#6b7280;'>This is an automated email from Eyecore System.</small>
+            </div>
+        ";
+
+        $mail->send();
+        return true;
+
+    } catch (Exception $e) {
+        error_log("Reset attempts email failed: " . $e->getMessage());
+        return false;
     }
 }
 

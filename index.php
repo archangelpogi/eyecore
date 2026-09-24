@@ -1189,7 +1189,7 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
                 </button>
                 <?php if ($is_logged_in): ?>
                     <a href="pages/dashboard.php" class="btn-primary">
-                        <i class="fas fa-user"></i> Dashboard
+                        <i class="fas fa-user"></i> Login
                     </a>
                     <a href="auth/logout.php" class="btn-outline">
                         <i class="fas fa-sign-out-alt"></i> Logout

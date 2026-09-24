@@ -153,10 +153,18 @@ $query = "
         s.amount_paid,
         s.status,
         NULL AS ref_no,
-        s.forfeited_amount,  -- ✅ IDAGDAG ITO
+        s.forfeited_amount,
         CONCAT('INV-', DATE_FORMAT(s.sale_date, '%Y%m'), '-', LPAD(s.id, 4, '0')) AS invoice_id,
-        COALESCE(s.walk_in_name, CONCAT(p2.first_name, ' ', p2.last_name), 'Walk-in') AS customer_name,
-        COALESCE(s.patient_id, 'WALK-IN') AS customer_code,
+        COALESCE(
+            s.walk_in_name, 
+            CONCAT(u2.first_name, ' ', u2.last_name), 
+            'Walk-in'
+        ) AS customer_name,
+        CASE 
+            WHEN s.walk_in_name IS NOT NULL THEN 'WALK-IN'
+            WHEN s.patient_id IS NOT NULL THEN CONCAT('USER-', s.patient_id)
+            ELSE 'WALK-IN'
+        END AS customer_code,
         s.amount_paid,
         CASE 
             WHEN s.status = 'Refunded' THEN 'Refunded'
@@ -164,14 +172,17 @@ $query = "
             WHEN s.amount_paid > 0 AND s.amount_paid < s.total_amount THEN 'Partial'
             ELSE 'Unpaid'
         END AS payment_status,
-        'walkin' AS source_type,
+        CASE
+            WHEN s.reservation_id IS NOT NULL THEN 'reservation'
+            ELSE 'walkin'
+        END AS source_type,
         s.items,
         NULL AS doctor_name,
         s.walk_in_name,
         s.walk_in_contact,
         s.walk_in_email
     FROM sales s
-    LEFT JOIN patients p2 ON s.patient_id = p2.id
+    LEFT JOIN users u2 ON s.patient_id = u2.id
     WHERE s.clinic_id = ?
     AND s.appointment_id IS NULL
     AND s.status IN ('Paid', 'Partial', 'Unpaid', 'Refunded')
@@ -998,7 +1009,17 @@ unset($invoice);
                         </td>
                         <td>
                             <div style="font-weight: 500;"><?php echo htmlspecialchars($invoice['customer_name']); ?></div>
-                            <div style="font-size: 12px; color: var(--gray-400);"><?php echo $invoice['customer_code']; ?></div>
+                            <div style="font-size: 12px; color: var(--gray-400);">
+                                <?php 
+                                if (!empty($invoice['reservation_id'])) {
+                                    echo 'Order (Reservation)';
+                                } elseif (!empty($invoice['appointment_id'])) {
+                                    echo 'Appointment';
+                                } elseif (!empty($invoice['walk_in_name'])) {
+                                    echo 'Walk-in';
+                                }
+                                ?>
+                            </div>
                         </td>
                         <td><?php echo date('M d, Y', strtotime($invoice['sale_date'])); ?></td>
                         <td>
@@ -1564,7 +1585,12 @@ function renderTableRows(rows) {
                 </td>
                 <td>
                     <div style="font-weight: 500;">${escapeHtml(invoice.customer_name || 'N/A')}</div>
-                    <div style="font-size: 12px; color: var(--gray-400);">${escapeHtml(invoice.customer_code || 'WALK-IN')}</div>
+                    <div style="font-size: 12px; color: var(--gray-400);">${
+                        invoice.reservation_id ? 'Order (Reservation)' :
+                        invoice.appointment_id ? 'Appointment' :
+                        invoice.walk_in_name ? 'Walk-in' :
+                        ''
+                    }</div>
                 </td>
                 <td>${invoice.sale_date ? new Date(invoice.sale_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A'}</td>
                 <td>

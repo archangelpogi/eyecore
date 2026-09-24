@@ -1,12 +1,13 @@
 <?php
 // ============================================
-// 3D-VIEW.PHP — VIEW-ONLY PAGE
-// Preview lang ng 3D model + product details
-// Reservation flow nasa product-view.php
+// 3D-VIEW.PHP — VIEWING MODE
+// Product details viewing lang — walang order button
+// May "View Full Product Page" link papunta sa product-view.php
 // ============================================
 
 include '../includes/config.php';
 include '../includes/theme.php';
+require_once '../includes/payment-helper.php';
 
 if (!isset($_SESSION['user_id'])) {
     header('Location: ../auth/user_login.php');
@@ -24,10 +25,13 @@ $user_data = mysqli_fetch_assoc($avatar_query);
 $product_id = isset($_GET['id']) ? (int)$_GET['id'] : 0;
 if (!$product_id) { header('Location: dashboard.php'); exit(); }
 
+// ============================================
 // GET PRODUCT + CLINIC DETAILS
+// ============================================
 $product_query = mysqli_query($conn, "
     SELECT p.*,
            p3d.model_file,
+           p3d.model_type,
            p3d.has_3d,
            c.id as clinic_id,
            c.name as clinic_name,
@@ -35,7 +39,8 @@ $product_query = mysqli_query($conn, "
            c.city as clinic_city,
            c.contact as clinic_contact,
            c.hours as clinic_hours,
-           c.logo as clinic_logo
+           c.logo as clinic_logo,
+           c.downpayment_percentage
     FROM products p
     LEFT JOIN product_3d_models p3d ON p.inventory_id = p3d.inventory_id OR p.id = p3d.product_id
     JOIN clinics c ON p.clinic_id = c.id
@@ -45,10 +50,33 @@ $product_query = mysqli_query($conn, "
 if (mysqli_num_rows($product_query) == 0) { header('Location: dashboard.php'); exit(); }
 $product = mysqli_fetch_assoc($product_query);
 $clinic_id = $product['clinic_id'];
-$category = $product['category'];
-$IS_SERVICE = in_array($category, ['Service', 'Eye Exam', 'Treatment', 'Screening']);
 
+// ============================================
+// CATEGORY LOGIC
+// ============================================
+$category = $product['category'];
+$NEEDS_LENS_SELECTION = in_array($category, ['Frames', 'Eyeglasses', 'Sunglasses', 'Lenses', 'Contact Lenses']);
+$IS_ACCESSORY = in_array($category, ['Accessories', 'Parts', 'Cleaning Kits']);
+$IS_SERVICE = in_array($category, ['Service', 'Eye Exam', 'Treatment', 'Screening']);
+$IS_CONTACT_LENS = ($category === 'Contact Lenses');
+$IS_LENS_ONLY = ($category === 'Lenses');
+
+// ============================================
+// EXTRA FIELDS (for sizes)
+// ============================================
+$extra_fields = [];
+if (!empty($product['extra_fields_json'])) {
+    $extra_fields = json_decode($product['extra_fields_json'], true);
+}
+$available_sizes = [];
+if (!empty($extra_fields['sizes_available']) && is_array($extra_fields['sizes_available'])) {
+    $available_sizes = $extra_fields['sizes_available'];
+}
+$has_sizes = !empty($available_sizes) && in_array($category, ['Frames', 'Eyeglasses', 'Sunglasses']);
+
+// ============================================
 // SALE DETECTION
+// ============================================
 $is_on_sale = !empty($product['is_on_sale'])
     && $product['is_on_sale'] == 1
     && !empty($product['sale_price'])
@@ -62,11 +90,30 @@ $display_price  = $is_on_sale ? $sale_price : $original_price;
 $discount_pct   = $is_on_sale ? round((($original_price - $sale_price) / $original_price) * 100) : 0;
 $savings        = $is_on_sale ? ($original_price - $sale_price) : 0;
 
+// ============================================
 // 3D MODEL CHECK
+// ============================================
 $has_3d = !empty($product['model_file']) && ($product['has_3d'] == 1 || $product['has_3d'] == '1');
 $model_file = $product['model_file'] ?? '';
 
+// ============================================
+// EXISTING RESERVATION / APPOINTMENT CHECK
+// ============================================
+$existing_reservation = mysqli_fetch_assoc(mysqli_query($conn,
+    "SELECT id, status, reservation_code FROM reservations
+     WHERE user_id = $user_id AND product_id = $product_id
+     AND status IN ('pending','confirmed') LIMIT 1"
+)) ?? null;
+
+$existing_appointment = mysqli_fetch_assoc(mysqli_query($conn,
+    "SELECT id, status, ref_no FROM appointments
+     WHERE user_id = $user_id AND product_id = $product_id
+     AND status IN ('pending','confirmed') LIMIT 1"
+)) ?? null;
+
+// ============================================
 // GET COLORS
+// ============================================
 $colors_query = mysqli_query($conn, "
     SELECT color_code, color_name, quantity
     FROM product_color_inventory
@@ -89,41 +136,61 @@ while ($c = mysqli_fetch_assoc($colors_query)) {
 }
 $has_colors         = !empty($product_colors);
 $is_fully_sold_out  = $has_colors && $total_available_stock === 0;
+$has_stock_tracking = $has_colors;
 
-// EXISTING RESERVATION / APPOINTMENT
-$existing_reservation = mysqli_fetch_assoc(mysqli_query($conn,
-    "SELECT id, status, reservation_code FROM reservations
-     WHERE user_id = $user_id AND product_id = $product_id
-     AND status IN ('pending','confirmed') LIMIT 1"
-)) ?? null;
-
-$existing_appointment = mysqli_fetch_assoc(mysqli_query($conn,
-    "SELECT id, status, ref_no FROM appointments
-     WHERE user_id = $user_id AND product_id = $product_id
-     AND status IN ('pending','confirmed') LIMIT 1"
-)) ?? null;
-
-// FAVORITED
+// ============================================
+// FAVORITE CHECK
+// ============================================
 $fav_check = mysqli_query($conn, "SELECT id FROM favorites WHERE user_id = $user_id AND product_id = $product_id");
 $is_product_favorited = mysqli_num_rows($fav_check) > 0;
 
+// ============================================
+// PAYMENT POLICY
+// ============================================
+$clinic_payment_config = getClinicPaymentPolicy($conn, $clinic_id);
+$clinic_payment_policy = $clinic_payment_config['payment_policy'];
+$clinic_downpayment_percent = (float)($clinic_payment_config['downpayment_percentage'] ?? 30);
+$clinic_booking_flow = $clinic_payment_config['booking_flow'] ?? 'approve_first';
+
+$policy_labels = [
+    'full_payment' => '100% Full Payment',
+    'downpayment_30' => '30% Downpayment',
+    'downpayment_custom' => $clinic_downpayment_percent . '% Downpayment',
+    'pay_on_site' => 'Pay On-Site Only',
+    'no_payment' => 'Free Service'
+];
+$clinic_payment_policy_display = $policy_labels[$clinic_payment_policy] ?? 'Standard Payment';
+
+// Tax/discount display
+$tax_calc = applyTaxAndDiscount($conn, $display_price, false);
+$vat_rate_display      = $tax_calc['vat_rate'];
+$discount_rate_display = $tax_calc['discount_rate'];
+
+$payment_info = getPaymentDisplayInfo($conn, $clinic_id, $display_price, false);
+$payment_type = $payment_info['payment_type'] ?? 'downpayment';
+$downpayment_percent = $clinic_downpayment_percent;
+$downpayment_amount = $payment_info['downpayment_amount'] ?? round($display_price * ($downpayment_percent / 100), 2);
+$balance_amount = $payment_info['balance_amount'] ?? ($display_price - $downpayment_amount);
+
 // Navbar vars
 $appointments_count = mysqli_query($conn, "SELECT COUNT(*) as total FROM appointments WHERE user_id = $user_id AND status = 'pending'");
-$pending = mysqli_fetch_assoc($appointments_count)['total'] ?? 0;
+$appointments = mysqli_fetch_assoc($appointments_count);
+$pending = $appointments['total'] ?? 0;
 $unread_count = getUnreadNotificationCount($user_id);
 $recent_notifications = getRecentNotifications($user_id);
 $sale_count_query = mysqli_query($conn, "SELECT COUNT(*) as total FROM products WHERE is_on_sale = 1 AND sale_end >= CURDATE()");
 $sale_count = mysqli_fetch_assoc($sale_count_query)['total'] ?? 0;
 $points_query = mysqli_query($conn, "SELECT SUM(points) as total_points FROM user_rewards WHERE user_id = $user_id");
-$total_points = mysqli_fetch_assoc($points_query)['total_points'] ?: 0;
+$points_row = mysqli_fetch_assoc($points_query);
+$total_points = $points_row['total_points'] ?: 0;
 $bookings_query = mysqli_query($conn, "SELECT COUNT(*) as total FROM appointments WHERE user_id = $user_id");
-$total_bookings = mysqli_fetch_assoc($bookings_query)['total'] ?: 0;
-$reservation_query_nav = mysqli_query($conn, "SELECT COUNT(*) as total FROM reservations WHERE user_id = $user_id AND status IN ('pending','confirmed')");
-$reservation_count = mysqli_fetch_assoc($reservation_query_nav)['total'] ?? 0;
+$bookings_row = mysqli_fetch_assoc($bookings_query);
+$total_bookings = $bookings_row['total'] ?: 0;
 $active_nav = 'discover';
 
 include '../includes/navbar.php';
 ?>
+
 <!DOCTYPE html>
 <html lang="en" class="<?php echo getThemeClass(); ?>">
 <head>
@@ -181,233 +248,178 @@ include '../includes/navbar.php';
         --viewer-bg: #0A0A1A;
     }
 
-    .main-content {
-        max-width: 1400px;
-        margin: 0 auto;
-        padding: 28px 20px 80px;
-    }
+    .main-content { max-width: 1400px; margin: 0 auto; padding: 28px 20px 80px; }
     @media (min-width: 1024px) { .main-content { padding: 32px 40px 60px; } }
     @media (max-width: 768px) { .main-content { padding: 16px 14px 100px; } }
 
     /* Breadcrumb */
-    .breadcrumb {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        margin-bottom: 24px;
-        font-size: 13px;
-        flex-wrap: wrap;
-    }
+    .breadcrumb { display: flex; align-items: center; gap: 8px; margin-bottom: 24px; font-size: 13px; flex-wrap: wrap; }
     .breadcrumb a {
-        color: var(--primary);
-        text-decoration: none;
-        font-weight: 500;
-        display: flex;
-        align-items: center;
-        gap: 6px;
-        padding: 6px 14px;
-        background: var(--bg-secondary);
-        border-radius: var(--radius-full);
-        border: 1px solid var(--border-light);
-        transition: all 0.2s;
+        color: var(--primary); text-decoration: none; font-weight: 500;
+        display: flex; align-items: center; gap: 6px; padding: 6px 14px;
+        background: var(--bg-secondary); border-radius: var(--radius-full);
+        border: 1px solid var(--border-light); transition: all 0.2s;
     }
     .breadcrumb a:hover { background: var(--primary); color: white; }
     .breadcrumb .sep { color: var(--border-color); }
     .breadcrumb .current { color: var(--text-secondary); font-size: 13px; }
 
-    /* Main layout */
-    .viewer-layout {
-        display: grid;
-        grid-template-columns: 1.6fr 1fr;
-        gap: 28px;
-        align-items: start;
-    }
+    .viewer-layout { display: grid; grid-template-columns: 1.6fr 1fr; gap: 28px; align-items: start; }
     @media (max-width: 1024px) { .viewer-layout { grid-template-columns: 1fr; } }
 
-    /* ===== 3D VIEWER ===== */
+    /* 3D VIEWER */
     .viewer-wrapper {
-        background: var(--bg-secondary);
-        border-radius: var(--radius-lg);
-        border: 1px solid var(--border-light);
-        overflow: hidden;
-        box-shadow: var(--shadow-sm);
-        position: sticky;
-        top: 80px;
+        background: var(--bg-secondary); border-radius: var(--radius-lg);
+        border: 1px solid var(--border-light); overflow: hidden;
+        box-shadow: var(--shadow-sm); position: sticky; top: 80px;
     }
     @media (max-width: 1024px) { .viewer-wrapper { position: static; } }
 
-    .viewer-canvas {
-        position: relative;
-        width: 100%;
-        height: 480px;
-        background: var(--viewer-bg);
-        overflow: hidden;
-    }
+    .viewer-canvas { position: relative; width: 100%; height: 480px; background: var(--viewer-bg); overflow: hidden; }
     @media (max-width: 768px) { .viewer-canvas { height: 320px; } }
-
     #viewer3D { width: 100%; height: 100%; }
 
     .no-model-msg {
-        position: absolute;
-        inset: 0;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        color: rgba(255,255,255,0.6);
-        gap: 12px;
-        text-align: center;
-        padding: 20px;
+        position: absolute; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        color: rgba(255,255,255,0.6); gap: 12px; text-align: center; padding: 20px;
     }
     .no-model-msg i { font-size: 64px; opacity: 0.2; }
     .no-model-msg h3 { color: white; font-size: 18px; }
     .no-model-msg p { font-size: 13px; }
 
-    .viewer-controls {
-        display: flex;
-        justify-content: center;
-        gap: 8px;
-        padding: 16px;
-        background: var(--bg-secondary);
-        border-top: 1px solid var(--border-light);
-        flex-wrap: wrap;
-    }
-
+    .viewer-controls { display: flex; justify-content: center; gap: 8px; padding: 16px; background: var(--bg-secondary); border-top: 1px solid var(--border-light); flex-wrap: wrap; }
     .ctrl-btn {
-        width: 38px;
-        height: 38px;
-        border-radius: 50%;
-        border: 1.5px solid var(--border-color);
-        background: var(--bg-primary);
-        color: var(--text-secondary);
-        font-size: 14px;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        transition: all 0.2s;
+        width: 38px; height: 38px; border-radius: 50%;
+        border: 1.5px solid var(--border-color); background: var(--bg-primary);
+        color: var(--text-secondary); font-size: 14px; cursor: pointer;
+        display: flex; align-items: center; justify-content: center; transition: all 0.2s;
     }
     .ctrl-btn:hover { background: var(--primary); color: white; border-color: var(--primary); transform: scale(1.1); }
     .ctrl-btn.active { background: var(--primary); color: white; border-color: var(--primary); }
 
-    .color-strip {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 12px 16px;
-        border-top: 1px solid var(--border-light);
-        background: var(--bg-secondary);
-        flex-wrap: wrap;
-    }
+    .color-strip { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border-light); background: var(--bg-secondary); flex-wrap: wrap; }
     .color-strip-label { font-size: 12px; font-weight: 600; color: var(--text-secondary); flex-shrink: 0; }
     .color-swatch {
-        width: 28px;
-        height: 28px;
-        border-radius: 50%;
-        border: 2.5px solid white;
-        box-shadow: 0 1px 4px rgba(0,0,0,0.25);
-        cursor: pointer;
-        transition: all 0.2s;
-        position: relative;
+        width: 28px; height: 28px; border-radius: 50%;
+        border: 2.5px solid white; box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+        cursor: pointer; transition: all 0.2s; position: relative;
     }
     .color-swatch:hover { transform: scale(1.2); }
     .color-swatch.active { box-shadow: 0 0 0 3px var(--primary); transform: scale(1.1); }
-    .color-swatch.reset-btn {
-        background: linear-gradient(45deg, #ccc 25%, #eee 25%, #eee 50%, #ccc 50%, #ccc 75%, #eee 75%);
-        background-size: 8px 8px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-    }
+    .color-swatch.reset-btn { background: linear-gradient(45deg, #ccc 25%, #eee 25%, #eee 50%, #ccc 50%, #ccc 75%, #eee 75%); background-size: 8px 8px; display: flex; align-items: center; justify-content: center; }
     .color-swatch.reset-btn i { font-size: 11px; color: #666; }
 
-    .viewer-hint {
-        display: flex;
-        gap: 16px;
-        padding: 10px 16px;
-        background: var(--bg-primary);
-        border-top: 1px solid var(--border-light);
-        flex-wrap: wrap;
-    }
+    .viewer-hint { display: flex; gap: 16px; padding: 10px 16px; background: var(--bg-primary); border-top: 1px solid var(--border-light); flex-wrap: wrap; }
     .hint-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text-muted); }
     .hint-item i { color: var(--primary); font-size: 12px; }
 
-    /* ===== INFO PANEL ===== */
+    /* INFO PANEL */
     .info-panel { display: flex; flex-direction: column; gap: 16px; }
-
-    .info-card {
-        background: var(--bg-secondary);
-        border-radius: var(--radius-lg);
-        border: 1px solid var(--border-light);
-        box-shadow: var(--shadow-sm);
-        overflow: hidden;
-    }
-
-    .info-card-head {
-        padding: 16px 20px;
-        border-bottom: 1px solid var(--border-light);
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 14px;
-        font-weight: 700;
-        color: var(--text-primary);
-    }
+    .info-card { background: var(--bg-secondary); border-radius: var(--radius-lg); border: 1px solid var(--border-light); box-shadow: var(--shadow-sm); overflow: hidden; }
+    .info-card-head { padding: 16px 20px; border-bottom: 1px solid var(--border-light); display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; color: var(--text-primary); }
     .info-card-head i { color: var(--primary); }
     .info-card-body { padding: 20px; }
 
-    .category-pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 5px;
-        padding: 4px 12px;
-        background: var(--primary-light);
-        color: var(--primary);
-        border-radius: var(--radius-full);
-        font-size: 11px;
-        font-weight: 600;
-        margin-bottom: 10px;
-    }
-    .product-title {
-        font-family: var(--font-display);
-        font-size: 24px;
-        color: var(--text-primary);
-        margin-bottom: 14px;
-        line-height: 1.2;
-    }
+    .category-pill { display: inline-flex; align-items: center; gap: 5px; padding: 4px 12px; background: var(--primary-light); color: var(--primary); border-radius: var(--radius-full); font-size: 11px; font-weight: 600; margin-bottom: 10px; }
+    .product-title { font-family: var(--font-display); font-size: 24px; color: var(--text-primary); margin-bottom: 14px; line-height: 1.2; }
 
-    .price-box {
-        background: var(--primary-light);
-        border-radius: var(--radius-md);
-        padding: 14px 16px;
-        margin-bottom: 14px;
-    }
+    .price-box { background: var(--primary-light); border-radius: var(--radius-md); padding: 14px 16px; margin-bottom: 14px; }
     .price-main { font-size: 28px; font-weight: 700; color: var(--primary); font-family: var(--font-display); }
     .price-main.sale { color: #EF4444; }
     .price-orig { font-size: 14px; color: var(--text-muted); text-decoration: line-through; margin-left: 8px; }
 
-    .sale-banner-sm {
+    .sale-banner-sm { display: flex; align-items: center; gap: 6px; padding: 7px 12px; background: linear-gradient(135deg, #EF4444, #FF6B6B); border-radius: var(--radius-md); margin-bottom: 10px; font-size: 12px; color: white; font-weight: 600; }
+
+    .product-desc { font-size: 13px; color: var(--text-secondary); line-height: 1.7; margin-bottom: 16px; }
+
+    /* PAYMENT POLICY CARD */
+    .payment-policy-card { margin-top: 16px; padding: 14px; background: var(--bg-primary); border-radius: var(--radius-md); border-left: 4px solid var(--primary); font-size: 13px; }
+    .payment-policy-card i { color: var(--primary); margin-right: 8px; }
+    .payment-policy-card .policy-title { font-weight: 700; color: var(--text-primary); margin-bottom: 4px; }
+    .payment-policy-card .policy-desc { color: var(--text-secondary); font-size: 12px; }
+
+    .existing-notice { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: var(--radius-md); font-size: 12px; font-weight: 500; margin-bottom: 12px; }
+    .existing-notice.reservation { background: #FEF3C7; color: #92400E; border: 1px solid #FDE68A; }
+    .existing-notice.appointment { background: #DBEAFE; color: #1E40AF; border: 1px solid #BFDBFE; }
+    .existing-notice a { color: inherit; font-weight: 700; }
+
+    /* ✅ VIEW FULL PRODUCT PAGE BUTTON */
+    .btn-view-full-page {
+        width: 100%;
         display: flex;
         align-items: center;
-        gap: 6px;
-        padding: 7px 12px;
-        background: linear-gradient(135deg, #EF4444, #FF6B6B);
-        border-radius: var(--radius-md);
-        margin-bottom: 10px;
-        font-size: 12px;
+        justify-content: center;
+        gap: 10px;
+        padding: 15px 20px;
+        background: var(--primary-gradient);
         color: white;
-        font-weight: 600;
+        border: none;
+        border-radius: var(--radius-full);
+        font-size: 15px;
+        font-weight: 700;
+        font-family: var(--font-main);
+        text-decoration: none;
+        cursor: pointer;
+        transition: all 0.2s;
+        box-shadow: 0 4px 14px rgba(0,183,97,0.3);
+        margin-top: 10px;
+    }
+    .btn-view-full-page:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 20px rgba(0,183,97,0.4);
+        color: white;
     }
 
-    .product-desc {
-        font-size: 13px;
-        color: var(--text-secondary);
-        line-height: 1.7;
-        margin-bottom: 16px;
-    }
+    /* FLOW CARD */
+    .flow-card { background: var(--bg-secondary); border-radius: var(--radius-lg); padding: 18px; border: 1px solid var(--border-light); box-shadow: var(--shadow-sm); }
+    .flow-card-title { font-size: 14px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 7px; margin-bottom: 14px; }
+    .flow-card-title i { color: var(--primary); }
 
-    /* COLOR / VARIANT SELECTOR */
-    .color-selector-box { background: var(--bg-primary); border-radius: var(--radius-md); padding: 14px; margin-bottom: 14px; border: 1px solid var(--border-light); }
+    .lens-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 6px; }
+    .lens-btn {
+        padding: 11px 10px; border: 2px solid var(--border-color); border-radius: var(--radius-md);
+        background: var(--bg-primary); cursor: pointer; transition: all 0.2s; text-align: left;
+        display: flex; flex-direction: column; gap: 3px;
+    }
+    .lens-btn:hover { border-color: var(--primary); background: var(--primary-light); }
+    .lens-btn.selected { border-color: var(--primary); background: var(--primary-light); box-shadow: 0 0 0 3px rgba(0,183,97,0.12); }
+    .lens-btn .ln { font-weight: 700; font-size: 13px; color: var(--text-primary); }
+    .lens-btn .lp { font-size: 11px; color: var(--primary); font-weight: 600; }
+    .lens-btn .ld { font-size: 10px; color: var(--text-muted); }
+
+    .rx-toggle { display: flex; gap: 10px; margin: 12px 0 8px; flex-wrap: wrap; }
+    .rx-option {
+        flex: 1; min-width: 130px; display: flex; align-items: center; gap: 8px;
+        padding: 10px 12px; border: 2px solid var(--border-color); border-radius: var(--radius-md);
+        cursor: pointer; background: var(--bg-primary); transition: all 0.2s;
+        font-size: 12px; font-weight: 600; color: var(--text-secondary);
+    }
+    .rx-option input[type="radio"] { display: none; }
+    .rx-option:has(input:checked) { border-color: var(--primary); background: var(--primary-light); color: var(--primary); }
+    .rx-option .icon { width: 28px; height: 28px; border-radius: 7px; background: var(--border-light); display: flex; align-items: center; justify-content: center; font-size: 13px; flex-shrink: 0; }
+    .rx-option:has(input:checked) .icon { background: var(--primary); color: white; }
+
+    .rx-form { background: var(--bg-primary); border-radius: var(--radius-md); padding: 14px; margin-top: 10px; border: 1px solid var(--border-light); }
+    .rx-form h4 { font-size: 12px; font-weight: 700; color: var(--text-primary); margin-bottom: 12px; display: flex; align-items: center; gap: 5px; }
+    .rx-eyes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .rx-eye-box { background: var(--bg-secondary); border-radius: 9px; padding: 10px; border: 1px solid var(--border-light); }
+    .rx-eye-label { font-size: 11px; font-weight: 700; color: var(--primary); margin-bottom: 7px; display: flex; align-items: center; gap: 4px; }
+    .rx-eye-label span { background: var(--primary); color: white; padding: 1px 6px; border-radius: 3px; font-size: 9px; }
+    .rx-inputs { display: flex; gap: 5px; }
+    .rx-input-group { flex: 1; }
+    .rx-input-group label { font-size: 8px; color: var(--text-muted); text-transform: uppercase; display: block; margin-bottom: 2px; font-weight: 600; }
+    .rx-input-group input { width: 100%; padding: 6px 4px; border: 1.5px solid var(--border-color); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); font-size: 12px; text-align: center; font-family: var(--font-main); }
+    .rx-input-group input:focus { outline: none; border-color: var(--primary); }
+    .rx-note { font-size: 10px; color: var(--text-muted); margin-top: 10px; text-align: center; display: flex; align-items: center; justify-content: center; gap: 4px; }
+    .rx-note i { color: var(--primary); }
+
+    .eye-exam-box { background: var(--primary-light); border: 1px solid rgba(0,183,97,0.2); border-radius: var(--radius-md); padding: 14px; margin-top: 10px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 6px; }
+    .eye-exam-box i { font-size: 24px; color: var(--primary); }
+    .eye-exam-box p { font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+
+    /* COLOR SELECTOR */
+    .color-selector-box { background: var(--bg-primary); border-radius: var(--radius-md); padding: 14px; margin-bottom: 8px; border: 1px solid var(--border-light); }
     .cs-title { font-size: 13px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 6px; margin-bottom: 12px; }
     .cs-title i { color: var(--primary); }
     .cs-selected-label { font-weight: 500; color: var(--text-secondary); font-size: 12px; margin-left: auto; }
@@ -415,7 +427,7 @@ include '../includes/navbar.php';
     .color-btns { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 8px; }
     .color-btn { display: flex; align-items: center; gap: 6px; padding: 7px 12px; border: 2px solid var(--border-color); border-radius: var(--radius-md); background: var(--bg-secondary); cursor: pointer; transition: all 0.2s; font-family: inherit; }
     .color-btn:hover:not(:disabled):not(.oos) { border-color: var(--primary); background: var(--primary-light); }
-    .color-btn.selected { border-color: var(--primary); background: var(--primary-light); box-shadow: 0 0 0 3px rgba(0,183,97,0.15); }
+    .color-btn.selected { border-color: var(--primary); background: var(--primary-light); box-shadow: 0 0 0 3px rgba(0,183,97,0.12); }
     .color-btn.oos { opacity: 0.45; cursor: not-allowed; border-style: dashed; }
     .color-dot { width: 12px; height: 12px; border-radius: 50%; border: 1.5px solid rgba(0,0,0,0.15); flex-shrink: 0; }
     .color-btn-name { font-size: 12px; font-weight: 600; color: var(--text-primary); }
@@ -430,72 +442,20 @@ include '../includes/navbar.php';
     .sold-out-notice strong { font-size: 13px; color: var(--danger); display: block; margin-bottom: 2px; }
     .sold-out-notice p { font-size: 11px; color: var(--text-secondary); }
 
-    .existing-notice {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 12px 14px;
-        border-radius: var(--radius-md);
-        font-size: 12px;
-        font-weight: 500;
-        margin-bottom: 12px;
-    }
-    .existing-notice.reservation { background: #FEF3C7; color: #92400E; border: 1px solid #FDE68A; }
-    .existing-notice.appointment { background: #DBEAFE; color: #1E40AF; border: 1px solid #BFDBFE; }
-    .existing-notice a { color: inherit; font-weight: 700; }
+    /* SIZE SELECTOR */
+    .size-selector-box { background: var(--bg-primary); border-radius: var(--radius-md); padding: 16px; margin-bottom: 16px; border: 1px solid var(--border-light); }
+    .size-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+    .size-btn { padding: 8px 16px; border: 2px solid var(--border-color); border-radius: var(--radius-md); background: var(--bg-secondary); cursor: pointer; font-weight: 600; font-size: 13px; transition: all 0.2s; }
+    .size-btn:hover, .size-btn.selected { border-color: var(--primary); background: var(--primary-light); color: var(--primary); }
 
-    .btn-main-action {
-        width: 100%;
-        padding: 15px;
-        background: var(--primary-gradient);
-        color: white;
-        border: none;
-        border-radius: var(--radius-md);
-        font-size: 15px;
-        font-weight: 700;
-        font-family: var(--font-main);
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 8px;
-        transition: all 0.2s;
-        box-shadow: 0 4px 14px rgba(0,183,97,0.3);
-        margin-bottom: 8px;
-        text-decoration: none;
-    }
-    .btn-main-action:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(0,183,97,0.4); }
-    .btn-main-action:disabled { opacity: 0.55; cursor: not-allowed; transform: none; box-shadow: none; }
-    .btn-main-action.apt { background: linear-gradient(135deg, #3B82F6, #2563EB); box-shadow: 0 4px 14px rgba(59,130,246,0.3); }
-    .btn-main-action.apt:hover:not(:disabled) { box-shadow: 0 8px 20px rgba(59,130,246,0.4); }
-
-    .action-helper {
-        font-size: 11px;
-        color: var(--text-muted);
-        text-align: center;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 4px;
-    }
-
+    /* FAVORITE BUTTON */
     .fav-product-wrap { margin-bottom: 12px; }
     .btn-fav-product-full {
-        width: 100%;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 10px;
-        padding: 13px 20px;
-        border-radius: var(--radius-full, 999px);
-        border: 2px solid #e5e7eb;
-        background: transparent;
-        color: var(--text-secondary, #6B7280);
-        font-size: 15px;
-        font-weight: 600;
-        cursor: pointer;
-        transition: all 0.2s;
-        font-family: inherit;
+        width: 100%; display: flex; align-items: center; justify-content: center;
+        gap: 10px; padding: 13px 20px; border-radius: var(--radius-full);
+        border: 2px solid #e5e7eb; background: transparent;
+        color: var(--text-secondary); font-size: 15px; font-weight: 600;
+        cursor: pointer; transition: all 0.2s; font-family: inherit;
     }
     .btn-fav-product-full i { font-size: 16px; color: #ccc; transition: all 0.2s; }
     .btn-fav-product-full:hover { border-color: #EF4444; color: #EF4444; }
@@ -509,16 +469,10 @@ include '../includes/navbar.php';
 
     /* CLINIC CARD */
     .clinic-card {
-        background: var(--bg-secondary);
-        border-radius: var(--radius-lg);
-        padding: 16px;
-        border: 1px solid var(--border-light);
-        display: flex;
-        gap: 12px;
-        align-items: flex-start;
-        text-decoration: none;
-        transition: all 0.2s;
-        box-shadow: var(--shadow-sm);
+        background: var(--bg-secondary); border-radius: var(--radius-lg);
+        padding: 16px; border: 1px solid var(--border-light);
+        display: flex; gap: 12px; align-items: flex-start;
+        text-decoration: none; transition: all 0.2s; box-shadow: var(--shadow-sm);
     }
     .clinic-card:hover { border-color: var(--primary); }
     .clinic-logo-box { width: 44px; height: 44px; border-radius: 12px; background: var(--primary-light); display: flex; align-items: center; justify-content: center; overflow: hidden; flex-shrink: 0; }
@@ -550,7 +504,7 @@ include '../includes/navbar.php';
 
     <!-- Breadcrumb -->
     <div class="breadcrumb">
-        <a href="#" onclick="goBack(); return false;">
+        <a href="#" onclick="goBack(); return false;" id="backButton">
             <i class="fas fa-arrow-left"></i> <?php echo htmlspecialchars($product['name']); ?>
         </a>
         <span class="sep">/</span>
@@ -581,17 +535,17 @@ include '../includes/navbar.php';
                 <button class="ctrl-btn" onclick="zoomOut()" title="Zoom Out"><i class="fas fa-search-minus"></i></button>
             </div>
 
-            <!-- 3D Color swatches (visual preview) -->
+            <!-- Color swatches -->
             <?php if ($has_colors && !$is_fully_sold_out): ?>
             <div class="color-strip">
-                <span class="color-strip-label">3D Preview Color:</span>
+                <span class="color-strip-label">3D Color:</span>
                 <div class="color-swatch reset-btn" onclick="resetColor()" title="Restore original">
                     <i class="fas fa-undo"></i>
                 </div>
                 <?php foreach ($product_colors as $c): if ($c['quantity'] <= 0) continue; ?>
                 <div class="color-swatch"
                      style="background:<?php echo htmlspecialchars($c['code']); ?>"
-                     onclick="pickColorFromSwatch('<?php echo htmlspecialchars($c['code']); ?>', '<?php echo htmlspecialchars($c['name']); ?>', this)"
+                     onclick="changeColor('<?php echo htmlspecialchars($c['code']); ?>', this)"
                      title="<?php echo htmlspecialchars($c['name']); ?> (<?php echo $c['quantity']; ?> left)">
                 </div>
                 <?php endforeach; ?>
@@ -640,8 +594,32 @@ include '../includes/navbar.php';
                     <p class="product-desc"><?php echo nl2br(htmlspecialchars($product['description'])); ?></p>
                     <?php endif; ?>
 
+                    <!-- PAYMENT POLICY CARD -->
+                    <div class="payment-policy-card">
+                        <div class="policy-title">
+                            <i class="fas fa-credit-card"></i> Payment Policy: <?php echo $clinic_payment_policy_display; ?>
+                            <?php if ($clinic_booking_flow == 'pay_first'): ?>
+                                <span style="background: var(--primary); color: white; padding: 2px 8px; border-radius: 20px; font-size: 10px; margin-left: 8px;">Pay First</span>
+                            <?php else: ?>
+                                <span style="background: var(--warning); color: white; padding: 2px 8px; border-radius: 20px; font-size: 10px; margin-left: 8px;">Approve First</span>
+                            <?php endif; ?>
+                        </div>
+                        <div class="policy-desc">
+                            <?php if ($payment_type == 'downpayment'): ?>
+                                <i class="fas fa-percent"></i> <?php echo $downpayment_percent; ?>% downpayment (₱<?php echo number_format($downpayment_amount, 2); ?>) required online.
+                                Balance of ₱<?php echo number_format($balance_amount, 2); ?> to be paid at the clinic.
+                            <?php elseif ($payment_type == 'full'): ?>
+                                <i class="fas fa-cash"></i> 100% full payment of ₱<?php echo number_format($downpayment_amount, 2); ?> required online.
+                            <?php elseif ($payment_type == 'onsite'): ?>
+                                <i class="fas fa-store"></i> Pay ₱<?php echo number_format($display_price, 2); ?> directly at the clinic. No online payment required.
+                            <?php elseif ($payment_type == 'free'): ?>
+                                <i class="fas fa-gift"></i> This is a free service. No payment required.
+                            <?php endif; ?>
+                        </div>
+                    </div>
+
                     <!-- COLOR / VARIANT SELECTOR -->
-                    <?php if ($has_colors && !$IS_SERVICE): ?>
+                    <?php if ($has_stock_tracking && !$IS_SERVICE): ?>
                     <div class="color-selector-box">
                         <div class="cs-title">
                             <i class="fas fa-palette"></i>
@@ -664,7 +642,7 @@ include '../includes/navbar.php';
                                             data-code="<?php echo htmlspecialchars($color['code']); ?>"
                                             data-name="<?php echo htmlspecialchars($color['name']); ?>"
                                             data-qty="<?php echo $color['quantity']; ?>"
-                                            onclick="selectColorFromButton(this)"
+                                            onclick="selectColor(this)"
                                             <?php echo $oos ? 'disabled' : ''; ?>>
                                         <?php if (!empty($color['code']) && strlen($color['code']) >= 4): ?>
                                             <span class="color-dot" style="background:<?php echo htmlspecialchars($color['code']); ?>"></span>
@@ -681,9 +659,30 @@ include '../includes/navbar.php';
                                 <?php endforeach; ?>
                             </div>
                             <p class="cs-hint" id="csHint">
-                                <i class="fas fa-info-circle"></i> Piliin ang variant para makita sa 3D at ma-prefill sa product page.
+                                <i class="fas fa-info-circle"></i> Click a color to preview on 3D model.
                             </p>
                         <?php endif; ?>
+                    </div>
+                    <?php endif; ?>
+
+                    <!-- SIZE SELECTOR -->
+                    <?php if ($has_sizes): ?>
+                    <div class="size-selector-box">
+                        <div class="cs-title">
+                            <i class="fas fa-ruler-combined"></i>
+                            Frame Size
+                            <span class="cs-selected-label" id="sizeSelectedLabel">— Select a size</span>
+                        </div>
+                        <div class="size-btns" id="sizeBtns">
+                            <?php foreach ($available_sizes as $size): ?>
+                            <button class="size-btn" data-size="<?php echo htmlspecialchars($size); ?>" onclick="selectSize(this)">
+                                <?php echo htmlspecialchars($size); ?>
+                            </button>
+                            <?php endforeach; ?>
+                        </div>
+                        <p class="cs-hint" id="sizeHint">
+                            <i class="fas fa-info-circle"></i> Select your preferred frame size.
+                        </p>
                     </div>
                     <?php endif; ?>
 
@@ -711,37 +710,14 @@ include '../includes/navbar.php';
                         </button>
                     </div>
 
-                    <!-- Action Button -->
-                    <?php if ($existing_reservation): ?>
-                        <a href="my-reservations.php" class="btn-main-action">
-                            <i class="fas fa-bookmark"></i> View My Reservation
-                        </a>
-                        <p class="action-helper"><i class="fas fa-info-circle"></i> May active reservation ka na para sa product na 'to.</p>
-                    <?php elseif ($existing_appointment): ?>
-                        <a href="my-appointments.php" class="btn-main-action apt">
-                            <i class="fas fa-calendar-check"></i> View My Appointment
-                        </a>
-                        <p class="action-helper"><i class="fas fa-info-circle"></i> May pending appointment ka na para sa product na 'to.</p>
-                    <?php elseif ($is_fully_sold_out): ?>
-                        <button class="btn-main-action" disabled>
-                            <i class="fas fa-times-circle"></i> Out of Stock
-                        </button>
-                        <p class="action-helper" style="color:var(--danger);">
-                            <i class="fas fa-info-circle"></i> All variants are currently unavailable.
-                        </p>
-                    <?php elseif ($IS_SERVICE): ?>
-                        <a href="product-view.php?id=<?php echo $product_id; ?>" class="btn-main-action apt">
-                            <i class="fas fa-calendar-plus"></i> Book Appointment
-                        </a>
-                        <p class="action-helper"><i class="fas fa-info-circle"></i> Buksan ang product page para mag-book.</p>
-                    <?php else: ?>
-                        <button class="btn-main-action" onclick="goToReserve()">
-                            <i class="fas fa-shopping-bag"></i> Reserve This Product
-                        </button>
-                        <p class="action-helper"><i class="fas fa-info-circle"></i> Dadalhin ka sa product page para sa reservation.</p>
-                    <?php endif; ?>
+                    <!-- ✅ VIEW FULL PRODUCT PAGE — Ito lang ang action button -->
+                    <a href="product-view.php?id=<?php echo $product_id; ?>" class="btn-view-full-page">
+                        <i class="fas fa-external-link-alt"></i> View Full Product Page
+                    </a>
                 </div>
             </div>
+
+
 
             <!-- Clinic Card -->
             <a href="clinic-details.php?id=<?php echo $clinic_id; ?>" class="clinic-card">
@@ -768,7 +744,7 @@ include '../includes/navbar.php';
 
 <script>
 // ============================================
-// GO BACK
+// GO BACK FUNCTION
 // ============================================
 function goBack() {
     if (document.referrer && document.referrer.indexOf(window.location.hostname) !== -1) {
@@ -779,77 +755,73 @@ function goBack() {
 }
 
 // ============================================
-// RESERVE — redirect to product-view.php
+// VARIABLES
 // ============================================
-function goToReserve() {
-    let url = 'product-view.php?id=<?php echo $product_id; ?>';
-    if (selectedColor && selectedColor.code) {
-        url += '&color=' + encodeURIComponent(selectedColor.code);
-    }
-    window.location.href = url;
+let selectedLens = '<?php echo ($IS_ACCESSORY || $IS_SERVICE) ? '' : ($IS_LENS_ONLY ? 'single_vision' : ($IS_CONTACT_LENS ? 'contact_daily' : 'frame_only')); ?>';
+let rxKnowledge = null;
+let selectedColor = null;
+let selectedSize = null;
+
+const IS_LENS_ONLY       = <?php echo $IS_LENS_ONLY ? 'true' : 'false'; ?>;
+const IS_CONTACT         = <?php echo $IS_CONTACT_LENS ? 'true' : 'false'; ?>;
+const NEEDS_LENS         = <?php echo $NEEDS_LENS_SELECTION ? 'true' : 'false'; ?>;
+
+// ============================================
+// SIZE SELECTION
+// ============================================
+function selectSize(btn) {
+    document.querySelectorAll('.size-btn').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+    selectedSize = btn.dataset.size;
+    const label = document.getElementById('sizeSelectedLabel');
+    if (label) { label.textContent = selectedSize; label.classList.add('chosen'); }
 }
 
 // ============================================
-// COLOR SELECTION — from info panel buttons
+// COLOR SELECTION
 // ============================================
-let selectedColor = null;
-
-function selectColorFromButton(btn) {
+function selectColor(btn) {
     document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('selected'));
     btn.classList.add('selected');
-
     selectedColor = {
         code: btn.dataset.code,
-        name: btn.dataset.name
+        name: btn.dataset.name,
+        qty:  parseInt(btn.dataset.qty),
     };
-
     const label = document.getElementById('csSelectedLabel');
-    if (label) {
-        label.textContent = selectedColor.name;
-        label.classList.add('chosen');
-    }
-    const hint = document.getElementById('csHint');
-    if (hint) hint.style.display = 'none';
-
-    // Update 3D model color
-    changeColorModel(selectedColor.code);
-
-    // Also visually highlight the matching 3D swatch (if any)
-    document.querySelectorAll('.color-swatch').forEach(s => {
-        s.classList.toggle('active', s.style.background.includes(selectedColor.code.toLowerCase()) || s.title.startsWith(selectedColor.name));
-    });
+    if (label) { label.textContent = selectedColor.name + ' (' + selectedColor.qty + ' left)'; label.classList.add('chosen'); }
+    changeColor(selectedColor.code, null);
 }
 
 // ============================================
-// COLOR SELECTION — from 3D swatches
+// LENS SELECTION
 // ============================================
-function pickColorFromSwatch(code, name, el) {
-    selectedColor = { code: code, name: name };
+function selectLens(btn) {
+    document.querySelectorAll('.lens-btn').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+    selectedLens = btn.dataset.lens;
 
-    // Highlight swatch
-    document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
-    if (el) el.classList.add('active');
-
-    // Update info panel color buttons selection
-    document.querySelectorAll('.color-btn').forEach(b => {
-        b.classList.toggle('selected', b.dataset.code === code);
-    });
-
-    // Update label
-    const label = document.getElementById('csSelectedLabel');
-    if (label) {
-        label.textContent = name;
-        label.classList.add('chosen');
+    const rxSection = document.getElementById('rxSection');
+    const isFrameOnly = (selectedLens === 'frame_only');
+    if (rxSection) {
+        rxSection.style.display = (!isFrameOnly && NEEDS_LENS) ? 'block' : 'none';
+        if (isFrameOnly) {
+            rxKnowledge = null;
+            document.querySelectorAll('input[name="rx_know"]').forEach(r => r.checked = false);
+            document.getElementById('rxFormBox').style.display = 'none';
+            document.getElementById('rxExamBox').style.display = 'none';
+        }
     }
-    const hint = document.getElementById('csHint');
-    if (hint) hint.style.display = 'none';
+}
 
-    // Update 3D model
-    changeColorModel(code);
+function handleRxKnowledge(radio) {
+    rxKnowledge = radio.value;
+    document.getElementById('rxFormBox').style.display = rxKnowledge === 'know' ? 'block' : 'none';
+    document.getElementById('rxExamBox').style.display = rxKnowledge === 'dont_know' ? 'block' : 'none';
 }
 
 // ============================================
-// UTILITIES — Toast
+// TOAST
 // ============================================
 function showToast(msg, type = 'success') {
     const c = document.getElementById('toastContainer');
@@ -862,7 +834,7 @@ function showToast(msg, type = 'success') {
 }
 
 // ============================================
-// FAVORITE
+// FAVORITE TOGGLE
 // ============================================
 function toggleProductFav(btn) {
     const productId = btn.dataset.productId;
@@ -908,6 +880,18 @@ document.addEventListener('DOMContentLoaded', function() {
     <?php if ($has_3d): ?>
     init3DViewer('<?php echo addslashes($model_file); ?>');
     <?php endif; ?>
+
+    // Initialize rx section visibility
+    const rxSection = document.getElementById('rxSection');
+    if (rxSection) {
+        if (IS_LENS_ONLY || IS_CONTACT) {
+            rxSection.style.display = 'block';
+        } else if (NEEDS_LENS && selectedLens !== 'frame_only' && selectedLens !== '') {
+            rxSection.style.display = 'block';
+        } else if (selectedLens === 'frame_only') {
+            rxSection.style.display = 'none';
+        }
+    }
 });
 
 function isLensMaterial(node, material) {
@@ -915,9 +899,13 @@ function isLensMaterial(node, material) {
     const nodeName = (node.name || '').toLowerCase();
     const lensKeywords = ['lens', 'glass', 'clear', 'transparent', 'window', 'lense', 'optic', 'lenses'];
     for (let keyword of lensKeywords) {
-        if (materialName.includes(keyword) || nodeName.includes(keyword)) return true;
+        if (materialName.includes(keyword) || nodeName.includes(keyword)) {
+            return true;
+        }
     }
-    if (material.transparent === true || material.opacity < 1) return true;
+    if (material.transparent === true || material.opacity < 1) {
+        return true;
+    }
     return false;
 }
 
@@ -944,7 +932,8 @@ function init3DViewer(modelPath) {
     controls.enableZoom = true;
     controls.enablePan = false;
     controls.target.set(0, 1.5, 0);
-    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+    scene.add(ambient);
     const mainLight = new THREE.DirectionalLight(0xffffff, 1.2);
     mainLight.position.set(2, 5, 3);
     mainLight.castShadow = true;
@@ -996,6 +985,23 @@ function init3DViewer(modelPath) {
         });
         scene.add(model);
         showToast('3D model loaded!', 'success');
+        if (originalLensColors.size === 0) {
+            const warningDiv = document.createElement('div');
+            warningDiv.style.cssText = `
+                position: absolute; bottom: 60px; left: 16px; right: 16px;
+                background: #fff3cd; border: 1px solid #ffeeba; color: #856404;
+                padding: 8px 12px; border-radius: 8px; font-size: 11px;
+                text-align: center; z-index: 100;
+            `;
+            warningDiv.innerHTML = `<i class="fas fa-info-circle"></i> <strong>Note:</strong> No lens material detected. The entire frame (including lens area) will change color.`;
+            const viewerCanvas = document.querySelector('.viewer-canvas');
+            if (viewerCanvas) viewerCanvas.style.position = 'relative';
+            if (viewerCanvas && !viewerCanvas.querySelector('.lens-warning')) {
+                warningDiv.classList.add('lens-warning');
+                viewerCanvas.appendChild(warningDiv);
+                setTimeout(() => warningDiv.remove(), 5000);
+            }
+        }
     }, null, function(err) { console.error('3D load error:', err); showToast('Failed to load 3D model.', 'error'); });
     function animate() {
         requestAnimationFrame(animate);
@@ -1042,7 +1048,9 @@ function toggleWireframe() {
 function zoomIn() { if (camera) camera.position.multiplyScalar(0.9); }
 function zoomOut() { if (camera) camera.position.multiplyScalar(1.1); }
 
-function changeColorModel(colorCode) {
+function changeColor(colorCode, el) {
+    document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
+    if (el) el.classList.add('active');
     if (!model) return;
     model.traverse(node => {
         if (node.isMesh && node.material) {
@@ -1065,17 +1073,11 @@ function changeColorModel(colorCode) {
             });
         }
     });
+    showToast('Color changed', 'info');
 }
 
 function resetColor() {
     document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
-    document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('selected'));
-    selectedColor = null;
-    const label = document.getElementById('csSelectedLabel');
-    if (label) { label.textContent = '— Select a color'; label.classList.remove('chosen'); }
-    const hint = document.getElementById('csHint');
-    if (hint) hint.style.display = '';
-
     if (!model) return;
     let idx = 0;
     model.traverse(node => {

@@ -203,8 +203,14 @@ if (isset($_POST['request_refund'], $_POST['appointment_id'])) {
         exit;
     }
     
-    // ✅ Check existing refund request
-    $ex = mysqli_query($conn, "SELECT id FROM refund_requests WHERE appointment_id=$rid AND status IN ('pending','processing','approved')");
+    // ✅ FIXED: Check existing refund request — kasama na ang completed
+    $ex = mysqli_query($conn, "
+        SELECT id, status, refund_status 
+        FROM refund_requests 
+        WHERE appointment_id=$rid 
+        AND (status IN ('pending','processing','completed','approved') 
+             OR refund_status IN ('pending','processing','completed'))
+    ");
     if (mysqli_num_rows($ex) > 0) {
         echo json_encode(['success'=>false, 'message'=>'Refund request already submitted.']);
         exit;
@@ -223,6 +229,7 @@ if (isset($_POST['request_refund'], $_POST['appointment_id'])) {
             amount, 
             request_type, 
             status, 
+            refund_status,
             refund_percentage,
             reason,
             created_at
@@ -232,6 +239,7 @@ if (isset($_POST['request_refund'], $_POST['appointment_id'])) {
             $cid, 
             $refundAmount, 
             'refund', 
+            'pending',
             'pending',
             $refundPercent,
             'Patient requested refund for no-show appointment',
@@ -348,11 +356,16 @@ if (!$appointment) { header('Location: my-appointments.php'); exit(); }
 
 $downpayment_amount = max((float)($appointment['downpayment_amount']??0), (float)($appointment['downpayment']??0));
 
-// ✅ Check refund eligibility
+// ============================================
+// ✅ FIXED: Check refund eligibility — kasama na ang completed status
+// ============================================
 $refund_available = false;
 $refund_pending = false;
+$refund_completed = false;
+$refund_rejected = false;
 $refund_percent = 0;
 $eligible_refund = 0;
+$refund_data = null;
 
 if ($appointment['status'] == 'cancelled' && $downpayment_amount > 0) {
     $refund_eligible = (int)($appointment['refund_eligible'] ?? 0);
@@ -363,8 +376,30 @@ if ($appointment['status'] == 'cancelled' && $downpayment_amount > 0) {
         $refund_available = true;
     }
     
-    $rc = mysqli_query($conn, "SELECT status FROM refund_requests WHERE appointment_id=$appointment_id AND status IN ('pending','approved','processing')");
-    $refund_pending = mysqli_num_rows($rc) > 0;
+    // ✅ FIXED: Kunin ang pinakabagong refund request — kasama lahat ng status
+    $rc = mysqli_query($conn, "
+        SELECT id, status, refund_status, amount, paymongo_refund_id, refund_date, created_at
+        FROM refund_requests 
+        WHERE appointment_id=$appointment_id 
+        ORDER BY id DESC LIMIT 1
+    ");
+    
+    if ($rc && mysqli_num_rows($rc) > 0) {
+        $refund_data = mysqli_fetch_assoc($rc);
+        $current_refund_status = $refund_data['refund_status'] ?? $refund_data['status'];
+        
+        // ✅ Check kung may active/completed refund na
+        if (in_array($current_refund_status, ['pending', 'processing'])) {
+            $refund_pending = true;
+        }
+        if ($current_refund_status === 'completed') {
+            $refund_completed = true;
+            $refund_pending = true; // ✅ Kapag completed, hindi na dapat magpakita ng button
+        }
+        if (in_array($current_refund_status, ['rejected', 'failed'])) {
+            $refund_rejected = true;
+        }
+    }
 }
 
 // ✅ Check if No-Show
@@ -373,6 +408,32 @@ $forfeited_amount = (float)($appointment['forfeited_amount'] ?? 0);
 $refund_eligible = (int)($appointment['refund_eligible'] ?? 0);
 $refund_percent = (int)($appointment['refund_percentage'] ?? 0);
 $eligible_refund = (float)($appointment['eligible_refund_amount'] ?? 0);
+
+// ✅ FIXED: Para sa no-show, i-check din ang refund request status
+if ($is_no_show && $downpayment_amount > 0) {
+    $rc_no_show = mysqli_query($conn, "
+        SELECT id, status, refund_status, amount, paymongo_refund_id, refund_date, created_at
+        FROM refund_requests 
+        WHERE appointment_id=$appointment_id 
+        ORDER BY id DESC LIMIT 1
+    ");
+    
+    if ($rc_no_show && mysqli_num_rows($rc_no_show) > 0) {
+        $refund_data = mysqli_fetch_assoc($rc_no_show);
+        $current_refund_status = $refund_data['refund_status'] ?? $refund_data['status'];
+        
+        if (in_array($current_refund_status, ['pending', 'processing'])) {
+            $refund_pending = true;
+        }
+        if ($current_refund_status === 'completed') {
+            $refund_completed = true;
+            $refund_pending = true;
+        }
+        if (in_array($current_refund_status, ['rejected', 'failed'])) {
+            $refund_rejected = true;
+        }
+    }
+}
 
 // ── Image helpers ──────────────────────────────────────────────────────────────
 function resolveImgPath3($path) {
@@ -586,6 +647,12 @@ if (!empty($appointment['product_id'])) {
         .downpayment-info{background:#FFF3E0;border-radius:var(--radius-md);padding:12px 15px;margin-bottom:20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;}
         .downpayment-info i{color:#F57C00;} .downpayment-info .amount{font-weight:700;color:#F57C00;font-size:16px;}
 
+        /* ✅ FIXED: Refund completed card */
+        .refund-completed-card{background:#D1FAE5; border:1px solid #6EE7B7; border-radius:var(--radius-md); padding:15px; margin-bottom:20px;}
+        .refund-completed-card .header{display:flex; align-items:center; gap:8px; color:#065F46; font-weight:700; font-size:15px; margin-bottom:8px;}
+        .refund-completed-card .details{color:#065F46; font-size:13px; line-height:1.7;}
+        .refund-completed-card .details strong{font-weight:600;}
+
         /* No-Show Info Box */
         .no-show-info { background:#FEF2F2; border:1px solid #FCA5A5; border-radius:var(--radius-md); padding:15px; margin-bottom:20px; }
         .no-show-info .forfeited-amount { font-size:20px; font-weight:700; color:#DC2626; }
@@ -680,6 +747,7 @@ if (!empty($appointment['product_id'])) {
         .action-btn-primary{background:var(--primary-gradient);color:white;} .action-btn-primary:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,183,97,0.3);}
         .action-btn-secondary{background:var(--bg-primary);border:1px solid var(--border-color);color:var(--text-primary);} .action-btn-secondary:hover{background:var(--primary);color:white;border-color:var(--primary);}
         .action-btn-warning{background:#F59E0B;color:white;} .action-btn-warning:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(245,158,11,0.3);}
+        .action-btn-success{background:#00B761;color:white;cursor:default;} .action-btn-success:hover{transform:none;}
 
         .image-modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.95);z-index:10000;cursor:pointer;align-items:center;justify-content:center;}
         .image-modal.show{display:flex;}
@@ -753,14 +821,40 @@ if (!empty($appointment['product_id'])) {
                 <?php endif; ?>
                 
             <?php elseif ($appointment['status'] == 'cancelled'): ?>
-                <?php if ($refund_available && !$refund_pending): ?>
-                    <div><i class="fas fa-check-circle" style="color: #00B761;"></i> <span>Refund eligible: <strong><?php echo $refund_percent; ?>%</strong> (₱<?php echo number_format($eligible_refund, 2); ?>)</span></div>
+                <?php if ($refund_completed): ?>
+                    <div><i class="fas fa-check-circle" style="color: #065F46;"></i> <span style="color:#065F46; font-weight:600;">Refund Completed: ₱<?php echo number_format($refund_data['amount'] ?? $eligible_refund, 2); ?></span></div>
                 <?php elseif ($refund_pending): ?>
                     <div><i class="fas fa-spinner fa-pulse"></i> <span>Refund request pending...</span></div>
+                <?php elseif ($refund_rejected): ?>
+                    <div><i class="fas fa-times-circle" style="color: #EF4444;"></i> <span>Refund request rejected</span></div>
+                <?php elseif ($refund_available): ?>
+                    <div><i class="fas fa-check-circle" style="color: #00B761;"></i> <span>Refund eligible: <strong><?php echo $refund_percent; ?>%</strong> (₱<?php echo number_format($eligible_refund, 2); ?>)</span></div>
                 <?php elseif (!$refund_available && $refund_percent == 0): ?>
                     <div><i class="fas fa-times-circle" style="color: #EF4444;"></i> <span>No refund available (0% per clinic policy)</span></div>
                 <?php endif; ?>
             <?php endif; ?>
+        </div>
+        <?php endif; ?>
+
+        <!-- ✅ FIXED: Refund Completed Success Card -->
+        <?php if ($refund_completed && $refund_data): ?>
+        <div class="refund-completed-card">
+            <div class="header">
+                <i class="fas fa-check-circle" style="font-size:20px;"></i>
+                Refund Completed
+            </div>
+            <div class="details">
+                <div><strong>Amount Refunded:</strong> ₱<?php echo number_format($refund_data['amount'] ?? $eligible_refund, 2); ?> (<?php echo $refund_percent; ?>%)</div>
+                <?php if (!empty($refund_data['paymongo_refund_id'])): ?>
+                    <div><strong>Refund ID:</strong> <?php echo htmlspecialchars($refund_data['paymongo_refund_id']); ?></div>
+                <?php endif; ?>
+                <?php if (!empty($refund_data['refund_date'])): ?>
+                    <div><strong>Refunded on:</strong> <?php echo date('F j, Y g:i A', strtotime($refund_data['refund_date'])); ?></div>
+                <?php endif; ?>
+                <div style="margin-top:8px; font-size:12px; color:#047857;">
+                    <i class="fas fa-info-circle"></i> Amount will reflect in your account within 3-5 business days.
+                </div>
+            </div>
         </div>
         <?php endif; ?>
 
@@ -1029,28 +1123,62 @@ if (!empty($appointment['product_id'])) {
                 <a href="book-appointment.php?clinic=<?php echo $appointment['clinic_id']; ?>&product=<?php echo $appointment['product_id']; ?>" class="action-btn action-btn-primary">
                     <i class="fas fa-redo-alt"></i> Book Again
                 </a>
-                <?php if ($refund_eligible == 1 && $refund_percent > 0 && !$refund_pending): ?>
+                
+                <?php if ($refund_completed): ?>
+                    <!-- ✅ Refund COMPLETED — success button, walang action -->
+                    <button class="action-btn action-btn-success" disabled>
+                        <i class="fas fa-check-circle"></i> 
+                        Refunded ₱<?php echo number_format($refund_data['amount'] ?? $eligible_refund, 2); ?> (<?php echo $refund_percent; ?>%)
+                    </button>
+                <?php elseif ($refund_pending): ?>
+                    <!-- ✅ Refund PENDING/PROCESSING -->
+                    <button class="action-btn action-btn-secondary" disabled style="opacity:0.6; cursor:not-allowed;">
+                        <i class="fas fa-spinner fa-pulse"></i> Refund Processing...
+                    </button>
+                <?php elseif ($refund_rejected): ?>
+                    <!-- ✅ Refund REJECTED -->
+                    <button class="action-btn action-btn-secondary" disabled style="opacity:0.6; cursor:not-allowed;">
+                        <i class="fas fa-times-circle"></i> Refund Rejected
+                    </button>
+                <?php elseif ($refund_eligible == 1 && $refund_percent > 0): ?>
+                    <!-- ✅ Eligible pa lang — ipakita ang button -->
                     <button onclick="requestRefund(<?php echo $appointment['id']; ?>)" class="action-btn action-btn-warning">
                         <i class="fas fa-money-bill-wave"></i> 
                         Request Refund (<?php echo $refund_percent; ?>% • ₱<?php echo number_format($eligible_refund, 2); ?>)
-                    </button>
-                <?php elseif ($refund_pending): ?>
-                    <button class="action-btn action-btn-secondary" disabled style="opacity:0.6; cursor:not-allowed;">
-                        <i class="fas fa-spinner fa-pulse"></i> Refund Request Pending
                     </button>
                 <?php endif; ?>
             <?php endif; ?>
         </div>
 
-        <!-- Refund Request Button for Cancelled -->
+        <!-- ✅ FIXED: Refund Request Button for Cancelled -->
         <?php if ($appointment['status'] == 'cancelled' && $downpayment_amount > 0): ?>
-            <?php if ($refund_pending): ?>
+            <?php if ($refund_completed): ?>
+                <!-- ✅ Refund COMPLETED — info card na lang, walang button -->
                 <div class="action-buttons" style="margin-top:15px; justify-content:flex-end;">
-                    <button class="action-btn action-btn-secondary" disabled style="opacity:0.6; cursor:not-allowed;">
-                        <i class="fas fa-spinner fa-pulse"></i> Refund Request Pending
+                    <button class="action-btn action-btn-success" disabled>
+                        <i class="fas fa-check-circle"></i> 
+                        Refund Completed (<?php echo $refund_percent; ?>% • ₱<?php echo number_format($refund_data['amount'] ?? $eligible_refund, 2); ?>)
                     </button>
                 </div>
+                
+            <?php elseif ($refund_pending): ?>
+                <!-- ✅ Refund PENDING/PROCESSING -->
+                <div class="action-buttons" style="margin-top:15px; justify-content:flex-end;">
+                    <button class="action-btn action-btn-secondary" disabled style="opacity:0.6; cursor:not-allowed;">
+                        <i class="fas fa-spinner fa-pulse"></i> Refund Processing...
+                    </button>
+                </div>
+                
+            <?php elseif ($refund_rejected): ?>
+                <!-- ✅ Refund REJECTED -->
+                <div class="action-buttons" style="margin-top:15px; justify-content:flex-end;">
+                    <button class="action-btn action-btn-secondary" disabled style="opacity:0.6; cursor:not-allowed;">
+                        <i class="fas fa-times-circle"></i> Refund Request Rejected
+                    </button>
+                </div>
+                
             <?php elseif ($refund_available): ?>
+                <!-- ✅ Eligible pa lang — ipakita ang button -->
                 <div class="action-buttons" style="margin-top:15px; justify-content:flex-end;">
                     <button onclick="requestRefund(<?php echo $appointment['id']; ?>)" class="action-btn action-btn-warning">
                         <i class="fas fa-money-bill-wave"></i> 
@@ -1061,7 +1189,9 @@ if (!empty($appointment['product_id'])) {
                         Refund eligible: <?php echo $refund_percent; ?>% of downpayment (₱<?php echo number_format($eligible_refund, 2); ?>)
                     </small>
                 </div>
+                
             <?php elseif ($refund_percent == 0): ?>
+                <!-- ✅ Not eligible -->
                 <div class="action-buttons" style="margin-top:15px; justify-content:flex-end;">
                     <button class="action-btn action-btn-secondary" disabled style="opacity:0.5; cursor:not-allowed;">
                         <i class="fas fa-times-circle"></i> 
@@ -1451,7 +1581,6 @@ async function viewPenalty(id) {
             body: fd.toString() 
         });
         
-        // ✅ Check if response is valid JSON
         const text = await res.text();
         
         try {
@@ -1505,7 +1634,6 @@ async function viewPenalty(id) {
                 });
             }
         } catch (parseError) {
-            // ✅ If response is not JSON, show error
             console.error('Parse error:', parseError);
             console.error('Response:', text);
             Swal.fire({ 

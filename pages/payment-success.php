@@ -7,7 +7,6 @@ include '../includes/config.php';
 include '../includes/theme.php';
 require_once '../includes/payment-helper.php';
 
-// Set timezone
 date_default_timezone_set('Asia/Manila');
 
 if (!isset($_SESSION['user_id'])) {
@@ -17,23 +16,104 @@ if (!isset($_SESSION['user_id'])) {
 
 $user_id = $_SESSION['user_id'];
 
-// Get parameters from URL
 $appointment_id = isset($_GET['appointment_id']) ? (int)$_GET['appointment_id'] : 0;
 $reservation_id = isset($_GET['reservation_id']) ? (int)$_GET['reservation_id'] : 0;
 $ref_no = isset($_GET['ref_no']) ? mysqli_real_escape_string($conn, $_GET['ref_no']) : '';
 $payment_type = isset($_GET['type']) ? $_GET['type'] : 'full';
 
-// Determine if this is a reservation or appointment
 $is_reservation = ($reservation_id > 0);
 
 // ============================================
-// SIMPLE INVENTORY DEDUCTION FUNCTION (NO TRANSACTION)
+// ✅ FIXED: HELPER — Resolve PayMongo payment_id from checkout session
+// ============================================
+function resolvePayMongoPaymentId($checkoutSessionId) {
+    if (empty($checkoutSessionId)) {
+        error_log("resolvePayMongoPaymentId: empty checkout session");
+        return null;
+    }
+    
+    // Skip if not a checkout session ID
+    if (strpos($checkoutSessionId, 'cs_') !== 0) {
+        // Already a payment ID?
+        if (strpos($checkoutSessionId, 'pay_') === 0) {
+            return $checkoutSessionId;
+        }
+        error_log("resolvePayMongoPaymentId: invalid format {$checkoutSessionId}");
+        return null;
+    }
+    
+    $secretKey = "sk_test_qcZwF33CQGUk9owjBgRtGFbS"; // ⚠️ Palitan sa live key
+    
+    // Step 1: Get checkout session → payment_intent_id
+    $ch = curl_init("https://api.paymongo.com/v1/checkout_sessions/{$checkoutSessionId}");
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Authorization: Basic ' . base64_encode($secretKey . ':')
+    ]);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError = curl_error($ch);
+    curl_close($ch);
+    
+    if ($curlError) {
+        error_log("resolvePayMongoPaymentId: CURL error — {$curlError}");
+        return null;
+    }
+    
+    if ($httpCode !== 200) {
+        error_log("resolvePayMongoPaymentId: HTTP {$httpCode} for checkout {$checkoutSessionId}");
+        return null;
+    }
+    
+    $data = json_decode($response, true);
+    $paymentIntentId = $data['data']['attributes']['payment_intent']['id'] ?? null;
+    
+    if (!$paymentIntentId) {
+        error_log("resolvePayMongoPaymentId: no payment_intent in checkout {$checkoutSessionId}");
+        return null;
+    }
+    
+    // Step 2: Get payment_intent → payments[]
+    $ch = curl_init("https://api.paymongo.com/v1/payment_intents/{$paymentIntentId}");
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 15);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Authorization: Basic ' . base64_encode($secretKey . ':')
+    ]);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($httpCode !== 200) {
+        error_log("resolvePayMongoPaymentId: HTTP {$httpCode} for intent {$paymentIntentId}");
+        return null;
+    }
+    
+    $data = json_decode($response, true);
+    $payments = $data['data']['attributes']['payments'] ?? [];
+    
+    if (empty($payments)) {
+        error_log("resolvePayMongoPaymentId: no payments in intent {$paymentIntentId}");
+        return null;
+    }
+    
+    $paymentId = $payments[0]['id'] ?? null;
+    
+    if ($paymentId) {
+        error_log("resolvePayMongoPaymentId: ✅ resolved {$checkoutSessionId} → {$paymentId}");
+    }
+    
+    return $paymentId;
+}
+
+// ============================================
+// SIMPLE INVENTORY DEDUCTION FUNCTION
 // ============================================
 function deductInventorySimple($conn, $product_id, $clinic_id, $quantity = 1, $color_code = null) {
     $result = ['success' => false, 'message' => ''];
     
     try {
-        // Check if product exists
         $product_query = mysqli_query($conn, "SELECT id, name, category FROM products WHERE id = $product_id");
         $product = mysqli_fetch_assoc($product_query);
         
@@ -42,14 +122,12 @@ function deductInventorySimple($conn, $product_id, $clinic_id, $quantity = 1, $c
             return $result;
         }
         
-        // Skip services
         if ($product['category'] === 'Service') {
             $result['success'] = true;
             $result['message'] = "Service - no inventory";
             return $result;
         }
         
-        // IF HAS COLOR CODE - deduct from product_color_inventory
         if (!empty($color_code)) {
             $color_check = mysqli_query($conn, "
                 SELECT id, quantity FROM product_color_inventory 
@@ -79,7 +157,6 @@ function deductInventorySimple($conn, $product_id, $clinic_id, $quantity = 1, $c
             return $result;
         }
         
-        // NO COLOR CODE - deduct from main inventory
         $inv_check = mysqli_query($conn, "
             SELECT id, stock FROM inventory 
             WHERE product_id = $product_id AND clinic_id = $clinic_id
@@ -118,7 +195,6 @@ if ($is_reservation) {
     // RESERVATION PAYMENT SUCCESS
     // ============================================
     
-    // Check if already processed
     $check_query = mysqli_query($conn, "
         SELECT payment_status, total_amount, downpayment_amount, balance_amount, product_id, clinic_id, color_code
         FROM reservations 
@@ -133,7 +209,6 @@ if ($is_reservation) {
     
     $already_processed = in_array($current['payment_status'], ['paid', 'downpayment_paid']);
     
-    // Get payment details from payments table if ref_no is empty
     if (empty($ref_no) || $already_processed) {
         $ref_query = mysqli_query($conn, "
             SELECT reference_number, amount, payment_method FROM payments 
@@ -151,21 +226,53 @@ if ($is_reservation) {
     
     $inventory_deducted = false;
     
-    // Process payment if not yet processed
+    // ✅ FIXED: Resolve PayMongo payment_id BEFORE processing
+    $paymongo_payment_id_resolved = null;
+    
+    if (!$already_processed && !empty($ref_no)) {
+        $session_query = mysqli_query($conn, "
+            SELECT paymongo_session_id, paymongo_checkout_id 
+            FROM payments 
+            WHERE reservation_id = $reservation_id 
+              AND reference_number = '$ref_no'
+            LIMIT 1
+        ");
+        $session_row = mysqli_fetch_assoc($session_query);
+        $checkout_session_id = $session_row['paymongo_checkout_id'] 
+                            ?? $session_row['paymongo_session_id'] 
+                            ?? null;
+        
+        if ($checkout_session_id) {
+            $paymongo_payment_id_resolved = resolvePayMongoPaymentId($checkout_session_id);
+        }
+    }
+    
     if (!$already_processed) {
         if ($payment_type == 'downpayment') {
-            mysqli_query($conn, "
-                UPDATE reservations 
-                SET payment_status = 'downpayment_paid', 
-                    status = 'confirmed',
-                    updated_at = NOW()
-                WHERE id = $reservation_id AND user_id = $user_id
-            ");
+            // ✅ FIXED: Include paymongo_payment_id
+            $paymentIdSql = $paymongo_payment_id_resolved 
+                ? ", paymongo_payment_id = '{$paymongo_payment_id_resolved}'" 
+                : "";
+            
+mysqli_query($conn, "
+    UPDATE reservations 
+    SET payment_status = 'downpayment_paid', 
+        status = 'confirmed',
+        paid_at = NOW(),
+        updated_at = NOW()
+        {$paymentIdSql}
+    WHERE id = $reservation_id AND user_id = $user_id
+");
+            
+            $paymentIdSqlPayments = $paymongo_payment_id_resolved 
+                ? ", paymongo_payment_id = '{$paymongo_payment_id_resolved}'" 
+                : "";
             
             mysqli_query($conn, "
                 UPDATE payments 
                 SET payment_status = 'paid', 
-                    payment_date = NOW() 
+                    payment_date = NOW()
+                    {$paymentIdSqlPayments}
                 WHERE reservation_id = $reservation_id 
                 AND reference_number = '$ref_no'
             ");
@@ -174,46 +281,62 @@ if ($is_reservation) {
             $success_title = "Downpayment Successful!";
             $success_icon = "fa-hand-holding-usd";
             
-        } else {
-            // FULL PAYMENT for RESERVATION
-            mysqli_query($conn, "
-                UPDATE reservations 
-                SET payment_status = 'paid', 
-                    status = 'confirmed',
-                    updated_at = NOW()
-                WHERE id = $reservation_id AND user_id = $user_id
-            ");
-            
-            mysqli_query($conn, "
-                UPDATE payments 
-                SET payment_status = 'paid', 
-                    payment_date = NOW() 
-                WHERE reservation_id = $reservation_id 
-                AND reference_number = '$ref_no'
-            ");
-            
-            // ✅ INVENTORY DEDUCTION FOR RESERVATION (FULL PAYMENT ONLY)
-            $inv_result = deductInventorySimple(
-                $conn, 
-                $current['product_id'], 
-                $current['clinic_id'], 
-                1,
-                $current['color_code'] ?? null
-            );
-            
-            if ($inv_result['success']) {
-                $inventory_deducted = true;
-            } else {
-                error_log("Inventory deduction failed for reservation ID: $reservation_id - " . $inv_result['message']);
-            }
-            
-            $payment_message = "full payment";
-            $success_title = "Payment Successful!";
-            $success_icon = "fa-check-circle";
-        }
+} else {
+    // FULL PAYMENT for RESERVATION
+    $paymentIdSql = $paymongo_payment_id_resolved 
+        ? ", paymongo_payment_id = '{$paymongo_payment_id_resolved}'" 
+        : "";
+    
+    mysqli_query($conn, "
+        UPDATE reservations 
+        SET payment_status = 'paid', 
+            status = 'confirmed',
+            paid_at = NOW(),
+            updated_at = NOW()
+            {$paymentIdSql}
+        WHERE id = $reservation_id AND user_id = $user_id
+    ");
+    
+    $paymentIdSqlPayments = $paymongo_payment_id_resolved 
+        ? ", paymongo_payment_id = '{$paymongo_payment_id_resolved}'" 
+        : "";
+    
+    mysqli_query($conn, "
+        UPDATE payments 
+        SET payment_status = 'paid', 
+            payment_date = NOW()
+            {$paymentIdSqlPayments}
+        WHERE reservation_id = $reservation_id 
+        AND reference_number = '$ref_no'
+    ");
+    
+    // ✅ IDAGDAG ITO — INVENTORY DEDUCTION PARA SA RESERVATION:
+    $inv_result = deductInventorySimple(
+        $conn, 
+        $current['product_id'], 
+        $current['clinic_id'], 
+        1,
+        $current['color_code'] ?? null
+    );
+    
+    if ($inv_result['success']) {
+        $inventory_deducted = true;
+        mysqli_query($conn, "
+            UPDATE reservations 
+            SET inventory_deducted = 1, 
+                inventory_deducted_at = NOW()
+            WHERE id = $reservation_id
+        ");
+    } else {
+        error_log("Inventory deduction failed for reservation ID: $reservation_id - " . $inv_result['message']);
     }
     
-    // Fetch reservation data
+    $payment_message = "full payment";
+    $success_title = "Payment Successful!";
+    $success_icon = "fa-check-circle";
+}
+    }
+    
     $query = mysqli_query($conn, "
         SELECT r.*, 
                p.name as product_name,
@@ -239,9 +362,6 @@ if ($is_reservation) {
     
     $reservation = mysqli_fetch_assoc($query);
     
-    // ============================================
-    // ✅ DELIVERY FEATURE — Detect delivery + get info
-    // ============================================
     $is_delivery_order  = false;
     $delivery_info      = null;
     $delivery_fee_shown = 0;
@@ -261,17 +381,14 @@ if ($is_reservation) {
         $delivery_fee_shown = (float)($reservation['delivery_fee'] ?? 0);
     }
     
-    // Override amount from payments table if available
     if (isset($paid_amount_from_db) && $paid_amount_from_db > 0) {
         $reservation['amount'] = $paid_amount_from_db;
     }
     
-    // Override payment method if available
     if (isset($payment_method_from_db)) {
         $reservation['payment_method'] = $payment_method_from_db;
     }
     
-    // Send notification (once only)
     if (!$already_processed) {
         if ($payment_type == 'downpayment') {
             $notification_message = "Your downpayment of ₱" . number_format($reservation['downpayment_amount'] ?? 0, 2) . 
@@ -282,7 +399,6 @@ if ($is_reservation) {
                                    " for {$reservation['product_name']} at {$reservation['clinic_name']} has been confirmed.";
             
             if ($inventory_deducted) {
-                // ✅ DELIVERY FEATURE — Different message for delivery vs pickup
                 if ($is_delivery_order) {
                     $notification_message .= " Your item is now reserved and will be prepared for delivery.";
                 } else {
@@ -320,7 +436,6 @@ if ($is_reservation) {
         exit();
     }
     
-    // CHECK MUNA KUNG PAID NA BAGO MAG-UPDATE
     $check_query = mysqli_query($conn, "
         SELECT payment_status, downpayment_amount, balance_amount, total_amount, product_id, clinic_id, color_code
         FROM appointments 
@@ -329,7 +444,6 @@ if ($is_reservation) {
     $current = mysqli_fetch_assoc($check_query);
     $already_processed = in_array($current['payment_status'], ['paid', 'downpayment_paid']);
     
-    // GET THE CORRECT REFERENCE NUMBER FROM PAYMENTS TABLE IF NOT PROVIDED OR IF ALREADY PROCESSED
     if (empty($ref_no) || $already_processed) {
         $ref_query = mysqli_query($conn, "
             SELECT reference_number, amount, payment_method FROM payments 
@@ -347,22 +461,53 @@ if ($is_reservation) {
     
     $inventory_deducted = false;
     
-    // PROCESS PAYMENT IF NOT YET PROCESSED
+    // ✅ FIXED: Resolve PayMongo payment_id BEFORE processing
+    $paymongo_payment_id_resolved = null;
+    
+    if (!$already_processed && !empty($ref_no)) {
+        $session_query = mysqli_query($conn, "
+            SELECT paymongo_session_id, paymongo_checkout_id 
+            FROM payments 
+            WHERE appointment_id = $appointment_id 
+              AND reference_number = '$ref_no'
+            LIMIT 1
+        ");
+        $session_row = mysqli_fetch_assoc($session_query);
+        $checkout_session_id = $session_row['paymongo_checkout_id'] 
+                            ?? $session_row['paymongo_session_id'] 
+                            ?? null;
+        
+        if ($checkout_session_id) {
+            $paymongo_payment_id_resolved = resolvePayMongoPaymentId($checkout_session_id);
+        }
+    }
+    
     if (!$already_processed) {
         if ($payment_type == 'downpayment') {
-            // ✅ FIXED: UPDATE APPOINTMENT - DOWNPAYMENT WITH amount_paid
-            mysqli_query($conn, "
-                UPDATE appointments 
-                SET payment_status = 'downpayment_paid', 
-                    status = 'confirmed',
-                    amount_paid = downpayment_amount
-                WHERE id = $appointment_id AND user_id = $user_id
-            ");
+            // ✅ FIXED: Include paymongo_payment_id
+            $paymentIdSql = $paymongo_payment_id_resolved 
+                ? ", paymongo_payment_id = '{$paymongo_payment_id_resolved}'" 
+                : "";
+            
+mysqli_query($conn, "
+    UPDATE appointments 
+    SET payment_status = 'downpayment_paid', 
+        status = 'confirmed',
+        paid_at = NOW(),
+        amount_paid = downpayment_amount
+        {$paymentIdSql}
+    WHERE id = $appointment_id AND user_id = $user_id
+");
+            
+            $paymentIdSqlPayments = $paymongo_payment_id_resolved 
+                ? ", paymongo_payment_id = '{$paymongo_payment_id_resolved}'" 
+                : "";
             
             mysqli_query($conn, "
                 UPDATE payments 
                 SET payment_status = 'paid', 
-                    payment_date = NOW() 
+                    payment_date = NOW()
+                    {$paymentIdSqlPayments}
                 WHERE appointment_id = $appointment_id 
                 AND reference_number = '$ref_no'
                 AND payment_type = 'downpayment'
@@ -373,26 +518,39 @@ if ($is_reservation) {
             $success_icon = "fa-hand-holding-usd";
             
         } else {
-            // ✅ FIXED: FULL PAYMENT FOR APPOINTMENT - WITH amount_paid, subtotal, at payment_status
-            mysqli_query($conn, "
-                UPDATE appointments 
-                SET payment_status = 'paid', 
-                    status = 'confirmed',
-                    amount_paid = total_amount,
-                    subtotal = total_amount,
-                    payment_status = 'paid'
-                WHERE id = $appointment_id AND user_id = $user_id
-            ");
+            // FULL PAYMENT FOR APPOINTMENT
+            $paymentIdSql = $paymongo_payment_id_resolved 
+                ? ", paymongo_payment_id = '{$paymongo_payment_id_resolved}'" 
+                : "";
+            
+mysqli_query($conn, "
+    UPDATE appointments 
+    SET payment_status = 'paid', 
+        status = 'confirmed',
+        paid_at = NOW(),
+        amount_paid = total_amount,
+        subtotal = total_amount
+        {$paymentIdSql}
+    WHERE id = $appointment_id AND user_id = $user_id
+");
+            
+            if (mysqli_error($conn)) {
+                error_log("Appointment update error: " . mysqli_error($conn));
+            }
+            
+            $paymentIdSqlPayments = $paymongo_payment_id_resolved 
+                ? ", paymongo_payment_id = '{$paymongo_payment_id_resolved}'" 
+                : "";
             
             mysqli_query($conn, "
                 UPDATE payments 
                 SET payment_status = 'paid', 
-                    payment_date = NOW() 
+                    payment_date = NOW()
+                    {$paymentIdSqlPayments}
                 WHERE appointment_id = $appointment_id 
                 AND reference_number = '$ref_no'
             ");
             
-            // ✅ INVENTORY DEDUCTION FOR APPOINTMENT (FULL PAYMENT ONLY)
             $inv_result = deductInventorySimple(
                 $conn, 
                 $current['product_id'], 
@@ -403,7 +561,6 @@ if ($is_reservation) {
             
             if ($inv_result['success']) {
                 $inventory_deducted = true;
-                // Mark as deducted in appointments table
                 mysqli_query($conn, "
                     UPDATE appointments 
                     SET inventory_deducted = 1, 
@@ -420,7 +577,6 @@ if ($is_reservation) {
         }
     }
     
-    // FETCH APPOINTMENT DATA
     $query = mysqli_query($conn, "
         SELECT a.*, 
                c.name as clinic_name,
@@ -459,7 +615,6 @@ if ($is_reservation) {
     
     $appointment = mysqli_fetch_assoc($query);
     
-    // Override values
     if (isset($paid_amount_from_db) && $paid_amount_from_db > 0) {
         $appointment['amount'] = $paid_amount_from_db;
     }
@@ -467,7 +622,6 @@ if ($is_reservation) {
         $appointment['payment_method'] = $payment_method_from_db;
     }
     
-    // NOTIFICATION - ONCE LANG
     if (!$already_processed) {
         if ($payment_type == 'downpayment') {
             $notification_message = "Your downpayment of ₱" . number_format($appointment['downpayment_amount'] ?? 0, 2) . 
@@ -503,7 +657,7 @@ if ($is_reservation) {
 }
 
 // ============================================
-// GET USER DATA FOR SIDEBAR (for both)
+// GET USER DATA FOR SIDEBAR
 // ============================================
 $points_query = mysqli_query($conn, "SELECT SUM(points) as total_points FROM user_rewards WHERE user_id = $user_id");
 $points_row = mysqli_fetch_assoc($points_query);
@@ -725,7 +879,7 @@ $user = mysqli_fetch_assoc($user_query);
 
         .btn-primary:hover {
             transform: translateY(-2px);
-            box-shadow: var(--shadow-hover);
+            box-shadow: var(--shadow-md);
         }
 
         .btn-outline {
@@ -785,23 +939,10 @@ $user = mysqli_fetch_assoc($user_query);
             </div>
             
             <h1 class="success-title"><?php echo $success_title ?? 'Payment Successful!'; ?></h1>
-            <p class="success-message">
-                Thank you for your payment. Your <?php echo $is_reservation ? 'reservation' : 'appointment'; ?> has been confirmed.
-            </p>
+<p class="success-message">
+    Thank you for your payment. Your <?php echo $is_reservation ? 'order' : 'appointment'; ?> has been confirmed.
+</p>
 
-            <?php if ($payment_type != 'downpayment'): ?>
-                <?php if ($inventory_deducted): ?>
-                <div class="inventory-status">
-                    <i class="fas fa-check-circle"></i>
-                    ✓ Item has been reserved and deducted from inventory
-                </div>
-                <?php else: ?>
-                <div class="inventory-status" style="background: var(--warning); color: white;">
-                    <i class="fas fa-exclamation-triangle"></i>
-                    ⚠ Inventory update pending. Please contact the clinic.
-                </div>
-                <?php endif; ?>
-            <?php endif; ?>
 
             <div class="payment-details-card">
                 <div class="detail-row">
@@ -836,7 +977,6 @@ $user = mysqli_fetch_assoc($user_query);
                 </div>
 
                 <?php if ($is_reservation && $is_delivery_order): ?>
-                    <!-- ✅ DELIVERY FEATURE — Delivery info -->
                     <div class="detail-row" style="align-items: flex-start;">
                         <span class="detail-label">
                             <i class="fas fa-truck" style="color: var(--primary);"></i> Delivery To
@@ -887,10 +1027,10 @@ $user = mysqli_fetch_assoc($user_query);
             </div>
 
             <div class="action-buttons">
-                <a href="<?php echo $return_url; ?>" class="btn btn-primary">
-                    <i class="fas <?php echo $is_reservation ? 'fa-clock' : 'fa-calendar-check'; ?>"></i> 
-                    View My <?php echo $is_reservation ? 'Reservations' : 'Appointments'; ?>
-                </a>
+<a href="<?php echo $return_url; ?>" class="btn btn-primary">
+    <i class="fas <?php echo $is_reservation ? 'fa-shopping-bag' : 'fa-calendar-check'; ?>"></i> 
+    View My <?php echo $is_reservation ? 'Orders' : 'Appointments'; ?>
+</a>
                 <a href="dashboard.php" class="btn btn-outline">
                     <i class="fas fa-home"></i> Back to Home
                 </a>

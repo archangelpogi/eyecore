@@ -54,7 +54,6 @@
 </div>
 
 <!-- MODAL - ADD EMPLOYEE -->
-<!-- MODAL - ADD EMPLOYEE -->
 <div class="modal fade" id="addEmployeeModal" tabindex="-1">
     <div class="modal-dialog modal-xl modal-dialog-centered">
         <div class="modal-content">
@@ -108,7 +107,9 @@
                         <!-- Tab Content -->
                         <div class="tab-content" id="addEmployeeTabContent">
 
-<!-- Basic Info Tab -->
+<!-- ═══════════════════════════════════════════════════════
+     BASIC INFO TAB
+     ═══════════════════════════════════════════════════════ -->
 <div class="tab-pane fade show active" id="basic" role="tabpanel">
     <h6 class="border-bottom pb-2 mb-4">
         <i class="bi bi-info-circle me-2"></i>Personal Information
@@ -163,6 +164,7 @@
                 <option value="Finance">Finance</option>
                 <option value="CRM">CRM</option>
                 <option value="SCM">SCM</option>
+                <option value="Rider">Rider</option>
             </select>
         </div>
         <div class="col-md-6 mb-3">
@@ -174,7 +176,7 @@
         </div>
     </div>
 
-    <!-- ✅ Optometrist-only fields — hidden by default, shown when role = Optometrist -->
+    <!-- ✅ Optometrist-only fields -->
     <div id="optometristFields" style="display: none;">
         <div class="alert alert-info py-2 mb-3">
             <i class="bi bi-eye me-2"></i>
@@ -186,12 +188,8 @@
                     Specialty
                     <small class="text-muted">(optional)</small>
                 </label>
-                <input type="text"
-                       class="form-control"
-                       id="add_specialty"
-                       name="specialty"
-                       placeholder="e.g. Pediatric Optometry, Contact Lens"
-                       maxlength="100">
+                <input type="text" class="form-control" id="add_specialty" name="specialty"
+                       placeholder="e.g. Pediatric Optometry, Contact Lens" maxlength="100">
                 <div class="form-text text-muted">Area of expertise or specialization</div>
             </div>
             <div class="col-md-6 mb-3">
@@ -199,15 +197,95 @@
                     Schedule
                     <small class="text-muted fw-normal">(optional)</small>
                 </label>
-
-                <!-- Schedule builder UI -->
                 <div id="scheduleBuilder" style="border: 0.5px solid #dee2e6; border-radius: 8px; padding: 10px;">
                     <div id="schedDayRows"></div>
                 </div>
-
-                <!-- Hidden input — naglalaman ng JSON value na isesend sa backend -->
                 <input type="hidden" id="add_schedule" name="schedule">
                 <div class="form-text text-muted">Lagyan ng tsek ang araw at itakda ang oras</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ✅ Rider-only fields -->
+    <div id="riderFields" style="display: none;">
+        <div class="alert alert-info py-2 mb-3">
+            <i class="bi bi-bicycle me-2"></i>
+            <strong>Rider Details</strong> — These fields will be added to the Riders list.
+        </div>
+
+        <!-- Driver's License -->
+        <div class="row">
+            <div class="col-md-6 mb-3">
+                <label class="form-label" for="add_driver_license_no">
+                    Driver's License No. <span class="text-danger">*</span>
+                </label>
+                <input type="text" class="form-control" id="add_driver_license_no" name="driver_license_no"
+                       placeholder="e.g. N01-23-456789" maxlength="50" required>
+                <div class="form-text text-muted">LTO-issued driver's license number</div>
+            </div>
+            <div class="col-md-6 mb-3">
+                <label class="form-label" for="add_license_expiration_date">
+                    License Expiration Date <span class="text-danger">*</span>
+                </label>
+                <input type="date" class="form-control" id="add_license_expiration_date"
+                       name="license_expiration_date" required>
+                <div class="form-text text-muted">Valid until</div>
+            </div>
+        </div>
+
+        <!-- Vehicle Info -->
+        <div class="row">
+            <div class="col-md-6 mb-3">
+                <label class="form-label" for="add_vehicle_type">
+                    Vehicle Type <span class="text-danger">*</span>
+                </label>
+                <select class="form-select" id="add_vehicle_type" name="vehicle_type" required>
+                    <option value="">Select Vehicle</option>
+                    <option value="Motorcycle">Motorcycle</option>
+                    <option value="Car">Car</option>
+                    <option value="Bike">Bicycle</option>
+                    <option value="Van">Van</option>
+                </select>
+            </div>
+            <div class="col-md-6 mb-3">
+                <label class="form-label" for="add_vehicle_brand_model">
+                    Vehicle Brand &amp; Model
+                </label>
+                <input type="text" class="form-control" id="add_vehicle_brand_model"
+                       name="vehicle_brand_model" placeholder="e.g. Honda Click 125i" maxlength="100">
+                <div class="form-text text-muted">Brand and model of the vehicle</div>
+            </div>
+        </div>
+
+        <!-- Plate & OR/CR -->
+        <div class="row">
+            <div class="col-md-6 mb-3">
+                <label class="form-label" for="add_plate_number">
+                    Plate Number <span class="text-danger">*</span>
+                </label>
+                <input type="text" class="form-control" id="add_plate_number" name="plate_number"
+                       placeholder="e.g. ABC-1234" maxlength="20" required>
+            </div>
+            <div class="col-md-6 mb-3">
+                <label class="form-label" for="add_or_cr_number">
+                    OR/CR Number
+                </label>
+                <input type="text" class="form-control" id="add_or_cr_number" name="or_cr_number"
+                       placeholder="e.g. 1234567890" maxlength="50">
+                <div class="form-text text-muted">Official Receipt / Certificate of Registration</div>
+            </div>
+        </div>
+
+        <!-- Assigned Clinic (read-only) -->
+        <div class="row">
+            <div class="col-md-6 mb-3">
+                <label class="form-label" for="add_assigned_clinic">Assigned Clinic</label>
+                <input type="text" class="form-control bg-light" id="add_assigned_clinic"
+                       value="Auto-assigned based on your clinic" readonly>
+                <div class="form-text text-muted">
+                    <i class="bi bi-info-circle me-1"></i>
+                    Automatically assigned based on the clinic you are logged into.
+                </div>
             </div>
         </div>
     </div>
@@ -245,6 +323,9 @@
         </div>
     </div>
 </div>
+<!-- ═══════════════════════════════════════════════════════
+     END BASIC INFO TAB
+     ═══════════════════════════════════════════════════════ -->
 
                             <!-- Employment Tab -->
                             <div class="tab-pane fade" id="employment" role="tabpanel">
@@ -425,7 +506,6 @@
                                     </div>
                                 </div>
 
-                                <!-- Emergency Contact (unchanged) -->
                                 <h6 class="border-bottom pb-2 mb-4 mt-4">
                                     <i class="bi bi-telephone me-2"></i>Emergency Contact
                                 </h6>
@@ -493,32 +573,31 @@
                                     </div>
                                 </div>
 
-                                <!-- File Preview Section -->
                                 <div id="filePreviewSection" class="mt-4" style="display: none;">
                                     <h6 class="border-bottom pb-2 mb-3"><i class="bi bi-files me-2"></i>Selected Files</h6>
                                     <div id="selectedFilesList" class="list-group"></div>
                                 </div>
                             </div>
 
+                            <!-- RBAC Roles Tab -->
                             <div class="tab-pane fade" id="rolesTab" role="tabpanel">
-                            <h6 class="border-bottom pb-2 mb-3">
-                                <i class="bi bi-shield-lock me-2"></i>Assign Access Roles
-                            </h6>
-                            <div class="alert alert-info py-2 small">
-                                <i class="bi bi-info-circle me-1"></i>
-                                These roles control what this employee can <b>see and do</b> in the system.
-                                You can skip this and assign later.
-                            </div>
-                            <div id="addEmployeeRolesList" class="d-flex flex-column gap-2">
-                                <!-- Roles loaded dynamically via JavaScript -->
-                                <div class="text-center py-3 text-muted">
-                                    <div class="spinner-border spinner-border-sm me-2"></div> Loading roles...
+                                <h6 class="border-bottom pb-2 mb-3">
+                                    <i class="bi bi-shield-lock me-2"></i>Assign Access Roles
+                                </h6>
+                                <div class="alert alert-info py-2 small">
+                                    <i class="bi bi-info-circle me-1"></i>
+                                    These roles control what this employee can <b>see and do</b> in the system.
+                                    You can skip this and assign later.
+                                </div>
+                                <div id="addEmployeeRolesList" class="d-flex flex-column gap-2">
+                                    <div class="text-center py-3 text-muted">
+                                        <div class="spinner-border spinner-border-sm me-2"></div> Loading roles...
+                                    </div>
                                 </div>
                             </div>
-                        </div>
 
-                        </div>
-                    </div>
+                        </div><!-- /tab-content -->
+                    </div><!-- /p-4 -->
 
                     <!-- Modal Footer -->
                     <div class="modal-footer border-top p-3">
@@ -587,7 +666,6 @@
             <div class="modal-body">
                 <input type="hidden" id="assign_user_id">
  
-                <!-- Employee Info -->
                 <div class="d-flex align-items-center gap-3 p-3 bg-light rounded mb-3">
                     <div class="rounded-circle bg-primary text-white d-flex align-items-center justify-content-center fw-bold"
                          style="width:44px;height:44px;font-size:16px" id="assign_user_avatar">--</div>
@@ -603,19 +681,17 @@
                     Their permissions are a combination of all assigned roles.
                 </p>
  
-                <!-- Roles loading state -->
                 <div id="assignRolesLoading" class="text-center py-3">
                     <div class="spinner-border spinner-border-sm text-primary me-2"></div>
                     Loading roles...
                 </div>
  
-                <!-- Roles list — rendered dynamically -->
                 <div id="assignRolesList" class="d-flex flex-column gap-2" style="display:none!important;"></div>
-            <div id="assignRolesEmpty" class="text-center py-3 text-muted" style="display:none;">
-                <i class="bi bi-shield-exclamation display-6 d-block mb-2 opacity-50"></i>
-                No roles yet. 
-                <a href="main.php?view=roles_management" target="_blank">Create roles here</a>.
-            </div>
+                <div id="assignRolesEmpty" class="text-center py-3 text-muted" style="display:none;">
+                    <i class="bi bi-shield-exclamation display-6 d-block mb-2 opacity-50"></i>
+                    No roles yet. 
+                    <a href="main.php?view=roles_management" target="_blank">Create roles here</a>.
+                </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">

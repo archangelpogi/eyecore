@@ -97,7 +97,7 @@ class EmployeeBackend {
     
     public function __construct($pdo) {
         $this->pdo = $pdo;
-        $this->allowedRoles = ['HR', 'Finance', 'CRM', 'SCM', 'Staff', 'Optometrist'];
+        $this->allowedRoles = ['HR', 'Finance', 'CRM', 'SCM', 'Staff', 'Optometrist', 'Rider'];
         
         // ✅ Initialize RBACHelper with PDO
         RBACHelper::init($this->pdo);
@@ -310,6 +310,8 @@ class EmployeeBackend {
             $this->getUserDetails($_GET['user_id']);
         } elseif (isset($_GET['get_positions'])) {
             $this->getAllPositions();
+        } elseif (isset($_GET['get_riders'])) {
+            $this->getRidersList();
         } elseif (isset($_GET['get_documents'])) {
             $this->getEmployeeDocuments($_GET['get_documents']);
         } elseif (isset($_GET['get_permissions'])) {
@@ -333,10 +335,17 @@ class EmployeeBackend {
                 e.*,
                 p.position_name,
                 p.salary_rate as position_salary,
-                p.department
+                p.department,
+                r.vehicle_type AS rider_vehicle_type,
+                r.plate_number AS rider_plate_number,
+                r.driver_license_no AS rider_driver_license_no,
+                r.license_expiration_date AS rider_license_expiration_date,
+                r.vehicle_brand_model AS rider_vehicle_brand_model,
+                r.or_cr_number AS rider_or_cr_number
             FROM users u
             LEFT JOIN employees e ON u.id = e.user_id
             LEFT JOIN positions p ON e.position_id = p.id
+            LEFT JOIN riders r ON u.id = r.user_id
             WHERE u.id = ? AND u.clinic_id = ?
         ");
         
@@ -386,6 +395,29 @@ class EmployeeBackend {
         $this->sendResponse(200, $stmt->fetchAll(PDO::FETCH_ASSOC));
     }
     
+        private function getRidersList() {
+        if (!$this->canView('users')) {
+            $this->sendResponse(403, ['error' => 'No permission to view riders']);
+        }
+        
+        $stmt = $this->pdo->prepare("
+            SELECT 
+                r.id, r.name, r.phone, r.email, r.vehicle_type, r.plate_number,
+                r.is_available, r.status, r.user_id,
+                u.status as user_status
+            FROM riders r
+            LEFT JOIN users u ON r.user_id = u.id
+            WHERE r.clinic_id = ?
+            ORDER BY r.is_available DESC, r.name ASC
+        ");
+        $stmt->execute([$this->clinic_id]);
+        $this->sendResponse(200, [
+            'success' => true,
+            'riders'  => $stmt->fetchAll(PDO::FETCH_ASSOC)
+        ]);
+    }
+
+
     private function getAllUsers() {
         if (!$this->canView('users')) {
             $this->sendResponse(403, [
@@ -644,6 +676,12 @@ class EmployeeBackend {
             if ($data['role'] === 'Optometrist') {
                 $doctor_id = $this->createDoctorRecord($user_id, $data);
             }
+
+                        // ✅ Insert into riders table if role is Rider
+            $rider_id = null;
+            if ($data['role'] === 'Rider') {
+                $rider_id = $this->createRiderRecord($user_id, $data);
+            }
             
             // Audit: User creation
             $this->logAudit('CREATE', 'users', $user_id, null, [
@@ -681,6 +719,7 @@ class EmployeeBackend {
                 'user_id'     => $user_id,
                 'employee_id' => $employee_id,
                 'doctor_id'   => $doctor_id,
+                'rider_id'    => $rider_id,
                 'email_sent'  => $emailSent
             ]);
         } catch (Exception $e) {
@@ -691,96 +730,104 @@ class EmployeeBackend {
         }
     }
 
-    // ============= CREATE USER + EMPLOYEE + DOCUMENTS (FormData) =============
-    private function addUserWithEmployeeAndDocuments($postData, $files) {
-        if (!$this->canCreate('users')) {
-            $this->sendResponse(403, ['error' => 'You do not have permission to create employees']);
-        }
-        
-        $this->pdo->beginTransaction();
-        
-        try {
-            $this->validateUserData($postData);
-            $this->checkEmailExists($postData['email']);
-            
-            $user_code   = $this->generateUserCode($postData['role']);
-            $user_id     = $this->createUser($postData, $user_code);
-            $employee_no = $this->generateEmployeeNumber();
-            $employee_id = $this->createEmployee($user_id, $postData, $employee_no);
-            $this->recordInitialSalary($employee_id, $postData['basic_salary']);
-            
-            // ✅ Insert into doctors table if role is Optometrist
-            $doctor_id = null;
-            if ($postData['role'] === 'Optometrist') {
-                $doctor_id = $this->createDoctorRecord($user_id, $postData);
-            }
-            
-            // Audit: User creation
-            $this->logAudit('CREATE', 'users', $user_id, null, [
-                'user_code'  => $user_code,
-                'first_name' => $postData['first_name'],
-                'last_name'  => $postData['last_name'],
-                'email'      => $postData['email'],
-                'role'       => $postData['role']
-            ]);
-            
-            // Audit: Employee creation
-            $this->logAudit('CREATE', 'employees', $employee_id, null, [
-                'employee_no'     => $employee_no,
-                'position_id'     => $postData['position_id'],
-                'employment_type' => $postData['employment_type'],
-                'basic_salary'    => $postData['basic_salary']
-            ]);
-            
-            $documents_uploaded = 0;
-            
-            $documentTypes = [
-                'add_resume'       => 'Resume',
-                'add_government_id'=> 'Government ID',
-                'add_medical_cert' => 'Medical Certificate',
-                'add_clearance'    => 'Police Clearance'
-            ];
-            
-            foreach ($documentTypes as $field => $docType) {
-                if (isset($files[$field . '_file']) && $files[$field . '_file']['error'] === UPLOAD_ERR_OK) {
-                    $doc_id = $this->uploadSingleDocument($employee_id, $docType, $files[$field . '_file']);
-                    
-                    $this->logAudit('UPLOAD', 'employee_documents', $doc_id, null, [
-                        'employee_id'   => $employee_id,
-                        'document_type' => $docType,
-                        'document_name' => $files[$field . '_file']['name']
-                    ]);
-                    
-                    $documents_uploaded++;
-                }
-            }
-            
-            $emailSent = false;
-            try {
-                $emailSent = $this->sendWelcomeEmail($postData, $user_code);
-            } catch (Exception $emailError) {
-                error_log("Email sending failed: " . $emailError->getMessage());
-            }
-            
-            $this->pdo->commit();
-            
-            $this->sendResponse(200, [
-                'success'            => true,
-                'message'            => 'User and employee record created successfully' . 
-                                        ($documents_uploaded > 0 ? ' with ' . $documents_uploaded . ' document(s)' : ''),
-                'user_code'          => $user_code,
-                'employee_no'        => $employee_no,
-                'user_id'            => $user_id,
-                'employee_id'        => $employee_id,
-                'doctor_id'          => $doctor_id,
-                'documents_uploaded' => $documents_uploaded,
-                'email_sent'         => $emailSent
-            ]);
-        } catch (Exception $e) {
-            $this->pdo->rollBack();
-            $this->sendResponse(400, ['error' => $e->getMessage()]);
-        }
+// ============= CREATE USER + EMPLOYEE + DOCUMENTS (FormData) =============
+private function addUserWithEmployeeAndDocuments($postData, $files) {
+    if (!$this->canCreate('users')) {
+        $this->sendResponse(403, ['error' => 'You do not have permission to create employees']);
     }
+    
+    $this->pdo->beginTransaction();
+    
+    try {
+        $this->validateUserData($postData);
+        $this->checkEmailExists($postData['email']);
+        
+        $user_code   = $this->generateUserCode($postData['role']);
+        $user_id     = $this->createUser($postData, $user_code);
+        $employee_no = $this->generateEmployeeNumber();
+        $employee_id = $this->createEmployee($user_id, $postData, $employee_no);
+        $this->recordInitialSalary($employee_id, $postData['basic_salary']);
+        
+        // ✅ Insert into doctors table if role is Optometrist
+        $doctor_id = null;
+        if ($postData['role'] === 'Optometrist') {
+            $doctor_id = $this->createDoctorRecord($user_id, $postData);
+        }
+        
+        // ✅ INSERT INTO RIDERS TABLE IF ROLE IS RIDER — IDAGDAG ITO!
+        $rider_id = null;
+        if ($postData['role'] === 'Rider') {
+            $rider_id = $this->createRiderRecord($user_id, $postData);
+        }
+        
+        // Audit: User creation
+        $this->logAudit('CREATE', 'users', $user_id, null, [
+            'user_code'  => $user_code,
+            'first_name' => $postData['first_name'],
+            'last_name'  => $postData['last_name'],
+            'email'      => $postData['email'],
+            'role'       => $postData['role']
+        ]);
+        
+        // Audit: Employee creation
+        $this->logAudit('CREATE', 'employees', $employee_id, null, [
+            'employee_no'     => $employee_no,
+            'position_id'     => $postData['position_id'],
+            'employment_type' => $postData['employment_type'],
+            'basic_salary'    => $postData['basic_salary']
+        ]);
+        
+        $documents_uploaded = 0;
+        
+        $documentTypes = [
+            'add_resume'       => 'Resume',
+            'add_government_id'=> 'Government ID',
+            'add_medical_cert' => 'Medical Certificate',
+            'add_clearance'    => 'Police Clearance'
+        ];
+        
+        foreach ($documentTypes as $field => $docType) {
+            if (isset($files[$field . '_file']) && $files[$field . '_file']['error'] === UPLOAD_ERR_OK) {
+                $doc_id = $this->uploadSingleDocument($employee_id, $docType, $files[$field . '_file']);
+                
+                $this->logAudit('UPLOAD', 'employee_documents', $doc_id, null, [
+                    'employee_id'   => $employee_id,
+                    'document_type' => $docType,
+                    'document_name' => $files[$field . '_file']['name']
+                ]);
+                
+                $documents_uploaded++;
+            }
+        }
+        
+        $emailSent = false;
+        try {
+            $emailSent = $this->sendWelcomeEmail($postData, $user_code);
+        } catch (Exception $emailError) {
+            error_log("Email sending failed: " . $emailError->getMessage());
+        }
+        
+        $this->pdo->commit();
+        
+        // ✅ Response — may rider_id na
+        $this->sendResponse(200, [
+            'success'            => true,
+            'message'            => 'User and employee record created successfully' . 
+                                    ($documents_uploaded > 0 ? ' with ' . $documents_uploaded . ' document(s)' : ''),
+            'user_code'          => $user_code,
+            'employee_no'        => $employee_no,
+            'user_id'            => $user_id,
+            'employee_id'        => $employee_id,
+            'doctor_id'          => $doctor_id,
+            'rider_id'           => $rider_id,   // ✅ IDAGDAG ITO
+            'documents_uploaded' => $documents_uploaded,
+            'email_sent'         => $emailSent
+        ]);
+    } catch (Exception $e) {
+        $this->pdo->rollBack();
+        $this->sendResponse(400, ['error' => $e->getMessage()]);
+    }
+}
     
     // ============= ✅ CREATE DOCTOR RECORD =============
     private function createDoctorRecord($user_id, $data) {
@@ -821,6 +868,73 @@ class EmployeeBackend {
         }
     }
     
+private function createRiderRecord($user_id, $data) {
+    try {
+        $stmt = $this->pdo->prepare("
+            SELECT first_name, last_name, email, contact, password 
+            FROM users WHERE id = ?
+        ");
+        $stmt->execute([$user_id]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$user) {
+            throw new Exception('User not found for rider creation');
+        }
+        
+        $full_name = trim($user['first_name'] . ' ' . $user['last_name']);
+        
+        // ✅ FIXED: 14 placeholders + NOW() + NOW()
+        $stmt = $this->pdo->prepare("
+            INSERT INTO riders (
+                user_id, clinic_id, name, phone, email, password,
+                driver_license_no, license_expiration_date,
+                vehicle_type, vehicle_brand_model, plate_number, or_cr_number,
+                status, is_available,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+        ");
+        
+        // ✅ FIXED: 14 values (including is_available = 1)
+        $stmt->execute([
+            $user_id,                                        // 1
+            $this->clinic_id,                                // 2
+            $full_name,                                      // 3
+            $data['phone_number'] ?? $user['contact'] ?? null, // 4
+            $user['email'],                                  // 5
+            $user['password'],                               // 6
+            $data['driver_license_no'] ?? null,              // 7
+            !empty($data['license_expiration_date']) ? $data['license_expiration_date'] : null, // 8
+            $data['vehicle_type'] ?? null,                   // 9
+            $data['vehicle_brand_model'] ?? null,            // 10
+            $data['plate_number'] ?? null,                   // 11
+            $data['or_cr_number'] ?? null,                   // 12
+            'active',                                        // 13
+            1                                                // 14 ✅ is_available
+        ]);
+        
+        $rider_id = $this->pdo->lastInsertId();
+        
+        // Audit log
+        $this->logAudit('CREATE', 'riders', $rider_id, null, [
+            'user_id'               => $user_id,
+            'clinic_id'             => $this->clinic_id,
+            'name'                  => $full_name,
+            'driver_license_no'     => $data['driver_license_no'] ?? null,
+            'license_expiration_date' => $data['license_expiration_date'] ?? null,
+            'vehicle_type'          => $data['vehicle_type'] ?? null,
+            'vehicle_brand_model'   => $data['vehicle_brand_model'] ?? null,
+            'plate_number'          => $data['plate_number'] ?? null,
+            'or_cr_number'          => $data['or_cr_number'] ?? null
+        ]);
+        
+        error_log("Rider record created: ID $rider_id for user_id $user_id");
+        return $rider_id;
+        
+    } catch (Exception $e) {
+        error_log("Failed to create rider record: " . $e->getMessage());
+        throw new Exception('Failed to create rider record: ' . $e->getMessage());
+    }
+}
     // ============= ADD POSITION =============
     private function addPosition($data) {
         if (!$this->canCreate('positions')) {
@@ -913,6 +1027,11 @@ class EmployeeBackend {
             }
             
             $this->updateEmployee($employee_id, $data);
+
+                        // ✅ Update rider-specific fields if role is Rider
+            if (isset($data['role']) && $data['role'] === 'Rider' && isset($data['user_id'])) {
+                $this->updateRiderInfo($data['user_id'], $data);
+            }
             
             $stmt = $this->pdo->prepare("SELECT * FROM employees WHERE id = ?");
             $stmt->execute([$employee_id]);
@@ -998,6 +1117,20 @@ class EmployeeBackend {
                 $stmt->execute([$is_active, $this->clinic_id, $full_name]);
                 error_log("Doctors table is_active synced to $is_active for $full_name");
             }
+
+                        // ✅ Also sync rider status if Rider
+            if ($role === 'Rider') {
+                $rider_status = ($new_status === 'Active') ? 'active' : 'suspended';
+                $is_available = ($new_status === 'Active') ? 1 : 0;
+                
+                $stmt = $this->pdo->prepare("
+                    UPDATE riders
+                    SET status = ?, is_available = ?
+                    WHERE user_id = ?
+                ");
+                $stmt->execute([$rider_status, $is_available, $user_id]);
+                error_log("Rider status synced to $rider_status for user_id: $user_id");
+            }
             
             $this->logAudit('UPDATE', 'users', $user_id,
                 ['status' => $old_status],
@@ -1056,6 +1189,16 @@ class EmployeeBackend {
                 ");
                 $stmt->execute([$this->clinic_id, $full_name]);
                 error_log("Doctor record deleted for: $full_name");
+            }
+
+                        // ✅ Delete from riders table if Rider
+            if ($employee['role'] === 'Rider') {
+                $stmt = $this->pdo->prepare("
+                    DELETE FROM riders 
+                    WHERE user_id = ?
+                ");
+                $stmt->execute([$employee['user_id']]);
+                error_log("Rider record deleted for user_id: " . $employee['user_id']);
             }
             
             // Delete employee record
@@ -1426,7 +1569,8 @@ private function generateUserCode($role) {
         'CRM'         => 'CRM',
         'SCM'         => 'SCM',
         'Staff'       => 'STF',
-        'Optometrist' => 'OPT'
+        'Optometrist' => 'OPT',
+        'Rider'       => 'RDR'
     ];
     
     $prefix = $rolePrefixes[$role] ?? 'EMP';
@@ -1885,6 +2029,47 @@ private function generateEmployeeNumber() {
             ['new_salary' => $new_salary, 'reason' => $reason, 'clinic_id' => $employee_clinic_id]
         );
     }
+
+private function updateRiderInfo($user_id, $data) {
+    $updateFields = [];
+    $values = [':user_id' => $user_id];
+    
+    if (isset($data['vehicle_type'])) {
+        $updateFields[] = "vehicle_type = :vehicle_type";
+        $values[':vehicle_type'] = $data['vehicle_type'];
+    }
+    if (isset($data['plate_number'])) {
+        $updateFields[] = "plate_number = :plate_number";
+        $values[':plate_number'] = $data['plate_number'];
+    }
+    if (isset($data['phone_number'])) {
+        $updateFields[] = "phone = :phone";
+        $values[':phone'] = $data['phone_number'];
+    }
+    if (isset($data['driver_license_no'])) {
+        $updateFields[] = "driver_license_no = :driver_license_no";
+        $values[':driver_license_no'] = $data['driver_license_no'];
+    }
+    if (!empty($data['license_expiration_date'])) {
+        $updateFields[] = "license_expiration_date = :license_expiration_date";
+        $values[':license_expiration_date'] = $data['license_expiration_date'];
+    }
+    if (isset($data['vehicle_brand_model'])) {
+        $updateFields[] = "vehicle_brand_model = :vehicle_brand_model";
+        $values[':vehicle_brand_model'] = $data['vehicle_brand_model'];
+    }
+    if (isset($data['or_cr_number'])) {
+        $updateFields[] = "or_cr_number = :or_cr_number";
+        $values[':or_cr_number'] = $data['or_cr_number'];
+    }
+    
+    if (!empty($updateFields)) {
+        $updateFields[] = "updated_at = NOW()";
+        $sql = "UPDATE riders SET " . implode(', ', $updateFields) . " WHERE user_id = :user_id";
+        $stmt = $this->pdo->prepare($sql);
+        $stmt->execute($values);
+    }
+}
 }
 
 // Main execution

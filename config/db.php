@@ -7,6 +7,9 @@ $dbname = 'u334978718_eyecore_db';
 $username = 'u334978718_eyecore_user';
 $password = 'Eyecore@2026';
 
+// ✅ Set PHP timezone FIRST (before any date functions)
+date_default_timezone_set('Asia/Manila');
+
 // Create connection
 try {
     $pdo = new PDO(
@@ -28,12 +31,12 @@ try {
     $pdo->exec("SET SESSION collation_connection = utf8mb4_unicode_ci");
     $pdo->exec("SET SESSION collation_database = utf8mb4_unicode_ci");
     
+    // ✅ Set MySQL session timezone to match PHP
+    $pdo->exec("SET time_zone = '+08:00'");
+    
 } catch (PDOException $e) {
     // For development - show error
     die("Connection failed: " . $e->getMessage());
     // For production: die("System temporarily unavailable.");
 }
-
-// Set timezone
-date_default_timezone_set('Asia/Manila');
 ?>

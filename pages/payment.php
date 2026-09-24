@@ -132,42 +132,103 @@ if ($reservation_id > 0 && $appointment_id == 0) {
 }
 
 // ============================================
-// GET APPOINTMENT WITH MULTIPLE SERVICES
+// ✅ FIXED: GET APPOINTMENT WITH MULTIPLE SERVICES
+// Skip kapag reservation flow — may data na tayo!
 // ============================================
-$query = mysqli_query($conn, "
-    SELECT a.*,
-           c.name      AS clinic_name,
-           c.address   AS clinic_address,
-           c.contact   AS clinic_contact,
-           c.hours     AS clinic_hours,
-           d.name      AS doctor_name,
-           d.specialty AS doctor_specialty,
-           u.first_name,
-           u.last_name,
-           u.email,
-           u.contact   AS user_contact,
-           p.name        AS product_item_name,
-           p.price       AS product_item_price,
-           p.category    AS product_item_category,
-           p.image       AS product_image,
-           p.images      AS product_images_old,
-           p.images_json AS product_images_json,
-           a.lens_type   AS lens_type
-    FROM appointments a
-    LEFT JOIN clinics  c ON a.clinic_id  = c.id
-    LEFT JOIN doctors  d ON a.doctor_id  = d.id
-    LEFT JOIN users    u ON a.user_id    = u.id
-    LEFT JOIN products p ON a.product_id = p.id
-    WHERE a.id = $appointment_id
-      AND a.user_id = $user_id
-    LIMIT 1
-");
+if ($reservation_id > 0) {
+    // ✅ Reservation flow — may $appointment data na tayo galing sa itaas
+    // I-set lang ang mga kailangan for consistency
+    $appointment['clinic_id'] = $appointment['clinic_id'] ?? 0;
+    $appointment['product_id'] = $appointment['item_id'] ?? null;
+    $appointment['item_type'] = 'product';
+    $appointment['appointment_date'] = $appointment['appointment_date'] ?? null;
+    $appointment['appointment_time'] = $appointment['appointment_time'] ?? null;
+    $appointment['doctor_id'] = null;
+    $appointment['doctor_name'] = null;
+    $appointment['product_id'] = $appointment['item_id'] ?? null;
+    $appointment['product_name'] = $appointment['item_name'] ?? null;
+    $appointment['product_price'] = $appointment['item_price'] ?? null;
+    $appointment['product_category'] = $appointment['item_category'] ?? null;
+    $appointment['lens_type'] = null;
 
+} else if ($appointment_id > 0) {
+    // ✅ Appointment flow — normal query
+    $query = mysqli_query($conn, "
+        SELECT a.*,
+               c.name      AS clinic_name,
+               c.address   AS clinic_address,
+               c.contact   AS clinic_contact,
+               c.hours     AS clinic_hours,
+               d.name      AS doctor_name,
+               d.specialty AS doctor_specialty,
+               u.first_name,
+               u.last_name,
+               u.email,
+               u.contact   AS user_contact,
+               p.name        AS product_item_name,
+               p.price       AS product_item_price,
+               p.category    AS product_item_category,
+               p.image       AS product_image,
+               p.images      AS product_images_old,
+               p.images_json AS product_images_json,
+               a.lens_type   AS lens_type
+        FROM appointments a
+        LEFT JOIN clinics  c ON a.clinic_id  = c.id
+        LEFT JOIN doctors  d ON a.doctor_id  = d.id
+        LEFT JOIN users    u ON a.user_id    = u.id
+        LEFT JOIN products p ON a.product_id = p.id
+        WHERE a.id = $appointment_id
+          AND a.user_id = $user_id
+        LIMIT 1
+    ");
+    
 $appointment = mysqli_fetch_assoc($query);
 
-if (!$appointment) {
+// ✅ FIXED: Skip error kung reservation flow (may data na mula sa reservation)
+if (!$appointment && $reservation_id == 0) {
     header('Location: my-appointments.php');
     exit();
+}
+
+// ✅ FIXED: Merge reservation data kung reservation flow
+if ($reservation_id > 0) {
+    $appointment = [
+        'id'                 => $reservation_id,
+        'clinic_id'          => $appointment['clinic_id'] ?? 0,
+        'clinic_name'        => $reservation['clinic_name'] ?? '',
+        'clinic_address'     => $reservation['clinic_address'] ?? '',
+        'clinic_contact'     => $reservation['clinic_contact'] ?? '',
+        'clinic_hours'       => $reservation['clinic_hours'] ?? '',
+        'item_type'          => 'product',
+        'item_id'            => $reservation['product_id'] ?? null,
+        'item_name'          => $reservation['product_name'] ?? '',
+        'item_price'         => $reservation['product_price'] ?? 0,
+        'item_category'      => $reservation['product_category'] ?? '',
+        'product_id'         => $reservation['product_id'] ?? null,
+        'product_name'       => $reservation['product_name'] ?? '',
+        'product_price'      => $reservation['product_price'] ?? 0,
+        'product_category'   => $reservation['product_category'] ?? '',
+        'product_image'      => $product_image ?? null,
+        'product_images_old' => $reservation['product_images_old'] ?? null,
+        'product_images_json'=> $reservation['product_images_json'] ?? null,
+        'lens_type'          => null,
+        'doctor_id'          => null,
+        'doctor_name'        => null,
+        'doctor_specialty'   => null,
+        'first_name'         => $reservation['first_name'] ?? '',
+        'last_name'          => $reservation['last_name'] ?? '',
+        'email'              => $reservation['email'] ?? '',
+        'user_contact'       => $reservation['user_contact'] ?? '',
+        'appointment_date'   => $reservation['preferred_date'] ?? null,
+        'appointment_time'   => $reservation['preferred_time'] ?? null,
+        'status'             => $reservation['status'] ?? 'pending',
+        'payment_status'     => $reservation['payment_status'] ?? 'unpaid',
+        'total_amount'       => $reservation['total_amount'] ?? 0,
+        'downpayment_amount' => $reservation['downpayment_amount'] ?? 0,
+        'balance_amount'     => $reservation['balance_amount'] ?? 0,
+        'ref_no'             => $reservation['reservation_code'] ?? '',
+    ];
+}
 }
 
 // ============================================
@@ -301,7 +362,7 @@ if ($lens_price > 0) {
 }
 
 // ============================================
-// ✅ NEW: DELIVERY FEATURE — Fetch delivery info + fee
+// ✅ DELIVERY FEATURE — Fetch delivery info + fee
 // ============================================
 $delivery_fee   = 0;
 $is_delivery    = false;
@@ -338,7 +399,6 @@ if ($pwd_senior_expired) {
 // ✅ UPDATED: Compute total WITH delivery fee (after tax)
 // ============================================
 $taxed_total = $tax_calc['final_total'];
-// Idagdag ang delivery fee AFTER tax (flat fee, hindi taxed)
 $total_amount = $taxed_total + $delivery_fee;
 
 $discount_amount = $tax_calc['discount_amount'];
@@ -348,7 +408,7 @@ $vat_rate = $tax_calc['vat_rate'];
 $subtotal_after_discount = $subtotal - $discount_amount;
 
 // ============================================
-// ✅ UPDATED: CALCULATE PAYMENT USING HELPER - WITH DELIVERY FEE
+// ✅ CALCULATE PAYMENT USING HELPER - WITH DELIVERY FEE
 // ============================================
 $payment_info = calculatePaymentAmounts(
     $conn,
@@ -378,7 +438,6 @@ if ($payment_policy === 'full_payment') {
     $balance_amount     = round($total_amount - $downpayment_amount, 2);
     $payment_type_label = 'downpayment';
 } else {
-    // pay_on_site / no_payment
     $downpayment_amount = $payment_info['downpayment_amount'];
     $balance_amount     = $payment_info['balance_amount'];
 }
@@ -393,7 +452,7 @@ if ($requires_payment && $downpayment_amount <= 0 && $total_amount > 0) {
 $subtotal_display        = $payment_info['subtotal'];
 $discount_amount_display = $payment_info['discount_amount'];
 $vat_amount_display      = $payment_info['vat_amount'];
-$total_amount_display    = $total_amount;  // ← gamitin ang bagong total (may delivery fee)
+$total_amount_display    = $total_amount;
 
 // ============================================
 // CHECK IF APPROVE FIRST AND NOT YET APPROVED
@@ -543,57 +602,62 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($error)) {
             $checkout_url = $result['data']['attributes']['checkout_url'];
 
             if ($reservation_id > 0) {
+                // ✅ FIXED: Save paymongo_checkout_id for reservations
                 mysqli_query($conn, "
                     INSERT INTO payments
                     (reservation_id, user_id, clinic_id, amount, payment_method,
-                     payment_status, reference_number, paymongo_session_id, payment_type, created_at)
+                     payment_status, reference_number, paymongo_session_id, paymongo_checkout_id, payment_type, created_at)
                     VALUES (
                         $appointment_id, $user_id, {$appointment['clinic_id']},
                         $downpayment_amount, '$payment_method', 'pending',
-                        '$ref_no', '$session_id', '$payment_type_label', NOW()
+                        '$ref_no', '$session_id', '$session_id', '$payment_type_label', NOW()
                     )
                 ");
                 mysqli_query($conn, "
                     UPDATE reservations
-                    SET payment_status = 'pending', updated_at = NOW()
+                    SET payment_status = 'pending', 
+                        paymongo_checkout_id = '$session_id',
+                        updated_at = NOW()
                     WHERE id = $appointment_id
                 ");
             } else {
+                // ✅ FIXED: Save paymongo_checkout_id for appointments
                 mysqli_query($conn, "
                     INSERT INTO payments
                     (appointment_id, user_id, clinic_id, amount, payment_method,
-                     payment_status, reference_number, paymongo_session_id, payment_type, created_at)
+                     payment_status, reference_number, paymongo_session_id, paymongo_checkout_id, payment_type, created_at)
                     VALUES (
                         $appointment_id, $user_id, {$appointment['clinic_id']},
                         $downpayment_amount, '$payment_method', 'pending',
-                        '$ref_no', '$session_id', '$payment_type_label', NOW()
+                        '$ref_no', '$session_id', '$session_id', '$payment_type_label', NOW()
                     )
                 ");
                 
-$discount_type = $is_pwd_senior ? ($pwd_senior_type ?: 'pwd') : 'none';
-$discount_percentage = $is_pwd_senior ? ($discount_rate * 100) : 0;
-$discount_clinic_id = $is_pwd_senior ? $clinic_id : 'NULL';
+                $discount_type = $is_pwd_senior ? ($pwd_senior_type ?: 'pwd') : 'none';
+                $discount_percentage = $is_pwd_senior ? ($discount_rate * 100) : 0;
+                $discount_clinic_id = $is_pwd_senior ? $clinic_id : 'NULL';
 
-$update_sql = "
-    UPDATE appointments
-    SET 
-        payment_status = 'downpayment_pending',
-        downpayment_amount = $downpayment_amount,
-        downpayment_ref = '$ref_no',
-        balance_amount = $balance_amount,
-        total_amount = $total_amount_display,
-        subtotal = $subtotal_display,
-        discount_type = '$discount_type',
-        discount_percentage = $discount_percentage,
-        discount_amount = $discount_amount_display,
-        vat_percentage = " . ($vat_rate * 100) . ",
-        vat_amount = $vat_amount_display,
-        discount_clinic_id = $discount_clinic_id,
-        amount_paid = $downpayment_amount,
-        payment_status = 'downpayment_pending'
-    WHERE id = $appointment_id
-";
-mysqli_query($conn, $update_sql);
+                // ✅ FIXED: Save paymongo_checkout_id in appointments table
+                $update_sql = "
+                    UPDATE appointments
+                    SET 
+                        payment_status = 'downpayment_pending',
+                        downpayment_amount = $downpayment_amount,
+                        downpayment_ref = '$ref_no',
+                        balance_amount = $balance_amount,
+                        total_amount = $total_amount_display,
+                        subtotal = $subtotal_display,
+                        discount_type = '$discount_type',
+                        discount_percentage = $discount_percentage,
+                        discount_amount = $discount_amount_display,
+                        vat_percentage = " . ($vat_rate * 100) . ",
+                        vat_amount = $vat_amount_display,
+                        discount_clinic_id = $discount_clinic_id,
+                        amount_paid = $downpayment_amount,
+                        paymongo_checkout_id = '$session_id'
+                    WHERE id = $appointment_id
+                ";
+                mysqli_query($conn, $update_sql);
             }
 
             header("Location: $checkout_url");
@@ -1308,7 +1372,6 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
     <!-- MAIN CONTENT -->
     <div class="main-content">
         <div class="content-wrapper">
-            <!-- Back Button -->
             <div class="back-link">
                 <?php if ($reservation_id > 0): ?>
                     <a href="my-reservations.php">
@@ -1321,7 +1384,6 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
                 <?php endif; ?>
             </div>
 
-            <!-- Page Header -->
             <div class="page-header">
                 <h1>
                     <i class="fas fa-credit-card"></i>
@@ -1420,7 +1482,6 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
                         </div>
                     </div>
 
-                    <!-- Display All Services -->
                     <?php if (!empty($appointment_services)): ?>
                     <div class="service-items">
                         <div style="font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; font-size: 13px;">
@@ -1435,7 +1496,6 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
                     </div>
                     <?php endif; ?>
 
-                    <!-- Payment Breakdown -->
                     <div class="payment-breakdown">
                         <div class="breakdown-item">
                             <span class="breakdown-label">Subtotal:</span>
@@ -1447,30 +1507,8 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
                             <span class="breakdown-label">
                                 <?php echo ucfirst($pwd_senior_type); ?> Discount 
                                 <span class="discount-badge"><?php echo $discount_rate * 100; ?>%</span>
-                                <?php if ($pwd_senior_expiry_date): ?>
-                                <span style="font-size: 10px; color: #059669; margin-left: 5px;">
-                                    (Valid until <?php echo date('M j, Y', strtotime($pwd_senior_expiry_date)); ?>)
-                                </span>
-                                <?php endif; ?>
                             </span>
                             <span class="breakdown-value discount">-₱<?php echo number_format($discount_amount_display, 2); ?></span>
-                        </div>
-                        <?php elseif ($pwd_senior_expired): ?>
-                        <div class="breakdown-item" style="background: #fff3cd; padding: 8px 10px; border-radius: 6px;">
-                            <span class="breakdown-label" style="color: #92400e;">
-                                <i class="fas fa-exclamation-triangle" style="color: #d97706;"></i>
-                                PWD/Senior Discount (EXPIRED)
-                            </span>
-                            <span class="breakdown-value" style="color: #dc2626; font-size: 13px;">
-                                <span class="discount-badge" style="background: #dc2626;">Expired</span>
-                            </span>
-                        </div>
-                        <?php endif; ?>
-                        
-                        <?php if ($is_pwd_senior && $discount_amount_display > 0): ?>
-                        <div class="breakdown-item">
-                            <span class="breakdown-label">Subtotal after discount:</span>
-                            <span class="breakdown-value">₱<?php echo number_format($subtotal_display - $discount_amount_display, 2); ?></span>
                         </div>
                         <?php endif; ?>
                         
@@ -1490,7 +1528,6 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
                         </div>
                         <?php endif; ?>
 
-                        <!-- ✅ NEW: Delivery Fee (only if delivery order) -->
                         <?php if ($is_delivery): ?>
                         <div class="breakdown-item" style="border-top: 1px dashed var(--border-color); margin-top: 8px; padding-top: 10px;">
                             <span class="breakdown-label">
@@ -1536,10 +1573,8 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
                         <?php endif; ?>
                     </div>
 
-                    <!-- ✅ UPDATED: Appointment / Delivery Details -->
                     <div class="appointment-dates">
                         <?php if ($is_delivery): ?>
-                            <!-- Delivery order: ipakita ang delivery address -->
                             <div class="date-row" style="align-items: flex-start;">
                                 <i class="fas fa-truck"></i>
                                 <span>Deliver to:</span>
@@ -1564,15 +1599,7 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
                                 <span>Contact:</span>
                                 <strong><?php echo htmlspecialchars($delivery_info['delivery_phone'] ?? ''); ?></strong>
                             </div>
-                            <?php if (!empty($delivery_info['delivery_landmark'])): ?>
-                            <div class="date-row">
-                                <i class="fas fa-map-pin"></i>
-                                <span>Landmark:</span>
-                                <strong><?php echo htmlspecialchars($delivery_info['delivery_landmark']); ?></strong>
-                            </div>
-                            <?php endif; ?>
                         <?php else: ?>
-                            <!-- Pickup order: ipakita ang date/time -->
                             <div class="date-row">
                                 <i class="fas fa-calendar"></i>
                                 <span><?php echo $reservation_id > 0 ? 'Preferred Date:' : 'Appointment Date:'; ?></span>
@@ -1727,7 +1754,6 @@ $display_percent = ($total_amount_display > 0) ? round(($downpayment_amount / $t
             btn.innerHTML = '<span class="loading-spinner"></span> Processing payment...';
         });
 
-        // Notification Functions
         function toggleNotifications() {
             document.getElementById('notificationMenu')?.classList.toggle('show');
         }

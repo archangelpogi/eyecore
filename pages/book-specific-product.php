@@ -92,8 +92,10 @@ $active_nav = 'discover';
 // ============================================
 $rx_knowledge = isset($_GET['rx_knowledge']) ? $_GET['rx_knowledge'] : '';
 $from_lens    = isset($_GET['lens'])         ? $_GET['lens']         : '';
+$from_lens_index = isset($_GET['lens_index']) ? $_GET['lens_index']  : ''; // ✅ BAGO
 $from_color   = isset($_GET['color'])        ? $_GET['color']        : '';
-// ✅ LENS PRICES - PARA MA-ADD SA TOTAL
+
+// ✅ LENS PRICES - Base prices (hindi kasama ang index add-on)
 $lens_prices = [
     'frame_only'      => 0,
     'single_vision'   => 500,
@@ -102,8 +104,30 @@ $lens_prices = [
     'contact_daily'   => 0,
     'contact_monthly' => 0,
 ];
-$lens_price = $lens_prices[$from_lens] ?? 0;
+
+// ✅ Base lens price
+$base_lens_price = $lens_prices[$from_lens] ?? 0;
+
+// ✅ ADD: Lens index add-on price (from database, hindi hardcoded)
+$lens_index_price = 0;
+if (!empty($from_lens_index)) {
+    $li_row = @mysqli_fetch_assoc(mysqli_query($conn, "
+        SELECT price FROM lens_index_addons 
+        WHERE clinic_id = $clinic_id 
+          AND lens_type = '" . mysqli_real_escape_string($conn, $from_lens) . "'
+          AND index_value = '" . mysqli_real_escape_string($conn, $from_lens_index) . "'
+          AND is_active = 1
+        LIMIT 1
+    "));
+    if ($li_row) {
+        $lens_index_price = (float)$li_row['price'];
+    }
+}
+
+// ✅ Total lens price = base + index add-on
+$lens_price = $base_lens_price + $lens_index_price;
 $total_product_price = $product['price'] + $lens_price;
+
 $from_od_sph  = isset($_GET['od_sph'])       ? $_GET['od_sph']       : '';
 $from_color_name = '';
 if (!empty($from_color)) {
@@ -151,6 +175,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
     } elseif ($rx_knowledge_post === 'know' && ($post_od_sph || $post_os_sph)) {
         $notes .= ($notes ? ' | ' : '') . "Prescription — OD: SPH {$post_od_sph}, CYL {$post_od_cyl}, AXIS {$post_od_axis} | OS: SPH {$post_os_sph}, CYL {$post_os_cyl}, AXIS {$post_os_axis}";
         if ($lens_type_post) $notes .= " | Lens: {$lens_type_post}";
+        if ($from_lens_index) $notes .= " | Lens Index: {$from_lens_index}";
     }
     
     // Validate all fields
@@ -162,7 +187,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         // ============================================
 
         // 0. ✅ SERVER-SIDE: Bawal mag-book ng petsa/oras na nasa nakaraan na
-        //    (kahit ma-bypass ang JS validation, hindi papasa dito)
         $tz = new DateTimeZone(date_default_timezone_get() ?: 'Asia/Manila');
         $now_server = new DateTime('now', $tz);
         $appointment_datetime_str = $appointment_date . ' ' . $appointment_time;
@@ -174,7 +198,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             $error_message = 'You cannot book an appointment in the past. Please select a valid date and time.';
         }
         
-        // 1. Check if user already has appointment at this exact date and time (kahit ibang clinic)
+        // 1. Check if user already has appointment at this exact date and time
         if (empty($error_message)) {
         $conflict_query = mysqli_query($conn, "
             SELECT a.*, c.name as clinic_name 
@@ -227,29 +251,23 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         
         // 4. If specific doctor selected, check if doctor is available on that date and time
         if (empty($error_message) && $doctor_id !== 'NULL') {
-            // Get doctor's schedule
             $doctor_query = mysqli_query($conn, "SELECT schedule FROM doctors WHERE id = $doctor_id");
             $doctor = mysqli_fetch_assoc($doctor_query);
             $schedule = json_decode($doctor['schedule'], true);
             
-            // Get day of week (3-letter format: Mon, Tue, etc.)
             $day_of_week = strtolower(date('D', strtotime($appointment_date)));
             
-            // Check if doctor works on that day
             if (!isset($schedule[$day_of_week])) {
                 $error_message = 'Selected doctor is not available on this date. Please choose another doctor or date.';
             } else {
-                // Parse the selected time
                 $time_parts = explode(':', $appointment_time);
                 $selected_hour = (int)$time_parts[0];
                 $selected_min = (int)$time_parts[1];
                 $selected_time_mins = $selected_hour * 60 + $selected_min;
                 
-                // Check if time is within doctor's schedule for that day
                 $is_valid_time = false;
                 
                 foreach ($schedule[$day_of_week] as $time_range) {
-                    // Parse time range like "09:00-12:00"
                     $range_parts = explode('-', $time_range);
                     $start_time = $range_parts[0];
                     $end_time = $range_parts[1];
@@ -282,7 +300,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             // ✅ STEP 1: Check kung may existing patient na ang user na ito
             $existingPatientId = null;
 
-            // 1.1 Search sa patients table by email or contact
             $userEmail   = mysqli_real_escape_string($conn, trim($user['email']   ?? ''));
             $userContact = mysqli_real_escape_string($conn, trim($user['contact'] ?? ''));
 
@@ -305,7 +322,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 }
             }
 
-            // 1.2 Last resort: check previous appointments ng same user
             if (!$existingPatientId) {
                 $prevApptCheck = mysqli_query($conn, "
                     SELECT patient_id FROM appointments 
@@ -323,14 +339,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 }
             }
 
-            // ✅ STEP 2: Determine if new patient
             $isNewPatient = ($existingPatientId && $existingPatientId > 0) ? 0 : 1;
             
-            // ✅ STEP 3: Generate reference number
             $ref_no = 'APP-' . time() . '-' . rand(1000, 9999);
             
             // ============================================
-            // 🆕 STEP 4: BUILD ITEMS ARRAY (DAPAT MAY LENS)
+            // 🆕 STEP 4: BUILD ITEMS ARRAY (DAPAT MAY LENS + INDEX)
             // ============================================
             $items_array = [];
 
@@ -346,12 +360,18 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             // 2. Lens (kung may lens at hindi frame_only)
             if ($from_lens && $from_lens !== 'frame_only') {
                 $lens_name = ucwords(str_replace('_', ' ', $from_lens));
+                // ✅ Include lens index sa item name
+                $lens_display_name = $lens_name . ' Lens';
+                if (!empty($from_lens_index)) {
+                    $lens_display_name .= ' (' . $from_lens_index . ')';
+                }
                 $items_array[] = [
-                    'name' => $lens_name . ' Lens',
+                    'name' => $lens_display_name,
                     'price' => (float)$lens_price,
                     'quantity' => 1,
                     'type' => 'service',
-                    'lens_type' => $from_lens
+                    'lens_type' => $from_lens,
+                    'lens_index' => $from_lens_index
                 ];
             }
 
@@ -385,18 +405,23 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             $subtotal_after_discount = $subtotal - $discount_amount;
             
             // ============================================
-            // 🆕 STEP 7: INSERT APPOINTMENT WITH COMPLETE DATA
+            // 🆕 STEP 7: INSERT APPOINTMENT WITH COMPLETE DATA (kasama lens_index)
             // ============================================
             $lens_price_safe = (float)$lens_price;
             $subtotal_safe = (float)$subtotal;
             $discount_amount_safe = (float)$discount_amount;
             $total_amount_safe = (float)$total_amount;
 
+            // ✅ Escape lens_index safely
+            $lens_index_sql = !empty($from_lens_index) 
+                ? "'" . mysqli_real_escape_string($conn, $from_lens_index) . "'" 
+                : "NULL";
+
             if ($doctor_id === 'NULL') {
                 $insert_query = "INSERT INTO appointments 
                     (ref_no, user_id, patient_id, clinic_id, product_id, doctor_id, 
                      appointment_date, appointment_time, notes, status, is_new_patient, 
-                     color_code, color_name, lens_type, lens_price, contact_number,
+                     color_code, color_name, lens_type, lens_index, lens_price, contact_number,
                      subtotal, discount_amount, total_amount, amount_paid, payment_status, payment_type,
                      items, created_at) 
                     VALUES (
@@ -414,6 +439,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                         '" . mysqli_real_escape_string($conn, $from_color) . "', 
                         '" . mysqli_real_escape_string($conn, $from_color_name) . "',
                         '" . mysqli_real_escape_string($conn, $from_lens) . "',
+                        $lens_index_sql,
                         $lens_price_safe,
                         '$contact_number',
                         $subtotal_safe, 
@@ -429,7 +455,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 $insert_query = "INSERT INTO appointments 
                     (ref_no, user_id, patient_id, clinic_id, product_id, doctor_id, 
                      appointment_date, appointment_time, notes, status, is_new_patient, 
-                     color_code, color_name, lens_type, lens_price, contact_number,
+                     color_code, color_name, lens_type, lens_index, lens_price, contact_number,
                      subtotal, discount_amount, total_amount, amount_paid, payment_status, payment_type,
                      items, created_at) 
                     VALUES (
@@ -447,6 +473,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                         '" . mysqli_real_escape_string($conn, $from_color) . "', 
                         '" . mysqli_real_escape_string($conn, $from_color_name) . "',
                         '" . mysqli_real_escape_string($conn, $from_lens) . "',
+                        $lens_index_sql,
                         $lens_price_safe,
                         '$contact_number',
                         $subtotal_safe, 
@@ -464,18 +491,15 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 $new_appointment_id = mysqli_insert_id($conn);
                 
                 // ============================================
-                // 🔧 FIXED STEP 8: UPDATE PAYMENT INFO (GAMIT ANG TAMANG VALUES)
+                // 🔧 FIXED STEP 8: UPDATE PAYMENT INFO
                 // ============================================
-                // Kunin ang payment policy ng clinic
                 $policy = getClinicPaymentPolicy($conn, $clinic_id);
                 $payment_policy = $policy['payment_policy'];
                 $downpayment_percent = $policy['downpayment_percentage'] ?? 30;
                 $booking_flow = $policy['booking_flow'] ?? 'approve_first';
 
-                // ✅ I-base sa CORRECT total_amount (from applyTaxAndDiscount)
                 $final_total = $total_amount_safe;
 
-                // ✅ Compute downpayment based on policy
                 switch ($payment_policy) {
                     case 'full_payment':
                         $downpayment_amount = $final_total;
@@ -514,14 +538,12 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                         $requires_payment = true;
                 }
 
-                // ✅ Ensure downpayment is not zero when payment is required
                 if ($requires_payment && $downpayment_amount <= 0 && $final_total > 0) {
                     $downpayment_amount = $final_total;
                     $balance_amount = 0;
                     $payment_type = 'full';
                 }
 
-                // ✅ UPDATE: Gamitin ang tamang values
                 $update_payment = mysqli_query($conn, "
                     UPDATE appointments 
                     SET 
@@ -535,7 +557,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                     WHERE id = $new_appointment_id
                 ");
                 
-                // Add notification
                 $formatted_date = date('F j, Y', strtotime($appointment_date));
                 $formatted_time = date('g:i A', strtotime($appointment_time));
                 $doctor_text = ($doctor_id === 'NULL') ? 'any available doctor' : 'Dr. ' . $_POST['doctor_name'];
@@ -550,21 +571,15 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                     );
                 }
                 
-                // CHECK PAYMENT POLICY AT BOOKING FLOW NG CLINIC
                 if ($requires_payment) {
-                    
                     if ($booking_flow === 'pay_first') {
-                        // 💳 PAY FIRST: Redirect to payment immediately
                         header('Location: payment.php?appointment_id=' . $new_appointment_id);
                         exit();
                     } else {
-                        // ✅ APPROVE FIRST: Show success message, wait for clinic approval
                         $success_message = 'Appointment booked successfully! Please wait for clinic approval before making payment.';
                         $_POST = array();
                     }
-                    
                 } else {
-                    // Walang bayad (free o pay on-site) — show success
                     $success_message = 'Appointment booked successfully!';
                     $_POST = array();
                 }
@@ -594,33 +609,8 @@ $booked_slots = [];
 while ($row = mysqli_fetch_assoc($booked_slots_query)) {
     $booked_slots[] = $row;
 }
-if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
-    $clinic_id = $_POST['clinic_id'] ?? null;
-    $product_ids = $_POST['product_ids'] ?? [];
-    
-    $total = 0;
-    foreach ($product_ids as $id) {
-        $stmt = $pdo->prepare("
-            SELECT price FROM products 
-            WHERE id = ? AND clinic_id = ?
-        ");
-        $stmt->execute([$id, $clinic_id]);
-        $product = $stmt->fetch(PDO::FETCH_ASSOC);
-        $total += $product['price'] ?? 0;
-    }
-    
-    $payment_info = calculatePaymentAmounts($conn, $clinic_id, $total_product_price);
-    
-    echo json_encode([
-        'success' => true,
-        'total_amount' => $total,
-        'payment' => $payment_info
-    ]);
-    exit;
-}
 
 ?>
-
 <!DOCTYPE html>
 <html lang="en" class="<?php echo getThemeClass(); ?>">
 <head>
@@ -825,14 +815,8 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
         }
 
         @keyframes slideIn {
-            from {
-                transform: translateX(100%);
-                opacity: 0;
-            }
-            to {
-                transform: translateX(0);
-                opacity: 1;
-            }
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
         }
 
         @keyframes fadeOut {
@@ -910,16 +894,11 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
         }
 
         @media (max-width: 768px) {
-            .fab {
-                bottom: 90px;
-            }
+            .fab { bottom: 90px; }
         }
 
         /* ===== TOOLTIPS ===== */
-        [data-tooltip] {
-            position: relative;
-            cursor: help;
-        }
+        [data-tooltip] { position: relative; cursor: help; }
 
         [data-tooltip]:hover::before {
             content: '';
@@ -960,15 +939,11 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
         }
 
         @media (min-width: 1024px) {
-            .main-content {
-                padding: 30px 40px;
-            }
+            .main-content { padding: 30px 40px; }
         }
 
         @media (max-width: 768px) {
-            .main-content {
-                padding: 20px 16px 100px;
-            }
+            .main-content { padding: 20px 16px 100px; }
         }
 
         /* ===== BACK BUTTON ===== */
@@ -1050,9 +1025,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             box-shadow: var(--shadow-sm);
         }
 
-        .product-badge i {
-            color: var(--primary);
-        }
+        .product-badge i { color: var(--primary); }
 
         .product-badge span {
             font-weight: 600;
@@ -1126,9 +1099,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             color: var(--text-muted);
         }
 
-        .product-preview-details {
-            flex: 1;
-        }
+        .product-preview-details { flex: 1; }
 
         .product-preview-category {
             font-size: 13px;
@@ -1235,13 +1206,8 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             color: var(--text-secondary);
         }
 
-        .progress-step.active .step-label {
-            color: var(--primary);
-        }
-
-        .progress-step.completed .step-label {
-            color: var(--success);
-        }
+        .progress-step.active .step-label { color: var(--primary); }
+        .progress-step.completed .step-label { color: var(--success); }
 
         /* Step Sections */
         .step-section {
@@ -1253,18 +1219,9 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             transition: all 0.2s;
         }
 
-        .step-section.active {
-            border-left: 4px solid var(--primary);
-        }
-
-        .step-section.completed {
-            border-left: 4px solid var(--success);
-        }
-
-        .step-section.locked {
-            opacity: 0.7;
-            background: var(--disabled-bg);
-        }
+        .step-section.active { border-left: 4px solid var(--primary); }
+        .step-section.completed { border-left: 4px solid var(--success); }
+        .step-section.locked { opacity: 0.7; background: var(--disabled-bg); }
 
         .step-header {
             display: flex;
@@ -1293,25 +1250,11 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             font-weight: 600;
         }
 
-        .status-pending {
-            background: var(--warning);
-            color: white;
-        }
+        .status-pending { background: var(--warning); color: white; }
+        .status-completed { background: var(--success); color: white; }
+        .status-locked { background: var(--text-muted); color: white; }
 
-        .status-completed {
-            background: var(--success);
-            color: white;
-        }
-
-        .status-locked {
-            background: var(--text-muted);
-            color: white;
-        }
-
-        .disabled-content {
-            opacity: 0.5;
-            pointer-events: none;
-        }
+        .disabled-content { opacity: 0.5; pointer-events: none; }
 
         /* Doctors Grid */
         .doctors-grid {
@@ -1326,11 +1269,10 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             border-radius: var(--radius-md);
             padding: 15px;
             transition: all 0.2s;
-            border: 2px solid transparent;
+            border: 1px solid var(--border-light);
             cursor: pointer;
             position: relative;
             text-align: center;
-            border: 1px solid var(--border-light);
         }
 
         .doctor-card:hover:not(.unavailable) {
@@ -1349,7 +1291,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             pointer-events: none;
             background: var(--unavailable-bg);
             border-color: var(--border-color);
-            position: relative;
             cursor: not-allowed;
         }
 
@@ -1373,14 +1314,8 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             background: var(--bg-secondary);
         }
 
-        .doctor-card.no-schedule .doctor-avatar {
-            background: #999 !important;
-        }
-
-        .doctor-card.no-schedule .doctor-schedule-badge {
-            background: #999 !important;
-            color: white !important;
-        }
+        .doctor-card.no-schedule .doctor-avatar { background: #999 !important; }
+        .doctor-card.no-schedule .doctor-schedule-badge { background: #999 !important; color: white !important; }
 
         .doctor-card input[type="radio"] {
             position: absolute;
@@ -1400,9 +1335,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             font-size: 28px;
         }
 
-        .any-doctor-card .doctor-avatar {
-            background: var(--success);
-        }
+        .any-doctor-card .doctor-avatar { background: var(--success); }
 
         .doctor-name {
             font-size: 15px;
@@ -1548,9 +1481,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
         }
 
         /* Time Slots */
-        .time-slots-container {
-            margin-top: 20px;
-        }
+        .time-slots-container { margin-top: 20px; }
 
         .time-slots-header {
             display: flex;
@@ -1602,9 +1533,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             border-color: transparent;
         }
 
-        .time-slot-card.available {
-            border-color: var(--success);
-        }
+        .time-slot-card.available { border-color: var(--success); }
 
         .time-slot-card.disabled {
             background: var(--break-bg);
@@ -1655,9 +1584,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             margin-bottom: 5px;
         }
 
-        .no-slots-message p {
-            font-size: 13px;
-        }
+        .no-slots-message p { font-size: 13px; }
 
         /* Calendar Legend */
         .calendar-legend {
@@ -1697,9 +1624,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             margin-bottom: 20px;
         }
 
-        .form-group {
-            margin-bottom: 20px;
-        }
+        .form-group { margin-bottom: 20px; }
 
         .form-group label {
             display: block;
@@ -1793,9 +1718,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             color: var(--break-color);
         }
 
-        .break-info li {
-            margin-bottom: 5px;
-        }
+        .break-info li { margin-bottom: 5px; }
 
         /* Daily Limit Warning */
         .daily-limit-warning {
@@ -1904,9 +1827,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             gap: 8px;
         }
 
-        .summary-card h4 i {
-            color: var(--primary);
-        }
+        .summary-card h4 i { color: var(--primary); }
 
         .summary-item {
             display: flex;
@@ -1916,9 +1837,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             font-size: 13px;
         }
 
-        .summary-item:last-child {
-            border-bottom: none;
-        }
+        .summary-item:last-child { border-bottom: none; }
 
         .summary-label {
             color: var(--text-secondary);
@@ -2085,9 +2004,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             gap: 8px;
         }
 
-        .info-card h2 i {
-            color: var(--primary);
-        }
+        .info-card h2 i { color: var(--primary); }
 
         .info-card ul {
             color: var(--text-secondary);
@@ -2096,15 +2013,11 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             padding-left: 20px;
         }
 
-        .info-card li {
-            margin-bottom: 8px;
-        }
+        .info-card li { margin-bottom: 8px; }
 
         /* ===== RESPONSIVE ===== */
         @media (max-width: 992px) {
-            .booking-grid {
-                grid-template-columns: 1fr;
-            }
+            .booking-grid { grid-template-columns: 1fr; }
         }
 
         @media (max-width: 768px) {
@@ -2124,38 +2037,20 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                 margin: 0 auto;
             }
             
-            .form-row {
-                grid-template-columns: 1fr;
-            }
-            
-            .doctors-grid {
-                grid-template-columns: 1fr;
-            }
+            .form-row { grid-template-columns: 1fr; }
+            .doctors-grid { grid-template-columns: 1fr; }
             
             .clinic-info-sidebar {
                 flex-direction: column;
                 text-align: center;
             }
             
-            .clinic-info-sidebar p {
-                justify-content: center;
-            }
+            .clinic-info-sidebar p { justify-content: center; }
             
-            .calendar-days {
-                gap: 3px;
-            }
-            
-            .calendar-day {
-                font-size: 12px;
-            }
-            
-            .time-slots-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-            
-            .success-actions {
-                flex-direction: column;
-            }
+            .calendar-days { gap: 3px; }
+            .calendar-day { font-size: 12px; }
+            .time-slots-grid { grid-template-columns: repeat(2, 1fr); }
+            .success-actions { flex-direction: column; }
         }
     </style>
 </head>
@@ -2167,7 +2062,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
     <div class="toast-container" id="toastContainer"></div>
 
     <?php
-    // Define variables for the shared navbar
     $user = $user;
     $user_data = $user_data;
     $unread_count = $unread_count;
@@ -2229,7 +2123,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                 <div class="product-preview">
                     <div class="product-preview-image">
                         <?php 
-                        // Image handling
                         $imageUrl = '/assets/img/no-image.png';
                         if (!empty($product['images_json'])) {
                             $images = json_decode($product['images_json'], true);
@@ -2282,7 +2175,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                     </div>
                 </div>
 
-                <!-- Progress Steps - 3 steps (Doctor, Date/Time, Confirm) -->
+                <!-- Progress Steps -->
                 <div class="booking-progress">
                     <div class="progress-step step1 active" onclick="scrollToStep('step1')">
                         <div class="step-number">1</div>
@@ -2310,6 +2203,9 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                     <input type="hidden" name="doctor_name" id="selectedDoctorName" value="">
                     <input type="hidden" name="rx_knowledge" value="<?php echo htmlspecialchars($rx_knowledge); ?>">
                     <input type="hidden" name="lens_type"    value="<?php echo htmlspecialchars($from_lens); ?>">
+                    <?php if ($from_lens_index): ?>
+                    <input type="hidden" name="lens_index"   value="<?php echo htmlspecialchars($from_lens_index); ?>">
+                    <?php endif; ?>
                     <?php if ($from_color): ?>
                     <input type="hidden" name="color_code"   value="<?php echo htmlspecialchars($from_color); ?>">
                     <?php endif; ?>
@@ -2340,7 +2236,15 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                                 <span style="font-size: 13px; color: var(--text-secondary);">Lens Type:</span>
                                 <span style="background: var(--primary-light); color: var(--primary); padding: 4px 12px; border-radius: var(--radius-full); font-size: 13px; font-weight: 600;">
                                     <?php echo htmlspecialchars(ucwords(str_replace('_', ' ', $from_lens))); ?>
+                                    <?php if ($from_lens_index): ?>
+                                        — <?php echo htmlspecialchars($from_lens_index); ?>
+                                    <?php endif; ?>
                                 </span>
+                                <?php if ($lens_index_price > 0): ?>
+                                <span style="background: var(--primary-light); color: var(--primary); padding: 4px 12px; border-radius: var(--radius-full); font-size: 13px; font-weight: 600;">
+                                    +₱<?php echo number_format($lens_index_price, 2); ?>
+                                </span>
+                                <?php endif; ?>
                             </div>
                             <?php endif; ?>
                             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
@@ -2421,7 +2325,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                                 
                             <!-- Individual Doctors -->
                             <?php foreach($doctors_list as $doctor): 
-                                // Check if doctor has schedule
                                 $has_schedule = false;
                                 $schedule_text = 'No schedule';
                                 
@@ -2598,7 +2501,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                 </div>
 
                 <?php
-                // Kunin ang payment info para sa display
                 $display_payment = getPaymentDisplayInfo($conn, $clinic_id, $total_product_price);
                 $booking_flow = $display_payment['booking_flow'] ?? 'approve_first';
                 $payment_type = $display_payment['payment_type'] ?? 'downpayment';
@@ -2689,7 +2591,14 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                         </div>
                     </div>
                 </div>
+
 <!-- Booking Summary -->
+<?php
+// ✅ Compute VAT breakdown for display
+$summary_subtotal = $total_product_price; // Frame + Lens (walang VAT)
+$summary_vat = $summary_subtotal * 0.12;  // 12% VAT
+$summary_total = $summary_subtotal + $summary_vat;
+?>
 <div class="summary-card">
     <h4><i class="fas fa-receipt"></i> Booking Summary</h4>
     <div class="summary-item">
@@ -2697,16 +2606,31 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
         <span class="summary-value"><?php echo $product['name']; ?></span>
     </div>
     <div class="summary-item">
-        <span class="summary-label">Price:</span>
+        <span class="summary-label">Frame Price:</span>
         <span class="summary-value">₱<?php echo number_format($product['price'], 2); ?></span>
     </div>
     
     <?php if ($from_lens && $from_lens != 'frame_only'): ?>
     <div class="summary-item">
-        <span class="summary-label">Lens Upgrade (<?php echo ucwords(str_replace('_', ' ', $from_lens)); ?>):</span>
+        <span class="summary-label">
+            Lens (<?php echo ucwords(str_replace('_', ' ', $from_lens)); ?>
+            <?php if ($from_lens_index): ?>
+                — <?php echo htmlspecialchars($from_lens_index); ?>
+            <?php endif; ?>):
+        </span>
         <span class="summary-value">+₱<?php echo number_format($lens_price, 2); ?></span>
     </div>
     <?php endif; ?>
+    
+    <!-- ✅ BAGO: Ipakita ang Subtotal, VAT, at Total -->
+    <div class="summary-item" style="border-top: 1px solid var(--border-light); padding-top: 10px; margin-top: 5px;">
+        <span class="summary-label" style="font-weight: 500;">Subtotal:</span>
+        <span class="summary-value">₱<?php echo number_format($summary_subtotal, 2); ?></span>
+    </div>
+    <div class="summary-item">
+        <span class="summary-label" style="font-weight: 500; color: var(--info);">VAT (12%):</span>
+        <span class="summary-value" style="color: var(--info);">+₱<?php echo number_format($summary_vat, 2); ?></span>
+    </div>
     
     <div class="summary-item">
         <span class="summary-label">Doctor:</span>
@@ -2725,7 +2649,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
         <span class="summary-value" id="summaryContact">—</span>
     </div>
     <div class="total-price" id="totalPrice">
-        ₱<?php echo number_format($total_product_price, 2); ?>
+        ₱<?php echo number_format($summary_total, 2); ?>
     </div>
 </div>
                 <!-- Confirm Button -->
@@ -2847,10 +2771,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                 if (themeIcon) themeIcon.className = 'fas fa-moon';
             }
             
-            // Initially select "Any Doctor"
             document.getElementById('anyDoctor').checked = true;
-            
-            // Initialize calendar
             initCalendar();
         });
 
@@ -2860,7 +2781,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             document.getElementById('fab').classList.toggle('active');
         }
 
-        // Close FAB menu when clicking outside
         document.addEventListener('click', function(event) {
             const fab = document.getElementById('fab');
             const fabMenu = document.getElementById('fabMenu');
@@ -2871,7 +2791,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             }
         });
 
-        // Scroll to step
         function scrollToStep(stepId) {
             const section = document.getElementById(stepId);
             if (section) {
@@ -2885,7 +2804,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
         const bookedSlots = <?php echo json_encode($booked_slots); ?>;
         const doctorsData = <?php echo json_encode($doctors_list); ?>;
         
-        // State management
         let step1Completed = false;
         let step2Completed = false;
         let step3Completed = false;
@@ -2897,11 +2815,8 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
         let currentMonth = new Date();
         let availableDatesCache = {};
 
-        // ✅ Buffer (minutes) bago ang oras ngayon — pumipigil sa pag-book ng slot
-        // na napakalapit na (halimbawa 5 minuto na lang bago dumating)
         const BOOKING_BUFFER_MINUTES = 30;
 
-        // ✅ Helper: kunin ang clinic open/close minutes (24h format) mula sa clinicHours string
         function getClinicHoursRange() {
             const hoursMatch = clinicHours.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
             if (!hoursMatch) return null;
@@ -2925,14 +2840,11 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             };
         }
 
-        // ✅ Helper: kunin ang YYYY-MM-DD ng "today" gamit ang LOCAL time (hindi UTC)
         function getTodayDateStr() {
             const now = new Date();
             return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' + String(now.getDate()).padStart(2, '0');
         }
 
-        // ✅ Helper: base sa selected doctor (o "any"), kunin ang pinaka-huling available
-        //    na oras (end minutes) para sa ibinigay na araw ng linggo
         function getEffectiveEndMinutesForDay(dayOfWeek) {
             const clinicRange = getClinicHoursRange();
             if (!clinicRange) return null;
@@ -2942,7 +2854,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             if (selectedDoctorId !== 'any' && selectedDoctorSchedule && selectedDoctorSchedule[dayOfWeek]) {
                 const ranges = selectedDoctorSchedule[dayOfWeek];
                 if (!Array.isArray(ranges) || ranges.length === 0) {
-                    return null; // walang schedule ang doctor sa araw na ito
+                    return null;
                 }
                 let latestEnd = 0;
                 ranges.forEach(r => {
@@ -2960,17 +2872,15 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             return effectiveEnd;
         }
 
-        // ✅ Helper: kung "today" ang dateStr, may matitira pa bang future slot
-        //    (base sa kasalukuyang oras + buffer) bago mag-close ang clinic/doctor?
         function hasFutureSlotToday(dateStr, dayOfWeek) {
             const todayStr = getTodayDateStr();
-            if (dateStr !== todayStr) return true; // hindi today, walang epekto ang oras ngayon
+            if (dateStr !== todayStr) return true;
 
             const now = new Date();
             const nowMinutes = now.getHours() * 60 + now.getMinutes();
 
             const effectiveEnd = getEffectiveEndMinutesForDay(dayOfWeek);
-            if (effectiveEnd === null) return false; // walang schedule
+            if (effectiveEnd === null) return false;
 
             return (nowMinutes + BOOKING_BUFFER_MINUTES) < effectiveEnd;
         }
@@ -3115,8 +3025,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                     }
                 }
 
-                // ✅ BAGO: kung "today" ang date at wala nang matitirang oras
-                // (nakalampas na ang lahat ng available hours), i-disable ito
                 if (canSelect && isToday && !hasFutureSlotToday(dateStr, dayOfWeek)) {
                     canSelect = false;
                 }
@@ -3159,7 +3067,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                 }
             }
 
-            // ✅ BAGO: huling check kung "today" at nakalampas na ang oras
             if (!hasFutureSlotToday(dateStr, dayOfWeek)) {
                 alert('No more available time slots for today. Please select another date.');
                 return;
@@ -3216,8 +3123,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                 doctorTimeRanges = selectedDoctorSchedule[dayOfWeek];
             }
 
-            // ✅ BAGO: kung "today" ang piniling petsa, kunin ang current time
-            //    para masabing anong mga oras ang nakalipas na
             const todayStr = getTodayDateStr();
             const isSelectedDateToday = (date === todayStr);
             const now = new Date();
@@ -3227,7 +3132,7 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             let breakSlots = [];
             let bookedSlotsForDate = [];
             let unavailableSlots = [];
-            let pastSlots = []; // ✅ BAGO: mga oras na nakalipas na (kung today)
+            let pastSlots = [];
             
             for (let mins = clinicStartMinutes; mins < clinicEndMinutes; mins += 30) {
                 const hour = Math.floor(mins / 60);
@@ -3238,8 +3143,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                 const displayTime = displayHour + ':' + (minute < 10 ? '0' + minute : minute) + ' ' + ampm;
                 const time24h = (hour < 10 ? '0' + hour : hour) + ':' + (minute < 10 ? '0' + minute : minute) + ':00';
 
-                // ✅ BAGO: skip/disable kung "today" at nakalipas na ang oras na ito
-                // (may buffer para hindi puwedeng mag-book ng slot na masyadong malapit na)
                 if (isSelectedDateToday && mins < (nowMinutes + BOOKING_BUFFER_MINUTES)) {
                     pastSlots.push({ time: displayTime });
                     continue;
@@ -3338,7 +3241,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                 html += '</div>';
             }
 
-            // ✅ BAGO: ipakita ang mga oras na nakalipas na (para malinaw sa user)
             if (pastSlots.length > 0) {
                 html += '<h5 style="margin: 15px 0 5px; color: var(--text-muted);">Already Passed</h5>';
                 html += '<div class="time-slots-grid">';
@@ -3379,8 +3281,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                 html = '<div class="no-slots-message"><i class="fas fa-calendar-times"></i><h4>No available slots</h4><p>Please select another date.</p></div>';
             }
 
-            // ✅ BAGO: kung wala nang natitirang available slot dahil lahat
-            // ay nakalipas na (today) at walang break/booked/unavailable, palitan ang message
             if (availableSlots.length === 0 && isSelectedDateToday && pastSlots.length > 0 &&
                 unavailableSlots.length === 0 && bookedSlotsForDate.length === 0) {
                 html = `
@@ -3457,7 +3357,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
             document.getElementById('summaryContact').textContent = contact || '—';
         }
 
-        // Form validation
         document.getElementById('bookingForm').addEventListener('submit', function(e) {
             const contactInput = document.querySelector('input[name="contact_number"]');
             
@@ -3476,8 +3375,6 @@ if (isset($_POST['action']) && $_POST['action'] === 'get_cart_total') {
                 return;
             }
 
-            // ✅ BAGO: huling client-side check bago mag-submit — kung sakaling
-            // nakaupo lang ang user sa page at nakalipas na ang piniling oras
             const selDate = document.getElementById('selectedDate').value;
             const selTimeVal = document.getElementById('selectedTime').value;
             const todayStr = getTodayDateStr();

@@ -12,6 +12,12 @@ if (!$conn) {
     die("Connection failed: " . mysqli_connect_error());
 }
 
+// ============================================
+// ✅ PAYMONGO CONFIGURATION
+// ============================================
+define('PAYMONGO_SECRET_KEY', 'sk_test_qcZwF33CQGUk9owjBgRtGFbS');
+define('PAYMONGO_PUBLIC_KEY', 'pk_test_XXXXXXXXXXXXX'); // ⚠️ Palitan
+
 // Start session if not started
 if (session_status() == PHP_SESSION_NONE) {
     session_name('eyecore_user');

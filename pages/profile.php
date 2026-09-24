@@ -325,6 +325,13 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         $contact  = trim(mysqli_real_escape_string($conn, $_POST['contact']));
         $address  = trim(mysqli_real_escape_string($conn, $_POST['address']));
 
+        // ✅ NEW: Delivery address fields
+        $delivery_address   = trim(mysqli_real_escape_string($conn, $_POST['delivery_address'] ?? ''));
+        $delivery_barangay  = trim(mysqli_real_escape_string($conn, $_POST['delivery_barangay'] ?? ''));
+        $delivery_city      = trim(mysqli_real_escape_string($conn, $_POST['delivery_city'] ?? ''));
+        $delivery_province  = trim(mysqli_real_escape_string($conn, $_POST['delivery_province'] ?? ''));
+        $delivery_zip       = trim(mysqli_real_escape_string($conn, $_POST['delivery_zip'] ?? ''));
+
         // Huwag i-save ang "Not provided" — i-blank nalang
         if ($contact === 'Not provided') $contact = '';
         if ($address === 'Not provided') $address = '';
@@ -344,7 +351,19 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
             $first_name = mysqli_real_escape_string($conn, $name_parts[0]);
             $last_name  = mysqli_real_escape_string($conn, $name_parts[1] ?? '');
 
-            $update_query = "UPDATE users SET first_name = '$first_name', last_name = '$last_name', email = '$email', contact = '$contact', address = '$address' WHERE id = $user_id";
+            // ✅ I-update LAHAT ng fields (kasama ang delivery address)
+            $update_query = "UPDATE users SET 
+                first_name = '$first_name', 
+                last_name = '$last_name', 
+                email = '$email', 
+                contact = '$contact', 
+                address = '$address',
+                delivery_address = '$delivery_address',
+                delivery_barangay = '$delivery_barangay',
+                delivery_city = '$delivery_city',
+                delivery_province = '$delivery_province',
+                delivery_zip = '$delivery_zip'
+                WHERE id = $user_id";
 
             if (mysqli_query($conn, $update_query)) {
                 $affected = mysqli_affected_rows($conn);
@@ -353,57 +372,11 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
                 
                 $_SESSION['user_name']        = $fullname;
                 $_SESSION['user_email']       = $email;
-                $_SESSION['success_message']  = "Rows affected: $affected | user_id: $user_id | DB value now: " . $verify_row['fullname'];
+                $_SESSION['success_message']  = "Profile updated successfully!";
             } else {
                 // Ipakita ang exact MySQL error para malaman natin kung ano problema
                 $_SESSION['error_message'] = 'DB Error: ' . mysqli_error($conn);
             }
-        }
-        header('Location: profile.php');
-        exit();
-    }
-
-    // Handle profile picture upload
-    if (isset($_FILES['profile_picture']) && $_FILES['profile_picture']['error'] == 0) {
-
-        // ============================================
-        // DAILY LIMIT CHECK - 24 hours mula sa huling upload
-        // ============================================
-        $lock_check_query = mysqli_query($conn, "SELECT avatar_updated_at FROM users WHERE id = $user_id");
-        $lock_check_row = mysqli_fetch_assoc($lock_check_query);
-        $last_change = $lock_check_row['avatar_updated_at'] ?? null;
-
-        if ($last_change && strtotime($last_change) > strtotime('-24 hours')) {
-            $next_allowed = date('g:i A, M j', strtotime($last_change . ' +24 hours'));
-            $_SESSION['error_message'] = "You can only change your profile picture once every 24 hours. You'll be able to upload again at $next_allowed.";
-            header('Location: profile.php');
-            exit();
-        }
-
-        $allowed  = ['jpg', 'jpeg', 'png', 'gif'];
-        $filename = $_FILES['profile_picture']['name'];
-        $ext      = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
-
-        if (in_array($ext, $allowed)) {
-            $new_filename = 'user_' . $user_id . '_' . time() . '.' . $ext;
-            $upload_path  = '../assets/images/profiles/' . $new_filename;
-
-            if (!file_exists('../assets/images/profiles/')) {
-                mkdir('../assets/images/profiles/', 0777, true);
-            }
-
-            if (move_uploaded_file($_FILES['profile_picture']['tmp_name'], $upload_path)) {
-                if (!empty($user['avatar']) && file_exists('../assets/images/profiles/' . $user['avatar'])) {
-                    unlink('../assets/images/profiles/' . $user['avatar']);
-                }
-                mysqli_query($conn, "UPDATE users SET avatar = '$new_filename', avatar_updated_at = NOW() WHERE id = $user_id");
-                $_SESSION['user_avatar']     = $new_filename;
-                $_SESSION['success_message'] = 'Profile picture updated!';
-            } else {
-                $_SESSION['error_message'] = 'Error uploading file!';
-            }
-        } else {
-            $_SESSION['error_message'] = 'Invalid file type! Only JPG, PNG, GIF allowed.';
         }
         header('Location: profile.php');
         exit();
@@ -3075,8 +3048,56 @@ $is_home_active = in_array($current_page, $home_active_pages);
                     </div>
 
                     <div class="form-group">
-                        <label><i class="fas fa-map-marker-alt"></i> Address</label>
+                        <label><i class="fas fa-map-marker-alt"></i> Personal Address</label>
                         <textarea name="address" class="form-control" rows="3" readonly><?php echo htmlspecialchars($user['address'] ?? 'Not provided'); ?></textarea>
+                    </div>
+
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <!-- ✅ NEW: DELIVERY ADDRESS SECTION                    -->
+                    <!-- ═══════════════════════════════════════════════════ -->
+                    <div style="margin-top: 25px; padding-top: 20px; border-top: 2px dashed var(--border-light);">
+                        <h3 style="font-size: 14px; font-weight: 700; color: var(--text-primary); margin-bottom: 15px; display: flex; align-items: center; gap: 8px;">
+                            <i class="fas fa-truck" style="color: var(--primary);"></i>
+                            Delivery Address
+                            <span style="font-size: 11px; font-weight: 400; color: var(--text-muted); margin-left: 8px;">(for product deliveries)</span>
+                        </h3>
+                        
+                        <div class="form-group">
+                            <label><i class="fas fa-home"></i> Street Address</label>
+                            <input type="text" name="delivery_address" class="form-control" 
+                                   value="<?php echo htmlspecialchars($user['delivery_address'] ?? ''); ?>" 
+                                   placeholder="House no., street, subdivision" readonly>
+                        </div>
+                        
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                            <div class="form-group">
+                                <label><i class="fas fa-map-pin"></i> Barangay</label>
+                                <input type="text" name="delivery_barangay" class="form-control" 
+                                       value="<?php echo htmlspecialchars($user['delivery_barangay'] ?? ''); ?>" 
+                                       placeholder="Barangay" readonly>
+                            </div>
+                            <div class="form-group">
+                                <label><i class="fas fa-city"></i> City/Municipality</label>
+                                <input type="text" name="delivery_city" class="form-control" 
+                                       value="<?php echo htmlspecialchars($user['delivery_city'] ?? ''); ?>" 
+                                       placeholder="City" readonly>
+                            </div>
+                        </div>
+                        
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                            <div class="form-group">
+                                <label><i class="fas fa-map"></i> Province</label>
+                                <input type="text" name="delivery_province" class="form-control" 
+                                       value="<?php echo htmlspecialchars($user['delivery_province'] ?? ''); ?>" 
+                                       placeholder="Province" readonly>
+                            </div>
+                            <div class="form-group">
+                                <label><i class="fas fa-mail-bulk"></i> ZIP Code</label>
+                                <input type="text" name="delivery_zip" class="form-control" 
+                                       value="<?php echo htmlspecialchars($user['delivery_zip'] ?? ''); ?>" 
+                                       placeholder="ZIP Code" readonly>
+                            </div>
+                        </div>
                     </div>
 
                     <button type="submit" name="update_profile" class="btn-save">

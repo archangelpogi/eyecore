@@ -182,12 +182,30 @@ function previousStep() {
 }
 
 function showStep(stepIndex) {
-    tabButtons.forEach((btn, idx) => { const tabPane = document.getElementById(tabIds[idx]); if (tabPane) tabPane.classList.remove('show', 'active'); });
+    tabButtons.forEach((btn, idx) => { 
+        const tabPane = document.getElementById(tabIds[idx]); 
+        if (tabPane) tabPane.classList.remove('show', 'active'); 
+    });
     if (stepIndex < tabButtons.length) {
         const currentTabBtn = document.getElementById(tabButtons[stepIndex]);
         const currentTab    = document.getElementById(tabIds[stepIndex]);
-        if (currentTabBtn && currentTab) { currentTab.classList.add('show', 'active'); try { new bootstrap.Tab(currentTabBtn).show(); } catch(e) {} }
+        if (currentTabBtn && currentTab) { 
+            currentTab.classList.add('show', 'active'); 
+            try { new bootstrap.Tab(currentTabBtn).show(); } catch(e) {} 
+        }
     }
+    
+    // ✅ Restore rider/optometrist fields visibility after tab switch
+    setTimeout(() => {
+        const role = document.getElementById('add_role')?.value;
+        if (role === 'Rider') {
+            const rf = document.getElementById('riderFields');
+            if (rf) rf.style.display = 'block';
+        } else if (role === 'Optometrist') {
+            const of = document.getElementById('optometristFields');
+            if (of) of.style.display = 'block';
+        }
+    }, 50);
 }
 
 function validateCurrentStep() {
@@ -567,7 +585,23 @@ function openAddEmployeeModal() {
     loadRolesForNewEmployee();
     
     currentStep = 0;
-    setTimeout(() => { const b = document.getElementById('basic-tab'); if (b) { new bootstrap.Tab(b).show(); document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('show','active')); const bp = document.getElementById('basic'); if (bp) bp.classList.add('show','active'); } updateButtonVisibility(); }, 100);
+    setTimeout(() => { 
+        const b = document.getElementById('basic-tab'); 
+        if (b) { 
+            new bootstrap.Tab(b).show(); 
+            document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('show','active')); 
+            const bp = document.getElementById('basic'); 
+            if (bp) bp.classList.add('show','active'); 
+        }
+        
+        // ✅ Reset role fields visibility
+        const optFields = document.getElementById('optometristFields');
+        const riderFields = document.getElementById('riderFields');
+        if (optFields) optFields.style.display = 'none';
+        if (riderFields) riderFields.style.display = 'none';
+        
+        updateButtonVisibility(); 
+    }, 100);
     new bootstrap.Modal(document.getElementById('addEmployeeModal')).show();
 }
 
@@ -599,7 +633,10 @@ async function saveEmployee(e) {
     formData.append('basic_salary',     document.getElementById('add_basic_salary').value);
     formData.append('salary_type',      document.getElementById('add_salary_type').value || 'Fixed');
 
-    ['add_middle_name','add_phone_number','add_birth_date','add_gender','add_marital_status','add_address','add_date_regularized','add_emergency_contact_relationship','add_sss_number','add_philhealth_number','add_pagibig_number','add_tin_number','add_bank_name','add_bank_account_holder','add_bank_account_number','add_emergency_contact_name','add_emergency_contact_number','add_specialty','add_schedule'].forEach(id => { const el = document.getElementById(id); if (el) formData.append(id.replace('add_', ''), el.value || ''); });
+        ['add_middle_name','add_phone_number','add_birth_date','add_gender','add_marital_status','add_address','add_date_regularized','add_emergency_contact_relationship','add_sss_number','add_philhealth_number','add_pagibig_number','add_tin_number','add_bank_name','add_bank_account_holder','add_bank_account_number','add_emergency_contact_name','add_emergency_contact_number','add_specialty','add_schedule','add_vehicle_type','add_plate_number','add_driver_license_no','add_license_expiration_date','add_vehicle_brand_model','add_or_cr_number'].forEach(id => { 
+        const el = document.getElementById(id); 
+        if (el) formData.append(id.replace('add_', ''), el.value || ''); 
+    });
     formData.append('upload_documents_with_employee', true);
 
     let hasFiles = false;
@@ -971,9 +1008,49 @@ function editEmployee(userId) {
                     </div>
                     <div class="row"><div class="col-12 mb-3"><label class="form-label">Address</label><textarea class="form-control" id="edit_address" rows="2">${e.address||''}</textarea></div></div>
                     <div class="row">
-                        <div class="col-md-6 mb-3"><label class="form-label">Role <span class="text-danger">*</span></label><select class="form-select" id="edit_role" required><option value="">Select</option><option value="Optometrist" ${e.role=='Optometrist'?'selected':''}>Optometrist</option><option value="Staff" ${e.role=='Staff'?'selected':''}>Staff</option><option value="HR" ${e.role=='HR'?'selected':''}>HR</option><option value="Finance" ${e.role=='Finance'?'selected':''}>Finance</option><option value="CRM" ${e.role=='CRM'?'selected':''}>CRM</option><option value="SCM" ${e.role=='SCM'?'selected':''}>SCM</option></select></div>
+                        <div class="col-md-6 mb-3"><label class="form-label">Role <span class="text-danger">*</span></label><select class="form-select" id="edit_role" required><option value="">Select</option><option value="Optometrist" ${e.role=='Optometrist'?'selected':''}>Optometrist</option><option value="Staff" ${e.role=='Staff'?'selected':''}>Staff</option><option value="HR" ${e.role=='HR'?'selected':''}>HR</option><option value="Finance" ${e.role=='Finance'?'selected':''}>Finance</option><option value="CRM" ${e.role=='CRM'?'selected':''}>CRM</option><option value="SCM" ${e.role=='SCM'?'selected':''}>SCM</option><option value="Rider" ${e.role=='Rider'?'selected':''}>Rider</option></select></div>
                         <div class="col-md-6 mb-3"><label class="form-label">Status <span class="text-danger">*</span></label><select class="form-select" id="edit_status" required><option value="Active" ${e.status=='Active'?'selected':''}>Active</option><option value="On-Leave" ${e.status=='On-Leave'?'selected':''}>On Leave</option><option value="Resigned" ${e.status=='Resigned'?'selected':''}>Resigned</option><option value="Terminated" ${e.status=='Terminated'?'selected':''}>Terminated</option><option value="Inactive" ${e.status=='Inactive'?'selected':''}>Inactive</option></select></div>
                     </div>
+
+${e.role === 'Rider' ? `
+<h6 class="border-bottom pb-2 mb-3 mt-3"><i class="bi bi-bicycle me-2"></i>Rider Details</h6>
+<div class="row" id="editRiderFields">
+    <div class="col-md-6 mb-3">
+        <label class="form-label">Driver's License No.</label>
+        <input type="text" class="form-control" id="edit_driver_license_no" value="${e.rider_driver_license_no||''}" maxlength="50" placeholder="e.g. N01-23-456789">
+    </div>
+    <div class="col-md-6 mb-3">
+        <label class="form-label">License Expiration Date</label>
+        <input type="date" class="form-control" id="edit_license_expiration_date" value="${e.rider_license_expiration_date||''}">
+    </div>
+</div>
+<div class="row">
+    <div class="col-md-6 mb-3">
+        <label class="form-label">Vehicle Type</label>
+        <select class="form-select" id="edit_vehicle_type">
+            <option value="">Select Vehicle</option>
+            <option value="Motorcycle" ${e.rider_vehicle_type=='Motorcycle'?'selected':''}>Motorcycle</option>
+            <option value="Car" ${e.rider_vehicle_type=='Car'?'selected':''}>Car</option>
+            <option value="Bike" ${e.rider_vehicle_type=='Bike'?'selected':''}>Bicycle</option>
+            <option value="Van" ${e.rider_vehicle_type=='Van'?'selected':''}>Van</option>
+        </select>
+    </div>
+    <div class="col-md-6 mb-3">
+        <label class="form-label">Vehicle Brand &amp; Model</label>
+        <input type="text" class="form-control" id="edit_vehicle_brand_model" value="${e.rider_vehicle_brand_model||''}" maxlength="100" placeholder="e.g. Honda Click 125i">
+    </div>
+</div>
+<div class="row">
+    <div class="col-md-6 mb-3">
+        <label class="form-label">Plate Number</label>
+        <input type="text" class="form-control" id="edit_plate_number" value="${e.rider_plate_number||''}" maxlength="20" placeholder="e.g. ABC-1234">
+    </div>
+    <div class="col-md-6 mb-3">
+        <label class="form-label">OR/CR Number</label>
+        <input type="text" class="form-control" id="edit_or_cr_number" value="${e.rider_or_cr_number||''}" maxlength="50" placeholder="e.g. 1234567890">
+    </div>
+</div>` : ''}
+
                     <h6 class="border-bottom pb-2 mb-3 mt-3">Employment Details</h6>
                     <div class="row">
                         <div class="col-md-6 mb-3"><label class="form-label">Position <span class="text-danger">*</span></label><select class="form-select" id="edit_position_id" required><option value="">Select Position</option>${positionsData.map(p=>`<option value="${p.id}" ${e.position_id==p.id?'selected':''}>${p.position_name}</option>`).join('')}</select></div>
@@ -1098,7 +1175,13 @@ function updateEmployeeInfo(e) {
         bank_account_number: document.getElementById('edit_bank_account_number').value || null,
         emergency_contact_name:         document.getElementById('edit_emergency_contact_name').value || null,
         emergency_contact_number:       document.getElementById('edit_emergency_contact_number').value || null,
-        emergency_contact_relationship: document.getElementById('edit_emergency_contact_relationship').value || null
+        emergency_contact_relationship: document.getElementById('edit_emergency_contact_relationship').value || null,
+        vehicle_type:    document.getElementById('edit_vehicle_type')?.value || null,
+        plate_number:    document.getElementById('edit_plate_number')?.value || null,
+        driver_license_no:       document.getElementById('edit_driver_license_no')?.value || null,
+        license_expiration_date: document.getElementById('edit_license_expiration_date')?.value || null,
+        vehicle_brand_model:     document.getElementById('edit_vehicle_brand_model')?.value || null,
+        or_cr_number:            document.getElementById('edit_or_cr_number')?.value || null
     };
 
     if (newSalary !== oldSalary) { data.salary_change_reason = salaryChangeReason; data.old_salary = oldSalary; }
@@ -1356,17 +1439,26 @@ function showPermissions() {
 }
 
 function toggleOptometristFields() {
-    const role   = document.getElementById('add_role').value;
-    const fields = document.getElementById('optometristFields');
-    if (!fields) return;
+    const role        = document.getElementById('add_role').value;
+    const optFields   = document.getElementById('optometristFields');
+    const riderFields = document.getElementById('riderFields');
+
+    if (optFields)   optFields.style.display   = 'none';
+    if (riderFields) riderFields.style.display = 'none';
 
     if (role === 'Optometrist') {
-        fields.style.display = 'block';
-        renderScheduleBuilder(); // ✅ i-render ang builder
-    } else {
-        fields.style.display = 'none';
-        document.getElementById('add_specialty').value = '';
-        resetScheduleBuilder(); // ✅ i-reset ang schedule
+        if (optFields) optFields.style.display = 'block';
+        if (typeof renderScheduleBuilder === 'function' && document.getElementById('schedDayRows')) {
+            renderScheduleBuilder();
+        }
+    } else if (role === 'Rider') {
+        if (riderFields) riderFields.style.display = 'block';
+    }
+
+    if (role !== 'Optometrist') {
+        const spec = document.getElementById('add_specialty');
+        if (spec) spec.value = '';
+        if (typeof resetScheduleBuilder === 'function') resetScheduleBuilder();
     }
 }
 

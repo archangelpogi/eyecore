@@ -350,8 +350,12 @@ function renderClinicModal(clinic) {
         const hasBeenViewed = viewedDocs.has(doc.id);
         const maxAttemptsReached = doc.max_attempts_reached || false;
 
-        const disableApprove = isApproved || isRejected || !hasBeenViewed || maxAttemptsReached;
-        const disableReject  = isApproved || isRejected || !hasBeenViewed || maxAttemptsReached;
+        // ✅ FIX: "final rejection" LANG ang naka-block (3rd attempt rejected)
+        // Kapag 3rd attempt pero Pending pa → hindi pa final, pwede pa i-review
+        const isFinalRejection = maxAttemptsReached && isRejected;
+
+        const disableApprove = isApproved || isRejected || !hasBeenViewed || isFinalRejection;
+        const disableReject  = isApproved || isRejected || !hasBeenViewed || isFinalRejection;
 
         let fileHtml = '<div class="doc-preview-empty">No file to preview</div>';
         if (doc.file_path) {
@@ -370,6 +374,14 @@ function renderClinicModal(clinic) {
                 fileHtml = `<a href="${fileUrl}" target="_blank" class="btn btn-primary"><i class="bi bi-box-arrow-up-right"></i> Open Document</a>`;
             }
         }
+
+        // ✅ Reset button — lalabas lang kapag final rejection
+        const resetButtonHtml = isFinalRejection ? `
+            <button type="button" class="btn btn-warning btn-sm" 
+                onclick="resetDocAttempts(${doc.id})"
+                title="Give the clinic a fresh chance to re-upload">
+                <i class="bi bi-arrow-clockwise"></i> Reset Attempts
+            </button>` : '';
 
         return `
 <div class="d-flex justify-content-between align-items-start mb-2">
@@ -394,6 +406,7 @@ function renderClinicModal(clinic) {
         onclick="showRejectModal(${doc.id})" ${disableReject ? 'disabled' : ''}>
         <i class="bi bi-x"></i> Reject
     </button>
+    ${resetButtonHtml}
 </div>
 ${!hasBeenViewed && !isApproved && !isRejected ? '<p class="text-muted small mt-2 mb-0"><i class="bi bi-info-circle"></i> Tignan muna ang dokumento para ma-enable ang Approve/Reject.</p>' : ''}`;
     }
@@ -479,7 +492,7 @@ ${!hasBeenViewed && !isApproved && !isRejected ? '<p class="text-muted small mt-
     updateClinicButtons();
 
     // ==========================
-    // DOCUMENT REVIEW FUNCTIONS
+    // DOCUMENT REVIEW — showRejectModal
     // ==========================
     window.showRejectModal = function(docId) {
         const doc = uploadedDocs.find(d => d.id === docId);
@@ -490,10 +503,15 @@ ${!hasBeenViewed && !isApproved && !isRejected ? '<p class="text-muted small mt-
             return;
         }
 
-        if (doc && doc.max_attempts_reached) {
+        if (doc && doc.max_attempts_reached && doc.status === 'Rejected') {
             showToast('error', 'This document has reached the maximum attempts. Contact support.');
             return;
         }
+
+        // ✅ I-HIDE ang Bootstrap modal bago mag-Swal (para makapag-type sa textarea)
+        const viewModalEl   = document.getElementById('viewModal');
+        const modalInstance = bootstrap.Modal.getInstance(viewModalEl);
+        modalInstance?.hide();
 
         Swal.fire({
             title: 'Reject Document',
@@ -505,12 +523,18 @@ ${!hasBeenViewed && !isApproved && !isRejected ? '<p class="text-muted small mt-
             confirmButtonColor: '#dc3545',
             inputValidator: value => { if (!value) return 'Reason is required'; }
         }).then(result => {
+            // ✅ I-SHOW ulit ang Bootstrap modal pagkatapos
+            modalInstance?.show();
+
             if (result.isConfirmed) {
                 reviewDocument(docId, 'Rejected', result.value);
             }
         });
     };
 
+    // ==========================
+    // DOCUMENT REVIEW — reviewDocument
+    // ==========================
     window.reviewDocument = function(docId, status, reason = '') {
         const doc = uploadedDocs.find(d => d.id === docId);
 
@@ -520,7 +544,8 @@ ${!hasBeenViewed && !isApproved && !isRejected ? '<p class="text-muted small mt-
             return;
         }
 
-        if (doc && doc.max_attempts_reached && status === 'Rejected') {
+        // ✅ Block reject LANG kapag final rejection na (3rd attempt rejected)
+        if (doc && doc.max_attempts_reached && doc.status === 'Rejected' && status === 'Rejected') {
             showToast('error', 'This document has reached the maximum attempts. Contact support.');
             return;
         }
@@ -540,10 +565,81 @@ ${!hasBeenViewed && !isApproved && !isRejected ? '<p class="text-muted small mt-
             updateClinicButtons();
 
             clinicsTable.ajax.reload(null, false);
+            loadStats();
             showToast('success', `Document ${status.toLowerCase()}`);
         })
         .catch(err => { console.error(err); showToast('error', 'Network error updating document'); });
     };
+
+    // ==========================
+    // DOCUMENT REVIEW — resetDocAttempts
+    // ==========================
+    window.resetDocAttempts = function(docId) {
+        const viewModalEl   = document.getElementById('viewModal');
+        const modalInstance = bootstrap.Modal.getInstance(viewModalEl);
+        modalInstance?.hide();
+
+        Swal.fire({
+            title: 'Reset Document Attempts?',
+            html: `
+                <p>This will give the clinic a <b>fresh chance</b> to re-upload this document.</p>
+                <p class="text-muted small mb-0">The submission counter will reset to 0 and the document status will become <b>Pending</b>.</p>
+            `,
+            icon: 'warning',
+            input: 'textarea',
+            inputLabel: 'Reason for reset',
+            inputPlaceholder: 'Enter reason...',
+            showCancelButton: true,
+            confirmButtonText: 'Yes, reset',
+            confirmButtonColor: '#f59e0b',
+            inputValidator: value => value ? null : 'Reason is required'
+        }).then(result => {
+            modalInstance?.show();
+
+            if (!result.isConfirmed) return;
+
+            fetch(`${BASE_URL}/api/clinics_api.php`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'reset_document_attempts',
+                    docId: docId,
+                    reason: result.value
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (!data.success) {
+                    return Swal.fire('Error', data.error || 'Failed to reset', 'error');
+                }
+
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Attempts Reset',
+                    text: 'The clinic can now re-upload this document.',
+                    timer: 1500,
+                    showConfirmButton: false
+                });
+
+                // Reload clinic modal
+                fetch(`${BASE_URL}/api/clinics_api.php?action=get_clinic&id=${currentClinicId}`)
+                    .then(res => res.json())
+                    .then(clinicData => {
+                        if (clinicData.success) {
+                            renderClinicModal(clinicData.data);
+                        }
+                    });
+
+                clinicsTable.ajax.reload(null, false);
+                loadStats();
+            })
+            .catch(err => {
+                console.error(err);
+                Swal.fire('Error', 'Network error', 'error');
+            });
+        });
+    };
+
 }
 
 // ==========================

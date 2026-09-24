@@ -5,10 +5,7 @@ include '../config/db.php';
 $error = '';
 $success = '';
 
-/* ===============================
-   BASE URL
-================================ */
-$base_url = 'http://eyecore.capstone001.com/';
+$base_url = 'https://eyecore.capstone001.com/';
 
 // Generate CSRF token for forgot password API calls
 if (empty($_SESSION['csrf_token'])) {
@@ -100,6 +97,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
         $_SESSION['role']       = $user['role'];
         $_SESSION['status']     = $user['status'];
         $_SESSION['employee_id']   = $user['id'];
+
+        /* ===============================
+           ✅ RIDER SESSION LOADING
+        ================================ */
+        if ($user['role'] === 'Rider') {
+            $rStmt = $pdo->prepare("
+                SELECT id, name, status 
+                FROM riders 
+                WHERE user_id = ? AND clinic_id = ?
+            ");
+            $rStmt->execute([$user['id'], $user['clinic_id']]);
+            $riderRec = $rStmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($riderRec && $riderRec['status'] === 'active') {
+                $_SESSION['rider_id']   = (int)$riderRec['id'];
+                $_SESSION['rider_name'] = $riderRec['name'];
+            } else {
+                // Rider record not found or not active
+                session_destroy();
+                $_SESSION['swal'] = [
+                    'icon'  => 'error',
+                    'title' => 'Rider Account Inactive',
+                    'text'  => 'Your rider account is not active. Please contact admin.'
+                ];
+                header("Location: {$base_url}admin/login.php");
+                exit();
+            }
+        }
 
         if (!empty($user['clinic_id'])) {
             $_SESSION['clinic_id']     = $user['clinic_id'];
@@ -203,6 +228,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
             $redirect = $hasSubscription
                 ? $base_url . "main.php"
                 : $base_url . "views/subscription.php";
+        } elseif ($user['role'] === 'Rider') {
+            // ✅ Rider redirect to rider dashboard
+            $redirect = $base_url . "views/rider_dashboard.php";
         } else {
             $redirect = "{$base_url}access_denied.php?role=" . urlencode($user['role']);
         }

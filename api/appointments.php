@@ -1085,127 +1085,311 @@ if ($newStatus === 'no-show') {
             echo json_encode(['success' => true, 'message' => 'Patient marked as arrived']);
             exit;
         }
-
-        // ──────────────────────────────────────────────────────────
-        //  PROCESS REFUND WITH PAYMONGO INTEGRATION
-        // ──────────────────────────────────────────────────────────
-        if ($action === 'process_refund') {
-            if (!canEditAppointments()) {
-                echo json_encode(['success' => false, 'message' => 'You do not have permission to process refunds']);
-                exit();
-            }
-            
-            $refundId = (int)($data['refund_id'] ?? 0);
-            $userId = (int)($data['user_id'] ?? 0);
-            $refundAction = $data['refund_action'] ?? '';
-            $adminNotes = trim($data['admin_notes'] ?? '');
-            
-            if (!$refundId || !$refundAction) {
-                echo json_encode(['success' => false, 'message' => 'Missing required fields']);
-                exit;
-            }
-            
-            // Get refund request details
-            $stmt = $pdo->prepare("
-                SELECT rr.*, a.paymongo_payment_id, a.downpayment_amount, a.total_amount,
-                       a.id as appointment_id, a.user_id
-                FROM refund_requests rr
-                JOIN appointments a ON rr.appointment_id = a.id
-                WHERE rr.id = ? AND rr.clinic_id = ?
-            ");
-            $stmt->execute([$refundId, $clinicId]);
-            $refund = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            if (!$refund) {
-                echo json_encode(['success' => false, 'message' => 'Refund request not found']);
-                exit;
-            }
-            
-            if ($refund['status'] !== 'pending') {
-                echo json_encode(['success' => false, 'message' => 'This refund request is no longer pending']);
-                exit;
-            }
-            
-            // ==========================================
-            // REJECT: Simple update, no PayMongo
-            // ==========================================
-            if ($refundAction === 'reject') {
-                $stmt = $pdo->prepare("
-                    UPDATE refund_requests 
-                    SET status = 'rejected', 
-                        admin_notes = CONCAT(IFNULL(admin_notes, ''), ' Rejected: ', ?),
-                        refund_status = 'failed',
-                        updated_at = NOW()
-                    WHERE id = ?
-                ");
-                $stmt->execute([$adminNotes, $refundId]);
-                
-                $pdo->prepare("UPDATE appointments SET status = 'paid' WHERE id = ?")
-                    ->execute([$refund['appointment_id']]);
-                
-                sendRefundNotification($pdo, $refund['user_id'], $refund['appointment_id'], 'rejected', $adminNotes);
-                
-                echo json_encode(['success' => true, 'message' => 'Refund request rejected']);
-                exit;
-            }
-            
-if ($refundAction === 'approve') {
+if ($action === 'process_refund') {
+    if (!canEditAppointments()) {
+        echo json_encode(['success' => false, 'message' => 'You do not have permission to process refunds']);
+        exit();
+    }
     
-    require_once __DIR__ . '/../api/paymongos.php';
-    $paymongo = new PayMongoRefund($pdo);
+    $refundId = (int)($data['refund_id'] ?? 0);
+    $userId = (int)($data['user_id'] ?? 0);
+    $refundAction = $data['refund_action'] ?? '';
+    $adminNotes = trim($data['admin_notes'] ?? '');
     
-    $refundAmount = $refund['amount'] ?? $refund['downpayment_amount'] ?? 0;
-    
-    if ($refundAmount <= 0) {
-        echo json_encode(['success' => false, 'message' => 'Invalid refund amount']);
+    if (!$refundId || !$refundAction) {
+        echo json_encode(['success' => false, 'message' => 'Missing required fields']);
         exit;
     }
     
-    // ✅ Create checkout session
-    $result = $paymongo->createRefundCheckout(
-        $refundId,
-        $refund['appointment_id'],
-        $refundAmount,
-        $refund['reason'] ?? 'Customer requested refund'
-    );
+    // ✅ Get refund + appointment + payment reference
+    $stmt = $pdo->prepare("
+        SELECT rr.*, 
+               a.paymongo_payment_id,
+               a.downpayment_amount, 
+               a.total_amount,
+               a.id as appointment_id, 
+               a.user_id,
+               a.patient_id
+        FROM refund_requests rr
+        JOIN appointments a ON rr.appointment_id = a.id
+        WHERE rr.id = ? AND rr.clinic_id = ?
+    ");
+    $stmt->execute([$refundId, $clinicId]);
+    $refund = $stmt->fetch(PDO::FETCH_ASSOC);
     
-    if ($result['success']) {
-        // Update refund status
+    if (!$refund) {
+        echo json_encode(['success' => false, 'message' => 'Refund request not found']);
+        exit;
+    }
+    
+    if ($refund['status'] !== 'pending') {
+        echo json_encode(['success' => false, 'message' => 'This refund request is no longer pending']);
+        exit;
+    }
+    
+    // ==========================================
+    // REJECT
+    // ==========================================
+    if ($refundAction === 'reject') {
         $pdo->prepare("
             UPDATE refund_requests 
-            SET refund_status = 'processing', 
-                status = 'processing',
-                paymongo_refund_id = ?,
+            SET status = 'rejected', 
+                admin_notes = CONCAT(IFNULL(admin_notes, ''), ' Rejected: ', ?),
+                refund_status = 'failed',
                 updated_at = NOW()
             WHERE id = ?
-        ")->execute([$result['checkout_id'], $refundId]);
+        ")->execute([$adminNotes, $refundId]);
         
-        // ✅ ✅ ✅ SEND EMAIL NOTIFICATION TO CUSTOMER (optional - or wait until fully processed)
-        // You can either send now or wait for webhook/processRefundWithRetry
+        $pdo->prepare("UPDATE appointments SET status = 'paid' WHERE id = ?")
+            ->execute([$refund['appointment_id']]);
         
-        echo json_encode([
-            'success' => true,
-            'redirect' => true,
-            'checkout_url' => $result['checkout_url'],
-            'checkout_id' => $result['checkout_id'],
-            'ref_no' => $result['ref_no'],
-            'customer' => $result['customer'] ?? null,
-            'message' => 'Redirecting to PayMongo to process refund...'
-        ]);
-        exit;
-    } else {
-        echo json_encode([
-            'success' => false,
-            'message' => $result['message'],
-            'requires_manual' => true
-        ]);
+        sendRefundNotification($pdo, $refund['user_id'], $refund['appointment_id'], 'rejected', $adminNotes);
+        
+        echo json_encode(['success' => true, 'message' => 'Refund request rejected']);
         exit;
     }
-}
-            
-            echo json_encode(['success' => false, 'message' => 'Invalid action']);
+    
+    // ==========================================
+    // APPROVE — AUTOMATIC REFUND via Refunds API
+    // ==========================================
+    if ($refundAction === 'approve') {
+        require_once __DIR__ . '/../api/paymongos.php';
+        $paymongo = new PayMongoRefund($pdo);
+        
+        $refundAmount = (float)($refund['amount'] ?? $refund['downpayment_amount'] ?? 0);
+        
+        if ($refundAmount <= 0) {
+            echo json_encode(['success' => false, 'message' => 'Invalid refund amount']);
             exit;
         }
+        
+        // ✅ CHECK: may PayMongo payment reference ba?
+        $paymentRef = $refund['paymongo_payment_id'] ?? null;
+        
+        if (empty($paymentRef)) {
+            // ⚠️ Walang reference — manual na lang
+            $pdo->prepare("
+                UPDATE refund_requests 
+                SET status = 'processing',
+                    refund_status = 'processing',
+                    admin_notes = CONCAT(IFNULL(admin_notes, ''), ' [MANUAL] No PayMongo reference: ', ?),
+                    updated_at = NOW()
+                WHERE id = ?
+            ")->execute([$adminNotes, $refundId]);
+            
+            echo json_encode([
+                'success' => false,
+                'message' => 'No PayMongo payment reference found. Please process refund manually via PayMongo dashboard.',
+                'requires_manual' => true
+            ]);
+            exit;
+        }
+        
+        // ✅ Mark as processing first
+        $pdo->prepare("
+            UPDATE refund_requests 
+            SET status = 'processing',
+                refund_status = 'processing',
+                updated_at = NOW()
+            WHERE id = ?
+        ")->execute([$refundId]);
+        
+        // ✅ DIRECT REFUND — automatic, no redirect
+        $result = $paymongo->processRefundDirect(
+            $refundId,
+            $paymentRef,
+            $refundAmount,
+            'requested_by_customer'
+        );
+        
+        if ($result['success']) {
+            // ✅ Success — mark completed
+            $pdo->prepare("
+                UPDATE refund_requests 
+                SET status = 'completed',
+                    refund_status = 'completed',
+                    paymongo_refund_id = ?,
+                    refund_date = NOW(),
+                    admin_notes = CONCAT(IFNULL(admin_notes, ''), ' ', ?),
+                    updated_at = NOW()
+                WHERE id = ?
+            ")->execute([
+                $result['refund_id'] ?? null,
+                $adminNotes,
+                $refundId
+            ]);
+            
+            // ✅ BAGO: I-update ang appointments table
+            $pdo->prepare("
+                UPDATE appointments 
+                SET status = 'refunded',
+                    refund_status = 'completed',
+                    refund_date = NOW(),
+                    updated_at = NOW()
+                WHERE id = ?
+            ")->execute([$refund['appointment_id']]);
+            
+            // ✅ BAGO: I-update ang payments table
+            $pdo->prepare("
+                UPDATE payments 
+                SET payment_status = 'refunded',
+                    refunded_amount = ?,
+                    updated_at = NOW()
+                WHERE appointment_id = ?
+            ")->execute([$refundAmount, $refund['appointment_id']]);
+            
+            // ✅ BAGO: I-update ang sales table
+            $pdo->prepare("
+                UPDATE sales 
+                SET status = 'Refunded',
+                    refunded_amount = ?,
+                    updated_at = NOW()
+                WHERE appointment_id = ?
+            ")->execute([$refundAmount, $refund['appointment_id']]);
+            
+            echo json_encode([
+                'success' => true,
+                'message' => 'Refund processed automatically! Amount: ₱' . number_format($refundAmount, 2),
+                'refund_id' => $result['refund_id'] ?? null,
+                'amount' => $refundAmount,
+                'status' => 'completed'
+            ]);
+            exit;
+        } else {
+            // ❌ Failed — mark for manual
+            $pdo->prepare("
+                UPDATE refund_requests 
+                SET status = 'processing',
+                    refund_status = 'failed',
+                    error_message = ?,
+                    updated_at = NOW()
+                WHERE id = ?
+            ")->execute([$result['message'] ?? 'Unknown error', $refundId]);
+            
+            echo json_encode([
+                'success' => false,
+                'message' => $result['message'] ?? 'Refund failed. Manual intervention required.',
+                'requires_manual' => true
+            ]);
+            exit;
+        }
+    }
+    
+    // ==========================================
+    // RETRY (for failed refunds)
+    // ==========================================
+    if ($refundAction === 'retry') {
+        require_once __DIR__ . '/../api/paymongos.php';
+        $paymongo = new PayMongoRefund($pdo);
+        
+        $refundAmount = (float)($refund['amount'] ?? $refund['downpayment_amount'] ?? 0);
+        $paymentRef = $refund['paymongo_payment_id'] ?? null;
+        
+        if (empty($paymentRef)) {
+            echo json_encode(['success' => false, 'message' => 'No PayMongo reference found']);
+            exit;
+        }
+        
+        $result = $paymongo->processRefundDirect(
+            $refundId,
+            $paymentRef,
+            $refundAmount,
+            'requested_by_customer'
+        );
+        
+        if ($result['success']) {
+            $pdo->prepare("
+                UPDATE refund_requests 
+                SET status = 'completed',
+                    refund_status = 'completed',
+                    paymongo_refund_id = ?,
+                    refund_date = NOW(),
+                    updated_at = NOW()
+                WHERE id = ?
+            ")->execute([$result['refund_id'] ?? null, $refundId]);
+            
+            // ✅ BAGO: I-update ang appointments table
+            $pdo->prepare("
+                UPDATE appointments 
+                SET status = 'refunded',
+                    refund_status = 'completed',
+                    refund_date = NOW(),
+                    updated_at = NOW()
+                WHERE id = ?
+            ")->execute([$refund['appointment_id']]);
+            
+            // ✅ BAGO: I-update ang payments table
+            $pdo->prepare("
+                UPDATE payments 
+                SET payment_status = 'refunded',
+                    refunded_amount = ?,
+                    updated_at = NOW()
+                WHERE appointment_id = ?
+            ")->execute([$refundAmount, $refund['appointment_id']]);
+            
+            // ✅ BAGO: I-update ang sales table
+            $pdo->prepare("
+                UPDATE sales 
+                SET status = 'Refunded',
+                    refunded_amount = ?,
+                    updated_at = NOW()
+                WHERE appointment_id = ?
+            ")->execute([$refundAmount, $refund['appointment_id']]);
+            
+            echo json_encode([
+                'success' => true,
+                'message' => 'Refund retry successful!',
+                'refund_id' => $result['refund_id'] ?? null
+            ]);
+        } else {
+            $pdo->prepare("
+                UPDATE refund_requests 
+                SET error_message = ?,
+                    updated_at = NOW()
+                WHERE id = ?
+            ")->execute([$result['message'] ?? 'Retry failed', $refundId]);
+            
+            echo json_encode([
+                'success' => false,
+                'message' => $result['message'] ?? 'Retry failed'
+            ]);
+        }
+        exit;
+    }
+    
+    // ==========================================
+    // MARK MANUAL (fallback kung talagang manual)
+    // ==========================================
+    if ($refundAction === 'mark_manual') {
+        $pdo->prepare("
+            UPDATE refund_requests 
+            SET status = 'completed',
+                refund_status = 'completed',
+                refund_date = NOW(),
+                admin_notes = CONCAT(IFNULL(admin_notes, ''), ' [MANUAL REFUND] ', ?),
+                updated_at = NOW()
+            WHERE id = ?
+        ")->execute([$adminNotes, $refundId]);
+        
+        // Update appointment + sales
+        $pdo->prepare("UPDATE appointments SET status = 'refunded', refund_status = 'completed', refund_date = NOW() WHERE id = ?")
+            ->execute([$refund['appointment_id']]);
+        
+        $pdo->prepare("UPDATE payments SET payment_status = 'refunded', refunded_amount = ?, updated_at = NOW() WHERE appointment_id = ?")
+            ->execute([$refund['amount'], $refund['appointment_id']]);
+        
+        $pdo->prepare("UPDATE sales SET status = 'Refunded', refunded_amount = ?, updated_at = NOW() WHERE appointment_id = ?")
+            ->execute([$refund['amount'], $refund['appointment_id']]);
+        
+        sendRefundNotification($pdo, $refund['user_id'], $refund['appointment_id'], 'completed', 'Manual refund completed.');
+        
+        echo json_encode(['success' => true, 'message' => 'Marked as manually refunded']);
+        exit;
+    }
+    
+    echo json_encode(['success' => false, 'message' => 'Invalid refund action: ' . $refundAction]);
+    exit;
+}
 
         echo json_encode(['success' => false, 'message' => 'Unknown action']);
         exit;

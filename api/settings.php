@@ -152,7 +152,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
             exit;
         }
         
-        // ===== ✅ NEW: GET DELIVERY SETTINGS =====
+        // ===== ✅ GET DELIVERY SETTINGS =====
         if ($action === 'get_delivery_settings') {
             $stmt = $pdo->prepare("
                 SELECT offers_delivery, delivery_fee, delivery_radius_km, free_delivery_minimum
@@ -170,6 +170,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET') {
                     'delivery_radius_km' => 0,
                     'free_delivery_minimum' => 0
                 ]
+            ]);
+            exit;
+        }
+        
+        // ═══════════════════════════════════════════════════
+        // ✅ NEW: GET DELIVERY FEES (per-city list)
+        // ═══════════════════════════════════════════════════
+        if ($action === 'get_delivery_fees') {
+            $stmt = $pdo->prepare("
+                SELECT id, region, city, barangay, fee_amount, estimated_days, is_active
+                FROM delivery_fees 
+                WHERE clinic_id = ?
+                ORDER BY city ASC
+            ");
+            $stmt->execute([$clinic_id]);
+            $fees = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            echo json_encode([
+                'success' => true,
+                'data' => $fees ?: []
             ]);
             exit;
         }
@@ -539,6 +559,122 @@ if ($type === 'delivery_settings') {
         $pdo->rollBack();
         echo json_encode(['error' => $e->getMessage()]);
     }
+    exit;
+}
+
+// ═══════════════════════════════════════════════════
+// ✅ NEW: ADD DELIVERY FEE (per city)
+// ═══════════════════════════════════════════════════
+if ($type === 'add_delivery_fee') {
+    $city = trim($data['city'] ?? '');
+    $region = trim($data['region'] ?? '');
+    $barangay = trim($data['barangay'] ?? '');
+    $fee_amount = floatval($data['fee_amount'] ?? 0);
+    $estimated_days = intval($data['estimated_days'] ?? 1);
+    
+    if (empty($city) || $fee_amount <= 0) {
+        echo json_encode(['error' => 'City and valid fee amount are required']);
+        exit;
+    }
+    
+    // Check duplicate
+    $checkStmt = $pdo->prepare("
+        SELECT id FROM delivery_fees 
+        WHERE clinic_id = ? AND city = ?
+    ");
+    $checkStmt->execute([$clinic_id, $city]);
+    if ($checkStmt->fetch()) {
+        echo json_encode(['error' => 'City already exists']);
+        exit;
+    }
+    
+    $stmt = $pdo->prepare("
+        INSERT INTO delivery_fees (clinic_id, region, city, barangay, fee_amount, estimated_days, is_active)
+        VALUES (?, ?, ?, ?, ?, ?, 1)
+    ");
+    $stmt->execute([$clinic_id, $region, $city, $barangay, $fee_amount, $estimated_days]);
+    
+    $new_id = $pdo->lastInsertId();
+    logAudit($pdo, $user_id, $clinic_id, 'CREATE', 'delivery_fee_' . $new_id, null, json_encode($data));
+    
+    echo json_encode(['success' => true, 'message' => 'City added successfully', 'id' => $new_id]);
+    exit;
+}
+
+// ═══════════════════════════════════════════════════
+// ✅ NEW: UPDATE DELIVERY FEE
+// ═══════════════════════════════════════════════════
+if ($type === 'update_delivery_fee') {
+    $id = intval($data['id'] ?? 0);
+    $city = trim($data['city'] ?? '');
+    $region = trim($data['region'] ?? '');
+    $barangay = trim($data['barangay'] ?? '');
+    $fee_amount = floatval($data['fee_amount'] ?? 0);
+    $estimated_days = intval($data['estimated_days'] ?? 1);
+    $is_active = intval($data['is_active'] ?? 1);
+    
+    if ($id <= 0 || empty($city) || $fee_amount <= 0) {
+        echo json_encode(['error' => 'Invalid input']);
+        exit;
+    }
+    
+    // Verify ownership
+    $checkStmt = $pdo->prepare("
+        SELECT id FROM delivery_fees 
+        WHERE id = ? AND clinic_id = ?
+    ");
+    $checkStmt->execute([$id, $clinic_id]);
+    if (!$checkStmt->fetch()) {
+        echo json_encode(['error' => 'City not found']);
+        exit;
+    }
+    
+    $oldStmt = $pdo->prepare("SELECT * FROM delivery_fees WHERE id = ?");
+    $oldStmt->execute([$id]);
+    $old = $oldStmt->fetch(PDO::FETCH_ASSOC);
+    
+    $stmt = $pdo->prepare("
+        UPDATE delivery_fees 
+        SET city = ?, region = ?, barangay = ?, fee_amount = ?, estimated_days = ?, is_active = ?
+        WHERE id = ? AND clinic_id = ?
+    ");
+    $stmt->execute([$city, $region, $barangay, $fee_amount, $estimated_days, $is_active, $id, $clinic_id]);
+    
+    logAudit($pdo, $user_id, $clinic_id, 'UPDATE', 'delivery_fee_' . $id, json_encode($old), json_encode($data));
+    
+    echo json_encode(['success' => true, 'message' => 'City updated successfully']);
+    exit;
+}
+
+// ═══════════════════════════════════════════════════
+// ✅ NEW: DELETE DELIVERY FEE
+// ═══════════════════════════════════════════════════
+if ($type === 'delete_delivery_fee') {
+    $id = intval($data['id'] ?? 0);
+    
+    if ($id <= 0) {
+        echo json_encode(['error' => 'Invalid ID']);
+        exit;
+    }
+    
+    // Verify ownership
+    $checkStmt = $pdo->prepare("
+        SELECT id, city FROM delivery_fees 
+        WHERE id = ? AND clinic_id = ?
+    ");
+    $checkStmt->execute([$id, $clinic_id]);
+    $fee = $checkStmt->fetch(PDO::FETCH_ASSOC);
+    if (!$fee) {
+        echo json_encode(['error' => 'City not found']);
+        exit;
+    }
+    
+    $stmt = $pdo->prepare("DELETE FROM delivery_fees WHERE id = ? AND clinic_id = ?");
+    $stmt->execute([$id, $clinic_id]);
+    
+    logAudit($pdo, $user_id, $clinic_id, 'DELETE', 'delivery_fee_' . $id, json_encode($fee), null);
+    
+    echo json_encode(['success' => true, 'message' => 'City deleted successfully']);
     exit;
 }
         

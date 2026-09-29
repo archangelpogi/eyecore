@@ -139,14 +139,131 @@ function recordCollection(PDO $pdo, int $orderId, int $clinicId, float $amount, 
     return ['ok'=>true, 'status'=>$newStatus];
 }
 
+
 // ════════════════════════════════════════════════════════════════
-// REFUND HELPERS
+// ✅ RIDER SCHEDULE VALIDATION HELPERS
 // ════════════════════════════════════════════════════════════════
 
 /**
- * ✅ Handle refund evidence image upload
- * Returns: relative path, or null if failed
+ * ✅ Check kung ang delivery time ay within rider's working hours
+ * Base sa employee_schedules table
  */
+function isRiderWithinWorkingHours(
+    PDO $pdo,
+    int $riderEmployeeId,
+    int $clinicId,
+    string $deliveryDate,
+    string $timeStart,
+    string $timeEnd
+): array {
+    $stmt = $pdo->prepare("
+        SELECT es.time_in, es.time_out, 
+               es.break_start, es.break_end, es.schedule_name
+        FROM employee_schedules es
+        WHERE es.employee_id = ?
+          AND es.clinic_id = ?
+          AND es.is_active = 1
+          AND (es.effective_from IS NULL OR es.effective_from <= ?)
+          AND (es.effective_to   IS NULL OR es.effective_to   >= ?)
+        ORDER BY es.created_at DESC
+        LIMIT 1
+    ");
+    $stmt->execute([$riderEmployeeId, $clinicId, $deliveryDate, $deliveryDate]);
+    $schedule = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    // Walang schedule = hindi puwede mag-deliver
+    if (!$schedule) {
+        return [
+            'ok' => false,
+            'reason' => 'Rider has no active working schedule. Please set working hours in Schedule Management first.',
+            'schedule' => null
+        ];
+    }
+
+    // Normalize times (HH:MM format)
+    $timeIn     = substr($schedule['time_in'], 0, 5);
+    $timeOut    = substr($schedule['time_out'], 0, 5);
+    $breakStart = $schedule['break_start'] ? substr($schedule['break_start'], 0, 5) : null;
+    $breakEnd   = $schedule['break_end'] ? substr($schedule['break_end'], 0, 5) : null;
+
+    $dStart = substr($timeStart, 0, 5);
+    $dEnd   = substr($timeEnd, 0, 5);
+
+    // ✅ Check 1: Within working hours?
+    if ($dStart < $timeIn || $dEnd > $timeOut) {
+        return [
+            'ok' => false,
+            'reason' => "Delivery time ({$dStart}–{$dEnd}) is outside rider's working hours ({$timeIn}–{$timeOut}).",
+            'schedule' => $schedule
+        ];
+    }
+
+    // ✅ Check 2: Hindi overlap sa break?
+    if ($breakStart && $breakEnd) {
+        if ($dStart < $breakEnd && $dEnd > $breakStart) {
+            return [
+                'ok' => false,
+                'reason' => "Delivery time overlaps with rider's break ({$breakStart}–{$breakEnd}).",
+                'schedule' => $schedule
+            ];
+        }
+    }
+
+    return [
+        'ok' => true,
+        'reason' => 'Within working hours.',
+        'schedule' => $schedule
+    ];
+}
+
+/**
+ * ✅ Check kung may conflict sa ibang delivery ng rider
+ * Returns: conflict row or null
+ */
+function hasRiderConflict(
+    PDO $pdo,
+    int $riderId,
+    int $clinicId,
+    string $deliveryDate,
+    string $timeStart,
+    string $timeEnd,
+    ?int $excludeOrderId = null
+): ?array {
+    $sql = "
+        SELECT id, reservation_code, 
+               TIME_FORMAT(delivery_time_start, '%H:%i') AS delivery_time_start,
+               TIME_FORMAT(delivery_time_end, '%H:%i')   AS delivery_time_end,
+               status
+        FROM reservations
+        WHERE assigned_rider_id = ?
+          AND clinic_id = ?
+          AND delivery_date = ?
+          AND status NOT IN ('delivered','completed','cancelled')
+          AND (
+              (delivery_time_start < ? AND delivery_time_end > ?)
+              OR (delivery_time_start < ? AND delivery_time_end IS NULL)
+              OR (delivery_time_start IS NULL AND delivery_time_end > ?)
+          )
+    ";
+    $params = [
+        $riderId, $clinicId, $deliveryDate,
+        $timeEnd, $timeStart,
+        $timeEnd, $timeStart
+    ];
+
+    if ($excludeOrderId) {
+        $sql .= " AND id != ?";
+        $params[] = $excludeOrderId;
+    }
+
+    $sql .= " LIMIT 1";
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $conflict = $stmt->fetch(PDO::FETCH_ASSOC);
+    return $conflict ?: null;
+}
+
 function handleRefundEvidenceUpload(int $reservationId): ?string
 {
     if (!isset($_FILES['evidence']) || $_FILES['evidence']['error'] !== UPLOAD_ERR_OK) {
@@ -280,6 +397,81 @@ try {
             $stmt->execute([$clinicId]);
             respond(true, '', $stmt->fetchAll(PDO::FETCH_ASSOC));
         }
+
+
+// ════════════════════════════════════════════════════════════════
+// ✅ RIDER AVAILABILITY — para sa UI time slots picker
+// ════════════════════════════════════════════════════════════════
+if ($action === 'rider_availability') {
+    $riderId = (int)($_GET['rider_id'] ?? 0);
+    $date    = $_GET['date'] ?? date('Y-m-d');
+
+    if (!$riderId) respond(false, 'Rider ID required', null, 400);
+
+    // ✅ Get rider info
+    $rStmt = $pdo->prepare("
+        SELECT id, name, phone, vehicle_type, plate_number, 
+               is_available, employee_id
+        FROM riders
+        WHERE id = ? AND clinic_id = ? AND status = 'active'
+    ");
+    $rStmt->execute([$riderId, $clinicId]);
+    $rider = $rStmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$rider) respond(false, 'Rider not found', null, 404);
+
+    // ✅ Get rider's working schedule (from employee_schedules)
+    $schedule = null;
+    if ($rider['employee_id']) {
+        $sStmt = $pdo->prepare("
+            SELECT time_in, time_out, break_start, break_end, schedule_name
+            FROM employee_schedules
+            WHERE employee_id = ?
+              AND clinic_id = ?
+              AND is_active = 1
+              AND (effective_from IS NULL OR effective_from <= ?)
+              AND (effective_to   IS NULL OR effective_to   >= ?)
+            ORDER BY created_at DESC
+            LIMIT 1
+        ");
+        $sStmt->execute([$rider['employee_id'], $clinicId, $date, $date]);
+        $row = $sStmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($row) {
+            $schedule = [
+                'time_in'       => substr($row['time_in'], 0, 5),
+                'time_out'      => substr($row['time_out'], 0, 5),
+                'break_start'   => $row['break_start'] ? substr($row['break_start'], 0, 5) : null,
+                'break_end'     => $row['break_end']   ? substr($row['break_end'], 0, 5)   : null,
+                'schedule_name' => $row['schedule_name'],
+            ];
+        }
+    }
+
+    // ✅ Get booked deliveries for that date
+    $bStmt = $pdo->prepare("
+        SELECT id, reservation_code,
+               TIME_FORMAT(delivery_time_start, '%H:%i') AS delivery_time_start,
+               TIME_FORMAT(delivery_time_end, '%H:%i')   AS delivery_time_end,
+               delivery_status, status
+        FROM reservations
+        WHERE assigned_rider_id = ?
+          AND clinic_id = ?
+          AND delivery_date = ?
+          AND status NOT IN ('delivered','completed','cancelled')
+        ORDER BY delivery_time_start
+    ");
+    $bStmt->execute([$riderId, $clinicId, $date]);
+    $booked = $bStmt->fetchAll(PDO::FETCH_ASSOC);
+
+    respond(true, '', [
+        'rider'    => $rider,
+        'date'     => $date,
+        'schedule' => $schedule,
+        'booked'   => $booked,
+        'count'    => count($booked),
+    ]);
+}
 
         if ($action === 'details') {
             $id = (int)($_GET['id'] ?? 0);
@@ -974,33 +1166,123 @@ function handleStatusUpdate(PDO $pdo, int $clinicId, int $currentUid, array $dat
         respond(true, 'Marked as preparing.');
     }
 
-    if ($action === 'assign_rider') {
-        if (!canEditReservations()) respond(false, 'No permission', null, 403);
+if ($action === 'assign_rider') {
+    if (!canEditReservations()) respond(false, 'No permission', null, 403);
 
-        $riderId = (int)($data['rider_id'] ?? 0);
-        $notes   = trim($data['delivery_notes'] ?? '');
-        $eta     = $data['delivery_date'] ?? null;
+    $riderId   = (int)($data['rider_id'] ?? 0);
+    $notes     = trim($data['delivery_notes'] ?? '');
+    $eta       = $data['delivery_date'] ?? null;
+    $timeStart = $data['delivery_time_start'] ?? null;  // ✅ BAGO
+    $timeEnd   = $data['delivery_time_end'] ?? null;    // ✅ BAGO
 
-        if (!$riderId) respond(false, 'Please select a rider', null, 400);
+    // ✅ Basic validation
+    if (!$riderId)   respond(false, 'Please select a rider', null, 400);
+    if (!$eta)       respond(false, 'Delivery date is required', null, 400);
+    if (!$timeStart) respond(false, 'Delivery time start is required', null, 400);
+    if (!$timeEnd)   respond(false, 'Delivery time end is required', null, 400);
 
-        $rStmt = $pdo->prepare("SELECT name FROM riders WHERE id=? AND clinic_id=? AND status='active'");
-        $rStmt->execute([$riderId, $clinicId]);
-        $riderName = $rStmt->fetchColumn();
-        if (!$riderName) respond(false, 'Rider not found or not active', null, 404);
-
-        $pdo->prepare("
-            UPDATE reservations
-            SET assigned_rider_id=?, delivery_status='assigned', delivery_date=?,
-                notes=CONCAT(IFNULL(notes,''),?), updated_at=NOW()
-            WHERE id=? AND clinic_id=?
-        ")->execute([$riderId, $eta, $notes ? "\n[Rider note: $notes]" : '', $reservationId, $clinicId]);
-
-        notifyUser($pdo, $userId, 'Rider Assigned 🏍️',
-            "A rider ({$riderName}) has been assigned to your order #{$code}.",
-            'reservation', 'my-reservations.php', $reservationId);
-
-        respond(true, 'Rider assigned successfully.');
+    if ($timeStart >= $timeEnd) {
+        respond(false, 'Delivery time end must be after start time', null, 400);
     }
+
+    // ✅ Get rider info + employee_id
+    $rStmt = $pdo->prepare("
+        SELECT name, employee_id 
+        FROM riders 
+        WHERE id = ? AND clinic_id = ? AND status = 'active'
+    ");
+    $rStmt->execute([$riderId, $clinicId]);
+    $rider = $rStmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$rider) {
+        respond(false, 'Rider not found or not active', null, 404);
+    }
+
+    if (!$rider['employee_id']) {
+        respond(false, 'Rider is not linked to an employee record. Please link it first.', null, 400);
+    }
+
+    $riderName = $rider['name'];
+
+    // ═══════════════════════════════════════════════════════════
+    // ✅ CHECK 1: Within rider's working hours?
+    // ═══════════════════════════════════════════════════════════
+    $workingCheck = isRiderWithinWorkingHours(
+        $pdo,
+        (int)$rider['employee_id'],
+        $clinicId,
+        $eta,
+        $timeStart,
+        $timeEnd
+    );
+
+    if (!$workingCheck['ok']) {
+        respond(false, $workingCheck['reason'], [
+            'error_type' => 'outside_working_hours',
+            'schedule'   => $workingCheck['schedule']
+        ], 422);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ✅ CHECK 2: Conflict sa ibang delivery?
+    // ═══════════════════════════════════════════════════════════
+    $conflict = hasRiderConflict(
+        $pdo,
+        $riderId,
+        $clinicId,
+        $eta,
+        $timeStart,
+        $timeEnd,
+        $reservationId  // exclude current order
+    );
+
+    if ($conflict) {
+        respond(false,
+            "Rider is already booked at this time. Conflict with order #{$conflict['reservation_code']} " .
+            "({$conflict['delivery_time_start']}–{$conflict['delivery_time_end']}).",
+            [
+                'error_type' => 'time_conflict',
+                'conflict'   => $conflict
+            ],
+            409  // HTTP Conflict
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // ✅ All checks passed — assign rider
+    // ═══════════════════════════════════════════════════════════
+    $pdo->prepare("
+        UPDATE reservations
+        SET assigned_rider_id   = ?,
+            delivery_status     = 'assigned',
+            delivery_date       = ?,
+            delivery_time_start = ?,
+            delivery_time_end   = ?,
+            notes               = CONCAT(IFNULL(notes,''), ?),
+            updated_at          = NOW()
+        WHERE id = ? AND clinic_id = ?
+    ")->execute([
+        $riderId,
+        $eta,
+        $timeStart,
+        $timeEnd,
+        $notes ? "\n[Rider note: $notes]" : '',
+        $reservationId,
+        $clinicId
+    ]);
+
+    // ✅ Notify customer
+    notifyUser($pdo, $userId, 'Rider Assigned 🏍️',
+        "A rider ({$riderName}) has been assigned to your order #{$code} on {$eta} from {$timeStart} to {$timeEnd}.",
+        'reservation', 'my-reservations.php', $reservationId);
+
+    respond(true, 'Rider assigned successfully.', [
+        'rider_name'          => $riderName,
+        'delivery_date'       => $eta,
+        'delivery_time_start' => $timeStart,
+        'delivery_time_end'   => $timeEnd
+    ]);
+}
 
 if ($action === 'dispatch') {
     if (!canEditReservations()) respond(false, 'No permission', null, 403);
@@ -1155,15 +1437,57 @@ function handleBulkAction(PDO $pdo, int $clinicId, int $currentUid, array $data,
     $collectedAmounts = $data['collected_amounts'] ?? [];
     $collectionNotes  = trim($data['collection_notes'] ?? '');
 
-    if ($action === 'bulk_assign_rider') {
-        if (!$riderId) respond(false, 'Please select a rider', null, 400);
-        $rStmt = $pdo->prepare("SELECT name FROM riders WHERE id=? AND clinic_id=? AND status='active'");
-        $rStmt->execute([$riderId, $clinicId]);
-        $riderName = $rStmt->fetchColumn();
-        if (!$riderName) respond(false, 'Rider not found or not active', null, 404);
-    } else {
-        $riderName = null;
+if ($action === 'bulk_assign_rider') {
+    if (!$riderId) respond(false, 'Please select a rider', null, 400);
+    if (!$deliveryDate) respond(false, 'Delivery date is required', null, 400);
+
+    // ✅ Get bulk time inputs
+    $bulkTimeStart = $data['delivery_time_start'] ?? null;
+    $bulkTimeEnd   = $data['delivery_time_end'] ?? null;
+
+    if (!$bulkTimeStart || !$bulkTimeEnd) {
+        respond(false, 'Delivery time start and end are required', null, 400);
     }
+
+    if ($bulkTimeStart >= $bulkTimeEnd) {
+        respond(false, 'Delivery time end must be after start time', null, 400);
+    }
+
+    // ✅ Get rider info + employee_id
+    $rStmt = $pdo->prepare("
+        SELECT name, employee_id 
+        FROM riders 
+        WHERE id = ? AND clinic_id = ? AND status = 'active'
+    ");
+    $rStmt->execute([$riderId, $clinicId]);
+    $rider = $rStmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$rider) respond(false, 'Rider not found or not active', null, 404);
+    if (!$rider['employee_id']) {
+        respond(false, 'Rider is not linked to an employee record.', null, 400);
+    }
+
+    $riderName = $rider['name'];
+
+    // ✅ Check working hours (isang beses lang)
+    $workingCheck = isRiderWithinWorkingHours(
+        $pdo,
+        (int)$rider['employee_id'],
+        $clinicId,
+        $deliveryDate,
+        $bulkTimeStart,
+        $bulkTimeEnd
+    );
+
+    if (!$workingCheck['ok']) {
+        respond(false, $workingCheck['reason'], null, 422);
+    }
+
+} else {
+    $riderName    = null;
+    $bulkTimeStart = null;
+    $bulkTimeEnd   = null;
+}
 
     $success = []; $failed = [];
 
@@ -1192,14 +1516,57 @@ function handleBulkAction(PDO $pdo, int $clinicId, int $currentUid, array $data,
                 notifyUser($pdo, $userId, 'Order Preparing 📦', "Your order #{$code} is being prepared.", 'reservation', 'my-reservations.php', $id);
                 $success[] = $id;
             }
-            elseif ($action === 'bulk_assign_rider') {
-                if ($order['fulfillment_type'] !== 'delivery') { $failed[] = ['id'=>$id,'code'=>$code,'reason'=>'Not a delivery']; continue; }
-                if (in_array($order['status'], ['delivered','completed','cancelled'], true)) { $failed[] = ['id'=>$id,'code'=>$code,'reason'=>'Already finalized']; continue; }
-                $pdo->prepare("UPDATE reservations SET assigned_rider_id=?, delivery_status='assigned', delivery_date=?, updated_at=NOW() WHERE id=? AND clinic_id=?")
-                    ->execute([$riderId, $deliveryDate, $id, $clinicId]);
-                notifyUser($pdo, $userId, 'Rider Assigned 🏍️', "A rider ({$riderName}) has been assigned to your order #{$code}.", 'reservation', 'my-reservations.php', $id);
-                $success[] = $id;
-            }
+elseif ($action === 'bulk_assign_rider') {
+    if ($order['fulfillment_type'] !== 'delivery') {
+        $failed[] = ['id'=>$id,'code'=>$code,'reason'=>'Not a delivery'];
+        continue;
+    }
+    if (in_array($order['status'], ['delivered','completed','cancelled'], true)) {
+        $failed[] = ['id'=>$id,'code'=>$code,'reason'=>'Already finalized'];
+        continue;
+    }
+
+    // ✅ Check conflict for THIS order
+    $conflict = hasRiderConflict(
+        $pdo, $riderId, $clinicId,
+        $deliveryDate, $bulkTimeStart, $bulkTimeEnd,
+        $id
+    );
+
+    if ($conflict) {
+        $failed[] = [
+            'id'     => $id,
+            'code'   => $code,
+            'reason' => "Conflict with #{$conflict['reservation_code']}"
+        ];
+        continue;
+    }
+
+    // ✅ Save with time
+    $pdo->prepare("
+        UPDATE reservations 
+        SET assigned_rider_id   = ?, 
+            delivery_status     = 'assigned', 
+            delivery_date       = ?,
+            delivery_time_start = ?,
+            delivery_time_end   = ?,
+            updated_at          = NOW() 
+        WHERE id = ? AND clinic_id = ?
+    ")->execute([
+        $riderId,
+        $deliveryDate,
+        $bulkTimeStart,
+        $bulkTimeEnd,
+        $id,
+        $clinicId
+    ]);
+
+    notifyUser($pdo, $userId, 'Rider Assigned 🏍️',
+        "A rider ({$riderName}) has been assigned to your order #{$code} on {$deliveryDate} from {$bulkTimeStart} to {$bulkTimeEnd}.",
+        'reservation', 'my-reservations.php', $id);
+
+    $success[] = $id;
+}
             elseif ($action === 'bulk_dispatch') {
                 if (!$order['assigned_rider_id']) { $failed[] = ['id'=>$id,'code'=>$code,'reason'=>'No rider assigned']; continue; }
                 if (in_array($order['status'], ['dispatched','delivered','completed','cancelled'], true)) { $failed[] = ['id'=>$id,'code'=>$code,'reason'=>'Cannot dispatch']; continue; }
@@ -1454,10 +1821,11 @@ if ($action === 'approve_refund') {
     ")->execute([$adminNotes ?: null, $currentUid, $refundId]);
     
     // ✅ Update reservation (mark as refunded for manual)
+    // ✅ Update reservation — refund_status LANG, HUWAG galawin ang payment_status
+    // payment_status ay magiging 'refunded' LANG kapag na-mark_refunded na
     $pdo->prepare("
         UPDATE reservations 
-        SET payment_status = 'refunded',
-            refund_status = 'approved',
+        SET refund_status = 'approved',
             updated_at = NOW()
         WHERE id = ?
     ")->execute([$reservationId]);

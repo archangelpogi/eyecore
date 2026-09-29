@@ -334,27 +334,52 @@ $js_plan        = json_encode($subscription_plan);
 
                     <?php else: ?>
                         <?php foreach ($group['items'] as $item): ?>
-                            <?php 
-                            $is_item_active = false;
-                            
-                            // Get the view name (prefer view_name, fallback to page_name)
-                            $item_view = $item['view_name'] ?? $item['page_name'] ?? '';
-                            
-                            // Check if this menu item matches the current view
-                            if (!empty($v) && !empty($item_view) && $v === $item_view) {
-                                $is_item_active = true;
-                            } 
-                            // Check if we're on the page directly
-                            elseif (empty($v) && !empty($item['url'])) {
-                                $url_parts = parse_url($item['url']);
-                                if (isset($url_parts['query'])) {
-                                    parse_str($url_parts['query'], $query_params);
-                                    if (isset($query_params['view']) && $query_params['view'] === $item_view) {
-                                        $is_item_active = true;
-                                    }
-                                }
-                            }
-                            ?>
+<?php 
+// ═══════════════════════════════════════════════════════
+// ACTIVE STATE DETECTION
+// ═══════════════════════════════════════════════════════
+$is_item_active = false;
+
+// Get the view name from menu item
+$item_view = $item['view_name'] ?? $item['page_name'] ?? '';
+
+// Parse the menu item's URL to extract its view parameter
+$item_url_view = '';
+$item_url_path = '';
+if (!empty($item['url'])) {
+    $item_url_parts = parse_url($item['url']);
+    $item_url_path = $item_url_parts['path'] ?? '';
+    if (isset($item_url_parts['query'])) {
+        parse_str($item_url_parts['query'], $item_query_params);
+        $item_url_view = $item_query_params['view'] ?? '';
+    }
+}
+
+// ═══════════════════════════════════════════════════════
+// MATCHING LOGIC
+// ═══════════════════════════════════════════════════════
+
+// Case 1: URL has ?view=xxx → strict match by view ONLY
+if (!empty($v)) {
+    if (!empty($item_url_view) && $item_url_view === $v) {
+        $is_item_active = true;
+    }
+}
+// Case 2: URL has NO ?view → check if current page matches item URL path
+else {
+    // Get filename from item URL
+    $item_url_filename = basename($item_url_path);
+    
+    // Match only if:
+    // - current page equals item URL filename
+    // - AND item URL also has NO view parameter (exact match)
+    if (!empty($item_url_filename) 
+        && $item_url_filename === $current_page 
+        && empty($item_url_view)) {
+        $is_item_active = true;
+    }
+}
+?>
                             <li class="nav-item ms-3">
                                 <!-- ITEM LINK: HIGHLIGHT LANG DITO -->
                                 <a class="nav-link item-highlight <?= $is_item_active ? 'active' : '' ?>"
@@ -396,7 +421,9 @@ $js_plan        = json_encode($subscription_plan);
 </aside>
 
 <style>
-/* ── Brand / Header ── */
+/* ══════════════════════════════════════════════════════════
+   BRAND / HEADER
+   ══════════════════════════════════════════════════════════ */
 .clinic-logo-container { width: 50px; height: 50px; flex-shrink: 0; }
 .clinic-logo-img { width: 100%; height: 100%; object-fit: cover; border-radius: 50%; border: 2px solid #0d9488; padding: 2px; background: white; }
 .clinic-logo-default { width: 100%; height: 100%; background: linear-gradient(135deg, #0d9488, #0891b2); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: white; border: 2px solid #0d9488; }
@@ -407,7 +434,9 @@ $js_plan        = json_encode($subscription_plan);
 .sidebar-header { padding: 15px; border-bottom: 1px solid #e2e8f0; position: relative; }
 .sidebar-toggle { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: #4a5568; background: none; border: none; font-size: 1.2rem; cursor: pointer; }
 
-/* ── Subscription Badge ── */
+/* ══════════════════════════════════════════════════════════
+   SUBSCRIPTION BADGE
+   ══════════════════════════════════════════════════════════ */
 .subscription-badge {
     font-size: 0.6rem;
     color: #0d9488;
@@ -420,75 +449,176 @@ $js_plan        = json_encode($subscription_plan);
     border: 1px solid #99f6e4;
 }
 
-/* ── Nav Links ── */
-.nav-link { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 8px; transition: all 0.2s; color: #4a5568; text-decoration: none; }
-.nav-link:hover { color: #2d3748; }
+/* ══════════════════════════════════════════════════════════
+   BASE NAV LINKS
+   ══════════════════════════════════════════════════════════ */
+.sidebar .nav-link {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    transition: all 0.2s;
+    color: #4a5568;
+    text-decoration: none;
+}
 
-/* ── GROUP HEADER (PLAIN TEXT) ── */
-.group-header-plain { 
-    color: #6c757d; 
-    font-weight: 700; 
-    font-size: 0.75rem; 
-    text-transform: uppercase; 
+/* ══════════════════════════════════════════════════════════
+   GROUP HEADER (PLAIN TEXT)
+   ══════════════════════════════════════════════════════════ */
+.sidebar .group-header-plain {
+    color: #6c757d;
+    font-weight: 700;
+    font-size: 0.75rem;
+    text-transform: uppercase;
     letter-spacing: 0.5px;
     padding: 8px 12px;
     border-radius: 8px;
+    background: transparent;
 }
-.group-header-plain i { width: 20px; color: #6c757d; }
-.group-header-plain:hover { background: transparent; color: #495057; }
+.sidebar .group-header-plain i { width: 20px; color: #6c757d; }
+.sidebar .group-header-plain:hover { background: transparent; color: #495057; }
 .lock-icon { font-size: 0.65rem; color: #9ca3af; }
 
-/* ── ITEM HIGHLIGHT (TEAL GREEN BUTTON STYLE) ── */
-.item-highlight {
+/* ══════════════════════════════════════════════════════════
+   ITEM HIGHLIGHT — PREMIUM MINIMALIST (Option 3)
+   ══════════════════════════════════════════════════════════ */
+
+/* ── DEFAULT STATE ── */
+.sidebar .item-highlight {
+    position: relative;
     background: transparent;
     color: #4a5568;
-    padding: 8px 12px;
-    border-radius: 8px;
-}
-.item-highlight i { width: 20px; color: #6c757d; }
-.item-highlight:hover {
-    background: #0d9488; /* Teal Green */
-    color: white !important;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(13, 148, 136, 0.2);
-}
-.item-highlight:hover i {
-    color: white !important;
+    padding: 10px 14px;
+    border-radius: 10px;
+    margin: 2px 0;
+    font-weight: 500;
+    font-size: 0.875rem;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    border: 1px solid transparent;
+    text-decoration: none;
+    display: flex !important;
+    align-items: center;
+    gap: 10px;
 }
 
-/* ── ACTIVE ITEM (TEAL GREEN HIGHLIGHT) ── */
-.item-highlight.active {
-    background: #0d9488;
-    color: white !important;
-    border-radius: 8px;
-    padding: 8px 12px;
-    box-shadow: 0 4px 8px rgba(13, 148, 136, 0.2);
+.sidebar .item-highlight i {
+    width: 20px;
+    color: #6c757d;
+    font-size: 1rem;
+    transition: all 0.25s ease;
+    flex-shrink: 0;
 }
-.item-highlight.active i {
-    color: white !important;
+
+/* ── HOVER STATE — Soft teal tint + subtle shift ── */
+.sidebar .item-highlight:hover {
+    background: linear-gradient(90deg, #f0fdfa 0%, #e6fffa 100%);
+    color: #0d9488 !important;
+    transform: translateX(4px);
+    border-color: rgba(13, 148, 136, 0.15);
 }
-.item-highlight.active .active-dot {
+
+.sidebar .item-highlight:hover i {
+    color: #0d9488 !important;
+    transform: scale(1.1);
+}
+
+/* ══════════════════════════════════════════════════════════
+   ACTIVE STATE — PREMIUM MINIMALIST
+   Soft teal tint + left accent bar + teal text + bold
+   ══════════════════════════════════════════════════════════ */
+.sidebar .item-highlight.active {
+    background: linear-gradient(90deg, rgba(13, 148, 136, 0.12) 0%, rgba(13, 148, 136, 0.04) 100%);
+    color: #0d9488 !important;
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-weight: 700;
+    box-shadow: 
+        0 2px 8px rgba(13, 148, 136, 0.1),
+        inset 0 1px 0 rgba(255, 255, 255, 0.6);
+    border-left: 4px solid #0d9488;
+}
+
+.sidebar .item-highlight.active i {
+    color: #0d9488 !important;
+    transform: scale(1.1);
+}
+
+.sidebar .item-highlight.active span {
+    color: #0d9488 !important;
+}
+
+/* ── ACTIVE DOT (right side) ── */
+.sidebar .item-highlight.active .active-dot {
     display: inline-block;
-    width: 6px;
-    height: 6px;
-    background: #99f6e4;
+    width: 7px;
+    height: 7px;
+    background: #0d9488;
     border-radius: 50%;
-    margin-left: 8px;
-    animation: pulse 2s infinite;
+    margin-left: auto;
+    box-shadow: 0 0 8px rgba(13, 148, 136, 0.6);
+    animation: pulseDot 2s ease-in-out infinite;
 }
 
-@keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.3; }
+@keyframes pulseDot {
+    0%, 100% { 
+        opacity: 1; 
+        transform: scale(1);
+        box-shadow: 0 0 8px rgba(13, 148, 136, 0.6);
+    }
+    50% { 
+        opacity: 0.7; 
+        transform: scale(0.85);
+        box-shadow: 0 0 12px rgba(13, 148, 136, 0.9);
+    }
 }
 
-/* ── Dark mode support ── */
-.theme-dark .item-highlight:hover,
-.theme-dark .item-highlight.active {
-    background: #14b8a6;
+/* ══════════════════════════════════════════════════════════
+   DARK MODE SUPPORT
+   ══════════════════════════════════════════════════════════ */
+.theme-dark .sidebar .item-highlight {
+    color: #a0aec0;
 }
 
-/* ── Upgrade CTA (locked group) ── */
+.theme-dark .sidebar .item-highlight i {
+    color: #718096;
+}
+
+.theme-dark .sidebar .item-highlight:hover {
+    background: linear-gradient(90deg, rgba(20, 184, 166, 0.15) 0%, rgba(20, 184, 166, 0.08) 100%);
+    color: #5eead4 !important;
+    border-color: rgba(20, 184, 166, 0.3);
+}
+
+.theme-dark .sidebar .item-highlight:hover i {
+    color: #5eead4 !important;
+}
+
+.theme-dark .sidebar .item-highlight.active {
+    background: linear-gradient(90deg, rgba(20, 184, 166, 0.18) 0%, rgba(20, 184, 166, 0.06) 100%);
+    color: #5eead4 !important;
+    border-left-color: #5eead4;
+    box-shadow: 
+        0 2px 8px rgba(20, 184, 166, 0.15),
+        inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.theme-dark .sidebar .item-highlight.active i {
+    color: #5eead4 !important;
+}
+
+.theme-dark .sidebar .item-highlight.active span {
+    color: #5eead4 !important;
+}
+
+.theme-dark .sidebar .item-highlight.active .active-dot {
+    background: #5eead4;
+    box-shadow: 0 0 8px rgba(94, 234, 212, 0.8);
+}
+
+/* ══════════════════════════════════════════════════════════
+   UPGRADE CTA (LOCKED GROUP)
+   ══════════════════════════════════════════════════════════ */
 .upgrade-plan-hint {
     display: flex;
     align-items: center;
@@ -516,7 +646,9 @@ $js_plan        = json_encode($subscription_plan);
     font-size: 0.75rem;
 }
 
-/* ── No Subscription Banner ── */
+/* ══════════════════════════════════════════════════════════
+   NO SUBSCRIPTION BANNER
+   ══════════════════════════════════════════════════════════ */
 .upgrade-sidebar-banner {
     background: linear-gradient(135deg, #fef3c7, #fde68a);
     border-radius: 12px;
@@ -525,13 +657,29 @@ $js_plan        = json_encode($subscription_plan);
 .btn-teal { background-color: #0d9488; color: white; border: none; }
 .btn-teal:hover { background-color: #0f766e; color: white; }
 
-/* ── User Footer ── */
-.user-avatar { width: 36px; height: 36px; background: linear-gradient(135deg, #0d9488, #0891b2); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 0.9rem; flex-shrink: 0; }
+/* ══════════════════════════════════════════════════════════
+   USER FOOTER
+   ══════════════════════════════════════════════════════════ */
+.user-avatar { 
+    width: 36px; 
+    height: 36px; 
+    background: linear-gradient(135deg, #0d9488, #0891b2); 
+    color: white; 
+    border-radius: 50%; 
+    display: flex; 
+    align-items: center; 
+    justify-content: center; 
+    font-weight: 600; 
+    font-size: 0.9rem; 
+    flex-shrink: 0; 
+}
 .user-name { font-weight: 500; font-size: 0.9rem; color: #2d3748; line-height: 1.2; }
 .user-role { font-size: 0.75rem; color: #718096; line-height: 1.2; }
 .trial-days { font-size: 0.65rem; }
 
-/* ── Utilities ── */
+/* ══════════════════════════════════════════════════════════
+   UTILITIES
+   ══════════════════════════════════════════════════════════ */
 .text-muted { color: #6c757d !important; }
 .fw-bold { font-weight: 700; }
 .text-uppercase { text-transform: uppercase; }
@@ -560,6 +708,9 @@ $js_plan        = json_encode($subscription_plan);
 .btn-link:hover { color: #2d3748; }
 .btn-sm { padding: 0.25rem 0.5rem; font-size: 0.875rem; }
 
+/* ══════════════════════════════════════════════════════════
+   RESPONSIVE
+   ══════════════════════════════════════════════════════════ */
 @media (max-width: 768px) {
     .clinic-name { font-size: 0.85rem; max-width: 120px; }
     .clinic-logo-container { width: 40px; height: 40px; }

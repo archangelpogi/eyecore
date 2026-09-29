@@ -917,6 +917,144 @@ if (isset($_POST['ajax_action'])) {
     exit();
 }
 
+// ============================================
+// ✅ ADDRESS AJAX HANDLERS (for delivery picker)
+// ============================================
+if (isset($_GET['addr_action'])) {
+    header('Content-Type: application/json');
+    $uid = (int)$_SESSION['user_id'];
+    $action = $_GET['addr_action'];
+
+    // ── LIST ──
+    if ($action === 'list') {
+        $q = mysqli_query($conn, "
+            SELECT id, label, recipient_name, recipient_phone,
+                   street_address, barangay, city, province, zip_code, landmark,
+                   latitude, longitude, is_default
+            FROM user_addresses
+            WHERE user_id = $uid
+            ORDER BY is_default DESC, created_at DESC
+        ");
+        $list = [];
+        while ($r = mysqli_fetch_assoc($q)) {
+            $r['is_default'] = (int)$r['is_default'];
+            $list[] = $r;
+        }
+        echo json_encode(['success' => true, 'addresses' => $list]);
+        exit;
+    }
+
+    // ── SAVE ──
+    if ($action === 'save') {
+        $id             = (int)($_POST['id'] ?? 0);
+        $label          = mysqli_real_escape_string($conn, trim($_POST['label'] ?? 'Home'));
+        $rname          = mysqli_real_escape_string($conn, trim($_POST['recipient_name'] ?? ''));
+        $rphone         = mysqli_real_escape_string($conn, trim($_POST['recipient_phone'] ?? ''));
+        $street         = mysqli_real_escape_string($conn, trim($_POST['street_address'] ?? ''));
+        $brgy           = mysqli_real_escape_string($conn, trim($_POST['barangay'] ?? ''));
+        $city           = mysqli_real_escape_string($conn, trim($_POST['city'] ?? ''));
+        $prov           = mysqli_real_escape_string($conn, trim($_POST['province'] ?? 'Cavite'));
+        $zip            = mysqli_real_escape_string($conn, trim($_POST['zip_code'] ?? ''));
+        $landmark       = mysqli_real_escape_string($conn, trim($_POST['landmark'] ?? ''));
+        $lat            = !empty($_POST['latitude']) ? (float)$_POST['latitude'] : null;
+        $lng            = !empty($_POST['longitude']) ? (float)$_POST['longitude'] : null;
+        $is_default     = !empty($_POST['is_default']) ? 1 : 0;
+
+        if (!$rname)  { echo json_encode(['success'=>false,'message'=>'Recipient name required.']); exit; }
+        if (!$rphone) { echo json_encode(['success'=>false,'message'=>'Phone number required.']); exit; }
+        if (!$street) { echo json_encode(['success'=>false,'message'=>'Street address required.']); exit; }
+        if (!$brgy)   { echo json_encode(['success'=>false,'message'=>'Barangay required.']); exit; }
+        if (!$city)   { echo json_encode(['success'=>false,'message'=>'City required.']); exit; }
+        if (!$zip)    { echo json_encode(['success'=>false,'message'=>'ZIP code required.']); exit; }
+
+        if (stripos($prov, 'Cavite') === false) {
+            echo json_encode(['success'=>false,'message'=>'Only addresses in Cavite are supported.']);
+            exit;
+        }
+
+        $lat_sql = $lat !== null ? $lat : 'NULL';
+        $lng_sql = $lng !== null ? $lng : 'NULL';
+        $landmark_sql = $landmark ? "'$landmark'" : 'NULL';
+
+        $c = (int)mysqli_fetch_assoc(mysqli_query($conn,
+            "SELECT COUNT(*) c FROM user_addresses WHERE user_id = $uid"))['c'];
+        if ($c === 0) $is_default = 1;
+
+        if ($is_default) {
+            mysqli_query($conn, "UPDATE user_addresses SET is_default = 0 WHERE user_id = $uid");
+        }
+
+        if ($id > 0) {
+            if (mysqli_num_rows(mysqli_query($conn,
+                "SELECT id FROM user_addresses WHERE id = $id AND user_id = $uid")) === 0) {
+                echo json_encode(['success'=>false,'message'=>'Address not found.']);
+                exit;
+            }
+            mysqli_query($conn, "
+                UPDATE user_addresses SET
+                    label='$label', recipient_name='$rname', recipient_phone='$rphone',
+                    street_address='$street', barangay='$brgy', city='$city',
+                    province='$prov', zip_code='$zip', landmark=$landmark_sql,
+                    latitude=$lat_sql, longitude=$lng_sql, is_default=$is_default,
+                    updated_at=NOW()
+                WHERE id = $id AND user_id = $uid
+            ");
+            $new_id = $id;
+        } else {
+            mysqli_query($conn, "
+                INSERT INTO user_addresses
+                (user_id, label, recipient_name, recipient_phone, street_address,
+                 barangay, city, province, zip_code, landmark, latitude, longitude, is_default)
+                VALUES
+                ($uid, '$label', '$rname', '$rphone', '$street',
+                 '$brgy', '$city', '$prov', '$zip', $landmark_sql,
+                 $lat_sql, $lng_sql, $is_default)
+            ");
+            $new_id = mysqli_insert_id($conn);
+        }
+
+        if ($is_default) {
+            mysqli_query($conn, "
+                UPDATE users SET
+                    delivery_address = '$street',
+                    delivery_barangay = '$brgy',
+                    delivery_city = '$city',
+                    delivery_province = '$prov',
+                    delivery_zip = '$zip'
+                WHERE id = $uid
+            ");
+        }
+
+        echo json_encode(['success'=>true,'message'=>'Address saved.','id'=>$new_id]);
+        exit;
+    }
+
+    // ── DELETE ──
+    if ($action === 'delete') {
+        $id = (int)($_POST['id'] ?? 0);
+        $row = mysqli_fetch_assoc(mysqli_query($conn,
+            "SELECT is_default FROM user_addresses WHERE id = $id AND user_id = $uid"));
+
+        if (!$row) { echo json_encode(['success'=>false,'message'=>'Address not found.']); exit; }
+
+        mysqli_query($conn, "DELETE FROM user_addresses WHERE id = $id AND user_id = $uid");
+
+        if ((int)$row['is_default'] === 1) {
+            $next = mysqli_fetch_assoc(mysqli_query($conn,
+                "SELECT id FROM user_addresses WHERE user_id = $uid ORDER BY created_at DESC LIMIT 1"));
+            if ($next) {
+                mysqli_query($conn, "UPDATE user_addresses SET is_default = 1 WHERE id = {$next['id']}");
+            }
+        }
+
+        echo json_encode(['success'=>true,'message'=>'Address deleted.']);
+        exit;
+    }
+
+    echo json_encode(['success'=>false,'message'=>'Unknown action.']);
+    exit;
+}
+
 $active_nav = 'discover';
 include '../includes/navbar.php';
 ?>
@@ -929,6 +1067,7 @@ include '../includes/navbar.php';
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Serif+Display&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 
     <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1593,6 +1732,38 @@ include '../includes/navbar.php';
         border-color: var(--primary);
         background: var(--primary-light);
     }
+
+    /* ═══ ADDRESS PICKER STYLES ═══ */
+    .addr-modal-overlay {
+        display: none; position: fixed; inset: 0;
+        background: rgba(0,0,0,0.6); backdrop-filter: blur(5px);
+        z-index: 2100; align-items: center; justify-content: center; padding: 16px;
+    }
+    .addr-modal-overlay.show { display: flex; }
+    .addr-modal {
+        background: var(--bg-secondary); border-radius: var(--radius-lg);
+        width: 100%; max-width: 560px; max-height: 90vh; overflow: hidden;
+        display: flex; flex-direction: column;
+        animation: modalIn 0.25s ease;
+    }
+    .addr-modal-head {
+        padding: 20px 24px;
+        background: var(--primary-gradient); color: white;
+        display: flex; align-items: center; justify-content: space-between;
+    }
+    .addr-modal-head h3 { font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; margin: 0; }
+    .addr-modal-head .addr-close { background: rgba(255,255,255,0.2); border: none; color: white; width: 32px; height: 32px; border-radius: 50%; cursor: pointer; font-size: 16px; }
+    .addr-modal-body { padding: 20px 24px; overflow-y: auto; flex: 1; }
+
+    .af-label-btn {
+        padding: 8px 16px; border: 2px solid var(--border-color);
+        border-radius: 10px; background: var(--bg-primary);
+        color: var(--text-secondary); font-size: 12.5px; font-weight: 600;
+        cursor: pointer; font-family: inherit; transition: all 0.2s;
+    }
+    .af-label-btn.selected {
+        background: var(--primary); color: white; border-color: var(--primary);
+    }
     </style>
 </head>
 <body>
@@ -1867,14 +2038,11 @@ include '../includes/navbar.php';
                         <span class="ld">Reduces screen glare</span>
                     </button>
                 </div>
-                <!-- ✅ LENS INDEX SECTION (Dynamic) -->
                 <div id="lensIndexSection" style="display: none; margin-top: 16px;">
                     <div class="flow-card-title" style="font-size: 14px; margin-bottom: 10px;">
                         <i class="fas fa-layer-group"></i> Select Lens Thickness
                     </div>
-                    <div class="lens-grid" id="lensIndexGrid">
-                        <!-- Populated by JavaScript -->
-                    </div>
+                    <div class="lens-grid" id="lensIndexGrid"></div>
                 </div>
                 <?php elseif ($IS_LENS_ONLY): ?>
                 <div class="lens-grid" id="lensGrid">
@@ -1894,14 +2062,11 @@ include '../includes/navbar.php';
                         <span class="ld">Reduces screen glare</span>
                     </button>
                 </div>
-                <!-- ✅ LENS INDEX SECTION (Dynamic) -->
                 <div id="lensIndexSection" style="display: none; margin-top: 16px;">
                     <div class="flow-card-title" style="font-size: 14px; margin-bottom: 10px;">
                         <i class="fas fa-layer-group"></i> Select Lens Thickness
                     </div>
-                    <div class="lens-grid" id="lensIndexGrid">
-                        <!-- Populated by JavaScript -->
-                    </div>
+                    <div class="lens-grid" id="lensIndexGrid"></div>
                 </div>
                 <?php else: ?>
                 <div class="lens-grid" id="lensGrid">
@@ -2247,6 +2412,56 @@ include '../includes/navbar.php';
             </div>
 
             <div id="deliveryFields" style="display:none;">
+
+                <!-- ═══ SAVED ADDRESS PICKER ═══ -->
+                <div id="savedAddressPicker" style="margin-bottom: 18px;">
+                    <label class="form-label">Delivery Address</label>
+
+                    <div id="addrPickerLoading" style="padding:16px; text-align:center; background:var(--bg-primary); border-radius:12px; color:var(--text-muted); font-size:13px;">
+                        <i class="fas fa-spinner fa-spin"></i> Loading saved addresses...
+                    </div>
+
+                    <div id="addrPickerContent" style="display:none;">
+                        <div id="selectedAddrCard" style="background:var(--bg-primary); border:2px solid var(--primary); border-radius:12px; padding:14px; margin-bottom:10px;">
+                            <div style="display:flex; align-items:flex-start; gap:10px;">
+                                <div style="flex:1;">
+                                    <div id="selAddrLabel" style="display:inline-flex; align-items:center; gap:5px; background:var(--primary-light); color:var(--primary); font-size:10px; font-weight:700; padding:2px 9px; border-radius:20px; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:6px;"></div>
+                                    <div id="selAddrName" style="font-size:14px; font-weight:700; color:var(--text-primary); margin-bottom:2px;"></div>
+                                    <div id="selAddrPhone" style="font-size:12px; color:var(--text-secondary); margin-bottom:4px;"></div>
+                                    <div id="selAddrFull" style="font-size:12.5px; color:var(--text-secondary); line-height:1.5;"></div>
+                                </div>
+                                <button type="button" onclick="openAddrPickerModal()" style="background:var(--primary); color:white; border:none; padding:7px 14px; border-radius:20px; font-size:12px; font-weight:700; cursor:pointer; font-family:inherit;">
+                                    <i class="fas fa-exchange-alt"></i> Change
+                                </button>
+                            </div>
+                        </div>
+
+                        <div style="display:flex; gap:8px;">
+                            <button type="button" onclick="openAddrFormModal()" style="flex:1; padding:10px; background:transparent; border:2px dashed var(--primary); color:var(--primary); border-radius:10px; font-size:12.5px; font-weight:700; cursor:pointer; font-family:inherit;">
+                                <i class="fas fa-plus"></i> Add New
+                            </button>
+                            <a href="profile.php" target="_blank" style="flex:1; padding:10px; background:var(--bg-primary); border:1px solid var(--border-color); color:var(--text-secondary); border-radius:10px; font-size:12.5px; font-weight:600; text-decoration:none; text-align:center;">
+                                <i class="fas fa-cog"></i> Manage
+                            </a>
+                        </div>
+                    </div>
+
+                    <div id="addrPickerEmpty" style="display:none; padding:20px; text-align:center; background:var(--bg-primary); border:2px dashed var(--border-color); border-radius:12px;">
+                        <i class="fas fa-map-marked-alt" style="font-size:32px; color:var(--text-muted); margin-bottom:8px; display:block;"></i>
+                        <p style="font-size:13px; color:var(--text-secondary); margin:0 0 12px;">No saved address yet.</p>
+                        <button type="button" onclick="openAddrFormModal()" style="background:var(--primary-gradient); color:white; border:none; padding:10px 22px; border-radius:20px; font-size:13px; font-weight:700; cursor:pointer; font-family:inherit;">
+                            <i class="fas fa-plus"></i> Add Address
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ═══ EDIT DETAILS (collapsible) ═══ -->
+                <details style="margin-bottom:14px;">
+                    <summary style="cursor:pointer; padding:8px 12px; background:var(--bg-primary); border-radius:8px; font-size:12.5px; font-weight:600; color:var(--text-secondary); user-select:none;">
+                        <i class="fas fa-edit" style="color:var(--primary);"></i> Edit delivery details manually
+                    </summary>
+                    <div style="padding-top:14px;">
+
                 <div class="form-group">
                     <label class="form-label">Recipient Name <span style="color:var(--danger)">*</span></label>
                     <input type="text" id="dName" class="form-input" placeholder="Full name ng tatanggap" value="<?php echo htmlspecialchars($user['fullname'] ?? ''); ?>">
@@ -2259,40 +2474,37 @@ include '../includes/navbar.php';
                     <label class="form-label">Street Address <span style="color:var(--danger)">*</span></label>
                     <input type="text" id="dAddress" class="form-input" placeholder="House no., street, subdivision" value="<?php echo htmlspecialchars($user_default_address); ?>">
                 </div>
-<div class="form-row-2">
-    <div class="form-group">
-        <label class="form-label">Barangay</label>
-        <input type="text" id="dBarangay" class="form-input" placeholder="Barangay"
-               value="<?php echo htmlspecialchars($user_default_barangay); ?>">
-    </div>
-    <div class="form-group">
-        <label class="form-label">City/Municipality <span style="color:var(--danger)">*</span></label>
-        <select id="dCity" class="form-input" onchange="updateDeliveryFee()">
-            <option value="">— Select City —</option>
-            <?php foreach ($delivery_fees_list as $df): ?>
-                <option value="<?php echo htmlspecialchars($df['city']); ?>"
-                        data-fee="<?php echo $df['fee_amount']; ?>"
-                        data-days="<?php echo $df['estimated_days']; ?>"
-                        <?php echo ($user_default_city === $df['city']) ? 'selected' : ''; ?>>
-                    <?php echo htmlspecialchars($df['city']); ?>
-                    (₱<?php echo number_format($df['fee_amount'], 2); ?> • <?php echo $df['estimated_days']; ?> day<?php echo $df['estimated_days'] > 1 ? 's' : ''; ?>)
-                </option>
-            <?php endforeach; ?>
-        </select>
-    </div>
-</div>
-<div class="form-row-2">
-    <div class="form-group">
-        <label class="form-label">Province</label>
-        <input type="text" id="dProvince" class="form-input" placeholder="Province" 
-               value="<?php echo htmlspecialchars($user_default_province ?: 'Cavite'); ?>">
-    </div>
-    <div class="form-group">
-        <label class="form-label">ZIP Code</label>
-        <input type="text" id="dZip" class="form-input" placeholder="e.g. 4114"
-               value="<?php echo htmlspecialchars($user_default_zip); ?>">
-    </div>
-</div>
+                <div class="form-row-2">
+                    <div class="form-group">
+                        <label class="form-label">Barangay</label>
+                        <input type="text" id="dBarangay" class="form-input" placeholder="Barangay" value="<?php echo htmlspecialchars($user_default_barangay); ?>">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">City/Municipality <span style="color:var(--danger)">*</span></label>
+                        <select id="dCity" class="form-input" onchange="updateDeliveryFee()">
+                            <option value="">— Select City —</option>
+                            <?php foreach ($delivery_fees_list as $df): ?>
+                                <option value="<?php echo htmlspecialchars($df['city']); ?>"
+                                        data-fee="<?php echo $df['fee_amount']; ?>"
+                                        data-days="<?php echo $df['estimated_days']; ?>"
+                                        <?php echo ($user_default_city === $df['city']) ? 'selected' : ''; ?>>
+                                    <?php echo htmlspecialchars($df['city']); ?>
+                                    (₱<?php echo number_format($df['fee_amount'], 2); ?> • <?php echo $df['estimated_days']; ?> day<?php echo $df['estimated_days'] > 1 ? 's' : ''; ?>)
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-row-2">
+                    <div class="form-group">
+                        <label class="form-label">Province</label>
+                        <input type="text" id="dProvince" class="form-input" placeholder="Province" value="<?php echo htmlspecialchars($user_default_province ?: 'Cavite'); ?>">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">ZIP Code</label>
+                        <input type="text" id="dZip" class="form-input" placeholder="e.g. 4114" value="<?php echo htmlspecialchars($user_default_zip); ?>">
+                    </div>
+                </div>
                 <div class="form-group">
                     <label class="form-label">Landmark (Optional)</label>
                     <input type="text" id="dLandmark" class="form-input" placeholder="e.g. Malapit sa simbahan">
@@ -2306,47 +2518,47 @@ include '../includes/navbar.php';
                     </div>
                 </div>
 
+                    </div>
+                </details>
+
             </div>
 
             <div class="form-group" id="paymentMethodSection" style="display:none;">
-    <label class="form-label">Payment Method <span style="color:var(--danger)">*</span></label>
-    <div style="display:flex; flex-direction:column; gap:10px;">
+                <label class="form-label">Payment Method <span style="color:var(--danger)">*</span></label>
+                <div style="display:flex; flex-direction:column; gap:10px;">
 
-        <!-- Pay Online -->
-        <label class="payment-method-option selected" data-method="online" onclick="selectPaymentMethod('online')">
-            <input type="radio" name="delivery_payment_method" value="online" checked style="display:none;">
-            <i class="fas fa-credit-card" style="font-size:20px; color:var(--primary);"></i>
-            <div style="flex:1;">
-                <strong style="font-size:14px; color:var(--text-primary);">Pay Online Now</strong>
-                <div style="font-size:12px; color:var(--text-secondary); margin-top:2px;">GCash, PayMaya, or Card</div>
+                    <label class="payment-method-option selected" data-method="online" onclick="selectPaymentMethod('online')">
+                        <input type="radio" name="delivery_payment_method" value="online" checked style="display:none;">
+                        <i class="fas fa-credit-card" style="font-size:20px; color:var(--primary);"></i>
+                        <div style="flex:1;">
+                            <strong style="font-size:14px; color:var(--text-primary);">Pay Online Now</strong>
+                            <div style="font-size:12px; color:var(--text-secondary); margin-top:2px;">GCash, PayMaya, or Card</div>
+                        </div>
+                        <span style="font-weight:700; color:var(--primary); font-size:14px;">₱0.00</span>
+                    </label>
+
+                    <label class="payment-method-option cod-option" data-method="cod" onclick="selectPaymentMethod('cod')" style="display:none;">
+                        <input type="radio" name="delivery_payment_method" value="cod" style="display:none;">
+                        <i class="fas fa-money-bill-wave" style="font-size:20px; color:var(--warning);"></i>
+                        <div style="flex:1;">
+                            <strong style="font-size:14px; color:var(--text-primary);">Cash on Delivery (COD)</strong>
+                            <div style="font-size:12px; color:var(--text-secondary); margin-top:2px;">Pay cash when you receive your order</div>
+                        </div>
+                        <span style="font-weight:700; color:var(--warning); font-size:14px;">₱0.00</span>
+                    </label>
+
+                    <label class="payment-method-option clinic-option" data-method="pay_at_clinic" onclick="selectPaymentMethod('pay_at_clinic')" style="display:none;">
+                        <input type="radio" name="delivery_payment_method" value="pay_at_clinic" style="display:none;">
+                        <i class="fas fa-store" style="font-size:20px; color:var(--primary);"></i>
+                        <div style="flex:1;">
+                            <strong style="font-size:14px; color:var(--text-primary);">Pay at Clinic</strong>
+                            <div style="font-size:12px; color:var(--text-secondary); margin-top:2px;">Pay cash when you pick up your order</div>
+                        </div>
+                        <span style="font-weight:700; color:var(--primary); font-size:14px;">₱0.00</span>
+                    </label>
+
+                </div>
             </div>
-            <span style="font-weight:700; color:var(--primary); font-size:14px;">₱0.00</span>
-        </label>
-
-        <!-- COD (delivery only) -->
-        <label class="payment-method-option cod-option" data-method="cod" onclick="selectPaymentMethod('cod')" style="display:none;">
-            <input type="radio" name="delivery_payment_method" value="cod" style="display:none;">
-            <i class="fas fa-money-bill-wave" style="font-size:20px; color:var(--warning);"></i>
-            <div style="flex:1;">
-                <strong style="font-size:14px; color:var(--text-primary);">Cash on Delivery (COD)</strong>
-                <div style="font-size:12px; color:var(--text-secondary); margin-top:2px;">Pay cash when you receive your order</div>
-            </div>
-            <span style="font-weight:700; color:var(--warning); font-size:14px;">₱0.00</span>
-        </label>
-
-        <!-- ✅ Pay at Clinic (pickup only) -->
-        <label class="payment-method-option clinic-option" data-method="pay_at_clinic" onclick="selectPaymentMethod('pay_at_clinic')" style="display:none;">
-            <input type="radio" name="delivery_payment_method" value="pay_at_clinic" style="display:none;">
-            <i class="fas fa-store" style="font-size:20px; color:var(--primary);"></i>
-            <div style="flex:1;">
-                <strong style="font-size:14px; color:var(--text-primary);">Pay at Clinic</strong>
-                <div style="font-size:12px; color:var(--text-secondary); margin-top:2px;">Pay cash when you pick up your order</div>
-            </div>
-            <span style="font-weight:700; color:var(--primary); font-size:14px;">₱0.00</span>
-        </label>
-
-    </div>
-</div>
 
             <div class="form-group">
                 <label class="form-label">Contact Number <span style="color:var(--danger)">*</span></label>
@@ -2445,6 +2657,116 @@ include '../includes/navbar.php';
     </div>
 </div>
 
+<!-- ADDRESS PICKER MODAL -->
+<div class="addr-modal-overlay" id="addrPickModal">
+    <div class="addr-modal">
+        <div class="addr-modal-head">
+            <h3><i class="fas fa-map-marker-alt"></i> Select Address</h3>
+            <button class="addr-close" type="button" onclick="closeAddrPickerModal()">&times;</button>
+        </div>
+        <div class="addr-modal-body" id="addrPickList"></div>
+    </div>
+</div>
+
+<!-- ADDRESS FORM MODAL -->
+<div class="addr-modal-overlay" id="addrFormModal">
+    <div class="addr-modal">
+        <div class="addr-modal-head">
+            <h3><i class="fas fa-plus-circle"></i> <span id="addrFormModalTitle">Add New Address</span></h3>
+            <button class="addr-close" type="button" onclick="closeAddrFormModal()">&times;</button>
+        </div>
+        <div class="addr-modal-body">
+            <input type="hidden" id="af_id" value="0">
+
+            <div class="form-group">
+                <label class="form-label">Label</label>
+                <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                    <button type="button" class="af-label-btn" data-label="Home" onclick="afPickLabel(this)"><i class="fas fa-home"></i> Home</button>
+                    <button type="button" class="af-label-btn" data-label="Work" onclick="afPickLabel(this)"><i class="fas fa-briefcase"></i> Work</button>
+                    <button type="button" class="af-label-btn" data-label="Other" onclick="afPickLabel(this)"><i class="fas fa-map-pin"></i> Other</button>
+                </div>
+            </div>
+
+            <div class="form-row-2">
+                <div class="form-group">
+                    <label class="form-label">Recipient Name <span style="color:var(--danger)">*</span></label>
+                    <input type="text" id="af_rname" class="form-input" value="<?php echo htmlspecialchars($user['fullname'] ?? ''); ?>">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Phone <span style="color:var(--danger)">*</span></label>
+                    <input type="tel" id="af_rphone" class="form-input" value="<?php echo htmlspecialchars($user['contact'] ?? ''); ?>">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Auto-fill via GPS</label>
+                <button type="button" id="afLocationBtn" onclick="afGetLocation()" style="padding:9px 16px; border:2px solid var(--primary); border-radius:10px; background:var(--primary-light); color:var(--primary); font-size:12.5px; font-weight:700; cursor:pointer; font-family:inherit;">
+                    <i class="fas fa-location-crosshairs"></i> Use Current Location
+                </button>
+                <div id="afLocStatus" style="font-size:12px; padding:8px 12px; border-radius:8px; display:none; margin-top:8px;"></div>
+                <div id="afMap" style="width:100%; height:180px; border-radius:10px; border:1.5px solid var(--border-color); display:none; margin-top:8px;"></div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Street <span style="color:var(--danger)">*</span></label>
+                <input type="text" id="af_street" class="form-input">
+            </div>
+
+            <div class="form-row-2">
+                <div class="form-group">
+                    <label class="form-label">Barangay <span style="color:var(--danger)">*</span></label>
+                    <input type="text" id="af_barangay" class="form-input">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">City <span style="color:var(--danger)">*</span></label>
+                    <select id="af_city" class="form-input">
+                        <option value="">— Select —</option>
+                        <option>Cavite City</option><option>Bacoor</option><option>Imus</option>
+                        <option>Dasmariñas</option><option>Tagaytay</option><option>General Trias</option>
+                        <option>Kawit</option><option>Tanza</option><option>Trece Martires</option>
+                        <option>Naic</option><option>Silang</option><option>Amadeo</option>
+                        <option>Alfonso</option><option>Carmona</option><option>Gen. Mariano Alvarez</option>
+                        <option>Magallanes</option><option>Maragondon</option><option>Mendez</option>
+                        <option>Ternate</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="form-row-2">
+                <div class="form-group">
+                    <label class="form-label">Province</label>
+                    <input type="text" id="af_province" class="form-input" value="Cavite" readonly style="background:var(--primary-light); color:var(--primary-dark); font-weight:700;">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">ZIP <span style="color:var(--danger)">*</span></label>
+                    <input type="text" id="af_zip" class="form-input" maxlength="4">
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label class="form-label">Landmark (Optional)</label>
+                <input type="text" id="af_landmark" class="form-input">
+            </div>
+
+            <input type="hidden" id="af_lat">
+            <input type="hidden" id="af_lng">
+
+            <div style="display:flex; align-items:center; gap:10px; padding:12px; background:var(--primary-light); border-radius:10px; margin-top:14px;">
+                <input type="checkbox" id="af_default" style="width:18px; height:18px; accent-color:var(--primary);">
+                <label for="af_default" style="font-size:13px; color:var(--primary-dark); font-weight:600;">Set as default</label>
+            </div>
+        </div>
+        <div class="modal-foot">
+            <button class="btn-modal cancel" type="button" onclick="closeAddrFormModal()">Cancel</button>
+            <button class="btn-modal confirm" type="button" id="afSaveBtn" onclick="afSaveAddress()">
+                <i class="fas fa-check"></i> Save
+            </button>
+        </div>
+    </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
 <script>
 function goBack() {
     if (document.referrer && document.referrer.indexOf(window.location.hostname) !== -1) {
@@ -2470,7 +2792,6 @@ let currentDeliveryFee = 0;
 let currentEstimatedDays = 0;
 let selectedDeliveryPayment = 'online';
 
-// ✅ BAGO: Lens Index state
 let selectedLensIndex = null;
 let selectedLensIndexPrice = 0;
 
@@ -2509,7 +2830,6 @@ const LENS_PRICES = {
     contact_monthly: 0,
 };
 
-// ✅ LENS INDEX ADD-ONS (from PHP)
 const LENS_INDEX_ADDONS = <?php echo json_encode($lens_index_addons); ?>;
 
 function selectFulfillment(type) {
@@ -2530,18 +2850,14 @@ if (type === 'delivery') {
     if (pickupFields)   pickupFields.style.display = 'none';
     if (deliveryFields) deliveryFields.style.display = 'block';
 
-    // Payment section visible kapag may COD option
     if (paymentSection) paymentSection.style.display = ALLOW_COD ? 'block' : 'none';
 
-    // Show COD option
     if (codOption) {
         codOption.style.display = ALLOW_COD ? 'flex' : 'none';
     }
 
-    // Hide Pay at Clinic sa delivery
     if (clinicOption) clinicOption.style.display = 'none';
 
-    // ✅ I-set ang default: COD kung allowed, otherwise online
     if (ALLOW_COD) {
         if (selectedDeliveryPayment !== 'cod') {
             selectPaymentMethod('cod');
@@ -2552,21 +2868,19 @@ if (type === 'delivery') {
         }
     }
 
+    // ✅ Load saved addresses when delivery selected
+    setTimeout(loadSavedAddresses, 100);
+
 } else {
-    // ✅ PICKUP
     if (pickupFields)   pickupFields.style.display = 'block';
     if (deliveryFields) deliveryFields.style.display = 'none';
 
-    // ✅ Show payment section sa pickup din
     if (paymentSection) paymentSection.style.display = 'block';
 
-    // Hide COD sa pickup
     if (codOption) codOption.style.display = 'none';
 
-    // ✅ Show Pay at Clinic sa pickup
     if (clinicOption) clinicOption.style.display = 'flex';
 
-    // ✅ I-set ang default sa pay_at_clinic kapag pickup
     if (selectedDeliveryPayment !== 'pay_at_clinic') {
         selectPaymentMethod('pay_at_clinic');
     }
@@ -2626,9 +2940,6 @@ function updateDeliveryFee() {
     updatePriceDisplay();
 }
 
-// ============================================
-// SIZE SELECTION
-// ============================================
 function selectSize(btn) {
     document.querySelectorAll('.size-btn').forEach(b => b.classList.remove('selected'));
     btn.classList.add('selected');
@@ -2643,9 +2954,6 @@ function selectSize(btn) {
     updateActionButton();
 }
 
-// ============================================
-// ACCORDION TOGGLES
-// ============================================
 function toggleSpecs() {
     const content = document.getElementById('specsContent');
     const icon = document.getElementById('specsIcon');
@@ -2672,9 +2980,6 @@ function toggleWarranty() {
     }
 }
 
-// ============================================
-// INIT
-// ============================================
 document.addEventListener('DOMContentLoaded', function() {
     initSlider();
     const tomorrow = new Date();
@@ -2691,13 +2996,11 @@ document.addEventListener('DOMContentLoaded', function() {
         if (rxSection) rxSection.style.display = 'none';
     }
 
-    // ✅ Auto-update delivery fee kung may naka-select na city
     const dCity = document.getElementById('dCity');
     if (dCity && dCity.value) {
         updateDeliveryFee();
     }
 
-    // ✅ Auto-render lens index para sa default selected lens
     if (selectedLens && !['frame_only', 'contact_daily', 'contact_monthly'].includes(selectedLens)) {
         const lensBtn = document.querySelector(`.lens-btn[data-lens="${selectedLens}"]`);
         if (lensBtn) {
@@ -2734,9 +3037,6 @@ document.addEventListener('DOMContentLoaded', function() {
     updateActionButton();
 });
 
-// ============================================
-// SLIDER
-// ============================================
 const TOTAL_SLIDES = <?php echo count($product_images); ?>;
 
 function initSlider() {
@@ -2810,9 +3110,6 @@ function lbRender() {
     if (ctr) ctr.textContent = (lbCurrentIndex + 1) + ' / ' + lbImages.length;
 }
 
-// ============================================
-// COLOR SELECTION
-// ============================================
 function selectColor(btn) {
     document.querySelectorAll('.color-btn').forEach(b => b.classList.remove('selected'));
     btn.classList.add('selected');
@@ -2831,25 +3128,19 @@ function selectColor(btn) {
     updateActionButton();
 }
 
-// ============================================
-// LENS SELECTION
-// ============================================
 function selectLens(btn) {
     document.querySelectorAll('.lens-btn').forEach(b => b.classList.remove('selected'));
     btn.classList.add('selected');
     selectedLens = btn.dataset.lens;
 
-    // ✅ BAGO: Handle lens index section
     const lensIndexSection = document.getElementById('lensIndexSection');
     const excludedLensTypes = ['frame_only', 'contact_daily', 'contact_monthly'];
 
     if (excludedLensTypes.includes(selectedLens)) {
-        // Walang lens index para dito
         if (lensIndexSection) lensIndexSection.style.display = 'none';
         selectedLensIndex = null;
         selectedLensIndexPrice = 0;
     } else {
-        // Filter lens index addons para sa napiling lens type
         const filtered = LENS_INDEX_ADDONS.filter(a => a.lens_type === selectedLens);
 
         if (filtered.length > 0) {
@@ -2865,7 +3156,6 @@ function selectLens(btn) {
                 </button>
             `).join('');
 
-            // Auto-select first option
             const firstBtn = grid.querySelector('.lens-btn');
             if (firstBtn) {
                 firstBtn.classList.add('selected');
@@ -2905,7 +3195,6 @@ function selectLens(btn) {
     updateActionButton();
 }
 
-// ✅ BAGO: Lens Index selection
 function selectLensIndex(btn, event) {
     if (event) {
         event.preventDefault();
@@ -2926,9 +3215,6 @@ function handleRxKnowledge(radio) {
     updateActionButton();
 }
 
-// ============================================
-// PRICE DISPLAY
-// ============================================
 function getLensPrice() {
     const basePrice = LENS_PRICES[selectedLens] || 0;
     const indexAddon = selectedLensIndexPrice || 0;
@@ -2997,16 +3283,12 @@ function updatePriceDisplay() {
         if (mpbDp) mpbDp.textContent = '₱' + totalWithVat.toLocaleString('en-PH', {minimumFractionDigits: 2});
     }
 
-    // Update COD/Online payment option totals
     document.querySelectorAll('.payment-method-option').forEach(opt => {
         const span = opt.querySelector('span:last-child');
         if (span) span.textContent = '₱' + totalWithVat.toLocaleString('en-PH', {minimumFractionDigits: 2});
     });
 }
 
-// ============================================
-// ACTION BUTTON
-// ============================================
 function updateActionButton() {
     const btn = document.getElementById('mainActionBtn');
     const helper = document.getElementById('actionHelper');
@@ -3084,7 +3366,6 @@ function handleMainAction() {
     const isFrameOnly = (selectedLens === 'frame_only');
     const colorCode = selectedColor ? selectedColor.code : '';
 
-    // ✅ Helper: Build lens_index param
     const lensIndexParam = (selectedLensIndex && !['frame_only', 'contact_daily', 'contact_monthly'].includes(selectedLens))
         ? '&lens_index=' + encodeURIComponent(selectedLensIndex)
         : '';
@@ -3096,39 +3377,33 @@ function handleMainAction() {
             return;
         }
 
-if (rxKnowledge === 'dont_know') {
-    // ✅ EYE EXAM → Book appointment
-    window.location.href = 'book-specific-product.php?clinic_id=' + CLINIC_ID
-        + '&product_id=' + PRODUCT_ID
-        + '&rx_knowledge=dont_know'
-        + '&lens=' + encodeURIComponent(selectedLens || '')
-        + lensIndexParam
-        + '&color=' + encodeURIComponent(colorCode);
-    return;
-}
+        if (rxKnowledge === 'dont_know') {
+            window.location.href = 'book-specific-product.php?clinic_id=' + CLINIC_ID
+                + '&product_id=' + PRODUCT_ID
+                + '&rx_knowledge=dont_know'
+                + '&lens=' + encodeURIComponent(selectedLens || '')
+                + lensIndexParam
+                + '&color=' + encodeURIComponent(colorCode);
+            return;
+        }
 
-// ✅ "I know my prescription" → Direct order (same as Frame Only)
-const od_sph = document.getElementById('od_sph')?.value || '';
-const os_sph = document.getElementById('os_sph')?.value || '';
-if (!od_sph && !os_sph) {
-    showToast('Please enter at least your sphere values, or select "I need an eye exam".', 'error');
-    return;
-}
+        const od_sph = document.getElementById('od_sph')?.value || '';
+        const os_sph = document.getElementById('os_sph')?.value || '';
+        if (!od_sph && !os_sph) {
+            showToast('Please enter at least your sphere values, or select "I need an eye exam".', 'error');
+            return;
+        }
 
-// ✅ BAGO: Open the SAME modal as Frame Only!
-// I-save muna ang prescription values sa hidden fields o variables
-window.pendingPrescription = {
-    od_sph: document.getElementById('od_sph')?.value || '',
-    od_cyl: document.getElementById('od_cyl')?.value || '',
-    od_axis: document.getElementById('od_axis')?.value || '',
-    os_sph: document.getElementById('os_sph')?.value || '',
-    os_cyl: document.getElementById('os_cyl')?.value || '',
-    os_axis: document.getElementById('os_axis')?.value || ''
-};
+        window.pendingPrescription = {
+            od_sph: document.getElementById('od_sph')?.value || '',
+            od_cyl: document.getElementById('od_cyl')?.value || '',
+            od_axis: document.getElementById('od_axis')?.value || '',
+            os_sph: document.getElementById('os_sph')?.value || '',
+            os_cyl: document.getElementById('os_cyl')?.value || '',
+            os_axis: document.getElementById('os_axis')?.value || ''
+        };
 
-// ✅ Open the SAME modal as Frame Only
-openModal('reservation');
-return;
+        openModal('reservation');
         return;
     }
 
@@ -3144,7 +3419,6 @@ return;
     }
 
     if (rxKnowledge === 'dont_know') {
-        // ✅ EYE EXAM → Book appointment
         window.location.href = 'book-specific-product.php?clinic_id=' + CLINIC_ID
             + '&product_id=' + PRODUCT_ID
             + '&rx_knowledge=dont_know'
@@ -3154,7 +3428,6 @@ return;
         return;
     }
 
-    // ✅ "I know my prescription" → Direct order (same as Frame Only)
     const od_sph = document.getElementById('od_sph')?.value || '';
     const os_sph = document.getElementById('os_sph')?.value || '';
     if (!od_sph && !os_sph) {
@@ -3162,7 +3435,6 @@ return;
         return;
     }
 
-    // ✅ BAGO: Save prescription values
     window.pendingPrescription = {
         od_sph: document.getElementById('od_sph')?.value || '',
         od_cyl: document.getElementById('od_cyl')?.value || '',
@@ -3172,13 +3444,9 @@ return;
         os_axis: document.getElementById('os_axis')?.value || ''
     };
 
-    // ✅ Open the SAME modal as Frame Only
     openModal('reservation');
 }
 
-// ============================================
-// MODAL
-// ============================================
 function openModal(type) {
     currentModal = type;
     const modal = document.getElementById('scheduleModal');
@@ -3216,9 +3484,6 @@ function closeModal() {
     document.body.style.overflow = '';
 }
 
-// ============================================
-// SUBMIT
-// ============================================
 function submitAction() {
     const contact = document.getElementById('mContact').value;
     const notes = document.getElementById('mNotes').value;
@@ -3228,7 +3493,6 @@ function submitAction() {
     const formData = new FormData();
     formData.append('ajax_action', currentModal === 'appointment' ? 'appointment' : 'reservation');
     formData.append('lens_type', selectedLens || 'frame_only');
-    // ✅ Lens index (combined logic)
     if (selectedLensIndex && !['frame_only', 'contact_daily', 'contact_monthly'].includes(selectedLens)) {
         formData.append('lens_index', selectedLensIndex);
         formData.append('lens_index_price', selectedLensIndexPrice);
@@ -3273,7 +3537,6 @@ function submitAction() {
         if (!time) { showToast('Please select a time.', 'error'); return; }
         formData.append('preferred_date', date);
         formData.append('preferred_time', time);
-        // ✅ Ipadala ang napiling payment method (online o pay_at_clinic)
         formData.append('delivery_payment_method', selectedDeliveryPayment);
     }
 
@@ -3286,15 +3549,14 @@ function submitAction() {
         formData.append('frame_size', selectedSize);
     }
 
-// ✅ "I know my prescription" — gamitin ang saved values
-if (rxKnowledge === 'know' && window.pendingPrescription) {
-    formData.append('od_sph', window.pendingPrescription.od_sph);
-    formData.append('od_cyl', window.pendingPrescription.od_cyl);
-    formData.append('od_axis', window.pendingPrescription.od_axis);
-    formData.append('os_sph', window.pendingPrescription.os_sph);
-    formData.append('os_cyl', window.pendingPrescription.os_cyl);
-    formData.append('os_axis', window.pendingPrescription.os_axis);
-}
+    if (rxKnowledge === 'know' && window.pendingPrescription) {
+        formData.append('od_sph', window.pendingPrescription.od_sph);
+        formData.append('od_cyl', window.pendingPrescription.od_cyl);
+        formData.append('od_axis', window.pendingPrescription.od_axis);
+        formData.append('os_sph', window.pendingPrescription.os_sph);
+        formData.append('os_cyl', window.pendingPrescription.os_cyl);
+        formData.append('os_axis', window.pendingPrescription.os_axis);
+    }
 
     closeModal();
     showLoading();
@@ -3320,9 +3582,6 @@ if (rxKnowledge === 'know' && window.pendingPrescription) {
     });
 }
 
-// ============================================
-// UTILITIES
-// ============================================
 function showToast(msg, type = 'success') {
     const c = document.getElementById('toastContainer');
     const t = document.createElement('div');
@@ -3383,6 +3642,316 @@ function toggleProductFav(btn) {
             icon.className    = isActive ? 'fas fa-heart' : 'far fa-heart';
             label.textContent = isActive ? 'Saved to Favorites' : 'Save to Favorites';
             showToast('Network error. Please try again.', 'error');
+        });
+}
+
+/* ═══════════════════════════════════════════════════════
+   ADDRESS PICKER (Product View Integration)
+   ═══════════════════════════════════════════════════════ */
+let savedAddresses = [];
+let selectedAddress = null;
+let afSelectedLabel = 'Home';
+let afMap = null;
+let afMarker = null;
+
+function escapeHtmlPV(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function loadSavedAddresses() {
+    if (!HAS_DELIVERY) return;
+
+    fetch('product-view.php?id=<?php echo $product_id; ?>&addr_action=list')
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('addrPickerLoading').style.display = 'none';
+
+            if (!data.success || !data.addresses || data.addresses.length === 0) {
+                document.getElementById('addrPickerEmpty').style.display = 'block';
+                savedAddresses = [];
+                return;
+            }
+
+            savedAddresses = data.addresses;
+            document.getElementById('addrPickerContent').style.display = 'block';
+
+            const def = savedAddresses.find(a => a.is_default) || savedAddresses[0];
+            if (def) applyAddress(def);
+        })
+        .catch(() => {
+            document.getElementById('addrPickerLoading').style.display = 'none';
+            document.getElementById('addrPickerEmpty').style.display = 'block';
+        });
+}
+
+function applyAddress(addr) {
+    selectedAddress = addr;
+
+    const labelIcon = addr.label === 'Work' ? 'fa-briefcase'
+                    : addr.label === 'Other' ? 'fa-map-pin' : 'fa-home';
+
+    document.getElementById('selAddrLabel').innerHTML = `<i class="fas ${labelIcon}"></i> ${escapeHtmlPV(addr.label)}`;
+    document.getElementById('selAddrName').textContent = addr.recipient_name;
+    document.getElementById('selAddrPhone').innerHTML = `<i class="fas fa-phone" style="font-size:10px;"></i> ${escapeHtmlPV(addr.recipient_phone)}`;
+    document.getElementById('selAddrFull').innerHTML =
+        `${escapeHtmlPV(addr.street_address)}, ${escapeHtmlPV(addr.barangay)}<br>${escapeHtmlPV(addr.city)}, ${escapeHtmlPV(addr.province)} ${escapeHtmlPV(addr.zip_code)}` +
+        (addr.landmark ? `<br><em style="font-size:11.5px; color:var(--text-muted);">📍 ${escapeHtmlPV(addr.landmark)}</em>` : '');
+
+    document.getElementById('dName').value     = addr.recipient_name;
+    document.getElementById('dPhone').value    = addr.recipient_phone;
+    document.getElementById('dAddress').value  = addr.street_address;
+    document.getElementById('dBarangay').value = addr.barangay;
+    document.getElementById('dProvince').value = addr.province;
+    document.getElementById('dZip').value      = addr.zip_code;
+    document.getElementById('dLandmark').value = addr.landmark || '';
+
+    const citySelect = document.getElementById('dCity');
+    let found = false;
+    for (let i = 0; i < citySelect.options.length; i++) {
+        if (citySelect.options[i].value === addr.city) {
+            citySelect.selectedIndex = i; found = true; break;
+        }
+    }
+    if (!found && addr.city) {
+        const opt = document.createElement('option');
+        opt.value = addr.city; opt.textContent = addr.city; opt.selected = true;
+        citySelect.appendChild(opt);
+    }
+
+    if (typeof updateDeliveryFee === 'function') updateDeliveryFee();
+}
+
+function openAddrPickerModal() {
+    const list = document.getElementById('addrPickList');
+    list.innerHTML = '';
+
+    if (savedAddresses.length === 0) {
+        list.innerHTML = '<p style="text-align:center; padding:30px; color:var(--text-muted);">No saved addresses.</p>';
+    } else {
+        savedAddresses.forEach(a => {
+            const isSel = selectedAddress && selectedAddress.id === a.id;
+            const labelIcon = a.label === 'Work' ? 'fa-briefcase'
+                            : a.label === 'Other' ? 'fa-map-pin' : 'fa-home';
+
+            const card = document.createElement('div');
+            card.style.cssText = `border:2px solid ${isSel ? 'var(--primary)' : 'var(--border-color)'}; background:${isSel ? 'var(--primary-light)' : 'var(--bg-primary)'}; border-radius:12px; padding:14px; margin-bottom:10px; cursor:pointer; position:relative;`;
+            card.innerHTML = `
+                ${a.is_default ? '<span style="position:absolute; top:-8px; right:12px; background:var(--primary); color:white; font-size:9px; font-weight:800; padding:3px 8px; border-radius:20px;">DEFAULT</span>' : ''}
+                <div style="display:inline-flex; align-items:center; gap:5px; background:var(--primary-light); color:var(--primary); font-size:10px; font-weight:700; padding:2px 9px; border-radius:20px; text-transform:uppercase; margin-bottom:6px;">
+                    <i class="fas ${labelIcon}"></i> ${escapeHtmlPV(a.label)}
+                </div>
+                <div style="font-size:14px; font-weight:700; color:var(--text-primary); margin-bottom:2px;">${escapeHtmlPV(a.recipient_name)}</div>
+                <div style="font-size:12px; color:var(--text-secondary); margin-bottom:4px;">${escapeHtmlPV(a.recipient_phone)}</div>
+                <div style="font-size:12.5px; color:var(--text-secondary); line-height:1.5;">
+                    ${escapeHtmlPV(a.street_address)}, ${escapeHtmlPV(a.barangay)}<br>
+                    ${escapeHtmlPV(a.city)}, ${escapeHtmlPV(a.province)} ${escapeHtmlPV(a.zip_code)}
+                </div>
+            `;
+            card.onclick = () => {
+                applyAddress(a);
+                closeAddrPickerModal();
+                showToast('Address selected', 'success');
+            };
+            list.appendChild(card);
+        });
+    }
+
+    document.getElementById('addrPickModal').classList.add('show');
+}
+
+function closeAddrPickerModal() {
+    document.getElementById('addrPickModal').classList.remove('show');
+}
+
+function openAddrFormModal() {
+    document.getElementById('af_id').value = '0';
+    document.getElementById('addrFormModalTitle').textContent = 'Add New Address';
+    afSelectedLabel = 'Home';
+
+    document.querySelectorAll('.af-label-btn').forEach(b => {
+        const isSel = b.dataset.label === 'Home';
+        b.classList.toggle('selected', isSel);
+    });
+
+    document.getElementById('af_rname').value    = '<?php echo htmlspecialchars($user["fullname"] ?? ""); ?>';
+    document.getElementById('af_rphone').value   = '<?php echo htmlspecialchars($user["contact"] ?? ""); ?>';
+    document.getElementById('af_street').value   = '';
+    document.getElementById('af_barangay').value = '';
+    document.getElementById('af_city').value     = '';
+    document.getElementById('af_province').value = 'Cavite';
+    document.getElementById('af_zip').value      = '';
+    document.getElementById('af_landmark').value = '';
+    document.getElementById('af_lat').value      = '';
+    document.getElementById('af_lng').value      = '';
+    document.getElementById('af_default').checked = false;
+
+    document.getElementById('addrFormModal').classList.add('show');
+}
+
+function closeAddrFormModal() {
+    document.getElementById('addrFormModal').classList.remove('show');
+    if (afMap) { afMap.remove(); afMap = null; afMarker = null; }
+    document.getElementById('afMap').style.display = 'none';
+    document.getElementById('afLocStatus').style.display = 'none';
+}
+
+function afPickLabel(btn) {
+    afSelectedLabel = btn.dataset.label;
+    document.querySelectorAll('.af-label-btn').forEach(b => b.classList.toggle('selected', b === btn));
+}
+
+function afGetLocation() {
+    if (!navigator.geolocation) { showToast('GPS not supported.', 'error'); return; }
+
+    const btn = document.getElementById('afLocationBtn');
+    const status = document.getElementById('afLocStatus');
+
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Getting...';
+    btn.disabled = true;
+    status.style.display = 'none';
+
+    navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+            await afReverseGeocode(pos.coords.latitude, pos.coords.longitude);
+            btn.innerHTML = '<i class="fas fa-location-crosshairs"></i> Refresh';
+            btn.disabled = false;
+        },
+        (err) => {
+            btn.innerHTML = '<i class="fas fa-location-crosshairs"></i> Use Current Location';
+            btn.disabled = false;
+            status.style.display = 'block';
+            status.style.background = '#fee2e2';
+            status.style.color = '#991b1b';
+            const msgs = { 1: 'Permission denied.', 2: 'Unavailable.', 3: 'Timed out.' };
+            status.textContent = msgs[err.code] || 'Error.';
+        },
+        { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+    );
+}
+
+async function afReverseGeocode(lat, lng) {
+    const status = document.getElementById('afLocStatus');
+    document.getElementById('af_lat').value = lat;
+    document.getElementById('af_lng').value = lng;
+    afShowMap(lat, lng);
+
+    try {
+        const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&addressdetails=1&zoom=18`,
+            { headers: { 'Accept-Language': 'en' } });
+        const data = await res.json();
+        if (!data || !data.address) throw new Error();
+
+        const a = data.address;
+        const prov = [a.state, a.county, a.state_district].filter(Boolean).join(' ');
+        if (!prov.toLowerCase().includes('cavite')) {
+            status.style.display = 'block';
+            status.style.background = '#fee2e2';
+            status.style.color = '#991b1b';
+            status.textContent = 'Outside Cavite. Only Cavite allowed.';
+            return;
+        }
+
+        const road = a.road || a.pedestrian || '';
+        const num  = a.house_number || '';
+        const street = [num, road].filter(Boolean).join(' ');
+        const barangay = a.village || a.suburb || a.quarter || a.neighbourhood || '';
+        const zip = a.postcode || '';
+        const city = a.city || a.town || a.municipality || a.county || '';
+
+        if (street)   document.getElementById('af_street').value = street;
+        if (barangay) document.getElementById('af_barangay').value = barangay;
+        if (zip)      document.getElementById('af_zip').value = zip;
+        afTryPickCity(city);
+
+        status.style.display = 'block';
+        status.style.background = '#d1fae5';
+        status.style.color = '#065f46';
+        status.textContent = 'Location confirmed.';
+    } catch (e) {
+        status.style.display = 'block';
+        status.style.background = '#fee2e2';
+        status.style.color = '#991b1b';
+        status.textContent = 'Lookup failed.';
+    }
+}
+
+function afTryPickCity(name) {
+    if (!name) return;
+    const sel = document.getElementById('af_city');
+    const norm = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+    for (let i = 0; i < sel.options.length; i++) {
+        const v = sel.options[i].value.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (v && (v === norm || v.includes(norm) || norm.includes(v))) {
+            sel.selectedIndex = i; return;
+        }
+    }
+}
+
+function afShowMap(lat, lng) {
+    const div = document.getElementById('afMap');
+    div.style.display = 'block';
+
+    if (typeof L === 'undefined') return;
+
+    if (!afMap) {
+        afMap = L.map('afMap').setView([lat, lng], 16);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19 }).addTo(afMap);
+        afMarker = L.marker([lat, lng], { draggable: true }).addTo(afMap);
+        afMarker.on('dragend', () => {
+            const p = afMarker.getLatLng();
+            afReverseGeocode(p.lat, p.lng);
+        });
+        afMap.on('click', (e) => {
+            afMarker.setLatLng(e.latlng);
+            afReverseGeocode(e.latlng.lat, e.latlng.lng);
+        });
+    } else {
+        afMap.setView([lat, lng], 16);
+        afMarker.setLatLng([lat, lng]);
+    }
+    setTimeout(() => afMap.invalidateSize(), 200);
+}
+
+function afSaveAddress() {
+    const btn = document.getElementById('afSaveBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+
+    const fd = new FormData();
+    fd.append('id', document.getElementById('af_id').value);
+    fd.append('label', afSelectedLabel);
+    fd.append('recipient_name', document.getElementById('af_rname').value.trim());
+    fd.append('recipient_phone', document.getElementById('af_rphone').value.trim());
+    fd.append('street_address', document.getElementById('af_street').value.trim());
+    fd.append('barangay', document.getElementById('af_barangay').value.trim());
+    fd.append('city', document.getElementById('af_city').value);
+    fd.append('province', document.getElementById('af_province').value);
+    fd.append('zip_code', document.getElementById('af_zip').value.trim());
+    fd.append('landmark', document.getElementById('af_landmark').value.trim());
+    fd.append('latitude', document.getElementById('af_lat').value);
+    fd.append('longitude', document.getElementById('af_lng').value);
+    fd.append('is_default', document.getElementById('af_default').checked ? '1' : '0');
+
+    fetch('product-view.php?id=<?php echo $product_id; ?>&addr_action=save', { method: 'POST', body: fd })
+        .then(r => r.json())
+        .then(data => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-check"></i> Save';
+            if (data.success) {
+                showToast('Address saved!', 'success');
+                closeAddrFormModal();
+                loadSavedAddresses();
+            } else {
+                showToast(data.message || 'Failed', 'error');
+            }
+        })
+        .catch(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-check"></i> Save';
+            showToast('Network error.', 'error');
         });
 }
 </script>

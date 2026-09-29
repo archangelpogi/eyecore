@@ -21,19 +21,15 @@ if (!$clinic_id || (!$message && !$has_image)) {
     exit();
 }
 
-// Verify user has a connection to this clinic
+// ✅ SIMPLE CHECK: Active lang ang clinic, walang kailangang appointment/favorite
 $check = mysqli_fetch_assoc(mysqli_query($conn,
-    "SELECT c.id FROM clinics c
-     WHERE c.id = $clinic_id AND c.status = 'Active'
-     AND (
-         EXISTS (SELECT 1 FROM appointments  WHERE user_id=$user_id AND clinic_id=$clinic_id)
-         OR EXISTS (SELECT 1 FROM reservations WHERE user_id=$user_id AND clinic_id=$clinic_id)
-         OR EXISTS (SELECT 1 FROM favorites   WHERE user_id=$user_id AND clinic_id=$clinic_id)
-     ) LIMIT 1"
+    "SELECT id FROM clinics 
+     WHERE id = $clinic_id AND status = 'Active' 
+     LIMIT 1"
 ));
 
 if (!$check) {
-    echo json_encode(['success' => false, 'message' => 'No connection to this clinic']);
+    echo json_encode(['success' => false, 'message' => 'Clinic not available']);
     exit();
 }
 
@@ -92,7 +88,6 @@ if ($image_safe) {
 if (mysqli_affected_rows($conn) > 0) {
     echo json_encode(['success' => true, 'id' => mysqli_insert_id($conn)]);
 } else {
-    // Kung nag-fail yung DB insert pero na-upload na yung image, i-delete para hindi mag-iwan ng orphan file
     if ($image_filename && file_exists($upload_dir . $image_filename)) {
         unlink($upload_dir . $image_filename);
     }

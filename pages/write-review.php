@@ -275,7 +275,7 @@ if (!function_exists('getThemeClass')) {
 
 if (!function_exists('getClinicImg')) {
     function getClinicImg($c) {
-        if (!empty($c['cover_photo']))  return '/eyecore/assets/images/clinic-covers/'  . $c['cover_photo'];
+        if (!empty($c['cover_photo']))  return '/assets/images/clinic-covers/'  . $c['cover_photo'];
         if (!empty($c['clinic_image'])) return '/eyecore/assets/images/clinic-images/'  . $c['clinic_image'];
         if (!empty($c['logo']))         return '/eyecore/assets/images/clinic-logos/'   . $c['logo'];
         return null;

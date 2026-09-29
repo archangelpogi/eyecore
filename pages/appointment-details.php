@@ -495,8 +495,12 @@ $clinic_total_reviews = $clinic_rating_data['total_reviews'];
 
 $apd = new DateTime($appointment['appointment_date']);
 $formatted_date = $apd->format('F j, Y');
-$formatted_time = $apd->format('g:i A');
 $formatted_day  = $apd->format('l');
+
+// ✅ TAMA: gamitin ang appointment_time
+$formatted_time = !empty($appointment['appointment_time']) 
+    ? date('g:i A', strtotime($appointment['appointment_time'])) 
+    : $apd->format('g:i A');
 
 $reviews_query = mysqli_query($conn,"
     SELECT r.*,

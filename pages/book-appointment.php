@@ -1953,44 +1953,37 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         return isComplete;
     }
 
-    // ============================================
-    // BUILD PRODUCT CARD
-    // ============================================
-    function buildProductCard(prod, isSelected) {
-        let imgHtml = '<div class="img-fallback"><i class="fas fa-box"></i></div>';
-        let imagePath = null;
-        if (prod.images_json) {
-            try { const imgs = JSON.parse(prod.images_json); if (imgs && imgs.length > 0) imagePath = imgs[0]; } catch(e) {}
-        }
-        if (!imagePath && prod.images) {
-            try { const imgs = JSON.parse(prod.images); if (imgs && imgs.length > 0) imagePath = imgs[0]; } catch(e) {}
-        }
-        if (!imagePath && prod.image) imagePath = prod.image;
-        if (imagePath) {
-            let cleanPath = imagePath.replace(/^uploads\/uploads\//, 'uploads/');
-            if (cleanPath.startsWith('uploads/')) imgHtml = `<img src="/${cleanPath}" alt="">`;
-            else if (cleanPath.startsWith('/uploads/')) imgHtml = `<img src="${cleanPath}" alt="">`;
-            else if (cleanPath.startsWith('http')) imgHtml = `<img src="${cleanPath}" alt="">`;
-            else imgHtml = `<img src="/assets/images/products/${cleanPath}" alt="">`;
-        }
-        return `
-            <div class="product-card ${isSelected ? 'selected' : ''}" data-product-id="${prod.id}" onclick="selectProduct('${prod.category}', ${prod.id}, '${htmlspecialchars(prod.name)}', ${prod.price})">
-                <div class="product-img-thumb">${imgHtml}</div>
-                <div class="product-name">${htmlspecialchars(prod.name)}</div>
-                <div class="product-category">${htmlspecialchars(prod.category)}</div>
-                <div class="product-price">₱${Number(prod.price).toFixed(2)}</div>
-            </div>
-        `;
+function buildProductCard(prod) {
+    let imgHtml = '<div class="img-fallback"><i class="fas fa-box"></i></div>';
+    let imagePath = null;
+    if (prod.images_json) {
+        try { const imgs = JSON.parse(prod.images_json); if (imgs && imgs.length > 0) imagePath = imgs[0]; } catch(e) {}
     }
+    if (!imagePath && prod.images) {
+        try { const imgs = JSON.parse(prod.images); if (imgs && imgs.length > 0) imagePath = imgs[0]; } catch(e) {}
+    }
+    if (!imagePath && prod.image) imagePath = prod.image;
+    if (imagePath) {
+        let cleanPath = imagePath.replace(/^uploads\/uploads\//, 'uploads/');
+        if (cleanPath.startsWith('uploads/')) imgHtml = `<img src="/${cleanPath}" alt="">`;
+        else if (cleanPath.startsWith('/uploads/')) imgHtml = `<img src="${cleanPath}" alt="">`;
+        else if (cleanPath.startsWith('http')) imgHtml = `<img src="${cleanPath}" alt="">`;
+        else imgHtml = `<img src="/assets/images/products/${cleanPath}" alt="">`;
+    }
+    return `
+        <div class="product-card" data-product-id="${prod.id}" onclick="selectProduct('${prod.category}', ${prod.id}, '${htmlspecialchars(prod.name)}', ${prod.price})">
+            <div class="product-img-thumb">${imgHtml}</div>
+            <div class="product-name">${htmlspecialchars(prod.name)}</div>
+            <div class="product-category">${htmlspecialchars(prod.category)}</div>
+            <div class="product-price">₱${Number(prod.price).toFixed(2)}</div>
+        </div>
+    `;
+}
 
-    function selectProduct(category, productId, name, price) {
-        const activeTab = document.querySelector('.main-tab-btn.active')?.dataset.tab;
-        if (activeTab === 'eyewear') {
-            selectEyewearProduct(productId, name, price);
-        } else if (activeTab === 'contact_lenses') {
-            selectContactProduct(productId, name, price);
-        }
-    }
+function selectProduct(category, productId, name, price) {
+    // ✅ I-redirect sa product-view.php — dito kumpleto ang selection
+    window.location.href = `product-view.php?id=${productId}`;
+}
 
     // ============================================
     // EYEWEAR
@@ -2338,8 +2331,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         let html = '';
         for (let i = start; i < end; i++) {
             const prod = filtered[i];
-            const isSelected = (selectedItemId == prod.id && selectedItemType === 'product');
-            html += buildProductCard(prod, isSelected);
+html += buildProductCard(prod);
         }
         if (filtered.length === 0) html = '<div class="no-slots-message" style="grid-column:1/-1;"><i class="fas fa-glasses"></i><h4>No products found</h4></div>';
         grid.innerHTML = html;

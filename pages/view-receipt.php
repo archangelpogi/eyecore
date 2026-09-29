@@ -153,7 +153,7 @@ function getPaymentMethodIcon($method) {
 }
 
 function getClinicImg($c) {
-    if (!empty($c['cover_photo']))  return '/eyecore/assets/images/clinic-covers/'  . $c['cover_photo'];
+    if (!empty($c['cover_photo']))  return '/assets/images/clinic-covers/'  . $c['cover_photo'];
     if (!empty($c['logo']))         return '/eyecore/assets/images/clinic-logos/'   . $c['logo'];
     return null;
 }

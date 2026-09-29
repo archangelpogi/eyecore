@@ -127,7 +127,7 @@ while ($row = mysqli_fetch_assoc($cat_q)) {
 // Helper: get clinic image path
 function getClinicImage($clinic) {
     if (!empty($clinic['cover_photo'])) {
-        return '/eyecore/assets/images/clinic-covers/' . $clinic['cover_photo'];
+        return '/assets/images/clinic-covers/' . $clinic['cover_photo'];
     } elseif (!empty($clinic['clinic_image'])) {
         return '/eyecore/assets/images/clinic-images/' . $clinic['clinic_image'];
     } elseif (!empty($clinic['logo'])) {

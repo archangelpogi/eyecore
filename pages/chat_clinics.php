@@ -42,7 +42,7 @@ $clinics = [];
 while ($row = mysqli_fetch_assoc($q)) {
     // Build image path
     $img = null;
-    if (!empty($row['cover_photo']))  $img = '/eyecore/assets/images/clinic-covers/'  . $row['cover_photo'];
+    if (!empty($row['cover_photo']))  $img = '/assets/images/clinic-covers/'  . $row['cover_photo'];
     elseif (!empty($row['clinic_image'])) $img = '/eyecore/assets/images/clinic-images/' . $row['clinic_image'];
     elseif (!empty($row['logo']))     $img = '/eyecore/assets/images/clinic-logos/'   . $row['logo'];
 

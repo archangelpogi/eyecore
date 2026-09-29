@@ -87,11 +87,14 @@ if ($patient_id == 0) {
     }
 }
 
+// Pre-declare email escaped (para magamit sa ownership verification)
+$email_escaped = mysqli_real_escape_string($conn, $user['email']);
+
 // 🔥 SOURCE 3: Hanapin sa patients table gamit ang email
 if ($patient_id == 0) {
     $email_patient = mysqli_query($conn, "
         SELECT id FROM patients 
-        WHERE email = '{$user['email']}' 
+        WHERE email = '$email_escaped' 
         LIMIT 1
     ");
     
@@ -117,23 +120,25 @@ if ($patient_id == 0) {
     }
 }
 
-// 🔥 SOURCE 5: LAST RESORT - Kunin ang pinakabagong patient_id mula sa optical_records
-if ($patient_id == 0) {
-    $any_patient = mysqli_query($conn, "
-        SELECT patient_id 
-        FROM optical_records 
-        WHERE patient_id IS NOT NULL AND patient_id > 0
-        ORDER BY examination_date DESC
+// ============================================
+// [ADDITION 1] SECURITY: VERIFY OWNERSHIP
+// ============================================
+if ($patient_id > 0) {
+    $verify = mysqli_query($conn, "
+        SELECT p.id FROM patients p
+        WHERE p.id = $patient_id
+        AND (
+            p.user_id = $user_id
+            OR p.email = '$email_escaped'
+            OR EXISTS (SELECT 1 FROM appointments a WHERE a.patient_id = p.id AND a.user_id = $user_id)
+        )
         LIMIT 1
     ");
     
-    if (mysqli_num_rows($any_patient) > 0) {
-        $any_row = mysqli_fetch_assoc($any_patient);
-        $patient_id = $any_row['patient_id'];
-        $show_no_patient_message = false;
-        
-        // Log for debugging
-        error_log("DEBUG: No direct patient link for user_id: $user_id. Using fallback patient_id: $patient_id");
+    if (mysqli_num_rows($verify) == 0) {
+        error_log("SECURITY: User $user_id tried to access patient $patient_id");
+        $patient_id = 0;
+        $show_no_patient_message = true;
     }
 }
 
@@ -148,7 +153,6 @@ $total_exams = 0;
 $examinations_query = null;
 
 if ($patient_id > 0 && !$show_consent_modal) {
-    // Primary query: gamit ang patient_id
     $examinations_query = mysqli_query($conn, "
         SELECT o.*, c.name as clinic_name, c.address, c.contact as clinic_contact
         FROM optical_records o
@@ -157,7 +161,6 @@ if ($patient_id > 0 && !$show_consent_modal) {
         ORDER BY o.examination_date DESC
     ");
     
-    // Backup: Kung walang result, subukan ang join sa appointments
     if (mysqli_num_rows($examinations_query) == 0) {
         $examinations_query = mysqli_query($conn, "
             SELECT DISTINCT o.*, c.name as clinic_name, c.address, c.contact as clinic_contact
@@ -179,7 +182,6 @@ $has_pending_request = false;
 $existing_requests = [];
 
 if ($patient_id > 0) {
-    // Check if there's any existing deletion request (pending, approved, processing)
     $existing_query = mysqli_query($conn, "
         SELECT id, clinic_id, status, action_taken, request_date 
         FROM data_retention_log 
@@ -196,7 +198,6 @@ if ($patient_id > 0) {
     }
 }
 
-// Also check if there's any request with status 'rejected' or 'completed' that might be re-requested
 $has_completed_request = false;
 $completed_query = mysqli_query($conn, "
     SELECT id, clinic_id, status, action_taken, request_date, processed_date
@@ -225,15 +226,8 @@ if (!function_exists('timeAgo')) {
 }
 
 if (!function_exists('interpretRx')) {
-    /**
-     * Converts raw prescription values into a short, plain-language
-     * explanation a non-medical patient can understand.
-     * Returns an array of sentence strings.
-     */
     function interpretRx($sph, $cyl, $axis, $add, $eyeLabel = 'this eye') {
         $notes = [];
-
-        // --- SPH: Sphere (nearsighted / farsighted / none) ---
         if ($sph !== null && $sph !== '' && is_numeric($sph)) {
             $sphVal = floatval($sph);
             if ($sphVal < 0) {
@@ -246,36 +240,101 @@ if (!function_exists('interpretRx')) {
                 $notes[] = "SPH 0.00 means no nearsightedness or farsightedness detected in $eyeLabel.";
             }
         }
-
-        // --- CYL / AXIS: Astigmatism ---
         if ($cyl !== null && $cyl !== '' && is_numeric($cyl) && floatval($cyl) != 0) {
             $axisText = ($axis !== null && $axis !== '') ? " at an axis (angle) of {$axis}&deg;" : "";
             $notes[] = "CYL $cyl$axisText means $eyeLabel also has astigmatism &mdash; the cornea is slightly irregular in shape, causing mild blurring or streaking at certain angles.";
         }
-
-        // --- ADD: Reading power ---
         if ($add !== null && $add !== '' && is_numeric($add) && floatval($add) > 0) {
             $notes[] = "ADD +$add is extra reading power added for close-up tasks (like reading or phone use) &mdash; common after age 40 (presbyopia).";
         }
-
         if (empty($notes)) {
             $notes[] = "No significant vision correction needed for $eyeLabel based on this exam.";
         }
-
         return $notes;
     }
 }
 
 // ============================================
-// HANDLE ACTIONS - COMPLETELY FIXED
+// [ADDITION 2] GET LATEST CONSENT VERSION INFO
+// ============================================
+$latest_consent_version = 'v1.0';
+$latest_consent_title = 'Data Privacy Consent';
+$latest_consent_date = date('F j, Y');
+$latest_consent_content = '';
+
+$cv_query = mysqli_query($conn, "SELECT * FROM consent_versions ORDER BY effective_date DESC LIMIT 1");
+if ($cv_query && mysqli_num_rows($cv_query) > 0) {
+    $cv_row = mysqli_fetch_assoc($cv_query);
+    $latest_consent_version = $cv_row['version'];
+    $latest_consent_title = $cv_row['title'];
+    $latest_consent_date = date('F j, Y', strtotime($cv_row['effective_date']));
+    $latest_consent_content = $cv_row['content'];
+}
+
+// ============================================
+// [ADDITION 3] GET USER'S CURRENT CONSENT STATUS
+// ============================================
+$user_consent_status = 'none';
+$user_consent_date = null;
+$user_consent_version = null;
+$user_consent_method = null;
+$user_is_minor = false;
+$user_guardian_name = null;
+
+if ($patient_id > 0) {
+    $uc_query = mysqli_query($conn, "
+        SELECT consent_version, consent_date, consent_method, consent_status
+        FROM patient_consent_history 
+        WHERE patient_id = $patient_id 
+        ORDER BY consent_date DESC 
+        LIMIT 1
+    ");
+    if ($uc_query && mysqli_num_rows($uc_query) > 0) {
+        $uc_row = mysqli_fetch_assoc($uc_query);
+        $user_consent_status = $uc_row['consent_status'] ?? 'approved';
+        $user_consent_date = $uc_row['consent_date'];
+        $user_consent_version = $uc_row['consent_version'];
+        $user_consent_method = $uc_row['consent_method'];
+    }
+    
+    $minor_query = mysqli_query($conn, "SELECT is_minor, guardian_name FROM patients WHERE id = $patient_id LIMIT 1");
+    if ($minor_query && mysqli_num_rows($minor_query) > 0) {
+        $minor_row = mysqli_fetch_assoc($minor_query);
+        $user_is_minor = (bool)($minor_row['is_minor'] ?? 0);
+        $user_guardian_name = $minor_row['guardian_name'] ?? null;
+    }
+}
+
+// ============================================
+// [ADDITION 4] DATA ACCESS LOGGING (Audit Trail)
+// ============================================
+if ($patient_id > 0 && !$show_consent_modal && $_SERVER['REQUEST_METHOD'] == 'GET' && !isset($_POST['action'])) {
+    $access_ip = mysqli_real_escape_string($conn, $_SERVER['REMOTE_ADDR'] ?? '');
+    $access_ua = mysqli_real_escape_string($conn, $_SERVER['HTTP_USER_AGENT'] ?? '');
+    $access_action = 'view_examination_records';
+    
+    $recent_log = mysqli_query($conn, "
+        SELECT id FROM data_access_log 
+        WHERE user_id = $user_id AND patient_id = $patient_id AND action = '$access_action'
+        AND created_at > DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+        LIMIT 1
+    ");
+    if (mysqli_num_rows($recent_log) == 0) {
+        mysqli_query($conn, "
+            INSERT INTO data_access_log (user_id, patient_id, action, ip_address, user_agent, created_at)
+            VALUES ($user_id, $patient_id, '$access_action', '$access_ip', '$access_ua', NOW())
+        ");
+    }
+}
+
+// ============================================
+// HANDLE ACTIONS
 // ============================================
 if (isset($_POST['action'])) {
-    // Clear output buffers
     while (ob_get_level()) {
         ob_end_clean();
     }
     
-    // Set JSON header
     header('Content-Type: application/json');
     header('Cache-Control: no-cache, must-revalidate');
 
@@ -291,7 +350,6 @@ if (isset($_POST['action'])) {
 
 } elseif ($_POST['action'] == 'request_deletion' && $patient_id > 0) {
     try {
-        // ==================== CHECK IF ALREADY HAS PENDING REQUEST ====================
         $check_pending = mysqli_query($conn, "
             SELECT id, status, request_date 
             FROM data_retention_log 
@@ -318,9 +376,7 @@ if (isset($_POST['action'])) {
         $reason = mysqli_real_escape_string($conn, $_POST['reason'] ?? '');
         $clinic_id = isset($_POST['clinic_id']) ? intval($_POST['clinic_id']) : null;
         
-        // If no clinic_id provided, get all clinics where patient has records
         if (!$clinic_id) {
-            // Get all clinics where patient has records
             $clinics_query = mysqli_query($conn, "
                 SELECT DISTINCT o.clinic_id, c.clinic_name as name, c.clinic_email, c.contact 
                 FROM optical_records o
@@ -350,14 +406,14 @@ if (isset($_POST['action'])) {
             exit();
         }
         
-        // Insert into data_retention_log
+        $patient_email_escaped = mysqli_real_escape_string($conn, $user['email']);
         $insert = mysqli_query($conn, "
             INSERT INTO data_retention_log 
             (clinic_id, patient_id, patient_email, notes, action_taken, status, performed_by, request_date) 
             VALUES (
                 $clinic_id, 
                 $patient_id, 
-                '{$user['email']}',
+                '$patient_email_escaped',
                 '$reason', 
                 'DELETION_REQUESTED',
                 'pending',
@@ -369,7 +425,6 @@ if (isset($_POST['action'])) {
         if ($insert) {
             $request_id = mysqli_insert_id($conn);
             
-            // Get clinic admin from users table where role = 'ClinicAdmin' and clinic_id matches
             $admin_query = mysqli_query($conn, "
                 SELECT id as user_id 
                 FROM users 
@@ -382,13 +437,11 @@ if (isset($_POST['action'])) {
                 $admin = mysqli_fetch_assoc($admin_query);
                 $admin_user_id = $admin['user_id'];
                 
-                // Get clinic name with proper escaping
                 $clinic_info_result = mysqli_query($conn, "SELECT clinic_name as name FROM clinics WHERE id = $clinic_id");
                 $clinic_info = mysqli_fetch_assoc($clinic_info_result);
                 $clinic_name = mysqli_real_escape_string($conn, $clinic_info['name'] ?? 'Clinic');
                 
-                // Escape message to handle apostrophes
-                $patient_name = mysqli_real_escape_string($conn, $user['name']);
+                $patient_name = mysqli_real_escape_string($conn, $user['fullname'] ?? $user['name'] ?? 'Patient');
                 $notif_message = "Patient $patient_name has requested deletion of their records from $clinic_name.\n\nReason: " . substr($reason, 0, 200);
                 $notif_title = "Data Deletion Request";
                 $notif_link = "clinic/deletion_requests.php";
@@ -409,17 +462,10 @@ if (isset($_POST['action'])) {
                     )
                 ");
                 
-                if ($notif_insert) {
-                    echo json_encode([
-                        'success' => true,
-                        'message' => 'Deletion request submitted successfully! The clinic admin has been notified and will contact you within 30 days.'
-                    ]);
-                } else {
-                    echo json_encode([
-                        'success' => true,
-                        'message' => 'Deletion request submitted successfully! The clinic will contact you within 30 days.'
-                    ]);
-                }
+                echo json_encode([
+                    'success' => true,
+                    'message' => 'Deletion request submitted successfully! The clinic admin has been notified and will contact you within 30 days.'
+                ]);
             } else {
                 echo json_encode([
                     'success' => true,
@@ -439,15 +485,14 @@ if (isset($_POST['action'])) {
     }
     exit();
 } elseif ($_POST['action'] == 'consent_update' && $patient_id > 0) {
-    $ip = mysqli_real_escape_string($conn, $_SERVER['REMOTE_ADDR']);
-    $insert = mysqli_query($conn, "INSERT INTO patient_consent_history (patient_id,consent_version,consent_date,consent_ip,consent_method,recorded_by) VALUES ($patient_id,'v1.0',NOW(),'$ip','digital',$user_id)");
+    $ip = mysqli_real_escape_string($conn, $_SERVER['REMOTE_ADDR'] ?? '');
+    $insert = mysqli_query($conn, "INSERT INTO patient_consent_history (patient_id,consent_version,consent_date,consent_ip,consent_method,recorded_by,consent_status) VALUES ($patient_id,'v1.0',NOW(),'$ip','digital',$user_id,'approved')");
     echo json_encode([
         'success' => (bool)$insert,
         'message' => $insert ? 'Consent recorded successfully.' : 'Failed: ' . mysqli_error($conn)
     ]);
     exit();
     
-// ✅ ADD RECONSENT ENDPOINT (User side - when patient changes mind)
 } elseif ($_POST['action'] == 'reconsent') {
     if (!isset($_SESSION['user_id'])) {
         echo json_encode(['success' => false, 'message' => 'Please login']);
@@ -455,9 +500,8 @@ if (isset($_POST['action'])) {
     }
     
     $userId = $_SESSION['user_id'];
-    $clientIp = $_SERVER['HTTP_CLIENT_IP'] ?? $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? '';
+    $clientIp = mysqli_real_escape_string($conn, $_SERVER['HTTP_CLIENT_IP'] ?? $_SERVER['HTTP_X_FORWARDED_FOR'] ?? $_SERVER['REMOTE_ADDR'] ?? '');
     
-    // Get patient from user using MySQLi
     $userStmt = mysqli_query($conn, "SELECT email FROM users WHERE id = $userId");
     $userData = mysqli_fetch_assoc($userStmt);
     
@@ -466,10 +510,11 @@ if (isset($_POST['action'])) {
         exit();
     }
     
+    $email_escaped = mysqli_real_escape_string($conn, $userData['email']);
     $patientStmt = mysqli_query($conn, "
         SELECT id, clinic_id, first_name, last_name 
         FROM patients 
-        WHERE email = '{$userData['email']}'
+        WHERE email = '$email_escaped'
     ");
     $patient = mysqli_fetch_assoc($patientStmt);
     
@@ -481,7 +526,6 @@ if (isset($_POST['action'])) {
     try {
         mysqli_begin_transaction($conn);
         
-        // Update consent to approved
         $stmt = mysqli_query($conn, "
             UPDATE patients 
             SET data_privacy_accepted = 1,
@@ -495,23 +539,17 @@ if (isset($_POST['action'])) {
             WHERE id = {$patient['id']}
         ");
         
-        if (!$stmt) {
-            throw new Exception(mysqli_error($conn));
-        }
+        if (!$stmt) throw new Exception(mysqli_error($conn));
         
-        // Record in consent history
         $historyStmt = mysqli_query($conn, "
             INSERT INTO patient_consent_history 
             (patient_id, consent_version, consent_date, consent_ip, consent_method, recorded_by, verification_method, verification_details, consent_status)
             VALUES ({$patient['id']}, 'v1.0', NOW(), '$clientIp', 'online_reconsent', $userId, 'online', 'Patient re-consented via portal', 'approved')
         ");
         
-        if (!$historyStmt) {
-            throw new Exception(mysqli_error($conn));
-        }
+        if (!$historyStmt) throw new Exception(mysqli_error($conn));
         
         mysqli_commit($conn);
-        
         echo json_encode(['success' => true, 'message' => 'Consent recorded successfully']);
         
     } catch (Exception $e) {
@@ -520,7 +558,6 @@ if (isset($_POST['action'])) {
     }
     exit();
     
-// ✅ GET CONSENT STATUS ENDPOINT
 } elseif ($_POST['action'] == 'get_consent_status') {
     if (!isset($_SESSION['user_id'])) {
         echo json_encode(['success' => false, 'message' => 'Please login']);
@@ -528,8 +565,6 @@ if (isset($_POST['action'])) {
     }
     
     $userId = $_SESSION['user_id'];
-    
-    // Get patient from user
     $userStmt = mysqli_query($conn, "SELECT email FROM users WHERE id = $userId");
     $userData = mysqli_fetch_assoc($userStmt);
     
@@ -538,10 +573,11 @@ if (isset($_POST['action'])) {
         exit();
     }
     
+    $email_escaped = mysqli_real_escape_string($conn, $userData['email']);
     $patientStmt = mysqli_query($conn, "
         SELECT data_privacy_accepted, consent_status 
         FROM patients 
-        WHERE email = '{$userData['email']}'
+        WHERE email = '$email_escaped'
     ");
     $patient = mysqli_fetch_assoc($patientStmt);
     
@@ -551,9 +587,99 @@ if (isset($_POST['action'])) {
         'consent_status' => $patient ? $patient['consent_status'] : null
     ]);
     exit();
-}
-}
 
+// ============================================
+// [ADDITION 5] WITHDRAW CONSENT
+// ============================================
+} elseif ($_POST['action'] == 'withdraw_consent' && $patient_id > 0) {
+    $ip = mysqli_real_escape_string($conn, $_SERVER['REMOTE_ADDR'] ?? '');
+    
+    mysqli_begin_transaction($conn);
+    try {
+        $withdraw = mysqli_query($conn, "
+            INSERT INTO patient_consent_history 
+            (patient_id, consent_version, consent_date, consent_ip, consent_method, recorded_by, consent_status, verification_details)
+            VALUES ($patient_id, 'v1.0', NOW(), '$ip', 'withdrawal', $user_id, 'withdrawn', 'Patient withdrew consent via portal')
+        ");
+        if (!$withdraw) throw new Exception(mysqli_error($conn));
+        
+        $update = mysqli_query($conn, "
+            UPDATE patients 
+            SET data_privacy_accepted = 0, consent_status = 'withdrawn'
+            WHERE id = $patient_id
+        ");
+        if (!$update) throw new Exception(mysqli_error($conn));
+        
+        mysqli_query($conn, "
+            INSERT INTO data_access_log (user_id, patient_id, action, ip_address, created_at)
+            VALUES ($user_id, $patient_id, 'withdraw_consent', '$ip', NOW())
+        ");
+        
+        mysqli_commit($conn);
+        echo json_encode(['success' => true, 'message' => 'Consent withdrawn successfully. You will no longer be able to access your records until you give consent again.']);
+    } catch (Exception $e) {
+        mysqli_rollback($conn);
+        echo json_encode(['success' => false, 'message' => 'Failed: ' . $e->getMessage()]);
+    }
+    exit();
+
+// ============================================
+// [ADDITION 6] GET ACCESS LOG
+// ============================================
+} elseif ($_POST['action'] == 'get_access_log' && $patient_id > 0) {
+    $logs = [];
+    $log_query = mysqli_query($conn, "
+        SELECT action, ip_address, created_at 
+        FROM data_access_log 
+        WHERE patient_id = $patient_id 
+        ORDER BY created_at DESC 
+        LIMIT 50
+    ");
+    while ($row = mysqli_fetch_assoc($log_query)) {
+        $logs[] = $row;
+    }
+    echo json_encode(['success' => true, 'logs' => $logs]);
+    exit();
+
+// ============================================
+// [ADDITION 7] ACCEPT DPA
+// ============================================
+} elseif ($_POST['action'] == 'accept_dpa' && $patient_id > 0) {
+    $ip = mysqli_real_escape_string($conn, $_SERVER['REMOTE_ADDR'] ?? '');
+    $dpa_version = mysqli_real_escape_string($conn, $_POST['dpa_version'] ?? 'v1.0');
+    $is_minor = isset($_POST['is_minor']) ? intval($_POST['is_minor']) : 0;
+    $guardian_name = mysqli_real_escape_string($conn, $_POST['guardian_name'] ?? '');
+    $guardian_relationship = mysqli_real_escape_string($conn, $_POST['guardian_relationship'] ?? '');
+    $guardian_contact = mysqli_real_escape_string($conn, $_POST['guardian_contact'] ?? '');
+    
+    mysqli_begin_transaction($conn);
+    try {
+        $dpa = mysqli_query($conn, "
+            INSERT INTO dpa_acceptance_log (patient_id, user_id, dpa_version, ip_address)
+            VALUES ($patient_id, $user_id, '$dpa_version', '$ip')
+        ");
+        if (!$dpa) throw new Exception(mysqli_error($conn));
+        
+        if ($is_minor) {
+            mysqli_query($conn, "
+                UPDATE patients 
+                SET is_minor = 1, 
+                    guardian_name = '$guardian_name',
+                    guardian_relationship = '$guardian_relationship',
+                    guardian_contact = '$guardian_contact'
+                WHERE id = $patient_id
+            ");
+        }
+        
+        mysqli_commit($conn);
+        echo json_encode(['success' => true, 'message' => 'Data Processing Agreement accepted.']);
+    } catch (Exception $e) {
+        mysqli_rollback($conn);
+        echo json_encode(['success' => false, 'message' => 'Failed: ' . $e->getMessage()]);
+    }
+    exit();
+}
+}
 
 ?>
 <!DOCTYPE html>
@@ -563,11 +689,9 @@ if (isset($_POST['action'])) {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>My Eye Examination History - Eyecore</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
-    <!-- SweetAlert2 CSS and JS -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
-        /* ===== YOUR EXISTING VARIABLES & BASE (copy from your shared CSS) ===== */
         *{margin:0;padding:0;box-sizing:border-box;font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;}
         html,body{margin:0!important;padding:0!important;width:100%;overflow-x:hidden;background:var(--bg-primary);}
         body{min-height:100vh;transition:background-color 0.3s,color 0.3s;}
@@ -593,8 +717,6 @@ if (isset($_POST['action'])) {
             --shadow-lg:0 20px 40px rgba(0,0,0,0.4);
             --sale-color:#FF6B6B;--sale-light:#4A2D2D;
         }
-
-        /* ===== NAVBAR (your exact existing navbar styles) ===== */
         .navbar{display:flex;justify-content:space-between;align-items:center;background:var(--bg-secondary);padding:12px 40px;box-shadow:var(--shadow-sm);position:sticky;top:0;z-index:100;border-bottom:1px solid var(--border-light);}
         @media(max-width:1024px){.navbar{padding:12px 24px;}}
         @media(max-width:768px){.navbar{display:none;}}
@@ -637,7 +759,6 @@ if (isset($_POST['action'])) {
         .profile-menu a:last-child{border-bottom:none;}
         .profile-menu a:hover{background:var(--primary-light);color:var(--primary);}
         .profile-menu a i{width:20px;color:var(--primary);}
-        /* Notification */
         .notification-dropdown{position:relative;display:inline-block;}
         .notification-menu{position:absolute;top:100%;right:0;width:380px;background:var(--bg-secondary);border-radius:var(--radius-lg);box-shadow:var(--shadow-lg);display:none;z-index:1000;margin-top:12px;border:1px solid var(--border-light);overflow:hidden;}
         .notification-menu.show{display:block;animation:slideDown 0.3s ease;}
@@ -662,7 +783,6 @@ if (isset($_POST['action'])) {
         .notification-empty i{font-size:50px;margin-bottom:15px;opacity:0.5;display:block;}
         .notification-footer{padding:16px;text-align:center;border-top:1px solid var(--border-light);}
         .notification-footer a{color:var(--primary);text-decoration:none;font-size:13px;font-weight:600;}
-        /* Mobile */
         .mobile-top{display:none;position:sticky;top:0;z-index:100;background:var(--bg-secondary);padding:12px 20px;border-bottom:1px solid var(--border-light);}
         @media(max-width:768px){.mobile-top{display:flex;justify-content:space-between;align-items:center;}}
         .mobile-logo{display:flex;align-items:center;gap:8px;font-size:20px;font-weight:700;color:var(--primary);}
@@ -688,7 +808,6 @@ if (isset($_POST['action'])) {
         .mobile-menu-items a:hover{background:var(--primary-light);color:var(--primary);}
         .mobile-menu-items .logout-link{color:var(--danger);margin-top:20px;border-top:1px solid var(--border-light);padding-top:20px;}
         .mobile-menu-items .logout-link i{color:var(--danger);}
-        /* Toast */
         .toast-container{position:fixed;top:20px;right:20px;z-index:9999;}
         .toast-notification{display:flex;align-items:center;gap:12px;background:var(--bg-secondary);border-radius:var(--radius-md);padding:16px 24px;box-shadow:var(--shadow-lg);margin-bottom:12px;min-width:320px;animation:slideIn 0.3s ease;border-left:4px solid var(--primary);}
         .toast-notification.success{border-left-color:var(--success);}
@@ -700,15 +819,9 @@ if (isset($_POST['action'])) {
         .toast-notification.info i{color:var(--info);}
         .toast-notification span{flex:1;font-size:14px;color:var(--text-primary);}
         @keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
-
-        /* ===================================================
-           PAGE-SPECIFIC — uses CSS vars, follows user theme
-        =================================================== */
         .main-content{max-width:1400px;margin:0 auto;padding:30px 20px;}
         @media(min-width:1024px){.main-content{padding:30px 40px;}}
         @media(max-width:768px){.main-content{padding:20px 16px 100px;}}
-
-        /* Header */
         .page-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:30px;flex-wrap:wrap;gap:16px;}
         .page-eyebrow{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.1em;color:var(--primary);display:flex;align-items:center;gap:6px;margin-bottom:8px;}
         .page-title{font-size:30px;font-weight:700;color:var(--text-primary);letter-spacing:-0.5px;}
@@ -722,8 +835,6 @@ if (isset($_POST['action'])) {
         .btn-green-act:hover{transform:translateY(-2px);box-shadow:var(--shadow-md);}
         .btn-red-act{background:var(--bg-secondary);color:var(--danger);border:1px solid var(--danger);}
         .btn-red-act:hover{background:var(--danger);color:white;}
-
-        /* Stats strip */
         .stats-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px;}
         @media(max-width:900px){.stats-strip{grid-template-columns:1fr 1fr;}}
         @media(max-width:480px){.stats-strip{grid-template-columns:1fr 1fr;}}
@@ -733,22 +844,16 @@ if (isset($_POST['action'])) {
         .ss-num{font-size:22px;font-weight:700;color:var(--text-primary);line-height:1;}
         .ss-num.accent{color:var(--primary);}
         .ss-label{font-size:12px;color:var(--text-secondary);margin-top:3px;}
-
-        /* Privacy banner */
         .privacy-banner{background:var(--bg-secondary);border:1px solid var(--border-light);border-left:4px solid var(--primary);border-radius:var(--radius-md);padding:16px 22px;margin-bottom:28px;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;box-shadow:var(--shadow-sm);}
         .pb-left{display:flex;align-items:center;gap:14px;}
         .pb-icon{width:40px;height:40px;background:var(--primary-light);border-radius:var(--radius-sm);display:flex;align-items:center;justify-content:center;color:var(--primary);font-size:18px;flex-shrink:0;}
         .pb-text strong{font-size:14px;font-weight:700;color:var(--text-primary);display:block;margin-bottom:2px;}
         .pb-text span{font-size:12px;color:var(--text-secondary);}
         .pb-actions{display:flex;gap:10px;flex-wrap:wrap;}
-
-        /* Section head */
         .section-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;}
         .section-title{font-size:16px;font-weight:700;color:var(--text-primary);display:flex;align-items:center;gap:10px;}
         .section-title i{color:var(--primary);}
         .rec-count{background:var(--primary-light);color:var(--primary);font-size:11px;font-weight:700;padding:3px 10px;border-radius:var(--radius-full);}
-
-        /* Exam cards */
         .exams-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(500px,1fr));gap:20px;}
         @media(max-width:768px){.exams-grid{grid-template-columns:1fr;}}
         .exam-card{background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:var(--radius-lg);overflow:hidden;transition:all 0.3s;box-shadow:var(--shadow-sm);}
@@ -778,14 +883,10 @@ if (isset($_POST['action'])) {
         .doctor-tag i{color:var(--primary);}
         .exam-card-foot{background:var(--bg-primary);border-top:1px solid var(--border-light);padding:16px 22px;display:flex;justify-content:flex-end;gap:10px;}
         .rec-code-badge{font-size:11px;font-weight:700;font-family:'Courier New',monospace;color:var(--primary);background:var(--primary-light);padding:3px 10px;border-radius:var(--radius-full);}
-
-        /* Empty state */
         .empty-wrap{text-align:center;padding:80px 20px;background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:var(--radius-lg);box-shadow:var(--shadow-sm);}
         .empty-wrap .big-icon{font-size:72px;color:var(--text-muted);opacity:0.4;margin-bottom:20px;display:block;}
         .empty-wrap h2{font-size:22px;font-weight:700;color:var(--text-primary);margin-bottom:8px;}
         .empty-wrap p{font-size:14px;color:var(--text-secondary);max-width:380px;margin:0 auto 28px;line-height:1.6;}
-
-        /* Modal */
         .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.55);backdrop-filter:blur(4px);z-index:9000;display:none;align-items:center;justify-content:center;padding:20px;}
         .modal-overlay.show{display:flex;}
         .modal-box{background:var(--bg-secondary);border:1px solid var(--border-light);border-radius:var(--radius-lg);width:100%;max-width:540px;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg);animation:popIn 0.25s cubic-bezier(0.34,1.56,0.64,1);}
@@ -813,82 +914,113 @@ if (isset($_POST['action'])) {
         .modal-tag-pill{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;padding:4px 12px;border-radius:var(--radius-full);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:10px;}
         .modal-tag-pill.green{color:var(--primary);background:var(--primary-light);}
         .modal-tag-pill.red{color:var(--danger);background:#fff0f0;border:1px solid #ffd5d5;}
+        .modal-tag-pill.blue{color:var(--info);background:#e3f6f9;border:1px solid #b3e5ed;}
         .theme-dark .modal-tag-pill.red{background:rgba(255,68,68,0.12);}
+        .theme-dark .modal-tag-pill.blue{background:rgba(23,162,184,0.12);}
         label.small-label{font-size:12px;font-weight:700;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.07em;}
-    /* Fix SweetAlert z-index to appear above modals */
-.swal2-container {
-    z-index: 10000 !important;
-}
-
-.swal2-popup {
-    z-index: 10001 !important;
-}
-
-/* Style for clinic selection options */
-.clinic-option {
-    transition: all 0.2s ease;
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color) !important;
-}
-
-.clinic-option:hover {
-    background: var(--primary-light);
-    border-color: var(--primary) !important;
-    transform: translateX(5px);
-}
-
-.clinic-option strong {
-    color: var(--primary);
-    font-size: 14px;
-}
-
-.clinic-option small {
-    color: var(--text-secondary);
-    font-size: 11px;
-}
-
-/* === NEW: info icon + interpretation box (added for patient-friendly term explanations) === */
-.rx-key{display:inline-flex;align-items:center;gap:4px;cursor:help;}
-.rx-info-icon{font-size:10px;opacity:.55;transition:opacity .2s;}
-.rx-key:hover .rx-info-icon{opacity:1;color:var(--primary);}
-.interpret-box{background:var(--bg-primary);border-left:3px solid var(--info);border-radius:0 var(--radius-sm) var(--radius-sm) 0;padding:12px 14px;margin-bottom:14px;}
-.interpret-box .notes-label{color:var(--info);}
-.interpret-box p{font-size:13px;color:var(--text-secondary);line-height:1.6;margin-bottom:6px;}
-.interpret-box p:last-child{margin-bottom:0;}
-.glossary-btn{padding:6px 14px !important;font-size:12px !important;}
-.rx-info-icon{cursor:pointer;padding:2px;}
-.info-tip-bubble{position:absolute;z-index:5000;background:var(--text-primary);color:var(--bg-secondary);font-size:12px;font-weight:500;line-height:1.5;padding:10px 14px;border-radius:var(--radius-sm);box-shadow:var(--shadow-lg);max-width:260px;width:max-content;animation:tipIn 0.15s ease;}
-.info-tip-bubble::after{content:'';position:absolute;top:-5px;left:16px;width:10px;height:10px;background:var(--text-primary);transform:rotate(45deg);}
-@keyframes tipIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+        .swal2-container{z-index:10000 !important;}
+        .swal2-popup{z-index:10001 !important;}
+        .clinic-option{transition:all 0.2s ease;background:var(--bg-secondary);border:1px solid var(--border-color) !important;}
+        .clinic-option:hover{background:var(--primary-light);border-color:var(--primary) !important;transform:translateX(5px);}
+        .clinic-option strong{color:var(--primary);font-size:14px;}
+        .clinic-option small{color:var(--text-secondary);font-size:11px;}
+        .rx-key{display:inline-flex;align-items:center;gap:4px;cursor:help;}
+        .rx-info-icon{font-size:10px;opacity:.55;transition:opacity .2s;}
+        .rx-key:hover .rx-info-icon{opacity:1;color:var(--primary);}
+        .interpret-box{background:var(--bg-primary);border-left:3px solid var(--info);border-radius:0 var(--radius-sm) var(--radius-sm) 0;padding:12px 14px;margin-bottom:14px;}
+        .interpret-box .notes-label{color:var(--info);}
+        .interpret-box p{font-size:13px;color:var(--text-secondary);line-height:1.6;margin-bottom:6px;}
+        .interpret-box p:last-child{margin-bottom:0;}
+        .glossary-btn{padding:6px 14px !important;font-size:12px !important;}
+        .rx-info-icon{cursor:pointer;padding:2px;}
+        .info-tip-bubble{position:absolute;z-index:5000;background:var(--text-primary);color:var(--bg-secondary);font-size:12px;font-weight:500;line-height:1.5;padding:10px 14px;border-radius:var(--radius-sm);box-shadow:var(--shadow-lg);max-width:260px;width:max-content;animation:tipIn 0.15s ease;}
+        .info-tip-bubble::after{content:'';position:absolute;top:-5px;left:16px;width:10px;height:10px;background:var(--text-primary);transform:rotate(45deg);}
+        @keyframes tipIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+        .consent-status-banner{background:var(--bg-secondary);border:1px solid var(--border-light);border-left:4px solid var(--success);border-radius:var(--radius-md);padding:14px 20px;margin-bottom:20px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;box-shadow:var(--shadow-sm);}
+        .audit-log-item{display:flex;align-items:center;gap:12px;padding:12px;background:var(--bg-primary);border-radius:var(--radius-md);margin-bottom:8px;border:1px solid var(--border-light);}
+        .audit-log-item i{color:var(--primary);}
     </style>
 </head>
 <body>
 <div class="toast-container" id="toastContainer"></div>
 
-<!-- CONSENT MODAL -->
+<!-- ============================================ -->
+<!-- CONSENT MODAL (ENHANCED with DPA, DPO, Minor) -->
+<!-- ============================================ -->
 <?php if ($show_consent_modal && $patient_id > 0): ?>
 <div class="modal-overlay show" id="consentModal">
-    <div class="modal-box">
+    <div class="modal-box" style="max-width:640px;">
         <div class="modal-head">
             <div>
                 <div class="modal-tag-pill green"><i class="fas fa-shield-alt"></i> RA 10173 Compliance</div>
                 <h2>Data Privacy Consent</h2>
+                <small style="color:var(--text-muted);font-size:12px;">
+                    Version <?=htmlspecialchars($latest_consent_version)?> &middot; Effective <?=htmlspecialchars($latest_consent_date)?>
+                </small>
             </div>
         </div>
         <div class="modal-body">
             <p>Under the <strong>Data Privacy Act of 2012 (RA 10173)</strong>, we need your consent before you can view your medical records.</p>
-            <div class="consent-detail">
-                <strong>What we collect:</strong>
-                <ul><li>Personal info (name, age, contact)</li><li>Medical records and eye examination results</li><li>Appointment history and prescriptions</li></ul>
+
+            <div class="consent-detail" style="border-left:3px solid var(--primary);">
+                <strong><i class="fas fa-file-contract"></i> Data Processing Agreement (DPA)</strong>
+                <ul style="margin-top:6px;">
+                    <li><strong>Personal Information Controller (PIC):</strong> The Clinic (owner of your medical records)</li>
+                    <li><strong>Personal Information Processor (PIP):</strong> EYECORE System</li>
+                    <li><strong>Purpose of Processing:</strong> Medical treatment, appointment management, and legal compliance</li>
+                    <li><strong>Data Sharing:</strong> Not shared with third parties without your explicit consent</li>
+                    <li><strong>Retention Period:</strong> 10 years as required by medical regulations</li>
+                    <li><strong>Storage Location:</strong> Secure servers within the Philippines</li>
+                </ul>
             </div>
+
             <div class="consent-detail">
-                <strong>Your rights under RA 10173:</strong>
-                <ul><li>Access, correct, and export your data</li><li>Request erasure (subject to retention laws)</li><li>Withdraw consent at any time</li></ul>
-                <br><small style="color:var(--text-muted)">Data retained for 10 years per medical regulations.</small>
+                <strong><i class="fas fa-database"></i> What we collect:</strong>
+                <ul><li>Personal info (name, age, contact, address)</li><li>Medical records and eye examination results</li><li>Appointment history and prescriptions</li><li>Consent history and access logs</li></ul>
             </div>
+
+            <div class="consent-detail">
+                <strong><i class="fas fa-user-shield"></i> Your rights under RA 10173:</strong>
+                <ul>
+                    <li><strong>Right to be Informed</strong> &mdash; alam mo kung ano ang kinokolekta</li>
+                    <li><strong>Right to Access</strong> &mdash; pwede mong tingnan ang records mo anytime</li>
+                    <li><strong>Right to Object</strong> &mdash; pwede kang tumutol sa processing</li>
+                    <li><strong>Right to Erasure</strong> &mdash; pwede kang mag-request ng deletion (subject to retention laws)</li>
+                    <li><strong>Right to Damages</strong> &mdash; pwede kang maghabol kung may violation</li>
+                    <li><strong>Right to Withdraw Consent</strong> &mdash; pwede mong bawiin ang consent anytime</li>
+                    <li><strong>Right to Data Portability</strong> &mdash; pwede mong i-export ang data mo</li>
+                </ul>
+            </div>
+
+            <div class="consent-detail" style="border-left:3px solid var(--info);">
+                <strong><i class="fas fa-user-tie"></i> Data Protection Officer (DPO)</strong>
+                <ul style="margin-top:6px;">
+                    <li><strong>Email:</strong> dpo@eyecore.ph</li>
+                    <li><strong>Contact:</strong> +63 XXX XXX XXXX</li>
+                    <li><strong>Office Hours:</strong> Mon&ndash;Fri, 9AM&ndash;5PM</li>
+                    <li>Para sa mga reklamo o katanungan tungkol sa iyong data, makipag-ugnayan sa DPO.</li>
+                </ul>
+            </div>
+
+            <div class="consent-detail" style="border-left:3px solid var(--warning);">
+                <strong><i class="fas fa-child"></i> Minor's Consent (Kung below 18 years old)</strong>
+                <div class="consent-check-row" style="margin-top:8px;margin-bottom:8px;">
+                    <input type="checkbox" id="isMinorCheck" onchange="toggleMinorFields()">
+                    <label for="isMinorCheck">Ang patient ay minor (below 18 years old) &mdash; consent ay ibinibigay ng parent/guardian</label>
+                </div>
+                <div id="minorFields" style="display:none;margin-top:10px;">
+                    <input type="text" id="guardianName" placeholder="Parent/Guardian Full Name" style="width:100%;padding:10px;border:2px solid var(--border-color);border-radius:var(--radius-md);background:var(--bg-secondary);color:var(--text-primary);margin-bottom:8px;font-size:13px;">
+                    <input type="text" id="guardianRelationship" placeholder="Relationship (Mother, Father, Guardian, etc.)" style="width:100%;padding:10px;border:2px solid var(--border-color);border-radius:var(--radius-md);background:var(--bg-secondary);color:var(--text-primary);margin-bottom:8px;font-size:13px;">
+                    <input type="text" id="guardianContact" placeholder="Guardian Contact Number" style="width:100%;padding:10px;border:2px solid var(--border-color);border-radius:var(--radius-md);background:var(--bg-secondary);color:var(--text-primary);font-size:13px;">
+                </div>
+            </div>
+
             <div class="consent-check-row">
                 <input type="checkbox" id="consentCheck">
-                <label for="consentCheck">I have read and understood the privacy notice. I consent to the collection, processing, and storage of my personal and medical information.</label>
+                <label for="consentCheck">
+                    I have read and understood the <a href="privacy-notice.php" target="_blank" style="color:var(--primary);font-weight:600;">Privacy Notice</a> and the Data Processing Agreement above. 
+                    I consent to the collection, processing, and storage of my personal and medical information under <strong>RA 10173 (Version <?=htmlspecialchars($latest_consent_version)?>)</strong>.
+                </label>
             </div>
         </div>
         <div class="modal-foot">
@@ -928,7 +1060,59 @@ if (isset($_POST['action'])) {
     </div>
 </div>
 
-<!-- GLOSSARY MODAL (NEW: patient-friendly explanation of exam terms) -->
+<!-- [ADDITION] ACCESS LOG MODAL -->
+<div class="modal-overlay" id="accessLogModal">
+    <div class="modal-box" style="max-width:640px;">
+        <div class="modal-head">
+            <div>
+                <div class="modal-tag-pill blue"><i class="fas fa-list-alt"></i> Audit Trail</div>
+                <h2>Data Access History</h2>
+            </div>
+            <div class="modal-close" onclick="closeAccessLogModal()"><i class="fas fa-times"></i></div>
+        </div>
+        <div class="modal-body">
+            <p>Ito ang listahan ng lahat ng pag-access ng iyong medical records. Naka-record dito kung sino, kailan, at saan nag-access.</p>
+            <div id="accessLogList" style="max-height:400px;overflow-y:auto;">
+                <div style="text-align:center;padding:40px;color:var(--text-muted);">
+                    <i class="fas fa-spinner fa-spin" style="font-size:24px;"></i>
+                    <p style="margin-top:10px;">Loading access log...</p>
+                </div>
+            </div>
+        </div>
+        <div class="modal-foot">
+            <button class="btn-act btn-green-act" onclick="closeAccessLogModal()"><i class="fas fa-check"></i> Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- [ADDITION] WITHDRAW CONSENT MODAL -->
+<div class="modal-overlay" id="withdrawConsentModal">
+    <div class="modal-box">
+        <div class="modal-head">
+            <div>
+                <div class="modal-tag-pill red"><i class="fas fa-times-circle"></i> Withdraw Consent</div>
+                <h2>Withdraw Data Privacy Consent</h2>
+            </div>
+            <div class="modal-close" onclick="closeWithdrawModal()"><i class="fas fa-times"></i></div>
+        </div>
+        <div class="modal-body">
+            <p>Kung i-withdraw mo ang consent mo:</p>
+            <ul class="modal-info-list">
+                <li>Hindi mo na ma-a-access ang iyong medical records</li>
+                <li>Hindi ka na makakapag-book ng appointments</li>
+                <li>Mananatili pa rin ang records mo sa clinic (10 years retention)</li>
+                <li>Pwede kang magbigay muli ng consent anytime</li>
+            </ul>
+            <p style="font-weight:600;color:var(--danger);">Sigurado ka bang gusto mong i-withdraw ang consent?</p>
+        </div>
+        <div class="modal-foot">
+            <button class="btn-act btn-outline-act" onclick="closeWithdrawModal()"><i class="fas fa-times"></i> Cancel</button>
+            <button class="btn-act btn-red-act" onclick="confirmWithdrawConsent()"><i class="fas fa-check"></i> Yes, Withdraw</button>
+        </div>
+    </div>
+</div>
+
+<!-- GLOSSARY MODAL -->
 <div class="modal-overlay" id="glossaryModal">
     <div class="modal-box" style="max-width:600px;">
         <div class="modal-head">
@@ -940,38 +1124,31 @@ if (isset($_POST['action'])) {
         </div>
         <div class="modal-body">
             <p>These terms describe your eyeglass or contact lens prescription. Here's what each one means in simple terms:</p>
-
             <div class="consent-detail">
-                <strong>SPH (Sphere)</strong> — the main lens power needed to correct your vision.
+                <strong>SPH (Sphere)</strong> &mdash; the main lens power needed to correct your vision.
                 <ul>
-                    <li><strong>Negative (−)</strong> number = nearsighted (myopia). Far objects look blurry.</li>
+                    <li><strong>Negative (&minus;)</strong> number = nearsighted (myopia). Far objects look blurry.</li>
                     <li><strong>Positive (+)</strong> number = farsighted (hyperopia). Near objects look blurry.</li>
                     <li>The bigger the number, the stronger the correction needed.</li>
                 </ul>
             </div>
-
             <div class="consent-detail">
-                <strong>CYL (Cylinder)</strong> — measures astigmatism, meaning your eye's surface (cornea) isn't perfectly round, which causes slightly blurry or streaky vision at certain angles. Only present if you have astigmatism.
+                <strong>CYL (Cylinder)</strong> &mdash; measures astigmatism, meaning your eye's surface (cornea) isn't perfectly round, which causes slightly blurry or streaky vision at certain angles. Only present if you have astigmatism.
             </div>
-
             <div class="consent-detail">
-                <strong>AXIS</strong> — works together with CYL. It's the angle (0°–180°) that describes exactly where the astigmatism correction is oriented on your eye.
+                <strong>AXIS</strong> &mdash; works together with CYL. It's the angle (0&deg;&ndash;180&deg;) that describes exactly where the astigmatism correction is oriented on your eye.
             </div>
-
             <div class="consent-detail">
-                <strong>ADD (Addition)</strong> — extra reading power added on top of your SPH, used for close-up tasks like reading or using your phone. Usually appears once a patient reaches around 40 years old (presbyopia).
+                <strong>ADD (Addition)</strong> &mdash; extra reading power added on top of your SPH, used for close-up tasks like reading or using your phone. Usually appears once a patient reaches around 40 years old (presbyopia).
             </div>
-
             <div class="consent-detail">
-                <strong>VA (Visual Acuity)</strong> — how clearly you can see, usually written like 20/20. The bottom number tells you how far a person with normal vision could stand and still see what you see at 20 feet. 20/40 means you'd need to be at 20 feet to see what a normal-sighted person sees at 40 feet.
+                <strong>VA (Visual Acuity)</strong> &mdash; how clearly you can see, usually written like 20/20. The bottom number tells you how far a person with normal vision could stand and still see what you see at 20 feet. 20/40 means you'd need to be at 20 feet to see what a normal-sighted person sees at 40 feet.
             </div>
-
             <div class="consent-detail">
-                <strong>PD (Pupillary Distance)</strong> — the distance in millimeters between the centers of your two pupils. Used to make sure your lenses are positioned correctly in your glasses frame.
+                <strong>PD (Pupillary Distance)</strong> &mdash; the distance in millimeters between the centers of your two pupils. Used to make sure your lenses are positioned correctly in your glasses frame.
             </div>
-
             <div class="consent-detail">
-                <strong>OD / OS</strong> — OD (oculus dexter) means right eye, OS (oculus sinister) means left eye.
+                <strong>OD / OS</strong> &mdash; OD (oculus dexter) means right eye, OS (oculus sinister) means left eye.
             </div>
         </div>
         <div class="modal-foot">
@@ -1047,12 +1224,11 @@ if (isset($_POST['action'])) {
 <!-- MAIN -->
 <div class="main-content">
 
-    <!-- HEADER -->
     <div class="page-header">
         <div>
             <div class="page-eyebrow"><i class="fas fa-eye"></i> Optical Records</div>
             <h1 class="page-title">Eye Examination <span>History</span></h1>
-            <p class="page-sub">Your complete optical records — encrypted & protected under RA 10173</p>
+            <p class="page-sub">Your complete optical records &mdash; encrypted & protected under RA 10173</p>
         </div>
         <div class="page-actions">
             <a href="profile.php" class="btn-act btn-outline-act"><i class="fas fa-arrow-left"></i> Back</a>
@@ -1102,16 +1278,50 @@ if (isset($_POST['action'])) {
         </div>
     </div>
 
+    <!-- [ADDITION] CONSENT STATUS BANNER -->
+    <?php if ($user_consent_date): ?>
+    <div class="consent-status-banner">
+        <div style="display:flex;align-items:center;gap:12px;">
+            <div style="width:36px;height:36px;background:var(--primary-light);border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--primary);font-size:16px;">
+                <i class="fas fa-check-circle"></i>
+            </div>
+            <div>
+                <strong style="font-size:13px;color:var(--text-primary);display:block;">Consent Active</strong>
+                <span style="font-size:12px;color:var(--text-secondary);">
+                    You consented to <strong>Version <?=htmlspecialchars($user_consent_version ?: 'v1.0')?></strong> 
+                    on <strong><?=date('F j, Y \a\t g:i A', strtotime($user_consent_date))?></strong>
+                    <?php if ($user_consent_method): ?>
+                        via <em><?=htmlspecialchars($user_consent_method)?></em>
+                    <?php endif; ?>
+                    <?php if ($user_is_minor && $user_guardian_name): ?>
+                        &middot; Guardian: <strong><?=htmlspecialchars($user_guardian_name)?></strong>
+                    <?php endif; ?>
+                </span>
+            </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <a href="consent-history.php" class="btn-act btn-outline-act" style="padding:6px 14px;font-size:12px;">
+                <i class="fas fa-history"></i> View Agreement
+            </a>
+            <button class="btn-act btn-red-act" style="padding:6px 14px;font-size:12px;" onclick="withdrawConsent()">
+                <i class="fas fa-times-circle"></i> Withdraw Consent
+            </button>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <!-- PRIVACY BANNER -->
     <div class="privacy-banner">
         <div class="pb-left">
             <div class="pb-icon"><i class="fas fa-shield-alt"></i></div>
             <div class="pb-text">
                 <strong>Your Data, Your Rights</strong>
-                <span>Under RA 10173 — access, correct, export, or request deletion of your data anytime.</span>
+                <span>Under RA 10173 &mdash; access, correct, export, or request deletion of your data anytime.</span>
             </div>
         </div>
         <div class="pb-actions">
+            <a href="privacy-notice.php" class="btn-act btn-outline-act"><i class="fas fa-file-contract"></i> Privacy Notice</a>
+            <button class="btn-act btn-outline-act" onclick="viewAccessLog()"><i class="fas fa-list-alt"></i> Access Log</button>
             <button class="btn-act btn-outline-act" onclick="exportMyData()"><i class="fas fa-file-export"></i> Export</button>
             <button class="btn-act btn-red-act" onclick="openDeleteModal()"><i class="fas fa-trash"></i> Request Deletion</button>
         </div>
@@ -1140,27 +1350,26 @@ if (isset($_POST['action'])) {
                 <div class="rx-cols">
                     <div class="eye-box">
                         <div class="eye-box-title"><i class="fas fa-eye"></i> Right Eye (OD)</div>
-                        <div class="rx-row"><span class="rx-key">SPH <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Sphere — main lens power. Negative = nearsighted, positive = farsighted.')"></i></span><span class="rx-val"><?=$exam['od_sph']??'—'?></span></div>
-                        <div class="rx-row"><span class="rx-key">CYL <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Cylinder — measures astigmatism (uneven cornea shape).')"></i></span><span class="rx-val"><?=$exam['od_cyl']??'—'?></span></div>
-                        <div class="rx-row"><span class="rx-key">AXIS <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Axis — the angle (0-180°) describing the orientation of astigmatism correction.')"></i></span><span class="rx-val"><?=!empty($exam['od_axis'])?$exam['od_axis'].'°':'—'?></span></div>
-                        <div class="rx-row"><span class="rx-key">ADD <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Addition — extra reading power for close-up tasks, common after age 40.')"></i></span><span class="rx-val"><?=$exam['od_add']??'—'?></span></div>
-                        <?php if(!empty($exam['od_va'])):?><div class="rx-row"><span class="rx-key">VA <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Visual Acuity — how clearly you see compared to normal vision (e.g. 20/20).')"></i></span><span class="rx-val"><?=$exam['od_va']?></span></div><?php endif;?>
+                        <div class="rx-row"><span class="rx-key">SPH <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Sphere &mdash; main lens power. Negative = nearsighted, positive = farsighted.')"></i></span><span class="rx-val"><?=$exam['od_sph']??'&mdash;'?></span></div>
+                        <div class="rx-row"><span class="rx-key">CYL <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Cylinder &mdash; measures astigmatism (uneven cornea shape).')"></i></span><span class="rx-val"><?=$exam['od_cyl']??'&mdash;'?></span></div>
+                        <div class="rx-row"><span class="rx-key">AXIS <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Axis &mdash; the angle (0-180&deg;) describing the orientation of astigmatism correction.')"></i></span><span class="rx-val"><?=!empty($exam['od_axis'])?$exam['od_axis'].'&deg;':'&mdash;'?></span></div>
+                        <div class="rx-row"><span class="rx-key">ADD <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Addition &mdash; extra reading power for close-up tasks, common after age 40.')"></i></span><span class="rx-val"><?=$exam['od_add']??'&mdash;'?></span></div>
+                        <?php if(!empty($exam['od_va'])):?><div class="rx-row"><span class="rx-key">VA <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Visual Acuity &mdash; how clearly you see compared to normal vision (e.g. 20/20).')"></i></span><span class="rx-val"><?=$exam['od_va']?></span></div><?php endif;?>
                     </div>
                     <div class="eye-box">
                         <div class="eye-box-title"><i class="fas fa-eye"></i> Left Eye (OS)</div>
-                        <div class="rx-row"><span class="rx-key">SPH <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Sphere — main lens power. Negative = nearsighted, positive = farsighted.')"></i></span><span class="rx-val"><?=$exam['os_sph']??'—'?></span></div>
-                        <div class="rx-row"><span class="rx-key">CYL <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Cylinder — measures astigmatism (uneven cornea shape).')"></i></span><span class="rx-val"><?=$exam['os_cyl']??'—'?></span></div>
-                        <div class="rx-row"><span class="rx-key">AXIS <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Axis — the angle (0-180°) describing the orientation of astigmatism correction.')"></i></span><span class="rx-val"><?=!empty($exam['os_axis'])?$exam['os_axis'].'°':'—'?></span></div>
-                        <div class="rx-row"><span class="rx-key">ADD <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Addition — extra reading power for close-up tasks, common after age 40.')"></i></span><span class="rx-val"><?=$exam['os_add']??'—'?></span></div>
-                        <?php if(!empty($exam['os_va'])):?><div class="rx-row"><span class="rx-key">VA <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Visual Acuity — how clearly you see compared to normal vision (e.g. 20/20).')"></i></span><span class="rx-val"><?=$exam['os_va']?></span></div><?php endif;?>
+                        <div class="rx-row"><span class="rx-key">SPH <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Sphere &mdash; main lens power. Negative = nearsighted, positive = farsighted.')"></i></span><span class="rx-val"><?=$exam['os_sph']??'&mdash;'?></span></div>
+                        <div class="rx-row"><span class="rx-key">CYL <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Cylinder &mdash; measures astigmatism (uneven cornea shape).')"></i></span><span class="rx-val"><?=$exam['os_cyl']??'&mdash;'?></span></div>
+                        <div class="rx-row"><span class="rx-key">AXIS <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Axis &mdash; the angle (0-180&deg;) describing the orientation of astigmatism correction.')"></i></span><span class="rx-val"><?=!empty($exam['os_axis'])?$exam['os_axis'].'&deg;':'&mdash;'?></span></div>
+                        <div class="rx-row"><span class="rx-key">ADD <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Addition &mdash; extra reading power for close-up tasks, common after age 40.')"></i></span><span class="rx-val"><?=$exam['os_add']??'&mdash;'?></span></div>
+                        <?php if(!empty($exam['os_va'])):?><div class="rx-row"><span class="rx-key">VA <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'Visual Acuity &mdash; how clearly you see compared to normal vision (e.g. 20/20).')"></i></span><span class="rx-val"><?=$exam['os_va']?></span></div><?php endif;?>
                     </div>
                 </div>
                 <div class="pd-row">
-                    <div class="pd-row-left"><div class="pd-icon"><i class="fas fa-ruler"></i></div><div class="pd-label">Pupillary Distance (PD) <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'The distance in millimeters between the centers of your two pupils — used to position your lenses correctly.')"></i></div></div>
-                    <div><span class="pd-val"><?=$exam['pd']??'—'?></span><span class="pd-unit"> mm</span></div>
+                    <div class="pd-row-left"><div class="pd-icon"><i class="fas fa-ruler"></i></div><div class="pd-label">Pupillary Distance (PD) <i class="fas fa-info-circle rx-info-icon" onclick="toggleTip(event, this, 'The distance in millimeters between the centers of your two pupils &mdash; used to position your lenses correctly.')"></i></div></div>
+                    <div><span class="pd-val"><?=$exam['pd']??'&mdash;'?></span><span class="pd-unit"> mm</span></div>
                 </div>
 
-                <!-- NEW: plain-language interpretation of this exam's numbers -->
                 <div class="interpret-box">
                     <div class="notes-label"><i class="fas fa-lightbulb"></i> In Simple Terms</div>
                     <?php
@@ -1210,7 +1419,7 @@ if (isset($_POST['action'])) {
     <div class="mobile-menu-header">
         <div class="mobile-user">
             <div class="mobile-avatar"><?php $av=$user_data['avatar']??null;if($av&&file_exists("../assets/images/profiles/$av")):?><img src="../assets/images/profiles/<?=$av?>" alt=""><?php else:?><div style="width:100%;height:100%;background:var(--primary-gradient);display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:bold;color:white;"><?=strtoupper(substr($_SESSION['user_name'],0,1))?></div><?php endif;?></div>
-            <div><h4 style="font-size:16px;margin-bottom:4px;"><?=htmlspecialchars($_SESSION['user_name'])?></h4><p style="font-size:12px;color:var(--text-secondary);"><?=$total_points?> points • <?=$total_bookings?> bookings</p></div>
+            <div><h4 style="font-size:16px;margin-bottom:4px;"><?=htmlspecialchars($_SESSION['user_name'])?></h4><p style="font-size:12px;color:var(--text-secondary);"><?=$total_points?> points &bull; <?=$total_bookings?> bookings</p></div>
         </div>
         <button onclick="closeMobileMenu()"><i class="fas fa-times"></i></button>
     </div>
@@ -1234,7 +1443,6 @@ function showToast(msg, type='success') {
     setTimeout(()=>{t.style.opacity='0';t.style.transition='opacity 0.4s';setTimeout(()=>t.remove(),400);},3500);
 }
 
-// Theme (your existing logic)
 function toggleTheme() {
     const html=document.documentElement;
     const icon=document.querySelector('#themeToggle i');
@@ -1248,17 +1456,64 @@ document.addEventListener('DOMContentLoaded',function(){
     else{document.documentElement.classList.remove('theme-dark');if(icon)icon.className='fas fa-moon';}
 });
 
-// Consent
+// Consent checkbox enable
 const consentCheck=document.getElementById('consentCheck');
 const acceptBtn=document.getElementById('acceptBtn');
 if(consentCheck&&acceptBtn) consentCheck.addEventListener('change',function(){acceptBtn.disabled=!this.checked;});
+
+// [ADDITION] Toggle minor fields
+function toggleMinorFields() {
+    const check = document.getElementById('isMinorCheck');
+    const fields = document.getElementById('minorFields');
+    if (check && fields) {
+        fields.style.display = check.checked ? 'block' : 'none';
+    }
+}
+
+// [ENHANCED] acceptConsent with DPA + minor support
 function acceptConsent(){
-    acceptBtn.disabled=true; acceptBtn.innerHTML='<i class="fas fa-spinner fa-spin"></i> Saving...';
-    fetch('my-examinations.php',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=consent_update'})
-    .then(r=>r.json()).then(d=>{
-        if(d.success){document.getElementById('consentModal').classList.remove('show');showToast('Consent recorded!','success');setTimeout(()=>location.reload(),1800);}
-        else{showToast(d.message||'Error.','error');acceptBtn.disabled=false;acceptBtn.innerHTML='<i class="fas fa-check"></i> Accept & Continue';}
-    }).catch(()=>{showToast('Connection error.','error');acceptBtn.disabled=false;acceptBtn.innerHTML='<i class="fas fa-check"></i> Accept & Continue';});
+    const acceptBtn=document.getElementById('acceptBtn');
+    const isMinor = document.getElementById('isMinorCheck')?.checked || false;
+    const guardianName = document.getElementById('guardianName')?.value?.trim() || '';
+    const guardianRelationship = document.getElementById('guardianRelationship')?.value?.trim() || '';
+    const guardianContact = document.getElementById('guardianContact')?.value?.trim() || '';
+    
+    if (isMinor && (!guardianName || !guardianRelationship)) {
+        showToast('Please fill in guardian information for minor patients.','error');
+        return;
+    }
+    
+    acceptBtn.disabled=true;
+    acceptBtn.innerHTML='<i class="fas fa-spinner fa-spin"></i> Saving...';
+    
+    // STEP 1: Accept DPA
+    const dpaData = new URLSearchParams();
+    dpaData.append('action', 'accept_dpa');
+    dpaData.append('dpa_version', '<?=htmlspecialchars($latest_consent_version)?>');
+    dpaData.append('is_minor', isMinor ? '1' : '0');
+    dpaData.append('guardian_name', guardianName);
+    dpaData.append('guardian_relationship', guardianRelationship);
+    dpaData.append('guardian_contact', guardianContact);
+    
+    fetch('my-examinations.php',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:dpaData.toString()})
+    .then(r=>r.json())
+    .then(dpaResult=>{
+        if(!dpaResult.success){
+            showToast('DPA Error: '+(dpaResult.message||'Unknown'),'error');
+            acceptBtn.disabled=false;
+            acceptBtn.innerHTML='<i class="fas fa-check"></i> Accept & Continue';
+            return;
+        }
+        // STEP 2: Save consent
+        fetch('my-examinations.php',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=consent_update'})
+        .then(r=>r.json())
+        .then(d=>{
+            if(d.success){document.getElementById('consentModal').classList.remove('show');showToast('Consent recorded! Salamat sa iyong tiwala.','success');setTimeout(()=>location.reload(),1800);}
+            else{showToast(d.message||'Error.','error');acceptBtn.disabled=false;acceptBtn.innerHTML='<i class="fas fa-check"></i> Accept & Continue';}
+        })
+        .catch(()=>{showToast('Connection error.','error');acceptBtn.disabled=false;acceptBtn.innerHTML='<i class="fas fa-check"></i> Accept & Continue';});
+    })
+    .catch(()=>{showToast('Connection error sa DPA.','error');acceptBtn.disabled=false;acceptBtn.innerHTML='<i class="fas fa-check"></i> Accept & Continue';});
 }
 function declineConsent(){if(confirm('Without consent you cannot view your records. This will log you out. Continue?'))window.location.href='../auth/user_logout.php';}
 
@@ -1266,47 +1521,89 @@ function declineConsent(){if(confirm('Without consent you cannot view your recor
 function openDeleteModal(){document.getElementById('deleteModal').classList.add('show');}
 function closeDeleteModal(){document.getElementById('deleteModal').classList.remove('show');document.getElementById('deletionReason').value='';}
 
-// Glossary modal (NEW)
+// [ADDITION] Withdraw consent modal
+function withdrawConsent(){document.getElementById('withdrawConsentModal').classList.add('show');}
+function closeWithdrawModal(){document.getElementById('withdrawConsentModal').classList.remove('show');}
+function confirmWithdrawConsent(){
+    closeWithdrawModal();
+    Swal.fire({title:'Processing...',allowOutsideClick:false,didOpen:()=>Swal.showLoading()});
+    fetch('my-examinations.php',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=withdraw_consent'})
+    .then(r=>r.json())
+    .then(d=>{
+        if(d.success){
+            Swal.fire({icon:'success',title:'Consent Withdrawn',text:d.message,timer:2500}).then(()=>location.reload());
+        } else {
+            Swal.fire({icon:'error',title:'Error',text:d.message});
+        }
+    })
+    .catch(()=>Swal.fire({icon:'error',title:'Error',text:'Connection error. Please try again.'}));
+}
+
+// [ADDITION] View access log
+function viewAccessLog(){
+    document.getElementById('accessLogModal').classList.add('show');
+    const list = document.getElementById('accessLogList');
+    list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);"><i class="fas fa-spinner fa-spin" style="font-size:24px;"></i><p style="margin-top:10px;">Loading access log...</p></div>';
+    
+    fetch('my-examinations.php',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'action=get_access_log'})
+    .then(r=>r.json())
+    .then(d=>{
+        if(d.success && d.logs.length > 0){
+            let html = '';
+            d.logs.forEach(log=>{
+                const date = new Date(log.created_at).toLocaleString();
+                const actionLabel = log.action.replace(/_/g,' ').replace(/\b\w/g, l=>l.toUpperCase());
+                html += `
+                    <div class="audit-log-item">
+                        <i class="fas fa-eye"></i>
+                        <div style="flex:1;">
+                            <strong style="font-size:13px;color:var(--text-primary);display:block;">${actionLabel}</strong>
+                            <span style="font-size:11px;color:var(--text-secondary);">
+                                <i class="fas fa-clock"></i> ${date} &middot; 
+                                <i class="fas fa-network-wired"></i> IP: ${log.ip_address || 'N/A'}
+                            </span>
+                        </div>
+                    </div>
+                `;
+            });
+            list.innerHTML = html;
+        } else {
+            list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted);"><i class="fas fa-inbox" style="font-size:40px;opacity:0.4;display:block;margin-bottom:15px;"></i><p>No access log recorded yet.</p></div>';
+        }
+    })
+    .catch(()=>{
+        list.innerHTML = '<div style="text-align:center;padding:40px;color:var(--danger);"><i class="fas fa-exclamation-circle" style="font-size:40px;display:block;margin-bottom:15px;"></i><p>Failed to load access log.</p></div>';
+    });
+}
+function closeAccessLogModal(){document.getElementById('accessLogModal').classList.remove('show');}
+
+// Glossary modal
 function openGlossaryModal(){document.getElementById('glossaryModal').classList.add('show');}
 function closeGlossaryModal(){document.getElementById('glossaryModal').classList.remove('show');}
 
-// Click-triggered info tooltip for SPH/CYL/AXIS/ADD/VA/PD icons (NEW)
-// Uses click instead of the browser's native title-hover tooltip so it works on mobile taps too.
+// Info tooltips
 let activeTip = null;
 function toggleTip(event, iconEl, text){
     event.stopPropagation();
-    // If this icon's tooltip is already open, close it
-    if(activeTip && activeTip._owner === iconEl){
-        activeTip.remove();
-        activeTip = null;
-        return;
-    }
-    // Close any other open tooltip
+    if(activeTip && activeTip._owner === iconEl){activeTip.remove();activeTip = null;return;}
     if(activeTip){ activeTip.remove(); activeTip = null; }
-
     const bubble = document.createElement('div');
     bubble.className = 'info-tip-bubble';
     bubble.textContent = text;
     document.body.appendChild(bubble);
-
     const rect = iconEl.getBoundingClientRect();
     const bubbleRect = bubble.getBoundingClientRect();
     let left = rect.left + window.scrollX;
     let top = rect.bottom + window.scrollY + 10;
-    // Keep bubble on-screen horizontally
     const maxLeft = window.scrollX + document.documentElement.clientWidth - bubbleRect.width - 10;
     if(left > maxLeft) left = Math.max(10, maxLeft);
     bubble.style.left = left + 'px';
     bubble.style.top = top + 'px';
-
     bubble._owner = iconEl;
     activeTip = bubble;
 }
 document.addEventListener('click', function(e){
-    if(activeTip && !activeTip.contains(e.target)){
-        activeTip.remove();
-        activeTip = null;
-    }
+    if(activeTip && !activeTip.contains(e.target)){activeTip.remove();activeTip = null;}
 });
 document.addEventListener('scroll', function(){
     if(activeTip){ activeTip.remove(); activeTip = null; }
@@ -1314,11 +1611,7 @@ document.addEventListener('scroll', function(){
 
 function submitDeletionRequest() {
     const reason = document.getElementById('deletionReason').value.trim();
-    
-    // Close the modal first to prevent z-index conflict
     closeDeleteModal();
-    
-    // Small delay to ensure modal is closed before showing SweetAlert
     setTimeout(() => {
         Swal.fire({
             title: 'Confirm Deletion Request',
@@ -1332,127 +1625,46 @@ function submitDeletionRequest() {
             allowOutsideClick: false
         }).then((result) => {
             if (result.isConfirmed) {
-                // Show loading
-                Swal.fire({
-                    title: 'Processing...',
-                    text: 'Submitting your deletion request',
-                    allowOutsideClick: false,
-                    didOpen: () => {
-                        Swal.showLoading();
-                    }
-                });
-                
+                Swal.fire({title: 'Processing...',text: 'Submitting your deletion request',allowOutsideClick: false,didOpen: () => {Swal.showLoading();}});
                 const formData = new URLSearchParams();
                 formData.append('action', 'request_deletion');
                 formData.append('reason', reason);
-                
                 fetch(window.location.href, {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'X-Requested-With': 'XMLHttpRequest'
-                    },
+                    headers: {'Content-Type': 'application/x-www-form-urlencoded','X-Requested-With': 'XMLHttpRequest'},
                     body: formData.toString()
                 })
                 .then(async response => {
                     const text = await response.text();
-                    try {
-                        return JSON.parse(text);
-                    } catch(e) {
-                        console.error('Response text:', text);
-                        throw new Error('Invalid JSON response from server');
-                    }
+                    try { return JSON.parse(text); } catch(e) { console.error('Response text:', text); throw new Error('Invalid JSON response from server'); }
                 })
                 .then(data => {
-                    // Check if user already has a pending request
                     if (data.already_requested) {
-                        Swal.fire({
-                            title: '⚠️ Request Already Exists',
-                            html: `
-                                <div class="text-start">
-                                    <p class="text-warning"><strong>${data.message}</strong></p>
-                                    <div class="alert alert-info mt-3">
-                                        <i class="bi bi-info-circle me-2"></i>
-                                        <strong>Existing Request Details:</strong><br>
-                                        Request ID: #${data.existing_request.id}<br>
-                                        Status: <span class="badge bg-${data.existing_request.status === 'pending' ? 'warning' : (data.existing_request.status === 'approved' ? 'success' : 'info')}">${data.existing_request.status.toUpperCase()}</span><br>
-                                        Date: ${new Date(data.existing_request.date).toLocaleString()}
-                                    </div>
-                                    <p class="small text-muted mt-2">Please wait for the clinic to process your current request before submitting a new one.</p>
-                                </div>
-                            `,
-                            icon: 'warning',
-                            confirmButtonText: 'OK'
-                        });
+                        Swal.fire({title: '⚠️ Request Already Exists',html: `<div class="text-start"><p class="text-warning"><strong>${data.message}</strong></p><div class="alert alert-info mt-3"><i class="bi bi-info-circle me-2"></i><strong>Existing Request Details:</strong><br>Request ID: #${data.existing_request.id}<br>Status: <span class="badge bg-${data.existing_request.status === 'pending' ? 'warning' : (data.existing_request.status === 'approved' ? 'success' : 'info')}">${data.existing_request.status.toUpperCase()}</span><br>Date: ${new Date(data.existing_request.date).toLocaleString()}</div><p class="small text-muted mt-2">Please wait for the clinic to process your current request before submitting a new one.</p></div>`,icon: 'warning',confirmButtonText: 'OK'});
                         return;
                     }
-                    
                     if (data.requires_clinic_selection) {
-                        // Close loading and show clinic selection
                         Swal.close();
-                        
                         let clinicOptions = '';
                         data.clinics.forEach(clinic => {
-                            clinicOptions += `
-                                <div class="clinic-option" style="padding: 15px; margin: 10px 0; border: 1px solid var(--border-color); border-radius: 10px; cursor: pointer;" onclick="selectClinicForDeletion(${clinic.clinic_id})">
-                                    <strong><i class="fas fa-clinic-medical"></i> ${escapeHtml(clinic.name)}</strong><br>
-                                    <small><i class="fas fa-envelope"></i> ${escapeHtml(clinic.clinic_email || 'No email')} | <i class="fas fa-phone"></i> ${escapeHtml(clinic.contact || 'No contact')}</small>
-                                </div>
-                            `;
+                            clinicOptions += `<div class="clinic-option" style="padding: 15px; margin: 10px 0; border: 1px solid var(--border-color); border-radius: 10px; cursor: pointer;" onclick="selectClinicForDeletion(${clinic.clinic_id})"><strong><i class="fas fa-clinic-medical"></i> ${escapeHtml(clinic.name)}</strong><br><small><i class="fas fa-envelope"></i> ${escapeHtml(clinic.clinic_email || 'No email')} | <i class="fas fa-phone"></i> ${escapeHtml(clinic.contact || 'No contact')}</small></div>`;
                         });
-                        
-                        Swal.fire({
-                            title: 'Select Clinic',
-                            html: `
-                                <p style="text-align: left;">You have records from multiple clinics. Please select which clinic's data you want to delete:</p>
-                                <div style="max-height: 350px; overflow-y: auto; margin: 15px 0;">${clinicOptions}</div>
-                                <p style="text-align: left; font-size: 12px; color: var(--text-muted); margin-top: 10px;">
-                                    <i class="fas fa-info-circle"></i> Note: You can submit separate requests for each clinic.
-                                </p>
-                            `,
-                            icon: 'info',
-                            showConfirmButton: false,
-                            showCancelButton: true,
-                            cancelButtonText: 'Close',
-                            customClass: {
-                                container: 'swal2-container'
-                            }
-                        });
+                        Swal.fire({title: 'Select Clinic',html: `<p style="text-align: left;">You have records from multiple clinics. Please select which clinic's data you want to delete:</p><div style="max-height: 350px; overflow-y: auto; margin: 15px 0;">${clinicOptions}</div><p style="text-align: left; font-size: 12px; color: var(--text-muted); margin-top: 10px;"><i class="fas fa-info-circle"></i> Note: You can submit separate requests for each clinic.</p>`,icon: 'info',showConfirmButton: false,showCancelButton: true,cancelButtonText: 'Close',customClass: {container: 'swal2-container'}});
                     } else if (data.success) {
-                        Swal.fire({
-                            title: 'Success!',
-                            text: data.message,
-                            icon: 'success',
-                            confirmButtonText: 'OK'
-                        }).then(() => {
-                            document.getElementById('deletionReason').value = '';
-                            // Optional: reload to update the page
-                            // location.reload();
-                        });
+                        Swal.fire({title: 'Success!',text: data.message,icon: 'success',confirmButtonText: 'OK'}).then(() => {document.getElementById('deletionReason').value = '';});
                     } else {
-                        Swal.fire({
-                            title: 'Error!',
-                            text: data.message,
-                            icon: 'error',
-                            confirmButtonText: 'OK'
-                        });
+                        Swal.fire({title: 'Error!',text: data.message,icon: 'error',confirmButtonText: 'OK'});
                     }
                 })
                 .catch(error => {
                     console.error('Fetch Error:', error);
-                    Swal.fire({
-                        title: 'Connection Error!',
-                        text: 'Cannot connect to server. Please try again later.\n\nError: ' + error.message,
-                        icon: 'error',
-                        confirmButtonText: 'OK'
-                    });
+                    Swal.fire({title: 'Connection Error!',text: 'Cannot connect to server. Please try again later.\n\nError: ' + error.message,icon: 'error',confirmButtonText: 'OK'});
                 });
             }
         });
     }, 300);
 }
 
-// Helper function to escape HTML
 function escapeHtml(text) {
     if (!text) return '';
     const div = document.createElement('div');
@@ -1462,73 +1674,25 @@ function escapeHtml(text) {
 
 function selectClinicForDeletion(clinicId) {
     const reason = document.getElementById('deletionReason').value.trim();
-    
-    // Close the clinic selection modal
     Swal.close();
-    
-    // Show confirmation
     setTimeout(() => {
-        Swal.fire({
-            title: 'Confirm',
-            text: 'Submit deletion request for this clinic?',
-            icon: 'question',
-            showCancelButton: true,
-            confirmButtonText: 'Yes, submit',
-            cancelButtonText: 'Cancel'
-        }).then((result) => {
+        Swal.fire({title: 'Confirm',text: 'Submit deletion request for this clinic?',icon: 'question',showCancelButton: true,confirmButtonText: 'Yes, submit',cancelButtonText: 'Cancel'}).then((result) => {
             if (result.isConfirmed) {
-                // Show loading
-                Swal.fire({
-                    title: 'Submitting...',
-                    text: 'Please wait',
-                    allowOutsideClick: false,
-                    didOpen: () => {
-                        Swal.showLoading();
-                    }
-                });
-                
+                Swal.fire({title: 'Submitting...',text: 'Please wait',allowOutsideClick: false,didOpen: () => {Swal.showLoading();}});
                 const formData = new URLSearchParams();
                 formData.append('action', 'request_deletion');
                 formData.append('reason', reason);
                 formData.append('clinic_id', clinicId);
-                
-                fetch(window.location.href, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'X-Requested-With': 'XMLHttpRequest'
-                    },
-                    body: formData.toString()
-                })
+                fetch(window.location.href, {method: 'POST',headers: {'Content-Type': 'application/x-www-form-urlencoded','X-Requested-With': 'XMLHttpRequest'},body: formData.toString()})
                 .then(response => response.json())
                 .then(data => {
                     if (data.success) {
-                        Swal.fire({
-                            title: 'Submitted!',
-                            text: data.message,
-                            icon: 'success',
-                            confirmButtonText: 'OK'
-                        }).then(() => {
-                            closeDeleteModal();
-                            document.getElementById('deletionReason').value = '';
-                        });
+                        Swal.fire({title: 'Submitted!',text: data.message,icon: 'success',confirmButtonText: 'OK'}).then(() => {closeDeleteModal();document.getElementById('deletionReason').value = '';});
                     } else {
-                        Swal.fire({
-                            title: 'Error',
-                            text: data.message,
-                            icon: 'error',
-                            confirmButtonText: 'OK'
-                        });
+                        Swal.fire({title: 'Error',text: data.message,icon: 'error',confirmButtonText: 'OK'});
                     }
                 })
-                .catch(error => {
-                    Swal.fire({
-                        title: 'Error',
-                        text: 'Connection failed: ' + error.message,
-                        icon: 'error',
-                        confirmButtonText: 'OK'
-                    });
-                });
+                .catch(error => {Swal.fire({title: 'Error',text: 'Connection failed: ' + error.message,icon: 'error',confirmButtonText: 'OK'});});
             }
         });
     }, 200);
@@ -1541,7 +1705,6 @@ function exportMyData(){
     f.appendChild(i);document.body.appendChild(f);f.submit();document.body.removeChild(f);
 }
 
-// Nav toggles (your existing)
 function toggleProfileMenu(){document.getElementById('profileMenu').classList.toggle('show');}
 function toggleDiscoverDropdown(){const d=document.getElementById('discoverDropdown'),t=document.querySelector('.dropdown-trigger');d.classList.toggle('show');t&&t.classList.toggle('active');}
 function toggleNotifications(){document.getElementById('notificationMenu').classList.toggle('show');}
@@ -1556,12 +1719,10 @@ document.addEventListener('click',function(e){
     if(nm&&nb&&!nb.contains(e.target)&&!nm.contains(e.target))nm.classList.remove('show');
 });
 
-// Check if user has pending or approved requests
 async function checkUserDeletionRequests() {
     try {
         const response = await fetch('/api/request_data_deletion.php?action=get_user_requests');
         const data = await response.json();
-        
         if (data.success && data.requests && data.requests.length > 0) {
             data.requests.forEach(request => {
                 if (request.status === 'pending' || request.status === 'approved') {
@@ -1569,9 +1730,7 @@ async function checkUserDeletionRequests() {
                 }
             });
         }
-    } catch (error) {
-        console.error('Error checking requests:', error);
-    }
+    } catch (error) { console.error('Error checking requests:', error); }
 }
 
 function addCancelButtonToUI(request) {
@@ -1591,35 +1750,22 @@ function addCancelButtonToUI(request) {
             </div>
         </div>
     `;
-    
-    // Add to the page (e.g., at the top of the examination history)
     const container = document.querySelector('.main-content');
     if (container && !document.getElementById(`cancelRequestAlert-${request.id}`)) {
         container.insertAdjacentHTML('afterbegin', cancelButtonHtml);
     }
 }
 
-// Check if user has rejected consent
 async function checkConsentStatus() {
     try {
         const formData = new URLSearchParams();
         formData.append('action', 'get_consent_status');
-        
-        const response = await fetch('my-examinations.php', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded',
-            },
-            body: formData.toString()
-        });
+        const response = await fetch('my-examinations.php', {method: 'POST',headers: {'Content-Type': 'application/x-www-form-urlencoded',},body: formData.toString()});
         const data = await response.json();
-        
         if (data.success && data.consent_status === 'rejected') {
             showReconsentBanner();
         }
-    } catch (error) {
-        console.error('Error checking consent:', error);
-    }
+    } catch (error) { console.error('Error checking consent:', error); }
 }
 
 function showReconsentBanner() {
@@ -1637,7 +1783,6 @@ function showReconsentBanner() {
             </div>
         </div>
     `;
-    
     const container = document.querySelector('.main-content');
     if (container && !document.getElementById('reconsentBanner')) {
         container.insertAdjacentHTML('afterbegin', bannerHtml);
@@ -1647,163 +1792,68 @@ function showReconsentBanner() {
 async function requestReconsent() {
     Swal.fire({
         title: 'Give Data Privacy Consent',
-        html: `
-            <div class="text-start">
-                <div class="alert alert-info">
-                    <i class="bi bi-shield-lock me-2"></i>
-                    <strong>RA 10173 - Data Privacy Act of 2012</strong>
-                </div>
-                <p>By giving your consent, you allow the clinic to:</p>
-                <ul class="text-start">
-                    <li>Store your personal and medical information</li>
-                    <li>Access your records for medical purposes</li>
-                    <li>Keep your data for 10 years as required by law</li>
-                </ul>
-                <p>You have the right to:</p>
-                <ul class="text-start">
-                    <li>Access your records anytime</li>
-                    <li>Request correction of inaccurate data</li>
-                    <li>Request deletion (subject to 10-year retention)</li>
-                    <li>Withdraw consent at any time</li>
-                </ul>
-                <div class="form-check mt-3">
-                    <input type="checkbox" id="reconsentCheck" class="form-check-input">
-                    <label class="form-check-label" for="reconsentCheck">
-                        I understand and I give my consent
-                    </label>
-                </div>
-            </div>
-        `,
+        html: `<div class="text-start"><div class="alert alert-info"><i class="bi bi-shield-lock me-2"></i><strong>RA 10173 - Data Privacy Act of 2012</strong></div><p>By giving your consent, you allow the clinic to:</p><ul class="text-start"><li>Store your personal and medical information</li><li>Access your records for medical purposes</li><li>Keep your data for 10 years as required by law</li></ul><p>You have the right to:</p><ul class="text-start"><li>Access your records anytime</li><li>Request correction of inaccurate data</li><li>Request deletion (subject to 10-year retention)</li><li>Withdraw consent at any time</li></ul><div class="form-check mt-3"><input type="checkbox" id="reconsentCheck" class="form-check-input"><label class="form-check-label" for="reconsentCheck">I understand and I give my consent</label></div></div>`,
         icon: 'question',
         showCancelButton: true,
         confirmButtonText: 'Yes, Give Consent',
         cancelButtonText: 'Cancel',
         preConfirm: () => {
             const checked = document.getElementById('reconsentCheck').checked;
-            if (!checked) {
-                Swal.showValidationMessage('Please confirm your consent');
-                return false;
-            }
+            if (!checked) { Swal.showValidationMessage('Please confirm your consent'); return false; }
             return true;
         }
-    }).then(result => {
-        if (result.isConfirmed) {
-            submitReconsent();
-        }
-    });
+    }).then(result => { if (result.isConfirmed) { submitReconsent(); } });
 }
 
 function submitReconsent() {
-    Swal.fire({
-        title: 'Processing...',
-        allowOutsideClick: false,
-        didOpen: () => Swal.showLoading()
-    });
-    
+    Swal.fire({title: 'Processing...',allowOutsideClick: false,didOpen: () => Swal.showLoading()});
     const formData = new URLSearchParams();
     formData.append('action', 'reconsent');
-    
-    fetch('my-examinations.php', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: formData.toString()
-    })
+    fetch('my-examinations.php', {method: 'POST',headers: {'Content-Type': 'application/x-www-form-urlencoded',},body: formData.toString()})
     .then(response => response.json())
     .then(data => {
         if (data.success) {
-            Swal.fire({
-                icon: 'success',
-                title: 'Consent Recorded!',
-                text: 'You can now access your records.',
-                timer: 2000
-            }).then(() => {
-                location.reload();
-            });
+            Swal.fire({icon: 'success',title: 'Consent Recorded!',text: 'You can now access your records.',timer: 2000}).then(() => {location.reload();});
         } else {
-            Swal.fire({
-                icon: 'error',
-                title: 'Error',
-                text: data.message
-            });
+            Swal.fire({icon: 'error',title: 'Error',text: data.message});
         }
     })
-    .catch(error => {
-        Swal.fire({
-            icon: 'error',
-            title: 'Error',
-            text: 'Connection error. Please try again.'
-        });
-    });
+    .catch(error => {Swal.fire({icon: 'error',title: 'Error',text: 'Connection error. Please try again.'});});
 }
 
 async function cancelDeletionRequest(requestId) {
     const { value: reason } = await Swal.fire({
         title: 'Cancel Deletion Request?',
-        html: `
-            <p>Are you sure you want to cancel your data deletion request?</p>
-            <textarea id="cancelReason" class="swal2-textarea" placeholder="Reason for cancellation (optional)"></textarea>
-        `,
+        html: `<p>Are you sure you want to cancel your data deletion request?</p><textarea id="cancelReason" class="swal2-textarea" placeholder="Reason for cancellation (optional)"></textarea>`,
         icon: 'warning',
         showCancelButton: true,
         confirmButtonText: 'Yes, cancel request',
         cancelButtonText: 'No, keep it',
-        preConfirm: () => {
-            return document.getElementById('cancelReason').value;
-        }
+        preConfirm: () => { return document.getElementById('cancelReason').value; }
     });
-    
     if (reason !== undefined) {
-        Swal.fire({
-            title: 'Processing...',
-            allowOutsideClick: false,
-            didOpen: () => Swal.showLoading()
-        });
-        
+        Swal.fire({title: 'Processing...',allowOutsideClick: false,didOpen: () => Swal.showLoading()});
         const formData = new FormData();
         formData.append('action', 'cancel_deletion');
         formData.append('request_id', requestId);
         formData.append('reason', reason || 'User cancelled');
-        
         try {
-            const response = await fetch('api/request_data_deletion.php', {
-                method: 'POST',
-                body: formData
-            });
+            const response = await fetch('api/request_data_deletion.php', {method: 'POST',body: formData});
             const data = await response.json();
-            
             if (data.success) {
-                Swal.fire({
-                    icon: 'success',
-                    title: 'Cancelled!',
-                    text: data.message,
-                    timer: 2000,
-                    showConfirmButton: false
-                }).then(() => {
-                    location.reload();
-                });
+                Swal.fire({icon: 'success',title: 'Cancelled!',text: data.message,timer: 2000,showConfirmButton: false}).then(() => {location.reload();});
             } else {
-                Swal.fire({
-                    icon: 'error',
-                    title: 'Error',
-                    text: data.message
-                });
+                Swal.fire({icon: 'error',title: 'Error',text: data.message});
             }
         } catch (error) {
-            Swal.fire({
-                icon: 'error',
-                title: 'Error',
-                text: 'Connection error. Please try again.'
-            });
+            Swal.fire({icon: 'error',title: 'Error',text: 'Connection error. Please try again.'});
         }
     }
 }
 
-// Call this when page loads
 document.addEventListener('DOMContentLoaded', function() {
     checkUserDeletionRequests();
-    checkConsentStatus(); // ✅ ADD THIS LINE
+    checkConsentStatus();
 });
 </script>
 </body>

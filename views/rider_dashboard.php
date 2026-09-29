@@ -1,11 +1,10 @@
 <?php
-// views/rider_dashboard.php — Rider Dashboard with COD Collection & History
+// views/rider_dashboard.php — Rider Dashboard (ParcelGo Style)
 if (session_status() === PHP_SESSION_NONE) {
     session_name('eyecore_admin');
     session_start();
 }
 
-// ✅ Check if rider is logged in
 if (!isset($_SESSION['rider_id']) || !isset($_SESSION['user_id'])) {
     header('Location: ../admin/login.php');
     exit;
@@ -17,7 +16,7 @@ $riderId  = (int)$_SESSION['rider_id'];
 $userId   = (int)$_SESSION['user_id'];
 $clinicId = (int)($_SESSION['clinic_id'] ?? 0);
 
-// ✅ Verify rider is still active
+// ✅ Verify rider
 $rStmt = $pdo->prepare("
     SELECT r.*, u.email, u.contact 
     FROM riders r
@@ -61,7 +60,16 @@ $stmtActive = $pdo->prepare("
     WHERE r.assigned_rider_id = ?
       AND r.clinic_id = ?
       AND r.delivery_status IN ('assigned', 'picked_up', 'in_transit')
-    ORDER BY r.created_at ASC
+    ORDER BY 
+        CASE 
+            WHEN r.delivery_status = 'in_transit' THEN 0
+            WHEN r.delivery_status = 'picked_up' THEN 1
+            WHEN r.delivery_status = 'assigned' THEN 2
+            ELSE 3
+        END,
+        r.delivery_date ASC,
+        r.delivery_time_start ASC,
+        r.created_at ASC
 ");
 $stmtActive->execute([$riderId, $clinicId]);
 $activeDeliveries = $stmtActive->fetchAll(PDO::FETCH_ASSOC);
@@ -81,7 +89,7 @@ $stmtToday = $pdo->prepare("
 $stmtToday->execute([$riderId, $clinicId]);
 $completedToday = $stmtToday->fetchAll(PDO::FETCH_ASSOC);
 
-// ✅ DELIVERY HISTORY — All past deliveries (excluding today)
+// ✅ History
 $stmtHistory = $pdo->prepare("
     SELECT r.*,
            CONCAT(u.first_name, ' ', u.last_name) AS customer_name
@@ -92,12 +100,12 @@ $stmtHistory = $pdo->prepare("
       AND r.delivery_status = 'delivered'
       AND DATE(r.delivered_at) < CURDATE()
     ORDER BY r.delivered_at DESC
-    LIMIT 50
+    LIMIT 10
 ");
 $stmtHistory->execute([$riderId, $clinicId]);
 $deliveryHistory = $stmtHistory->fetchAll(PDO::FETCH_ASSOC);
 
-// ✅ Calculate total collected for today
+// ✅ Total collected today
 $stmtCollected = $pdo->prepare("
     SELECT COALESCE(SUM(collected_amount), 0) AS total_collected
     FROM reservations
@@ -107,6 +115,38 @@ $stmtCollected = $pdo->prepare("
 ");
 $stmtCollected->execute([$riderId, $clinicId]);
 $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_collected'] ?? 0);
+
+// ✅ Today's schedule count
+$stmtTodaySched = $pdo->prepare("
+    SELECT COUNT(*) AS total
+    FROM reservations
+    WHERE assigned_rider_id = ?
+      AND clinic_id = ?
+      AND delivery_date = CURDATE()
+      AND delivery_status NOT IN ('delivered', 'cancelled')
+");
+$stmtTodaySched->execute([$riderId, $clinicId]);
+$todaySched = $stmtTodaySched->fetch(PDO::FETCH_ASSOC);
+
+// ✅ Working hours
+$scheduleStmt = $pdo->prepare("
+    SELECT es.time_in, es.time_out, es.break_start, es.break_end
+    FROM employee_schedules es
+    INNER JOIN riders r ON r.employee_id = es.employee_id
+    WHERE r.id = ? AND es.clinic_id = ? AND es.is_active = 1
+      AND (es.effective_from IS NULL OR es.effective_from <= CURDATE())
+      AND (es.effective_to   IS NULL OR es.effective_to   >= CURDATE())
+    ORDER BY es.created_at DESC
+    LIMIT 1
+");
+$scheduleStmt->execute([$riderId, $clinicId]);
+$riderSchedule = $scheduleStmt->fetch(PDO::FETCH_ASSOC);
+
+// ✅ NEXT delivery
+$nextDelivery = !empty($activeDeliveries) ? $activeDeliveries[0] : null;
+
+// ✅ Count remaining today
+$remainingToday = (int)($todaySched['total'] ?? 0);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -120,7 +160,7 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <style>
-        * { box-sizing: border-box; }
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
         :root {
             --ec-primary: #0d6e6e;
@@ -137,7 +177,7 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
             --ec-danger: #ef4444;
             --ec-success: #10b981;
             --ec-info: #3b82f6;
-            --ec-radius: 16px;
+            --ec-radius: 14px;
             --ec-radius-sm: 10px;
             --ec-shadow-sm: 0 1px 3px rgba(15,23,42,.05);
             --ec-shadow-md: 0 4px 16px rgba(15,23,42,.08);
@@ -152,17 +192,17 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
             font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             min-height: 100vh;
             -webkit-font-smoothing: antialiased;
+            font-size: 14px;
         }
 
         /* ═══════════════ HEADER ═══════════════ */
         .rider-header {
-            background: linear-gradient(135deg, var(--ec-primary) 0%, var(--ec-primary-dark) 100%);
-            color: #fff;
-            padding: 1.25rem 1.5rem;
+            background: #fff;
+            padding: .875rem 1rem;
             position: sticky;
             top: 0;
             z-index: 100;
-            box-shadow: 0 4px 20px rgba(13,110,110,.25);
+            border-bottom: 1px solid var(--ec-border);
         }
 
         .rider-header-inner {
@@ -171,375 +211,1178 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
             display: flex;
             justify-content: space-between;
             align-items: center;
-            gap: 1rem;
-            flex-wrap: wrap;
+            gap: .75rem;
         }
 
-        .rider-header h1 {
-            font-size: 1.35rem;
-            font-weight: 800;
-            margin: 0;
-            letter-spacing: -0.02em;
+        .header-left {
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 12px;
+            min-width: 0;
         }
 
-        .rider-header .subtitle {
-            opacity: .9;
-            font-size: .85rem;
-            margin-top: 4px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .rider-header .avatar-badge {
-            width: 44px;
-            height: 44px;
-            border-radius: 50%;
-            background: rgba(255,255,255,.2);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-            font-weight: 800;
-            flex-shrink: 0;
-            border: 2px solid rgba(255,255,255,.3);
-        }
-
-        .rider-header .btn-icon {
+        .brand-logo {
             width: 40px;
             height: 40px;
-            border-radius: 50%;
-            background: rgba(255,255,255,.15);
-            border: 1px solid rgba(255,255,255,.25);
+            border-radius: 10px;
+            background: var(--ec-primary);
             color: #fff;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-size: 16px;
-            cursor: pointer;
-            transition: all .2s;
+            font-size: 18px;
+            flex-shrink: 0;
         }
 
-        .rider-header .btn-icon:hover {
-            background: rgba(255,255,255,.25);
-            transform: translateY(-1px);
+        .brand-text {
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+        }
+
+        .brand-name {
+            font-size: .95rem;
+            font-weight: 800;
+            color: var(--ec-text);
+            letter-spacing: -0.02em;
+            line-height: 1.1;
+        }
+
+        .brand-sub {
+            font-size: .6rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .08em;
+            color: var(--ec-text-muted);
+            margin-top: 2px;
+        }
+
+        .header-divider {
+            width: 1px;
+            height: 32px;
+            background: var(--ec-border);
+            margin: 0 4px;
+        }
+
+        .rider-profile {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 0;
+        }
+
+        .rider-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: var(--ec-primary-light);
+            color: var(--ec-primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            font-weight: 800;
+            flex-shrink: 0;
+            overflow: hidden;
+            border: 2px solid #fff;
+            box-shadow: 0 0 0 1px var(--ec-border);
+        }
+
+        .rider-info {
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+            min-width: 0;
+        }
+
+        .rider-name {
+            font-size: .85rem;
+            font-weight: 700;
+            color: var(--ec-text);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+
+        .rider-role {
+            font-size: .65rem;
+            color: var(--ec-text-muted);
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 3px;
+        }
+
+        .on-duty-badge {
+            background: #d1fae5;
+            color: #065f46;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: .58rem;
+            font-weight: 800;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+            border: 1px solid #6ee7b7;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .icon-btn {
+            width: 38px;
+            height: 38px;
+            border-radius: 8px;
+            background: #fff;
+            border: 1px solid var(--ec-border);
+            color: var(--ec-text);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 15px;
+            cursor: pointer;
+            transition: all .15s;
+            position: relative;
+        }
+
+        .icon-btn:hover {
+            background: var(--ec-bg);
+            border-color: var(--ec-primary);
+            color: var(--ec-primary);
+        }
+
+        .icon-btn .notif-dot {
+            position: absolute;
+            top: 6px;
+            right: 6px;
+            width: 7px;
+            height: 7px;
+            background: var(--ec-danger);
+            border-radius: 50%;
+            border: 1.5px solid #fff;
+        }
+
+        .text-btn {
+            height: 38px;
+            padding: 0 .9rem;
+            border-radius: 8px;
+            background: #fff;
+            border: 1px solid var(--ec-border);
+            color: var(--ec-text);
+            font-size: .78rem;
+            font-weight: 700;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            cursor: pointer;
+            transition: all .15s;
+            text-decoration: none;
+            font-family: inherit;
+        }
+
+        .text-btn:hover {
+            background: var(--ec-bg);
+            border-color: var(--ec-primary);
+            color: var(--ec-primary);
+        }
+
+        .text-btn.primary {
+            background: var(--ec-primary-light);
+            border-color: #b2dede;
+            color: var(--ec-primary);
+        }
+
+        .text-btn.primary:hover {
+            background: #d1eded;
         }
 
         /* ═══════════════ MAIN CONTENT ═══════════════ */
         .main-content {
             max-width: 1200px;
             margin: 0 auto;
-            padding: 1.5rem 1.25rem 6rem;
+            padding: 1rem .75rem 5rem;
         }
 
-        /* ═══════════════ STATS ═══════════════ */
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-            gap: .875rem;
-            margin-bottom: 1.75rem;
-        }
-
-        .stat-card {
-            background: var(--ec-card);
-            border-radius: var(--ec-radius);
-            padding: 1.1rem 1.25rem;
+        /* ═══════════════ SHIFT BAR ═══════════════ */
+        .shift-bar {
+            background: #fff;
             border: 1px solid var(--ec-border);
-            box-shadow: var(--ec-shadow-sm);
-            transition: all .2s;
-            position: relative;
-            overflow: hidden;
+            border-radius: 12px;
+            padding: .85rem 1.15rem;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 1.25rem;
+            overflow-x: auto;
+            scrollbar-width: none;
+            -webkit-overflow-scrolling: touch;
         }
 
-        .stat-card::before {
-            content: '';
-            position: absolute;
-            top: 0; left: 0; right: 0;
-            height: 3px;
-            background: var(--ec-primary);
+        .shift-bar::-webkit-scrollbar { display: none; }
+
+        .shift-item {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            white-space: nowrap;
+            flex-shrink: 0;
         }
 
-        .stat-card.warning::before { background: var(--ec-warning); }
-        .stat-card.info::before { background: var(--ec-info); }
-        .stat-card.success::before { background: var(--ec-success); }
-        .stat-card.accent::before { background: var(--ec-accent); }
-
-        .stat-card:hover {
-            transform: translateY(-2px);
-            box-shadow: var(--ec-shadow-md);
-        }
-
-        .stat-label {
-            font-size: .7rem;
+        .shift-item-label {
+            font-size: .6rem;
             text-transform: uppercase;
-            letter-spacing: .05em;
+            letter-spacing: .06em;
             color: var(--ec-text-muted);
             font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 6px;
         }
 
-        .stat-value {
-            font-size: 1.85rem;
+        .shift-item-value {
+            font-size: 1rem;
             font-weight: 800;
-            line-height: 1.2;
-            margin-top: 6px;
-            letter-spacing: -0.02em;
-        }
-
-        .stat-value.primary { color: var(--ec-primary); }
-        .stat-value.warning { color: var(--ec-warning); }
-        .stat-value.info    { color: var(--ec-info); }
-        .stat-value.success { color: var(--ec-success); }
-        .stat-value.accent  { color: var(--ec-accent); }
-
-        .stat-value.small {
-            font-size: 1.25rem;
-        }
-
-        /* ═══════════════ SECTION HEADER ═══════════════ */
-        .section-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 1rem;
-            margin-top: 1.5rem;
-            gap: 1rem;
-            flex-wrap: wrap;
-        }
-
-        .section-header h5 {
-            font-size: 1.1rem;
-            font-weight: 800;
-            margin: 0;
-            display: flex;
-            align-items: center;
-            gap: 10px;
+            color: var(--ec-text);
             letter-spacing: -0.01em;
         }
 
-        .section-header h5 i {
-            width: 32px;
-            height: 32px;
-            border-radius: 8px;
-            background: var(--ec-primary-light);
+        .shift-item-sub {
+            font-size: .7rem;
+            color: var(--ec-text-muted);
+            font-weight: 600;
+        }
+
+        .shift-divider {
+            width: 1px;
+            height: 40px;
+            background: var(--ec-border);
+            flex-shrink: 0;
+        }
+
+        /* ═══════════════ STATS CARDS ═══════════════ */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: .75rem;
+            margin-bottom: 1.25rem;
+        }
+
+        .stat-card-new {
+            background: #fff;
+            border: 1px solid var(--ec-border);
+            border-radius: 12px;
+            padding: .85rem .95rem;
+            display: flex;
+            align-items: center;
+            gap: .75rem;
+            box-shadow: var(--ec-shadow-sm);
+            transition: all .15s;
+            min-width: 0;
+        }
+
+        .stat-card-new:hover {
+            box-shadow: var(--ec-shadow-md);
+        }
+
+        .stat-icon-box {
+            width: 44px;
+            height: 44px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            flex-shrink: 0;
+        }
+
+        .stat-icon-box.warning { background: #fef3c7; color: #d97706; }
+        .stat-icon-box.info    { background: #dbeafe; color: #2563eb; }
+        .stat-icon-box.success { background: #d1fae5; color: #059669; }
+        .stat-icon-box.accent  { background: #fef3c7; color: #d97706; }
+
+        .stat-content {
+            display: flex;
+            flex-direction: column;
+            gap: 1px;
+            min-width: 0;
+        }
+
+        .stat-label-new {
+            font-size: .7rem;
+            font-weight: 700;
+            color: var(--ec-text-muted);
+        }
+
+        .stat-value-new {
+            font-size: 1.35rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+            line-height: 1.1;
+            color: var(--ec-text);
+        }
+
+        .stat-sub {
+            font-size: .65rem;
+            color: var(--ec-text-muted);
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* ═══════════════ SECTION HEADER ═══════════════ */
+        .section-h {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 1.25rem 0 .75rem;
+            gap: .5rem;
+        }
+
+        .section-h-left {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .section-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--ec-accent);
+            flex-shrink: 0;
+        }
+
+        .section-h h5 {
+            font-size: .85rem;
+            font-weight: 800;
+            margin: 0;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+            color: var(--ec-text);
+        }
+
+        .section-h-right {
+            font-size: .72rem;
+            color: var(--ec-text-muted);
+            font-weight: 600;
+        }
+
+        .section-h-right a,
+        .section-h-right button {
             color: var(--ec-primary);
+            font-weight: 700;
+            text-decoration: none;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: inherit;
+            padding: 0;
+        }
+
+        .section-h-right a:hover,
+        .section-h-right button:hover {
+            text-decoration: underline;
+        }
+
+        /* ═══════════════ HERO — NEXT DELIVERY (ParcelGo Style) ═══════════════ */
+        .hero-delivery {
+            background: #fff;
+            border: 1px solid var(--ec-border);
+            border-radius: 14px;
+            overflow: hidden;
+            box-shadow: var(--ec-shadow-md);
+            margin-bottom: 1.25rem;
+            display: grid;
+            grid-template-columns: 1fr 1.4fr;
+        }
+
+        /* Left panel — dark green */
+        .hero-left {
+            background: linear-gradient(135deg, #0d6e6e 0%, #095050 100%);
+            color: #fff;
+            padding: 1.25rem 1.35rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            position: relative;
+            overflow: hidden;
+            min-height: 280px;
+        }
+
+        .hero-left::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            right: -30%;
+            width: 260px;
+            height: 260px;
+            background: radial-gradient(circle, rgba(255,255,255,.08) 0%, transparent 65%);
+            border-radius: 50%;
+            pointer-events: none;
+        }
+
+        .hero-left-top {
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero-left-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 8px;
+            margin-bottom: .85rem;
+        }
+
+        .hero-resv {
+            font-family: 'Courier New', monospace;
+            font-size: .78rem;
+            font-weight: 800;
+            letter-spacing: .02em;
+            opacity: .9;
+        }
+
+        .hero-status-badge {
+            background: rgba(255,255,255,.2);
+            border: 1px solid rgba(255,255,255,.35);
+            color: #fff;
+            padding: 3px 10px;
+            border-radius: 999px;
+            font-size: .6rem;
+            font-weight: 800;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+        }
+
+        .hero-go-label {
+            font-size: .6rem;
+            text-transform: uppercase;
+            letter-spacing: .1em;
+            font-weight: 700;
+            opacity: .7;
+            margin-bottom: .35rem;
+        }
+
+        .hero-address {
+            font-size: 1.6rem;
+            font-weight: 800;
+            line-height: 1.1;
+            letter-spacing: -0.02em;
+            margin-bottom: .25rem;
+            word-break: break-word;
+        }
+
+        .hero-city {
+            font-size: .82rem;
+            opacity: .85;
+            font-weight: 600;
+        }
+
+        .hero-customer {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 1rem;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero-customer-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background: rgba(255,255,255,.2);
+            border: 1.5px solid rgba(255,255,255,.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            font-weight: 800;
+            flex-shrink: 0;
+        }
+
+        .hero-customer-info {
+            min-width: 0;
+        }
+
+        .hero-customer-name {
+            font-size: .88rem;
+            font-weight: 700;
+            line-height: 1.15;
+        }
+
+        .hero-customer-phone {
+            font-size: .72rem;
+            opacity: .85;
+            font-family: 'Courier New', monospace;
+        }
+
+        .hero-left-actions {
+            display: flex;
+            gap: .5rem;
+            margin-top: 1rem;
+            position: relative;
+            z-index: 1;
+        }
+
+        .hero-action-btn {
+            flex: 1;
+            background: #fff;
+            color: var(--ec-primary);
+            border: none;
+            padding: .65rem .8rem;
+            border-radius: 9px;
+            font-size: .75rem;
+            font-weight: 800;
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            font-size: 16px;
+            gap: 6px;
+            cursor: pointer;
+            transition: all .15s;
+            text-decoration: none;
+            letter-spacing: .03em;
+            text-transform: uppercase;
+            font-family: inherit;
+            min-height: 42px;
         }
 
-        .section-count {
-            font-size: .8rem;
+        .hero-action-btn:hover {
+            background: #f0fdf4;
+            color: var(--ec-primary-dark);
+            transform: translateY(-1px);
+        }
+
+        .hero-action-btn.outline {
+            background: transparent;
+            color: #fff;
+            border: 1.5px solid rgba(255,255,255,.4);
+        }
+
+        .hero-action-btn.outline:hover {
+            background: rgba(255,255,255,.15);
+            color: #fff;
+        }
+
+        /* Right panel — white */
+        .hero-right {
+            padding: 1.25rem 1.35rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            background: #fff;
+        }
+
+        .hero-right-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .hero-right-title {
+            font-size: 1.1rem;
+            font-weight: 800;
+            color: var(--ec-text);
+            letter-spacing: -0.01em;
+        }
+
+        .hero-right-sub {
+            font-size: .72rem;
+            color: var(--ec-text-muted);
+            margin-top: 2px;
+            font-weight: 500;
+        }
+
+        .hero-cod-box {
+            text-align: right;
+            flex-shrink: 0;
+        }
+
+        .hero-cod-label {
+            font-size: .58rem;
+            text-transform: uppercase;
+            letter-spacing: .08em;
+            font-weight: 800;
+            color: var(--ec-text-muted);
+        }
+
+        .hero-cod-amount {
+            font-size: 1.5rem;
+            font-weight: 800;
+            color: var(--ec-text);
+            letter-spacing: -0.02em;
+            margin-top: 2px;
+        }
+
+        /* Info grid */
+        .hero-info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .hero-info-item {
+            display: flex;
+            gap: 8px;
+            align-items: flex-start;
+        }
+
+        .hero-info-icon {
+            width: 22px;
+            height: 22px;
+            border-radius: 6px;
+            background: var(--ec-bg);
+            color: var(--ec-primary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+
+        .hero-info-label {
+            font-size: .58rem;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            font-weight: 800;
+            color: var(--ec-text-muted);
+            margin-bottom: 3px;
+        }
+
+        .hero-info-value {
+            font-size: .85rem;
+            font-weight: 800;
+            color: var(--ec-text);
+            letter-spacing: -0.01em;
+        }
+
+        .hero-info-sub {
+            font-size: .68rem;
+            color: var(--ec-text-muted);
+            margin-top: 1px;
+        }
+
+        /* Progress tracker */
+        .hero-progress-wrap {
+            margin-top: auto;
+        }
+
+        .hero-progress-label {
+            font-size: .58rem;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            font-weight: 800;
+            color: var(--ec-text-muted);
+            margin-bottom: .65rem;
+        }
+
+        .hero-progress-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            position: relative;
+            padding: 0 .25rem;
+        }
+
+        .hero-progress-line {
+            position: absolute;
+            top: 11px;
+            left: 20px;
+            right: 20px;
+            height: 2px;
+            background: var(--ec-border);
+            z-index: 0;
+        }
+
+        .hero-progress-line-fill {
+            height: 100%;
+            background: var(--ec-primary);
+            transition: width .3s ease;
+        }
+
+        .hero-progress-step {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 5px;
+            position: relative;
+            z-index: 1;
+            flex: 1;
+        }
+
+        .hero-progress-dot {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            background: #fff;
+            border: 2px solid var(--ec-border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            color: var(--ec-text-muted);
+            transition: all .2s;
+        }
+
+        .hero-progress-step.done .hero-progress-dot {
+            background: var(--ec-primary);
+            border-color: var(--ec-primary);
+            color: #fff;
+        }
+
+        .hero-progress-step.active .hero-progress-dot {
+            background: var(--ec-primary);
+            border-color: var(--ec-primary);
+            color: #fff;
+            box-shadow: 0 0 0 4px var(--ec-primary-light);
+        }
+
+        .hero-progress-text {
+            font-size: .6rem;
             font-weight: 700;
             color: var(--ec-text-muted);
-            background: var(--ec-card);
-            padding: 6px 14px;
-            border-radius: 999px;
-            border: 1px solid var(--ec-border);
+            text-align: center;
+            white-space: nowrap;
         }
 
-        /* ═══════════════ DELIVERY CARDS ═══════════════ */
-        .delivery-card {
-            background: var(--ec-card);
-            border-radius: var(--ec-radius);
-            padding: 1.25rem;
-            border: 1px solid var(--ec-border);
-            box-shadow: var(--ec-shadow-sm);
-            transition: all .2s;
-            margin-bottom: 1rem;
+        .hero-progress-step.done .hero-progress-text,
+        .hero-progress-step.active .hero-progress-text {
+            color: var(--ec-text);
+        }
+
+        /* COD alert */
+        .hero-cod-alert {
+            background: #fef3c7;
+            border: 1px solid #fcd34d;
+            border-radius: 8px;
+            padding: .55rem .75rem;
+            margin-top: .85rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: .72rem;
+            font-weight: 600;
+            color: #92400e;
+        }
+
+        .hero-cod-alert i {
+            font-size: 14px;
+            color: #d97706;
+            flex-shrink: 0;
+        }
+
+        /* ═══════════════ SEARCH BAR ═══════════════ */
+        .search-bar {
             position: relative;
-            overflow: hidden;
+            margin-bottom: 1rem;
         }
 
-        .delivery-card:hover {
+        .search-bar i {
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--ec-text-muted);
+            font-size: .9rem;
+        }
+
+        .search-bar input {
+            width: 100%;
+            padding: .75rem 1rem .75rem 2.5rem;
+            border: 1px solid var(--ec-border);
+            border-radius: 10px;
+            font-size: .82rem;
+            background: #fff;
+            font-family: inherit;
+            transition: all .15s;
+        }
+
+        .search-bar input:focus {
+            outline: none;
+            border-color: var(--ec-primary);
+            box-shadow: 0 0 0 3px rgba(13,110,110,.08);
+        }
+
+        .search-hint {
+            position: absolute;
+            right: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: .62rem;
+            color: var(--ec-text-muted);
+            background: var(--ec-bg);
+            padding: 3px 7px;
+            border-radius: 5px;
+            font-weight: 700;
+            border: 1px solid var(--ec-border);
+            pointer-events: none;
+        }
+
+        /* ═══════════════ DELIVERY ROWS (ParcelGo Style) ═══════════════ */
+        .delivery-row {
+            background: #fff;
+            border: 1px solid var(--ec-border);
+            border-radius: 12px;
+            padding: 1rem 1.15rem;
+            margin-bottom: .65rem;
+            display: grid;
+            grid-template-columns: 1.4fr 1fr 1fr auto;
+            gap: 1rem;
+            align-items: center;
+            transition: all .15s;
+            box-shadow: var(--ec-shadow-sm);
+        }
+
+        .delivery-row:hover {
             box-shadow: var(--ec-shadow-md);
             border-color: #cbd5e1;
         }
 
-        .delivery-card.active-card {
-            border-left: 4px solid var(--ec-primary);
+        .delivery-col {
+            min-width: 0;
         }
 
-        .delivery-card.active-card.in_transit {
-            border-left-color: var(--ec-info);
-        }
-
-        .delivery-card.active-card.picked_up {
-            border-left-color: #8b5cf6;
-        }
-
-        .delivery-card.active-card.assigned {
-            border-left-color: var(--ec-warning);
-        }
-
-        .delivery-card.completed-card {
-            border-left: 4px solid var(--ec-success);
-            opacity: 0.92;
-        }
-
-        .delivery-card.completed-card:hover {
-            opacity: 1;
-        }
-
-        .delivery-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            gap: 1rem;
-            margin-bottom: 1rem;
-            flex-wrap: wrap;
+        /* Column 1: ID + customer + address */
+        .delivery-id-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 6px;
         }
 
         .delivery-id {
+            font-family: 'Courier New', monospace;
+            font-size: .75rem;
             font-weight: 800;
             color: var(--ec-primary);
-            font-size: 1rem;
-            font-family: 'Courier New', monospace;
-            letter-spacing: -0.02em;
+            letter-spacing: .01em;
         }
 
-        .delivery-date {
-            font-size: .75rem;
+        .delivery-status-tag {
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: .55rem;
+            font-weight: 800;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+        }
+
+        .tag-assigned   { background: #fef3c7; color: #92400e; }
+        .tag-picked_up  { background: #ede9fe; color: #5b21b6; }
+        .tag-in_transit { background: #dbeafe; color: #1e40af; }
+
+        .delivery-customer-name {
+            font-size: 1.05rem;
+            font-weight: 800;
+            color: var(--ec-text);
+            letter-spacing: -0.01em;
+            line-height: 1.15;
+            margin-bottom: 3px;
+        }
+
+        .delivery-address-line {
+            font-size: .72rem;
             color: var(--ec-text-muted);
-            margin-top: 3px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .delivery-address-line i {
+            font-size: .7rem;
+            flex-shrink: 0;
+        }
+
+        /* Column 2: Delivery time */
+        .delivery-col-label {
+            font-size: .56rem;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            font-weight: 800;
+            color: var(--ec-text-muted);
+            margin-bottom: 4px;
+        }
+
+        .delivery-time-value {
+            font-size: .85rem;
+            font-weight: 800;
+            color: var(--ec-text);
             display: flex;
             align-items: center;
             gap: 5px;
+            letter-spacing: -0.01em;
         }
 
-        .badge-status {
+        .delivery-time-value i {
+            color: var(--ec-primary);
+            font-size: .85rem;
+        }
+
+        .delivery-tracking-sub {
+            font-size: .65rem;
+            color: var(--ec-text-muted);
+            font-family: 'Courier New', monospace;
+            margin-top: 3px;
+        }
+
+        /* Column 3: Payment */
+        .delivery-pay-badge {
             display: inline-flex;
             align-items: center;
-            gap: .35rem;
-            padding: .4rem .75rem;
+            gap: 3px;
+            padding: 2px 8px;
             border-radius: 999px;
-            font-size: .72rem;
-            font-weight: 700;
-            white-space: nowrap;
-            letter-spacing: .02em;
-        }
-
-        .badge-assigned {
-            background: #fef3c7;
-            color: #92400e;
-        }
-        .badge-picked_up {
-            background: #ede9fe;
-            color: #5b21b6;
-        }
-        .badge-in_transit {
-            background: #dbeafe;
-            color: #1e40af;
-        }
-        .badge-delivered {
-            background: #d1fae5;
-            color: #065f46;
-        }
-        .badge-cod {
-            background: #fef3c7;
-            color: #92400e;
-            border: 1px dashed #d97706;
-        }
-        .badge-paid {
-            background: #d1fae5;
-            color: #065f46;
-        }
-
-        .delivery-details {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: .75rem;
-            padding: .75rem 0;
-        }
-
-        .delivery-detail {
-            display: flex;
-            gap: .5rem;
-            font-size: .85rem;
-            align-items: flex-start;
-        }
-
-        .delivery-detail .label {
-            color: var(--ec-text-muted);
-            font-weight: 600;
-            font-size: .75rem;
-            min-width: 80px;
-            text-transform: uppercase;
-            letter-spacing: .03em;
-            padding-top: 2px;
-        }
-
-        .delivery-detail .value {
-            font-weight: 600;
-            color: var(--ec-text);
-            flex: 1;
-            word-break: break-word;
-        }
-
-        .delivery-detail .value.amount {
-            color: var(--ec-accent);
-            font-size: 1.05rem;
+            font-size: .55rem;
             font-weight: 800;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+            margin-bottom: 5px;
         }
 
-        .delivery-actions {
+        .pay-paid { background: #d1fae5; color: #065f46; }
+        .pay-cod  { background: #fef3c7; color: #92400e; }
+
+        .delivery-amount-value {
+            font-size: 1.15rem;
+            font-weight: 800;
+            color: var(--ec-text);
+            letter-spacing: -0.02em;
+            line-height: 1.1;
+        }
+
+        .delivery-pay-sub {
+            font-size: .65rem;
+            color: var(--ec-text-muted);
+            margin-top: 3px;
+            font-weight: 500;
+        }
+
+        /* Column 4: Actions */
+        .delivery-actions-cell {
             display: flex;
             gap: .5rem;
-            margin-top: 1rem;
-            padding-top: 1rem;
-            border-top: 1px solid var(--ec-border);
-            flex-wrap: wrap;
+            align-items: center;
+            flex-shrink: 0;
         }
 
-        .btn-ec {
-            background: var(--ec-primary);
-            border: 1px solid var(--ec-primary);
-            color: #fff;
-            font-weight: 700;
+        .delivery-icon-btn {
+            width: 44px;
+            height: 44px;
             border-radius: 10px;
-            padding: .6rem 1.1rem;
-            font-size: .85rem;
-            display: inline-flex;
+            background: #fff;
+            border: 1.5px solid var(--ec-border);
+            color: var(--ec-text);
+            display: flex;
             align-items: center;
             justify-content: center;
-            gap: 6px;
-            transition: all .2s;
+            font-size: 17px;
             cursor: pointer;
+            transition: all .15s;
+            text-decoration: none;
+            flex-shrink: 0;
         }
 
-        .btn-ec:hover {
-            background: var(--ec-primary-dark);
-            border-color: var(--ec-primary-dark);
-            color: #fff;
-            transform: translateY(-1px);
-        }
-
-        .btn-ec-success {
-            background: var(--ec-accent);
-            border-color: var(--ec-accent);
-        }
-
-        .btn-ec-success:hover {
-            background: var(--ec-accent-dark);
-            border-color: var(--ec-accent-dark);
-        }
-
-        .btn-ec-outline {
-            background: transparent;
-            border: 1px solid var(--ec-border);
-            color: var(--ec-text);
-        }
-
-        .btn-ec-outline:hover {
+        .delivery-icon-btn:hover {
             background: var(--ec-bg);
             border-color: var(--ec-primary);
             color: var(--ec-primary);
+        }
+
+        .delivery-primary-btn {
+            height: 44px;
+            padding: 0 1.25rem;
+            border-radius: 10px;
+            background: var(--ec-primary);
+            color: #fff;
+            border: none;
+            font-size: .78rem;
+            font-weight: 800;
+            letter-spacing: .05em;
+            text-transform: uppercase;
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            cursor: pointer;
+            transition: all .15s;
+            white-space: nowrap;
+            font-family: inherit;
+        }
+
+        .delivery-primary-btn:hover {
+            background: var(--ec-primary-dark);
+            transform: translateY(-1px);
+        }
+
+        .delivery-primary-btn i {
+            font-size: .95rem;
+        }
+
+        /* ═══════════════ DELIVERED ROWS (ParcelGo Style) ═══════════════ */
+        .delivered-row {
+            background: #fff;
+            border: 1px solid var(--ec-border);
+            border-radius: 12px;
+            padding: .9rem 1.15rem;
+            margin-bottom: .55rem;
+            display: grid;
+            grid-template-columns: 60px 1.4fr 1fr 1fr 1fr auto;
+            gap: 1rem;
+            align-items: center;
+            transition: all .15s;
+            cursor: pointer;
+            box-shadow: var(--ec-shadow-sm);
+        }
+
+        .delivered-row:hover {
+            box-shadow: var(--ec-shadow-md);
+            border-color: #cbd5e1;
+        }
+
+        .delivered-thumb {
+            width: 60px;
+            height: 60px;
+            border-radius: 10px;
+            background: var(--ec-bg);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--ec-primary);
+            font-size: 22px;
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+
+        .delivered-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .delivered-name {
+            font-size: .95rem;
+            font-weight: 800;
+            color: var(--ec-text);
+            letter-spacing: -0.01em;
+            line-height: 1.15;
+            margin-bottom: 3px;
+        }
+
+        .delivered-sub {
+            font-size: .7rem;
+            color: var(--ec-text-muted);
+            display: flex;
+            align-items: center;
+            gap: 3px;
+        }
+
+        .delivered-col-label {
+            font-size: .56rem;
+            text-transform: uppercase;
+            letter-spacing: .06em;
+            font-weight: 800;
+            color: var(--ec-text-muted);
+            margin-bottom: 4px;
+        }
+
+        .delivered-col-value {
+            font-size: .85rem;
+            font-weight: 800;
+            color: var(--ec-text);
+            letter-spacing: -0.01em;
+        }
+
+        .delivered-col-value.collected {
+            color: var(--ec-accent);
+        }
+
+        .delivered-status-badge {
+            background: #d1fae5;
+            color: #065f46;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: .6rem;
+            font-weight: 800;
+            letter-spacing: .06em;
+            text-transform: uppercase;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+            white-space: nowrap;
+        }
+
+        /* ═══════════════ HISTORY TABLE (ParcelGo Style) ═══════════════ */
+        .history-table {
+            background: #fff;
+            border: 1px solid var(--ec-border);
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: var(--ec-shadow-sm);
+        }
+
+        .history-thead {
+            display: grid;
+            grid-template-columns: 1fr 1.5fr 1.5fr 1fr 1fr;
+            gap: 1rem;
+            padding: .85rem 1.15rem;
+            background: #f8fafc;
+            border-bottom: 1px solid var(--ec-border);
+            font-size: .58rem;
+            text-transform: uppercase;
+            letter-spacing: .08em;
+            font-weight: 800;
+            color: var(--ec-text-muted);
+        }
+
+        .history-row {
+            display: grid;
+            grid-template-columns: 1fr 1.5fr 1.5fr 1fr 1fr;
+            gap: 1rem;
+            padding: .9rem 1.15rem;
+            border-bottom: 1px solid var(--ec-border);
+            align-items: center;
+            transition: background .15s;
+            cursor: pointer;
+        }
+
+        .history-row:last-child { border-bottom: none; }
+        .history-row:hover { background: var(--ec-bg); }
+
+        .history-cell {
+            font-size: .8rem;
+            color: var(--ec-text);
+            font-weight: 500;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .history-cell.date {
+            color: var(--ec-text-muted);
+            font-size: .75rem;
+        }
+
+        .history-cell.resv {
+            font-family: 'Courier New', monospace;
+            font-weight: 800;
+            color: var(--ec-primary);
+            font-size: .75rem;
+        }
+
+        .history-cell.amount {
+            font-weight: 800;
+            text-align: right;
+            color: var(--ec-text);
+        }
+
+        .history-cell.status {
+            text-align: right;
         }
 
         /* ═══════════════ EMPTY STATE ═══════════════ */
@@ -547,70 +1390,64 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
             text-align: center;
             padding: 3rem 1rem;
             color: var(--ec-text-muted);
-            background: var(--ec-card);
-            border-radius: var(--ec-radius);
+            background: #fff;
+            border-radius: 12px;
             border: 2px dashed var(--ec-border);
         }
 
         .empty-state i {
-            font-size: 3.5rem;
+            font-size: 2.5rem;
             opacity: .3;
             display: block;
-            margin-bottom: 1rem;
+            margin-bottom: .65rem;
         }
 
         .empty-state p {
             margin: 0;
             font-weight: 600;
-            font-size: .95rem;
+            font-size: .85rem;
         }
 
-        /* ═══════════════ PROOF PREVIEW ═══════════════ */
+        /* ═══════════════ MODAL STYLES ═══════════════ */
         .proof-preview-wrap {
             position: relative;
-            border-radius: var(--ec-radius-sm);
+            border-radius: 8px;
             overflow: hidden;
             border: 2px solid var(--ec-border);
         }
 
         .proof-preview-wrap img {
             width: 100%;
-            max-height: 280px;
+            max-height: 240px;
             object-fit: cover;
             display: block;
         }
 
         .proof-remove-btn {
             position: absolute;
-            top: 8px;
-            right: 8px;
+            top: 6px;
+            right: 6px;
             background: rgba(220, 53, 69, .9);
             color: #fff;
             border: none;
-            width: 34px;
-            height: 34px;
+            width: 28px;
+            height: 28px;
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
             cursor: pointer;
-            transition: all .2s;
-            box-shadow: 0 2px 8px rgba(0,0,0,.2);
-        }
-
-        .proof-remove-btn:hover {
-            background: #dc3545;
-            transform: scale(1.1);
+            font-size: 12px;
         }
 
         .proof-upload-box {
             border: 2px dashed var(--ec-border);
-            border-radius: var(--ec-radius-sm);
-            padding: 2rem 1rem;
+            border-radius: 8px;
+            padding: 1.5rem 1rem;
             text-align: center;
             background: var(--ec-bg);
             cursor: pointer;
-            transition: all .2s;
+            transition: all .15s;
             display: block;
         }
 
@@ -620,36 +1457,35 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
         }
 
         .proof-upload-box i {
-            font-size: 2.5rem;
+            font-size: 1.75rem;
             color: var(--ec-primary);
-            margin-bottom: .5rem;
+            margin-bottom: .35rem;
             display: block;
         }
 
         .proof-upload-box .label {
             font-weight: 700;
-            font-size: .95rem;
+            font-size: .85rem;
             color: var(--ec-text);
         }
 
         .proof-upload-box .hint {
-            font-size: .75rem;
+            font-size: .7rem;
             color: var(--ec-text-muted);
-            margin-top: .25rem;
+            margin-top: .15rem;
         }
 
-        /* ═══════════════ COD SECTION ═══════════════ */
         .cod-total-due {
             background: linear-gradient(135deg, #fef3c7, #fde68a);
             border: 2px solid #f59e0b;
-            border-radius: 12px;
-            padding: 18px;
-            margin-bottom: 16px;
+            border-radius: 10px;
+            padding: 12px;
+            margin-bottom: 12px;
             text-align: center;
         }
 
         .cod-total-due .label {
-            font-size: 12px;
+            font-size: 10px;
             color: #92400e;
             font-weight: 700;
             text-transform: uppercase;
@@ -657,102 +1493,89 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
         }
 
         .cod-total-due .amount {
-            font-size: 2rem;
+            font-size: 1.5rem;
             font-weight: 800;
             color: #92400e;
-            margin-top: 4px;
+            margin-top: 2px;
             letter-spacing: -0.02em;
         }
 
-        .amount-input-wrap {
-            position: relative;
-        }
+        .amount-input-wrap { position: relative; }
 
         .amount-input-wrap .currency {
             position: absolute;
-            left: 16px;
+            left: 14px;
             top: 50%;
             transform: translateY(-50%);
             font-weight: 800;
             color: var(--ec-text-muted);
-            font-size: 1.2rem;
+            font-size: 1rem;
         }
 
         .amount-input-wrap input {
-            padding-left: 40px;
-            font-size: 1.35rem;
+            padding-left: 34px;
+            font-size: 1.15rem;
             font-weight: 800;
-            height: 60px;
+            height: 50px;
             border: 2px solid var(--ec-border);
-            border-radius: 12px;
+            border-radius: 10px;
             width: 100%;
             font-family: 'Plus Jakarta Sans', sans-serif;
-            transition: all .2s;
+            transition: all .15s;
         }
 
         .amount-input-wrap input:focus {
             outline: none;
             border-color: var(--ec-primary);
-            box-shadow: 0 0 0 4px rgba(13,110,110,.1);
+            box-shadow: 0 0 0 3px rgba(13,110,110,.1);
         }
 
         .collection-result {
-            margin-top: 12px;
-            border-radius: 12px;
-            padding: 16px;
-            animation: slideIn .3s ease;
+            margin-top: 10px;
+            border-radius: 10px;
+            padding: 12px;
+            animation: slideIn .25s ease;
         }
 
         @keyframes slideIn {
-            from { opacity: 0; transform: translateY(-8px); }
+            from { opacity: 0; transform: translateY(-6px); }
             to { opacity: 1; transform: translateY(0); }
         }
 
-        .collection-result.error {
-            background: #fee2e2;
-            border: 2px solid #dc2626;
-        }
-
-        .collection-result.success {
-            background: #d1fae5;
-            border: 2px solid #10b981;
-        }
-
-        .collection-result.change {
-            background: #fef3c7;
-            border: 2px solid #f59e0b;
-        }
+        .collection-result.error   { background: #fee2e2; border: 2px solid #dc2626; }
+        .collection-result.success { background: #d1fae5; border: 2px solid #10b981; }
+        .collection-result.change  { background: #fef3c7; border: 2px solid #f59e0b; }
 
         .collection-result .title {
             font-weight: 800;
-            font-size: 15px;
+            font-size: 13px;
             display: flex;
             align-items: center;
-            gap: 8px;
-            margin-bottom: 8px;
+            gap: 6px;
+            margin-bottom: 6px;
         }
 
-        .collection-result.error .title { color: #991b1b; }
+        .collection-result.error .title   { color: #991b1b; }
         .collection-result.success .title { color: #065f46; }
-        .collection-result.change .title { color: #92400e; }
+        .collection-result.change .title  { color: #92400e; }
 
         .collection-result .desc {
-            font-size: 13px;
+            font-size: 12px;
             color: #475569;
-            line-height: 1.5;
+            line-height: 1.4;
         }
 
         .change-display {
             background: #fff;
             border: 2px dashed #f59e0b;
-            border-radius: 8px;
-            padding: 12px;
-            margin-top: 12px;
+            border-radius: 6px;
+            padding: 10px;
+            margin-top: 10px;
             text-align: center;
         }
 
         .change-display .label {
-            font-size: 11px;
+            font-size: 10px;
             color: #92400e;
             font-weight: 700;
             text-transform: uppercase;
@@ -760,38 +1583,129 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
         }
 
         .change-display .amount {
-            font-size: 1.75rem;
+            font-size: 1.4rem;
             font-weight: 800;
             color: #f59e0b;
-            margin-top: 4px;
-            letter-spacing: -0.02em;
+            margin-top: 2px;
         }
 
-        /* ═══════════════ MOBILE OPTIMIZATION ═══════════════ */
+        /* ═══════════════ RESPONSIVE ═══════════════ */
+        @media (max-width: 991.98px) {
+            .hero-delivery {
+                grid-template-columns: 1fr;
+            }
+            .hero-left {
+                min-height: auto;
+            }
+            .hero-address {
+                font-size: 1.35rem;
+            }
+            .delivery-row {
+                grid-template-columns: 1fr 1fr;
+                gap: .75rem;
+            }
+            .delivery-actions-cell {
+                grid-column: 1 / -1;
+                justify-content: flex-end;
+                padding-top: .5rem;
+                border-top: 1px dashed var(--ec-border);
+            }
+            .delivered-row {
+                grid-template-columns: 60px 1fr 1fr auto;
+                gap: .75rem;
+            }
+            .delivered-row > *:nth-child(3),
+            .delivered-row > *:nth-child(4) {
+                display: none;
+            }
+            .history-thead > *:nth-child(3),
+            .history-thead > *:nth-child(4),
+            .history-row > *:nth-child(3),
+            .history-row > *:nth-child(4) {
+                display: none;
+            }
+            .history-thead,
+            .history-row {
+                grid-template-columns: 1fr 1.5fr 1fr;
+            }
+        }
+
         @media (max-width: 767.98px) {
-            .rider-header { padding: 1rem 1rem; }
-            .rider-header h1 { font-size: 1.15rem; }
-            .main-content { padding: 1rem .875rem 6rem; }
-            .stats-grid { grid-template-columns: repeat(2, 1fr); gap: .625rem; }
-            .stat-card { padding: .9rem 1rem; }
-            .stat-value { font-size: 1.5rem; }
-            .stat-value.small { font-size: 1.1rem; }
-            .delivery-card { padding: 1rem; }
-            .delivery-details { grid-template-columns: 1fr; gap: .5rem; }
-            .delivery-actions { justify-content: stretch; }
-            .delivery-actions .btn-ec { flex: 1; }
-            .modal-dialog { margin: .5rem; }
-            .cod-total-due .amount { font-size: 1.6rem; }
-            .amount-input-wrap input { font-size: 1.15rem; height: 54px; }
+            .rider-header { padding: .7rem .75rem; }
+            .brand-name { font-size: .85rem; }
+            .brand-sub { font-size: .55rem; }
+            .brand-logo { width: 36px; height: 36px; font-size: 16px; }
+            .rider-avatar { width: 34px; height: 34px; font-size: 14px; }
+            .rider-name { font-size: .78rem; }
+            .rider-role { font-size: .6rem; }
+            .icon-btn { width: 34px; height: 34px; font-size: 14px; }
+            .text-btn { height: 34px; padding: 0 .65rem; font-size: .72rem; }
+            .header-divider { display: none; }
+            .rider-info { display: none; }
+            .text-btn span { display: none; }
+            .text-btn { width: 34px; padding: 0; justify-content: center; }
+            .text-btn i { margin: 0; }
+
+            .main-content { padding: .75rem .55rem 5rem; }
+
+            .shift-bar { padding: .7rem .85rem; gap: .85rem; }
+            .shift-item-value { font-size: .85rem; }
+            .shift-divider { height: 32px; }
+
+            .stats-row { grid-template-columns: repeat(2, 1fr); gap: .5rem; }
+            .stat-card-new { padding: .7rem .75rem; gap: .6rem; }
+            .stat-icon-box { width: 38px; height: 38px; font-size: 16px; }
+            .stat-value-new { font-size: 1.15rem; }
+            .stat-label-new { font-size: .62rem; }
+            .stat-sub { font-size: .58rem; }
+
+            .hero-left { padding: 1rem 1.1rem; }
+            .hero-address { font-size: 1.25rem; }
+            .hero-city { font-size: .75rem; }
+            .hero-right { padding: 1rem 1.1rem; }
+            .hero-right-title { font-size: .95rem; }
+            .hero-cod-amount { font-size: 1.25rem; }
+            .hero-info-grid { gap: .75rem; }
+            .hero-info-value { font-size: .78rem; }
+            .hero-action-btn { font-size: .68rem; padding: .55rem .6rem; min-height: 38px; }
+
+            .delivery-row {
+                grid-template-columns: 1fr;
+                gap: .75rem;
+                padding: .85rem .95rem;
+            }
+            .delivery-customer-name { font-size: .95rem; }
+            .delivery-amount-value { font-size: 1.05rem; }
+
+            .delivered-row {
+                grid-template-columns: 48px 1fr auto;
+                gap: .65rem;
+                padding: .75rem .85rem;
+            }
+            .delivered-thumb { width: 48px; height: 48px; font-size: 18px; }
+            .delivered-name { font-size: .85rem; }
+
+            .history-thead,
+            .history-row {
+                grid-template-columns: 1fr 1.5fr 1fr;
+                gap: .5rem;
+                padding: .65rem .85rem;
+            }
+            .history-thead { font-size: .5rem; }
+            .history-cell { font-size: .72rem; }
+            .history-cell.resv { font-size: .68rem; }
+
+            .cod-total-due .amount { font-size: 1.3rem; }
+            .amount-input-wrap input { font-size: 1rem; height: 46px; }
         }
 
-        @media (max-width: 400px) {
-            .stat-value { font-size: 1.35rem; }
-            .stat-value.small { font-size: 1rem; }
+        @media (max-width: 480px) {
+            .shift-bar { gap: .65rem; padding: .6rem .7rem; }
+            .shift-item-value { font-size: .78rem; }
+            .shift-item-sub { font-size: .62rem; }
         }
 
-        /* ═══════════════ CUSTOM SCROLLBAR ═══════════════ */
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar { width: 5px; height: 5px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: var(--ec-border); border-radius: 3px; }
         ::-webkit-scrollbar-thumb:hover { background: var(--ec-text-muted); }
@@ -799,29 +1713,47 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
 </head>
 <body>
 
-    <!-- ═══ HEADER ═══ -->
+    <!-- ═══ HEADER (ParcelGo Style) ═══ -->
     <div class="rider-header">
         <div class="rider-header-inner">
-            <div style="display:flex; align-items:center; gap:14px; min-width:0;">
-                <div class="avatar-badge">
-                    <?= strtoupper(substr($rider['name'], 0, 1)) ?>
+            <div class="header-left">
+                <!-- Brand -->
+                <div class="brand-logo">
+                    <i class="bi bi-box-seam"></i>
                 </div>
-                <div style="min-width:0;">
-                    <h1><i class="bi bi-bicycle"></i> Rider Dashboard</h1>
-                    <div class="subtitle">
-                        <i class="bi bi-person-circle"></i>
-                        <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-                            Welcome, <?= htmlspecialchars($rider['name']) ?>
-                        </span>
+                <div class="brand-text">
+                    <div class="brand-name">Eyecore</div>
+                    <div class="brand-sub">Rider</div>
+                </div>
+
+                <div class="header-divider"></div>
+
+                <!-- Rider profile -->
+                <div class="rider-profile">
+                    <div class="rider-avatar">
+                        <?= strtoupper(substr($rider['name'], 0, 1)) ?>
+                    </div>
+                    <div class="rider-info">
+                        <div class="rider-name">
+                            <?= htmlspecialchars($rider['name']) ?>
+                            <span class="on-duty-badge">On Duty</span>
+                        </div>
+                        <div class="rider-role">
+                            <i class="bi bi-bicycle"></i> Delivery Rider
+                        </div>
                     </div>
                 </div>
             </div>
-            <div style="display:flex; gap:8px;">
-                <button class="btn-icon" onclick="refreshPage()" title="Refresh">
-                    <i class="bi bi-arrow-clockwise"></i>
+
+            <div class="header-actions">
+                <button class="icon-btn" title="Notifications">
+                    <i class="bi bi-bell"></i>
                 </button>
-                <button class="btn-icon" onclick="logout()" title="Logout">
-                    <i class="bi bi-box-arrow-right"></i>
+                <button class="text-btn primary" onclick="refreshPage()">
+                    <i class="bi bi-arrow-clockwise"></i> <span>Refresh</span>
+                </button>
+                <button class="text-btn" onclick="logout()">
+                    <i class="bi bi-box-arrow-right"></i> <span>Logout</span>
                 </button>
             </div>
         </div>
@@ -829,238 +1761,472 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
 
     <div class="main-content">
 
-        <!-- ═══ STATS ═══ -->
-        <div class="stats-grid">
-            <div class="stat-card warning">
-                <div class="stat-label"><i class="bi bi-hourglass-split"></i> Assigned</div>
-                <div class="stat-value warning"><?= (int)($stats['assigned'] ?? 0) ?></div>
+        <!-- ═══ TODAY'S SHIFT BAR ═══ -->
+        <div class="shift-bar">
+            <div class="shift-item">
+                <div class="shift-item-label">Today's Shift</div>
+                <div class="shift-item-sub"><?= date('l, F j') ?></div>
             </div>
-            <div class="stat-card info">
-                <div class="stat-label"><i class="bi bi-truck"></i> In Transit</div>
-                <div class="stat-value info"><?= (int)($stats['in_transit'] ?? 0) ?></div>
+            <div class="shift-divider"></div>
+
+            <?php if ($riderSchedule): ?>
+            <div class="shift-item">
+                <div class="shift-item-label">Time In</div>
+                <div class="shift-item-value"><?= date('g:i A', strtotime($riderSchedule['time_in'])) ?></div>
             </div>
-            <div class="stat-card success">
-                <div class="stat-label"><i class="bi bi-check2-circle"></i> Delivered Today</div>
-                <div class="stat-value success"><?= (int)($stats['delivered_today'] ?? 0) ?></div>
+            <div class="shift-divider"></div>
+
+            <?php if ($riderSchedule['break_start'] && $riderSchedule['break_end']): ?>
+            <div class="shift-item">
+                <div class="shift-item-label">Break</div>
+                <div class="shift-item-value"><?= date('g:i A', strtotime($riderSchedule['break_start'])) ?></div>
             </div>
-            <div class="stat-card accent">
-                <div class="stat-label"><i class="bi bi-cash-stack"></i> Collected Today</div>
-                <div class="stat-value accent small">₱<?= number_format($totalCollectedToday, 2) ?></div>
+            <div class="shift-divider"></div>
+            <?php endif; ?>
+
+            <div class="shift-item">
+                <div class="shift-item-label">Time Out</div>
+                <div class="shift-item-value"><?= date('g:i A', strtotime($riderSchedule['time_out'])) ?></div>
+            </div>
+            <div class="shift-divider"></div>
+            <?php endif; ?>
+
+            <div class="shift-item">
+                <div class="shift-item-label">Today's Deliveries</div>
+                <div class="shift-item-value"><?= (int)($todaySched['total'] ?? 0) ?></div>
             </div>
         </div>
 
-        <!-- ═══ ACTIVE DELIVERIES ═══ -->
-        <div class="section-header">
-            <h5><i class="bi bi-truck"></i> My Active Deliveries</h5>
-            <span class="section-count"><?= count($activeDeliveries) ?> item<?= count($activeDeliveries) != 1 ? 's' : '' ?></span>
-        </div>
-
-        <?php if (empty($activeDeliveries)): ?>
-            <div class="empty-state">
-                <i class="bi bi-inbox"></i>
-                <p>No active deliveries. Good job! 🎉</p>
-            </div>
-        <?php else: ?>
-            <?php foreach ($activeDeliveries as $d): ?>
-                <?php
-                    $statusMap = [
-                        'assigned'   => ['label'=>'Assigned','class'=>'assigned','icon'=>'hourglass-split'],
-                        'picked_up'  => ['label'=>'Picked Up','class'=>'picked_up','icon'=>'box-seam'],
-                        'in_transit' => ['label'=>'In Transit','class'=>'in_transit','icon'=>'truck'],
-                    ];
-                    $st = $statusMap[$d['delivery_status']] ?? ['label'=>ucfirst($d['delivery_status']),'class'=>'assigned','icon'=>'circle'];
-                    $isCOD = in_array($d['payment_status'], ['cod', 'onsite', 'unpaid', 'partial']);
-                ?>
-                <div class="delivery-card active-card <?= $d['delivery_status'] ?>">
-                    <div class="delivery-header">
-                        <div>
-                            <div class="delivery-id"><?= htmlspecialchars($d['reservation_code']) ?></div>
-                            <div class="delivery-date">
-                                <i class="bi bi-clock"></i>
-                                <?= date('M d, Y • g:i A', strtotime($d['created_at'])) ?>
-                            </div>
-                        </div>
-                        <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                            <span class="badge-status badge-<?= $st['class'] ?>">
-                                <i class="bi bi-<?= $st['icon'] ?>"></i><?= $st['label'] ?>
-                            </span>
-                            <?php if ($isCOD): ?>
-                                <span class="badge-status badge-cod">
-                                    <i class="bi bi-cash-coin"></i>COD
-                                </span>
-                            <?php else: ?>
-                                <span class="badge-status badge-paid">
-                                    <i class="bi bi-check-circle"></i>PAID
-                                </span>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-
-                    <div class="delivery-details">
-                        <div class="delivery-detail">
-                            <span class="label">Customer</span>
-                            <span class="value"><?= htmlspecialchars($d['customer_name']) ?></span>
-                        </div>
-                        <div class="delivery-detail">
-                            <span class="label">Contact</span>
-                            <span class="value"><?= htmlspecialchars($d['customer_contact'] ?? '—') ?></span>
-                        </div>
-                        <div class="delivery-detail" style="grid-column: 1 / -1;">
-                            <span class="label">Address</span>
-                            <span class="value">
-                                <?= htmlspecialchars($d['delivery_address'] ?? '—') ?>
-                                <?= $d['delivery_barangay'] ? ', ' . htmlspecialchars($d['delivery_barangay']) : '' ?>
-                                <?= $d['delivery_city'] ? ', ' . htmlspecialchars($d['delivery_city']) : '' ?>
-                            </span>
-                        </div>
-                        <div class="delivery-detail">
-                            <span class="label">Total</span>
-                            <span class="value amount">₱<?= number_format($d['total_amount'], 2) ?></span>
-                        </div>
-                        <?php if (!empty($d['tracking_number'])): ?>
-                        <div class="delivery-detail">
-                            <span class="label">Tracking</span>
-                            <span class="value" style="font-family:monospace; font-size:.8rem;"><?= htmlspecialchars($d['tracking_number']) ?></span>
-                        </div>
-                        <?php endif; ?>
-                    </div>
-
-                    <div class="delivery-actions">
-                        <?php if ($d['delivery_status'] === 'assigned'): ?>
-                            <button class="btn-ec" onclick="riderAction('pickup', <?= (int)$d['id'] ?>)">
-                                <i class="bi bi-box-seam"></i> Mark as Picked Up
-                            </button>
-                        <?php elseif ($d['delivery_status'] === 'picked_up'): ?>
-                            <button class="btn-ec" onclick="riderAction('transit', <?= (int)$d['id'] ?>)">
-                                <i class="bi bi-truck"></i> Start Transit
-                            </button>
-                        <?php elseif ($d['delivery_status'] === 'in_transit'): ?>
-                            <button class="btn-ec btn-ec-success" onclick='openDeliveryModal(<?= json_encode($d, JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'>
-                                <i class="bi bi-camera"></i> Deliver & Take Photo
-                            </button>
-                        <?php endif; ?>
-                    </div>
+        <!-- ═══ STATS CARDS (ParcelGo Style) ═══ -->
+        <div class="stats-row">
+            <div class="stat-card-new">
+                <div class="stat-icon-box warning">
+                    <i class="bi bi-clipboard-check"></i>
                 </div>
-            <?php endforeach; ?>
-        <?php endif; ?>
-
-        <!-- ═══ DELIVERED TODAY ═══ -->
-        <?php if (!empty($completedToday)): ?>
-            <div class="section-header">
-                <h5><i class="bi bi-check2-circle"></i> Delivered Today</h5>
-                <span class="section-count"><?= count($completedToday) ?> item<?= count($completedToday) != 1 ? 's' : '' ?></span>
+                <div class="stat-content">
+                    <div class="stat-label-new">Assigned</div>
+                    <div class="stat-value-new"><?= (int)($stats['assigned'] ?? 0) ?></div>
+                    <div class="stat-sub"><?= (int)($stats['assigned'] ?? 0) ?> deliveries remaining</div>
+                </div>
             </div>
-            <?php foreach ($completedToday as $d): ?>
-                <div class="delivery-card completed-card">
-                    <div class="delivery-header">
-                        <div>
-                            <div class="delivery-id"><?= htmlspecialchars($d['reservation_code']) ?></div>
-                            <div class="delivery-date">
-                                <i class="bi bi-check2-all"></i>
-                                Delivered at <?= date('g:i A', strtotime($d['delivered_at'])) ?>
-                            </div>
-                        </div>
-                        <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                            <span class="badge-status badge-delivered">
-                                <i class="bi bi-check2-all"></i>Delivered
-                            </span>
-                            <?php if (!empty($d['delivery_proof_image'])): ?>
-                                <span class="badge-status" style="background:#e0f2fe;color:#075985;">
-                                    <i class="bi bi-camera"></i>With Proof
-                                </span>
-                            <?php endif; ?>
-                            <?php if (!empty($d['collected_amount']) && $d['collected_amount'] > 0): ?>
-                                <span class="badge-status badge-paid">
-                                    <i class="bi bi-cash-stack"></i>₱<?= number_format($d['collected_amount'], 2) ?>
-                                </span>
-                            <?php endif; ?>
-                        </div>
+            <div class="stat-card-new">
+                <div class="stat-icon-box info">
+                    <i class="bi bi-bicycle"></i>
+                </div>
+                <div class="stat-content">
+                    <div class="stat-label-new">In Transit</div>
+                    <div class="stat-value-new"><?= (int)($stats['in_transit'] ?? 0) ?></div>
+                    <div class="stat-sub">Currently on the road</div>
+                </div>
+            </div>
+            <div class="stat-card-new">
+                <div class="stat-icon-box success">
+                    <i class="bi bi-box-seam"></i>
+                </div>
+                <div class="stat-content">
+                    <div class="stat-label-new">Delivered</div>
+                    <div class="stat-value-new"><?= (int)($stats['delivered_today'] ?? 0) ?></div>
+                    <div class="stat-sub">Completed today</div>
+                </div>
+            </div>
+            <div class="stat-card-new">
+                <div class="stat-icon-box accent">
+                    <i class="bi bi-cash-stack"></i>
+                </div>
+                <div class="stat-content">
+                    <div class="stat-label-new">COD Collected</div>
+                    <div class="stat-value-new">₱<?= number_format($totalCollectedToday, 0) ?></div>
+                    <div class="stat-sub">Cash to remit</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- HERO — NEXT DELIVERY (ParcelGo Style)                    -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <?php if ($nextDelivery): ?>
+        <?php
+            $nd = $nextDelivery;
+            $ndIsCOD = in_array($nd['payment_status'], ['cod', 'onsite', 'unpaid', 'partial']);
+            $ndStatus = $nd['delivery_status'];
+            $ndStatusLabel = ['assigned'=>'Assigned','picked_up'=>'Picked Up','in_transit'=>'In Transit'][$ndStatus] ?? 'Assigned';
+            $ndAddress = trim(($nd['delivery_address'] ?? ''));
+            $ndCity = trim(($nd['delivery_barangay'] ?? '') . ($nd['delivery_city'] ? ', '.$nd['delivery_city'] : ''));
+            $ndTime = (!empty($nd['delivery_time_start']) && !empty($nd['delivery_time_end']))
+                ? date('g:i A', strtotime($nd['delivery_time_start'])) . ' – ' . date('g:i A', strtotime($nd['delivery_time_end']))
+                : '—';
+            $ndInitials = strtoupper(substr($nd['customer_name'], 0, 1));
+            $fullAddress = trim($ndAddress . ($ndCity ? ', '.$ndCity : ''));
+
+            // Progress
+            $stepAssigned  = in_array($ndStatus, ['assigned','picked_up','in_transit']) ? 'done' : '';
+            $stepPickedUp  = $ndStatus === 'picked_up' ? 'active' : (in_array($ndStatus, ['in_transit']) ? 'done' : '');
+            $stepInTransit = $ndStatus === 'in_transit' ? 'active' : '';
+            $stepDelivered = '';
+
+            // Progress line fill %
+            $fillPercent = '0%';
+            if ($ndStatus === 'picked_up') $fillPercent = '33%';
+            elseif ($ndStatus === 'in_transit') $fillPercent = '66%';
+        ?>
+        <div class="section-h">
+            <div class="section-h-left">
+                <span class="section-dot"></span>
+                <h5>Next Delivery</h5>
+            </div>
+            <div class="section-h-right">
+                Stop 1 of <?= $remainingToday + 1 ?> • Deliver by <?= date('g:i A', strtotime($nd['delivery_time_end'] ?? 'now')) ?>
+            </div>
+        </div>
+
+        <div class="hero-delivery">
+            <!-- LEFT: Dark green address panel -->
+            <div class="hero-left">
+                <div class="hero-left-top">
+                    <div class="hero-left-header">
+                        <div class="hero-resv">#<?= htmlspecialchars($nd['reservation_code']) ?></div>
+                        <div class="hero-status-badge"><?= $ndStatusLabel ?></div>
                     </div>
-                    <div class="delivery-details">
-                        <div class="delivery-detail">
-                            <span class="label">Customer</span>
-                            <span class="value"><?= htmlspecialchars($d['customer_name']) ?></span>
-                        </div>
-                        <div class="delivery-detail">
-                            <span class="label">Total</span>
-                            <span class="value amount">₱<?= number_format($d['total_amount'], 2) ?></span>
-                        </div>
-                    </div>
-                    <?php if (!empty($d['delivery_proof_image'])): ?>
-                        <div style="margin-top:.75rem;">
-                            <img src="../<?= htmlspecialchars($d['delivery_proof_image']) ?>" 
-                                 alt="Proof" 
-                                 class="rounded" 
-                                 style="max-height: 140px; cursor: pointer; border:1px solid var(--ec-border);"
-                                 onclick="window.open('../<?= htmlspecialchars($d['delivery_proof_image']) ?>', '_blank')">
-                        </div>
+
+                    <div class="hero-go-label">Go To</div>
+                    <div class="hero-address"><?= htmlspecialchars($ndAddress ?: 'Address not set') ?></div>
+                    <?php if ($ndCity): ?>
+                        <div class="hero-city"><?= htmlspecialchars($ndCity) ?></div>
                     <?php endif; ?>
                 </div>
-            <?php endforeach; ?>
+
+                <div>
+                    <div class="hero-customer">
+                        <div class="hero-customer-avatar"><?= $ndInitials ?></div>
+                        <div class="hero-customer-info">
+                            <div class="hero-customer-name"><?= htmlspecialchars($nd['customer_name']) ?></div>
+                            <div class="hero-customer-phone"><?= htmlspecialchars($nd['customer_contact'] ?? '—') ?></div>
+                        </div>
+                    </div>
+
+                    <div class="hero-left-actions">
+                        <a class="hero-action-btn" href="https://www.google.com/maps/search/?api=1&query=<?= urlencode($fullAddress) ?>" target="_blank">
+                            <i class="bi bi-send-fill"></i> Navigate
+                        </a>
+                        <?php if (!empty($nd['customer_contact'])): ?>
+                        <a class="hero-action-btn outline" href="tel:<?= htmlspecialchars($nd['customer_contact']) ?>">
+                            <i class="bi bi-telephone-fill"></i> Call Customer
+                        </a>
+                        <?php endif; ?>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RIGHT: White details panel -->
+            <div class="hero-right">
+                <div class="hero-right-header">
+                    <div>
+                        <div class="hero-right-title">Delivery details</div>
+                        <?php if (!empty($nd['tracking_number'])): ?>
+                            <div class="hero-right-sub">Tracking no. <?= htmlspecialchars($nd['tracking_number']) ?></div>
+                        <?php endif; ?>
+                    </div>
+                    <div class="hero-cod-box">
+                        <div class="hero-cod-label"><?= $ndIsCOD ? 'Collect COD' : 'Amount' ?></div>
+                        <div class="hero-cod-amount">₱<?= number_format($nd['total_amount'], 0) ?></div>
+                    </div>
+                </div>
+
+                <div class="hero-info-grid">
+                    <div class="hero-info-item">
+                        <div class="hero-info-icon"><i class="bi bi-clock"></i></div>
+                        <div>
+                            <div class="hero-info-label">Delivery Time</div>
+                            <div class="hero-info-value"><?= $ndTime ?></div>
+                        </div>
+                    </div>
+                    <div class="hero-info-item">
+                        <div class="hero-info-icon"><i class="bi bi-box"></i></div>
+                        <div>
+                            <div class="hero-info-label">Parcel</div>
+                            <div class="hero-info-value">Qty <?= (int)$nd['quantity'] ?></div>
+                            <div class="hero-info-sub"><?= htmlspecialchars($nd['product_name'] ?? '') ?></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="hero-progress-wrap">
+                    <div class="hero-progress-label">Delivery Progress</div>
+                    <div class="hero-progress-bar">
+                        <div class="hero-progress-line">
+                            <div class="hero-progress-line-fill" style="width: <?= $fillPercent ?>;"></div>
+                        </div>
+
+                        <div class="hero-progress-step done">
+                            <div class="hero-progress-dot"><i class="bi bi-check-lg"></i></div>
+                            <div class="hero-progress-text">Assigned</div>
+                        </div>
+                        <div class="hero-progress-step <?= $stepPickedUp ?>">
+                            <div class="hero-progress-dot">
+                                <?= $stepPickedUp === 'done' ? '<i class="bi bi-check-lg"></i>' : '<i class="bi bi-circle-fill" style="font-size:.4rem;"></i>' ?>
+                            </div>
+                            <div class="hero-progress-text">Picked Up</div>
+                        </div>
+                        <div class="hero-progress-step <?= $stepInTransit ?>">
+                            <div class="hero-progress-dot">
+                                <?= $stepInTransit === 'done' ? '<i class="bi bi-check-lg"></i>' : '<i class="bi bi-circle-fill" style="font-size:.4rem;"></i>' ?>
+                            </div>
+                            <div class="hero-progress-text">In Transit</div>
+                        </div>
+                        <div class="hero-progress-step <?= $stepDelivered ?>">
+                            <div class="hero-progress-dot"><i class="bi bi-circle-fill" style="font-size:.4rem;"></i></div>
+                            <div class="hero-progress-text">Delivered</div>
+                        </div>
+                    </div>
+
+                    <?php if ($ndIsCOD): ?>
+                    <div class="hero-cod-alert">
+                        <i class="bi bi-exclamation-circle-fill"></i>
+                        <span>Collect ₱<?= number_format($nd['total_amount'], 0) ?> cash and confirm the amount before handing over the parcel.</span>
+                    </div>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
         <?php endif; ?>
 
-        <!-- ═══ DELIVERY HISTORY ═══ -->
-        <?php if (!empty($deliveryHistory)): ?>
-            <div class="section-header">
-                <h5><i class="bi bi-clock-history"></i> Delivery History</h5>
-                <span class="section-count"><?= count($deliveryHistory) ?> past<?= count($deliveryHistory) != 1 ? '' : '' ?> deliveries</span>
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- ACTIVE DELIVERIES                                        -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <div class="section-h">
+            <div class="section-h-left">
+                <h5>Active Deliveries</h5>
             </div>
-            <?php foreach ($deliveryHistory as $d): ?>
-                <div class="delivery-card completed-card" style="opacity:.85;">
-                    <div class="delivery-header">
-                        <div>
-                            <div class="delivery-id"><?= htmlspecialchars($d['reservation_code']) ?></div>
-                            <div class="delivery-date">
-                                <i class="bi bi-calendar-check"></i>
-                                <?= date('M d, Y • g:i A', strtotime($d['delivered_at'])) ?>
+            <div class="section-h-right">
+                <?= count($activeDeliveries) ?> remaining
+            </div>
+        </div>
+
+        <!-- Search bar -->
+        <div class="search-bar">
+            <i class="bi bi-search"></i>
+            <input type="text" id="searchActive" placeholder="Search reservation, customer or tracking number" oninput="filterActive()">
+            <span class="search-hint">⌘ K</span>
+        </div>
+
+        <div id="activeList">
+            <?php if (empty($activeDeliveries)): ?>
+                <div class="empty-state">
+                    <i class="bi bi-inbox"></i>
+                    <p>No active deliveries. Good job! 🎉</p>
+                </div>
+            <?php else: ?>
+                <?php foreach ($activeDeliveries as $d): ?>
+                    <?php
+                        $statusMap = [
+                            'assigned'   => ['label'=>'Assigned','class'=>'assigned','icon'=>'hourglass-split'],
+                            'picked_up'  => ['label'=>'Picked Up','class'=>'picked_up','icon'=>'box-seam'],
+                            'in_transit' => ['label'=>'In Transit','class'=>'in_transit','icon'=>'truck'],
+                        ];
+                        $st = $statusMap[$d['delivery_status']] ?? ['label'=>ucfirst($d['delivery_status']),'class'=>'assigned','icon'=>'circle'];
+                        $isCOD = in_array($d['payment_status'], ['cod', 'onsite', 'unpaid', 'partial']);
+                        $hasTimeSlot = !empty($d['delivery_time_start']) && !empty($d['delivery_time_end']);
+                        $address = trim(($d['delivery_address'] ?? '') . ($d['delivery_barangay'] ? ', '.$d['delivery_barangay'] : '') . ($d['delivery_city'] ? ', '.$d['delivery_city'] : ''));
+                        $fullAddress = $address;
+                        $timeStr = $hasTimeSlot
+                            ? date('g:i A', strtotime($d['delivery_time_start'])) . ' – ' . date('g:i A', strtotime($d['delivery_time_end']))
+                            : '—';
+                        $tracking = $d['tracking_number'] ?? '';
+                    ?>
+                    <div class="delivery-row" data-search="<?= htmlspecialchars(strtolower($d['reservation_code'] . ' ' . $d['customer_name'] . ' ' . ($d['customer_contact'] ?? '') . ' ' . $address . ' ' . $tracking)) ?>">
+
+                        <!-- Column 1: ID + Customer + Address -->
+                        <div class="delivery-col">
+                            <div class="delivery-id-badge">
+                                <span class="delivery-id">#<?= htmlspecialchars($d['reservation_code']) ?></span>
+                                <span class="delivery-status-tag tag-<?= $st['class'] ?>"><?= $st['label'] ?></span>
+                            </div>
+                            <div class="delivery-customer-name"><?= htmlspecialchars($d['customer_name']) ?></div>
+                            <div class="delivery-address-line">
+                                <i class="bi bi-geo-alt"></i>
+                                <?= htmlspecialchars($address ?: '—') ?>
                             </div>
                         </div>
-                        <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                            <span class="badge-status badge-delivered">
-                                <i class="bi bi-check2-all"></i>Delivered
-                            </span>
-                            <?php if (!empty($d['collected_amount']) && $d['collected_amount'] > 0): ?>
-                                <span class="badge-status badge-paid">
-                                    <i class="bi bi-cash-stack"></i>₱<?= number_format($d['collected_amount'], 2) ?>
-                                </span>
+
+                        <!-- Column 2: Delivery Time -->
+                        <div class="delivery-col">
+                            <div class="delivery-col-label">Delivery Time</div>
+                            <div class="delivery-time-value">
+                                <i class="bi bi-clock-fill"></i>
+                                <?= $timeStr ?>
+                            </div>
+                            <?php if ($tracking): ?>
+                                <div class="delivery-tracking-sub"><?= htmlspecialchars($tracking) ?></div>
+                            <?php endif; ?>
+                        </div>
+
+                        <!-- Column 3: Payment -->
+                        <div class="delivery-col">
+                            <div class="delivery-pay-badge <?= $isCOD ? 'pay-cod' : 'pay-paid' ?>">
+                                <?= $isCOD ? 'COD' : 'PAID' ?>
+                            </div>
+                            <div class="delivery-amount-value">₱<?= number_format($d['total_amount'], 0) ?></div>
+                            <div class="delivery-pay-sub">
+                                <?= $isCOD ? 'Collect on delivery' : 'No cash required' ?>
+                            </div>
+                        </div>
+
+                        <!-- Column 4: Actions (icons only) -->
+                        <div class="delivery-actions-cell">
+                            <?php if (!empty($d['customer_contact'])): ?>
+                                <a class="delivery-icon-btn" href="tel:<?= htmlspecialchars($d['customer_contact']) ?>" title="Call">
+                                    <i class="bi bi-telephone"></i>
+                                </a>
+                            <?php endif; ?>
+
+                            <?php if ($d['delivery_status'] === 'assigned'): ?>
+                                <button class="delivery-primary-btn" onclick="riderAction('pickup', <?= (int)$d['id'] ?>)">
+                                    <i class="bi bi-box-seam"></i> Pick Up
+                                </button>
+                            <?php elseif ($d['delivery_status'] === 'picked_up'): ?>
+                                <button class="delivery-primary-btn" onclick="riderAction('transit', <?= (int)$d['id'] ?>)">
+                                    <i class="bi bi-bicycle"></i> Start Transit
+                                </button>
+                            <?php elseif ($d['delivery_status'] === 'in_transit'): ?>
+                                <button class="delivery-primary-btn" onclick='openDeliveryModal(<?= json_encode($d, JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'>
+                                    <i class="bi bi-box-seam"></i> Deliver
+                                </button>
                             <?php endif; ?>
                         </div>
                     </div>
-                    <div class="delivery-details">
-                        <div class="delivery-detail">
-                            <span class="label">Customer</span>
-                            <span class="value"><?= htmlspecialchars($d['customer_name']) ?></span>
+                <?php endforeach; ?>
+            <?php endif; ?>
+        </div>
+
+        <!-- No results -->
+        <div class="empty-state" id="noResults-active" style="display:none;">
+            <i class="bi bi-search"></i>
+            <p>No deliveries match your search.</p>
+        </div>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- DELIVERED TODAY                                          -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <?php if (!empty($completedToday)): ?>
+            <div class="section-h">
+                <div class="section-h-left">
+                    <h5>Delivered Today</h5>
+                </div>
+                <div class="section-h-right">
+                    <?= count($completedToday) ?> completed
+                </div>
+            </div>
+
+            <?php foreach ($completedToday as $d): ?>
+                <?php
+                    $hasProof = !empty($d['delivery_proof_image']);
+                    $collected = (float)($d['collected_amount'] ?? 0);
+                    $address = trim(($d['delivery_barangay'] ?? '') . ($d['delivery_city'] ? ', '.$d['delivery_city'] : ''));
+                ?>
+                <div class="delivered-row" onclick='viewDelivered(<?= json_encode($d, JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'>
+                    <div class="delivered-thumb">
+                        <?php if ($hasProof): ?>
+                            <img src="../<?= htmlspecialchars($d['delivery_proof_image']) ?>" alt="">
+                        <?php else: ?>
+                            <i class="bi bi-box-seam"></i>
+                        <?php endif; ?>
+                    </div>
+
+                    <div style="min-width:0;">
+                        <div class="delivered-name"><?= htmlspecialchars($d['customer_name']) ?></div>
+                        <div class="delivered-sub">
+                            <i class="bi bi-geo-alt"></i>
+                            <?= htmlspecialchars($address ?: '—') ?>
                         </div>
-                        <div class="delivery-detail">
-                            <span class="label">Total</span>
-                            <span class="value amount">₱<?= number_format($d['total_amount'], 2) ?></span>
+                    </div>
+
+                    <div>
+                        <div class="delivered-col-label">Delivery Time</div>
+                        <div class="delivered-col-value"><?= date('g:i A', strtotime($d['delivered_at'])) ?></div>
+                    </div>
+
+                    <div>
+                        <div class="delivered-col-label">Amount</div>
+                        <div class="delivered-col-value">₱<?= number_format($d['total_amount'], 0) ?></div>
+                    </div>
+
+                    <div>
+                        <div class="delivered-col-label">COD Collected</div>
+                        <div class="delivered-col-value <?= $collected > 0 ? 'collected' : '' ?>">
+                            <?= $collected > 0 ? '₱' . number_format($collected, 0) . ' collected' : 'Prepaid' ?>
+                        </div>
+                    </div>
+
+                    <div style="text-align:right;">
+                        <span class="delivered-status-badge">
+                            <i class="bi bi-check-lg"></i>Delivered
+                        </span>
+                        <div class="delivered-sub" style="justify-content:flex-end;margin-top:4px;font-family:monospace;">
+                            #<?= htmlspecialchars($d['reservation_code']) ?>
                         </div>
                     </div>
                 </div>
             <?php endforeach; ?>
+        <?php endif; ?>
+
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- DELIVERY HISTORY                                         -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <?php if (!empty($deliveryHistory)): ?>
+            <div class="section-h">
+                <div class="section-h-left">
+                    <h5>Delivery History</h5>
+                </div>
+                <div class="section-h-right">
+                    <button type="button">View all history</button>
+                </div>
+            </div>
+
+            <div class="history-table">
+                <div class="history-thead">
+                    <div>Date</div>
+                    <div>Reservation</div>
+                    <div>Customer</div>
+                    <div style="text-align:right;">Amount</div>
+                    <div style="text-align:right;">Status</div>
+                </div>
+
+                <?php foreach ($deliveryHistory as $d): ?>
+                    <div class="history-row" onclick='viewDelivered(<?= json_encode($d, JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'>
+                        <div class="history-cell date"><?= date('M d, Y', strtotime($d['delivered_at'])) ?></div>
+                        <div class="history-cell resv">#<?= htmlspecialchars($d['reservation_code']) ?></div>
+                        <div class="history-cell"><?= htmlspecialchars($d['customer_name']) ?></div>
+                        <div class="history-cell amount">₱<?= number_format($d['total_amount'], 0) ?></div>
+                        <div class="history-cell status">
+                            <span class="delivered-status-badge">
+                                <i class="bi bi-check-lg"></i>Delivered
+                            </span>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
         <?php endif; ?>
 
     </div>
 
-    <!-- ═══ DELIVERY MODAL with COD COLLECTION ═══ -->
+    <!-- ═══ DELIVERY MODAL ═══ -->
     <div class="modal fade" id="deliveryModal" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
             <div class="modal-content" style="border:none; border-radius:var(--ec-radius); overflow:hidden;">
-                <div class="modal-header" style="background:linear-gradient(135deg, var(--ec-primary), var(--ec-primary-dark)); color:white; border:none; padding:1.1rem 1.25rem;">
-                    <h5 class="modal-title" style="font-weight:700; display:flex; align-items:center; gap:8px;">
+                <div class="modal-header" style="background:linear-gradient(135deg, var(--ec-primary), var(--ec-primary-dark)); color:white; border:none; padding:1rem 1.15rem;">
+                    <h5 class="modal-title" style="font-weight:700; display:flex; align-items:center; gap:8px; font-size:.95rem;">
                         <i class="bi bi-camera"></i> Deliver & Take Photo
                     </h5>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
-                <div class="modal-body" style="padding:1.25rem;">
+                <div class="modal-body" style="padding:1.1rem;">
 
-                    <div style="background:var(--ec-bg); border-radius:10px; padding:12px 14px; margin-bottom:1rem;">
-                        <div style="font-size:.7rem; color:var(--ec-text-muted); font-weight:700; text-transform:uppercase; letter-spacing:.05em;">Order</div>
-                        <div style="font-weight:800; color:var(--ec-primary); font-size:1rem; font-family:monospace;" id="delOrderCode"></div>
-                        <div style="font-size:.85rem; color:var(--ec-text); margin-top:4px;" id="delCustomer"></div>
+                    <div style="background:var(--ec-bg); border-radius:10px; padding:10px 12px; margin-bottom:.875rem;">
+                        <div style="font-size:.65rem; color:var(--ec-text-muted); font-weight:700; text-transform:uppercase; letter-spacing:.05em;">Order</div>
+                        <div style="font-weight:800; color:var(--ec-primary); font-size:.9rem; font-family:monospace;" id="delOrderCode"></div>
+                        <div style="font-size:.8rem; color:var(--ec-text); margin-top:2px;" id="delCustomer"></div>
                     </div>
 
-                    <!-- ✅ COD COLLECTION SECTION -->
                     <div id="codCollectionSection" style="display:none;">
                         <div class="cod-total-due">
                             <div class="label">Total Amount Due</div>
@@ -1068,9 +2234,9 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label fw-bold" style="font-size:.85rem;">
+                            <label class="form-label fw-bold" style="font-size:.8rem;">
                                 <i class="bi bi-cash-stack me-1"></i>
-                                Amount Received from Customer <span style="color:var(--ec-danger);">*</span>
+                                Amount Received <span style="color:var(--ec-danger);">*</span>
                             </label>
                             <div class="amount-input-wrap">
                                 <span class="currency">₱</span>
@@ -1086,9 +2252,8 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
                         <div id="collectionResult" class="collection-result" style="display:none;"></div>
                     </div>
 
-                    <!-- ✅ Proof of Delivery Upload -->
                     <div class="mb-3">
-                        <label class="form-label fw-bold" style="font-size:.85rem;">
+                        <label class="form-label fw-bold" style="font-size:.8rem;">
                             <i class="bi bi-camera-fill me-1" style="color:var(--ec-danger);"></i>
                             Proof of Delivery <span style="color:var(--ec-danger);">*</span>
                         </label>
@@ -1116,18 +2281,18 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
                     </div>
 
                     <div class="mb-0">
-                        <label class="form-label" style="font-size:.85rem; font-weight:600;">
+                        <label class="form-label" style="font-size:.8rem; font-weight:600;">
                             Notes <small style="color:var(--ec-text-muted);">(optional)</small>
                         </label>
                         <textarea class="form-control" id="delNotes" rows="2" 
                                   placeholder="e.g. Received by customer, signed..."
-                                  style="border-radius:10px; font-size:.9rem;"></textarea>
+                                  style="border-radius:10px; font-size:.85rem;"></textarea>
                     </div>
                 </div>
-                <div class="modal-footer" style="border-top:1px solid var(--ec-border); padding:1rem 1.25rem;">
-                    <button class="btn btn-secondary" data-bs-dismiss="modal" style="border-radius:10px; font-weight:600;">Cancel</button>
-                    <button class="btn btn-success" id="confirmDeliverBtn" style="border-radius:10px; font-weight:700; background:var(--ec-accent); border-color:var(--ec-accent);">
-                        <i class="bi bi-check-lg me-1"></i>Confirm Delivery
+                <div class="modal-footer" style="border-top:1px solid var(--ec-border); padding:.875rem 1.15rem;">
+                    <button class="btn btn-secondary btn-sm" data-bs-dismiss="modal" style="border-radius:8px; font-weight:600;">Cancel</button>
+                    <button class="btn btn-success btn-sm" id="confirmDeliverBtn" style="border-radius:8px; font-weight:700; background:var(--ec-accent); border-color:var(--ec-accent);">
+                        <i class="bi bi-check-lg me-1"></i>Confirm
                     </button>
                 </div>
             </div>
@@ -1135,7 +2300,7 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-<script>
+    <script>
         const API_URL = '../api/reservations.php';
         let deliveryModal;
         let pendingDeliveryId = null;
@@ -1159,7 +2324,6 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
                     return;
                 }
 
-                // COD VALIDATION
                 let collectedAmount = 0;
                 if (currentIsCOD) {
                     collectedAmount = parseFloat(document.getElementById('amountReceived').value) || 0;
@@ -1236,7 +2400,6 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
                     return;
                 }
 
-                // Non-COD
                 const notes = document.getElementById('delNotes').value.trim();
                 const file = proofInput.files[0];
 
@@ -1291,7 +2454,6 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
             deliveryModal.show();
         }
 
-        // Validation function
         function validateCollection() {
             if (!currentIsCOD) return;
 
@@ -1304,7 +2466,6 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
 
             if (input === 0) return;
 
-            // INSUFFICIENT
             if (input < currentTotalDue - 0.01) {
                 const short = currentTotalDue - input;
                 resultDiv.className = 'collection-result error';
@@ -1321,7 +2482,6 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
                 return;
             }
 
-            // EXACT
             if (Math.abs(input - currentTotalDue) < 0.01) {
                 resultDiv.className = 'collection-result success';
                 resultDiv.style.display = 'block';
@@ -1338,7 +2498,6 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
                 return;
             }
 
-            // OVERPAYMENT — HAS CHANGE
             if (input > currentTotalDue + 0.01) {
                 const change = input - currentTotalDue;
                 resultDiv.className = 'collection-result change';
@@ -1477,6 +2636,52 @@ $totalCollectedToday = (float)($stmtCollected->fetch(PDO::FETCH_ASSOC)['total_co
                         Swal.close();
                         Swal.fire('Error', 'Network error: ' + err.message, 'error');
                     });
+            });
+        }
+
+        function filterActive() {
+            const search = document.getElementById('searchActive').value.toLowerCase().trim();
+            const rows = document.querySelectorAll('#activeList .delivery-row');
+            let visible = 0;
+
+            rows.forEach(row => {
+                const match = !search || row.dataset.search.includes(search);
+                row.style.display = match ? '' : 'none';
+                if (match) visible++;
+            });
+
+            document.getElementById('noResults-active').style.display = (visible === 0 && rows.length > 0) ? 'block' : 'none';
+        }
+
+        function viewDelivered(d) {
+            const collected = parseFloat(d.collected_amount || 0);
+            const hasProof = !!d.delivery_proof_image;
+            Swal.fire({
+                title: d.reservation_code,
+                html: `
+                    <div style="text-align:left;font-size:14px;">
+                        <div style="padding:8px 0;border-bottom:1px solid #eee;">
+                            <strong>Customer:</strong> ${d.customer_name || '—'}
+                        </div>
+                        <div style="padding:8px 0;border-bottom:1px solid #eee;">
+                            <strong>Delivered:</strong> ${new Date(d.delivered_at).toLocaleString()}
+                        </div>
+                        <div style="padding:8px 0;border-bottom:1px solid #eee;">
+                            <strong>Total:</strong> ₱${parseFloat(d.total_amount || 0).toFixed(2)}
+                        </div>
+                        ${collected > 0 ? `<div style="padding:8px 0;border-bottom:1px solid #eee;color:#065f46;">
+                            <strong>Collected:</strong> ₱${collected.toFixed(2)}
+                        </div>` : ''}
+                        ${hasProof ? `
+                            <div style="padding:8px 0;">
+                                <strong>Proof:</strong><br>
+                                <img src="../${d.delivery_proof_image}" style="max-width:100%;max-height:240px;border-radius:8px;margin-top:6px;border:1px solid #eee;">
+                            </div>
+                        ` : ''}
+                    </div>
+                `,
+                confirmButtonColor: '#0d6e6e',
+                confirmButtonText: 'Close'
             });
         }
     </script>

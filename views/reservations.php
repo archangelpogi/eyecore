@@ -61,13 +61,20 @@ $stmt = $pdo->prepare("
            -- ✅ BAGO: Prescription data
            up.od_sph, up.od_cyl, up.od_axis,
            up.os_sph, up.os_cyl, up.os_axis,
-           up.prescription_source
+           up.prescription_source,
+           -- ✅ NEW: Refund request data
+           rr.id AS refund_request_id,
+           rr.status AS rr_status,
+           rr.refund_status AS rr_refund_status
     FROM reservations r
     JOIN users u ON r.user_id = u.id
     JOIN products p ON r.product_id = p.id
     LEFT JOIN riders rd ON r.assigned_rider_id = rd.id
     LEFT JOIN users cu ON r.collected_by = cu.id
     LEFT JOIN user_prescriptions up ON r.prescription_id = up.id
+    LEFT JOIN refund_requests rr ON r.id = rr.reservation_id AND rr.id = (
+        SELECT MAX(id) FROM refund_requests WHERE reservation_id = r.id
+    )
     WHERE r.clinic_id = ?
     ORDER BY r.created_at DESC
     LIMIT 200
@@ -950,21 +957,36 @@ function getReturnStatusInfo($status) {
                     'cancelled' => ['label'=>'Cancelled','class'=>'cancelled','icon'=>'x-circle'],
                 ];
                 $st = $statusMap[$r['status']] ?? ['label'=>ucfirst($r['status']),'class'=>'default','icon'=>'circle'];
-                $payMap = [
-                    'paid'=>'paid','unpaid'=>'unpaid','partial'=>'partial',
-                    'cod'=>'cod','onsite'=>'onsite','refunded'=>'refunded','failed'=>'unpaid'
-                ];
-                $payClass = $payMap[$r['payment_status']] ?? 'default';
-                $payLabel = match($r['payment_status']) {
-                    'cod'     => '💵 COD',
-                    'onsite'  => '🏪 ONSITE',
-                    'paid'    => '✅ PAID',
-                    'unpaid'  => '● UNPAID',
-                    'partial' => '⚠ PARTIAL',
-                    'refunded'=> '↩ REFUNDED',
-                    'failed'  => '✗ FAILED',
-                    default   => strtoupper($r['payment_status'])
-                };
+// ✅ NEW: Detect refund request status
+$has_refund_request = !empty($r['refund_request_id']);
+$refund_req_status = $r['rr_status'] ?? null;
+
+$payMap = [
+    'paid'=>'paid','unpaid'=>'unpaid','partial'=>'partial',
+    'cod'=>'cod','onsite'=>'onsite','refunded'=>'refunded','failed'=>'unpaid'
+];
+$payClass = $payMap[$r['payment_status']] ?? 'default';
+$payLabel = match($r['payment_status']) {
+    'cod'     => '💵 COD',
+    'onsite'  => '🏪 ONSITE',
+    'paid'    => '✅ PAID',
+    'unpaid'  => '● UNPAID',
+    'partial' => '⚠ PARTIAL',
+    'refunded'=> '↩ REFUNDED',
+    'failed'  => '✗ FAILED',
+    default   => strtoupper($r['payment_status'])
+};
+
+// ✅ OVERRIDE: Kung may active refund request, palitan ang badge
+if ($has_refund_request && in_array($refund_req_status, ['pending', 'approved', 'processing'])) {
+    $payClass = 'partial';  // Yellow badge
+    $payLabel = match($refund_req_status) {
+        'pending'    => '⏳ REFUND PENDING',
+        'approved'   => '↩ REFUND APPROVED',
+        'processing' => '↩ REFUND PROCESSING',
+        default      => '↩ REFUND'
+    };
+}
                 $needsCollection = in_array($r['payment_status'], ['cod','onsite','unpaid','partial'], true)
                                    && !in_array($r['status'], ['cancelled','completed','delivered'], true);
                 $collectorName = trim(($r['collector_first'] ?? '').' '.($r['collector_last'] ?? ''));
@@ -1095,11 +1117,19 @@ function getReturnStatusInfo($status) {
                                 onclick='handleDeliverClick(<?= json_encode($r, JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'>
                             <i class="bi bi-check2-all me-1"></i>Mark Delivered
                         </button>
-                    <?php elseif (canEditReservations() && $r['status'] === 'delivered'): ?>
-                        <button class="btn btn-success btn-sm"
-                                onclick='handleCompleteClick(<?= json_encode($r, JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'>
-                            <i class="bi bi-bag-check me-1"></i>Mark as Completed
-                        </button>
+<?php elseif (canEditReservations() && $r['status'] === 'delivered'): ?>
+    <?php if ($has_refund_request && in_array($refund_req_status, ['pending', 'approved', 'processing'])): ?>
+        <!-- ✅ Kapag may active refund, huwag ipakita ang "Mark as Completed" -->
+        <span class="ec-status-pill" style="background: #FEF3C7; color: #92400E;">
+            <i class="bi bi-arrow-return-left"></i>
+            Refund <?= ucfirst($refund_req_status) ?> — Cannot Complete
+        </span>
+    <?php else: ?>
+        <button class="btn btn-success btn-sm"
+                onclick='handleCompleteClick(<?= json_encode($r, JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'>
+            <i class="bi bi-bag-check me-1"></i>Mark as Completed
+        </button>
+    <?php endif; ?>
                     <?php elseif (canEditReservations() && $r['status'] === 'ready_for_pickup'): ?>
                         <button class="btn ec-btn-primary btn-sm"
                                 onclick='handleCompleteClick(<?= json_encode($r, JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'>
@@ -1173,14 +1203,14 @@ function getReturnStatusInfo($status) {
                                 
                             <?php endif; ?>
                             
-                            <?php if (canEditReservations() && $r['status'] === 'delivered'): ?>
-                                <li><hr class="dropdown-divider"></li>
-                                <li>
-                                    <a class="dropdown-item" href="#" onclick='handleCompleteClick(<?= json_encode($r, JSON_HEX_APOS|JSON_HEX_QUOT) ?>);return false;'>
-                                        <i class="bi bi-bag-check me-2"></i>Mark as Completed
-                                    </a>
-                                </li>
-                            <?php endif; ?>
+<?php if (canEditReservations() && $r['status'] === 'delivered' && !($has_refund_request && in_array($refund_req_status, ['pending', 'approved', 'processing']))): ?>
+    <li><hr class="dropdown-divider"></li>
+    <li>
+        <a class="dropdown-item" href="#" onclick='handleCompleteClick(...);return false;'>
+            <i class="bi bi-bag-check me-2"></i>Mark as Completed
+        </a>
+    </li>
+<?php endif; ?>
                             
                             <?php if (canRejectReservations() && !$isFinalized): ?>
                                 <li><hr class="dropdown-divider"></li>
@@ -1255,47 +1285,149 @@ function getReturnStatusInfo($status) {
 </div>
 
 <div class="modal fade" id="assignRiderModal" tabindex="-1">
-    <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title"><i class="bi bi-bicycle me-2"></i>Assign Rider</h5>
+                <div>
+                    <h5 class="modal-title mb-0">
+                        <i class="bi bi-bicycle me-2"></i>Assign Rider
+                    </h5>
+                    <small class="text-muted">Order: <strong id="assignOrderCode"></strong></small>
+                </div>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <div class="modal-body">
-                <p class="mb-3">Order: <strong id="assignOrderCode"></strong></p>
+
+            <div class="modal-body" style="padding: 1.25rem;">
                 <?php if (empty($riders)): ?>
                     <div class="alert alert-warning small mb-0">
-                        <i class="bi bi-exclamation-triangle me-1"></i>No active riders. Please add riders first.
+                        <i class="bi bi-exclamation-triangle me-1"></i>No active riders.
                     </div>
                 <?php else: ?>
+
+                    <!-- Rider selector -->
                     <div class="mb-3">
-                        <label class="form-label">Select Rider</label>
-                        <select class="form-select" id="assignRiderSelect">
+                        <label class="form-label small fw-semibold">Rider</label>
+                        <select class="form-select form-select-sm" id="assignRiderSelect">
                             <option value="">-- Choose rider --</option>
                             <?php foreach ($riders as $rd): ?>
-                                <option value="<?= (int)$rd['id'] ?>" <?= !$rd['is_available'] ? 'disabled' : '' ?>>
+                                <option value="<?= (int)$rd['id'] ?>">
                                     <?= htmlspecialchars($rd['name']) ?>
-                                    <?= $rd['vehicle_type'] ? ' — '.htmlspecialchars($rd['vehicle_type']) : '' ?>
-                                    <?= $rd['plate_number'] ? ' ('.htmlspecialchars($rd['plate_number']).')' : '' ?>
-                                    <?= !$rd['is_available'] ? ' — BUSY' : '' ?>
+                                    <?= $rd['vehicle_type'] ? ' • '.htmlspecialchars($rd['vehicle_type']) : '' ?>
                                 </option>
                             <?php endforeach; ?>
                         </select>
                     </div>
-                    <div class="mb-3">
-                        <label class="form-label">Estimated Delivery Date</label>
-                        <input type="date" class="form-control" id="assignDeliveryDate" value="<?= date('Y-m-d', strtotime('+2 days')) ?>">
+
+                    <!-- Working hours card -->
+                    <div id="riderInfoCard" style="display:none;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:.65rem .85rem;margin-bottom:1rem;">
+                        <div class="d-flex align-items-center gap-2 small">
+                            <i class="bi bi-clock-history text-success"></i>
+                            <span id="riderHours" class="fw-semibold"></span>
+                        </div>
+                        <div class="small text-muted mt-1" id="riderBreakInfo"></div>
                     </div>
+
+                    <!-- Date picker -->
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold">Delivery Date</label>
+                        <div class="d-flex gap-2 align-items-center">
+                            <input type="date" class="form-control form-control-sm" id="assignDeliveryDate"
+                                   value="<?= date('Y-m-d') ?>" style="max-width:200px;">
+                            <span class="small text-muted" id="dateDayLabel"></span>
+                        </div>
+                    </div>
+
+                    <!-- ✅ Slot duration toggle -->
+                    <div class="mb-3">
+                        <label class="form-label small fw-semibold">Slot Duration</label>
+                        <div class="btn-group w-100" role="group">
+                            <input type="radio" class="btn-check" name="slotDuration" id="slotDur60" value="60" checked>
+                            <label class="btn btn-outline-primary btn-sm" for="slotDur60" style="font-size:.78rem;">
+                                <i class="bi bi-clock me-1"></i>1 Hour
+                            </label>
+
+                            <input type="radio" class="btn-check" name="slotDuration" id="slotDur30" value="30">
+                            <label class="btn btn-outline-primary btn-sm" for="slotDur30" style="font-size:.78rem;">
+                                <i class="bi bi-clock-history me-1"></i>30 Min
+                            </label>
+                        </div>
+                        <div class="small text-muted mt-1" style="font-size:.72rem;">
+                            <i class="bi bi-info-circle me-1"></i>
+                            Pumili base sa order volume — 30-min kapag marami, 1-hour kapag normal.
+                        </div>
+                    </div>
+
+                    <!-- Available slots grid -->
+                    <div class="mb-3">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
+                            <label class="form-label small fw-semibold mb-0">Available Time Slots</label>
+                            <small class="text-muted" id="slotsDateLabel" style="font-size:.75rem;"></small>
+                        </div>
+                        <div id="timeSlotsGrid" style="
+                            display:grid;
+                            grid-template-columns:repeat(4,1fr);
+                            gap:.35rem;
+                            padding:.5rem;
+                            background:#f8fafc;
+                            border-radius:8px;
+                            min-height:60px;
+                        ">
+                            <div class="text-center text-muted small py-2 w-100" style="grid-column:1/-1;">
+                                Select rider & date first
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Outside working hours -->
+                    <div id="outsideSlotsSection" style="display:none;margin-bottom:1rem;">
+                        <label class="form-label small fw-semibold text-danger mb-2">
+                            Outside Working Hours
+                        </label>
+                        <div id="outsideSlotsGrid" style="
+                            display:grid;
+                            grid-template-columns:repeat(4,1fr);
+                            gap:.35rem;
+                            padding:.5rem;
+                            background:#fef2f2;
+                            border-radius:8px;
+                        "></div>
+                    </div>
+
+                    <!-- Selected range display -->
+                    <div class="mb-3" id="selectedRangeBox" style="display:none;">
+                        <div class="p-3 rounded" style="background:#eff6ff;border:1.5px solid #2563eb;">
+                            <div class="d-flex justify-content-between align-items-center mb-1">
+                                <span class="fw-semibold small" style="color:#1e40af;">
+                                    <i class="bi bi-check-circle-fill me-1"></i>Selected Time Slot
+                                </span>
+                                <span id="selectedDuration" class="badge" style="background:#2563eb;">2 hours</span>
+                            </div>
+                            <div class="fw-bold" style="font-size:1.1rem;color:#1e40af;" id="selectedTimeRange">
+                                09:00 – 11:00
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Validation message -->
+                    <div id="validationMsg" style="display:none"></div>
+
+                    <!-- Notes -->
                     <div class="mb-0">
-                        <label class="form-label">Notes <small class="text-muted">(optional)</small></label>
-                        <textarea class="form-control" id="assignDeliveryNotes" rows="2" placeholder="Instructions for the rider..."></textarea>
+                        <label class="form-label small fw-semibold">
+                            Notes <span class="text-muted fw-normal">(optional)</span>
+                        </label>
+                        <textarea class="form-control form-control-sm" id="assignDeliveryNotes"
+                                  rows="2" placeholder="Instructions for the rider..."></textarea>
                     </div>
                 <?php endif; ?>
             </div>
-            <div class="modal-footer">
-                <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+
+            <div class="modal-footer" style="padding:.75rem 1.25rem;">
+                <button class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Cancel</button>
                 <?php if (!empty($riders)): ?>
-                    <button class="btn ec-btn-primary" id="confirmAssignBtn"><i class="bi bi-check-lg me-1"></i>Assign Rider</button>
+                    <button class="btn ec-btn-primary btn-sm" id="confirmAssignBtn" disabled>
+                        <i class="bi bi-check-lg me-1"></i>Assign Rider
+                    </button>
                 <?php endif; ?>
             </div>
         </div>
@@ -1593,27 +1725,47 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById(id)?.addEventListener('change', applyFilters);
     });
 
-    document.getElementById('confirmAssignBtn')?.addEventListener('click', function () {
-        const riderId = document.getElementById('assignRiderSelect').value;
-        const eta     = document.getElementById('assignDeliveryDate').value;
-        const notes   = document.getElementById('assignDeliveryNotes').value.trim();
-        if (!riderId) { Swal.fire('Missing','Please select a rider','warning'); return; }
+document.getElementById('confirmAssignBtn')?.addEventListener('click', function () {
+    const riderId = document.getElementById('assignRiderSelect').value;
+    const eta     = document.getElementById('assignDeliveryDate').value;
+    const notes   = document.getElementById('assignDeliveryNotes').value.trim();
 
-        if (pendingBulkIds && pendingBulkIds.length > 0) {
-            assignRiderModal.hide();
-            bulkAction('bulk_assign_rider', pendingBulkIds, {
-                rider_id: riderId, delivery_date: eta, delivery_notes: notes
-            });
-            pendingBulkIds = null;
-            return;
-        }
+    if (!riderId) { Swal.fire('Missing','Please select a rider','warning'); return; }
+    if (!eta)     { Swal.fire('Missing','Please select delivery date','warning'); return; }
+    if (!selectedSlotStart || !selectedSlotEnd) {
+        Swal.fire('Missing','Please select a time range from the grid','warning');
+        return;
+    }
 
-        if (!pendingAssignId) return;
+    const timeStart = selectedSlotStart;
+    const timeEnd   = selectedSlotEnd;
+
+    // ✅ BULK
+    if (pendingBulkIds && pendingBulkIds.length > 0) {
         assignRiderModal.hide();
-        postAction('assign_rider', pendingAssignId, { rider_id: riderId, delivery_date: eta, delivery_notes: notes });
-        pendingAssignId = null;
-    });
+        bulkAction('bulk_assign_rider', pendingBulkIds, {
+            rider_id: riderId,
+            delivery_date: eta,
+            delivery_time_start: timeStart,
+            delivery_time_end: timeEnd,
+            delivery_notes: notes
+        });
+        pendingBulkIds = null;
+        return;
+    }
 
+    // ✅ SINGLE
+    if (!pendingAssignId) return;
+    assignRiderModal.hide();
+    postAction('assign_rider', pendingAssignId, {
+        rider_id: riderId,
+        delivery_date: eta,
+        delivery_time_start: timeStart,
+        delivery_time_end: timeEnd,
+        delivery_notes: notes
+    });
+    pendingAssignId = null;
+});
     document.getElementById('confirmCancelBtn')?.addEventListener('click', function () {
         if (!pendingCancelId) return;
         const reason = document.getElementById('cancelReason').value.trim() || 'Cancelled by clinic';
@@ -1833,12 +1985,41 @@ function bulkActionClick(action) {
     const selected = getSelectedOrders();
     if (selected.length === 0) return;
 
-    if (action === 'bulk_assign_rider') {
-        pendingBulkIds = selected.map(o => o.id);
-        document.getElementById('assignOrderCode').textContent = `${selected.length} order(s)`;
-        assignRiderModal.show();
-        return;
-    }
+if (action === 'bulk_assign_rider') {
+    pendingBulkIds = selected.map(o => o.id);
+    pendingAssignId = null;
+
+    // ✅ Reset slot state
+    selectedSlotStart = null;
+    selectedSlotEnd   = null;
+    currentRiderSlots = [];
+    outsideRiderSlots = [];
+        // ✅ Reset slot duration to 1 hour default
+    const slotDur60 = document.getElementById('slotDur60');
+    if (slotDur60) slotDur60.checked = true;
+    
+
+    document.getElementById('assignOrderCode').textContent = `${selected.length} order(s)`;
+    document.getElementById('assignRiderSelect').value = '';
+    document.getElementById('assignDeliveryDate').value = new Date().toISOString().split('T')[0];
+    document.getElementById('assignDeliveryNotes').value = '';
+    document.getElementById('timeSlotsGrid').innerHTML =
+        '<div class="text-center text-muted small py-2 w-100" style="grid-column:1/-1;">Select rider & date first</div>';
+    document.getElementById('riderInfoCard').style.display = 'none';
+    document.getElementById('selectedRangeBox').style.display = 'none';
+    document.getElementById('validationMsg').style.display = 'none';
+    document.getElementById('outsideSlotsSection').style.display = 'none';
+    document.getElementById('confirmAssignBtn').disabled = true;
+    document.getElementById('dateDayLabel').textContent = '';
+    document.getElementById('slotsDateLabel').textContent = '';
+
+    const d = new Date();
+    const formatted = d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+    document.getElementById('dateDayLabel').textContent = formatted;
+
+    assignRiderModal.show();
+    return;
+}
 
     if (action === 'bulk_cancel') {
         Swal.fire({
@@ -2121,6 +2302,34 @@ function openAssignRiderModal(id, code) {
     pendingAssignId = id;
     pendingBulkIds  = null;
     document.getElementById('assignOrderCode').textContent = code;
+
+    // ✅ Reset slot state
+    selectedSlotStart = null;
+    selectedSlotEnd   = null;
+    currentRiderSlots = [];
+    outsideRiderSlots = [];
+        // ✅ Reset slot duration to 1 hour default
+    const slotDur60 = document.getElementById('slotDur60');
+    if (slotDur60) slotDur60.checked = true;
+
+    document.getElementById('assignRiderSelect').value = '';
+    document.getElementById('assignDeliveryDate').value = new Date().toISOString().split('T')[0];
+    document.getElementById('assignDeliveryNotes').value = '';
+    document.getElementById('timeSlotsGrid').innerHTML =
+        '<div class="text-center text-muted small py-2 w-100" style="grid-column:1/-1;">Select rider & date first</div>';
+    document.getElementById('riderInfoCard').style.display = 'none';
+    document.getElementById('selectedRangeBox').style.display = 'none';
+    document.getElementById('validationMsg').style.display = 'none';
+    document.getElementById('outsideSlotsSection').style.display = 'none';
+    document.getElementById('confirmAssignBtn').disabled = true;
+    document.getElementById('dateDayLabel').textContent = '';
+    document.getElementById('slotsDateLabel').textContent = '';
+
+    // ✅ Trigger date label update
+    const d = new Date();
+    const formatted = d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+    document.getElementById('dateDayLabel').textContent = formatted;
+
     assignRiderModal.show();
 }
 
@@ -2800,4 +3009,367 @@ function postRefundAction(action, extra = {}) {
             Swal.fire('Error', 'Network error: ' + err.message, 'error');
         });
 }
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ RIDER ASSIGNMENT — Visual Time Slot Picker
+// ═══════════════════════════════════════════════════════════════
+
+let selectedSlotStart = null;
+let selectedSlotEnd   = null;
+let currentRiderSlots = [];
+let outsideRiderSlots = [];
+
+function generateHourlySlots(schedule, bookedSlots, durationMinutes = 60) {
+    if (!schedule) return { available: [], outside: [] };
+
+    const timeIn  = schedule.time_in;
+    const timeOut = schedule.time_out;
+    const breakS  = schedule.break_start;
+    const breakE  = schedule.break_end;
+
+    const available = [];
+    const outside   = [];
+
+    // ✅ AVAILABLE: working hours minus break minus booked
+    let cur = timeToMins(timeIn);
+    const end = timeToMins(timeOut);
+
+    while (cur + durationMinutes <= end) {
+        const slotStart = cur;
+        const slotEnd   = cur + durationMinutes;
+
+        let status = 'available';
+
+        // Check break
+        if (breakS && breakE) {
+            const bS = timeToMins(breakS);
+            const bE = timeToMins(breakE);
+            if (slotStart < bE && slotEnd > bS) status = 'break';
+        }
+
+        // Check booked
+        if (status === 'available') {
+            for (const b of bookedSlots) {
+                if (!b.delivery_time_start || !b.delivery_time_end) continue;
+                const bS = timeToMins(b.delivery_time_start);
+                const bE = timeToMins(b.delivery_time_end);
+                if (slotStart < bE && slotEnd > bS) {
+                    status = 'booked';
+                    break;
+                }
+            }
+        }
+
+        available.push({
+            time:    minsToTime(slotStart),
+            endTime: minsToTime(slotEnd),
+            status
+        });
+
+        cur += durationMinutes;
+    }
+
+    // ✅ OUTSIDE: 6AM-8AM at 5PM-8PM (fixed display range, 1-hour increments)
+    const outsideStart = 6 * 60;
+    const outsideEnd   = 20 * 60;
+
+    for (let m = outsideStart; m < outsideEnd; m += 60) {
+        if (m >= timeToMins(timeIn) && m < timeToMins(timeOut)) continue;
+
+        outside.push({
+            time:    minsToTime(m),
+            endTime: minsToTime(m + 60),
+            status:  'outside'
+        });
+    }
+
+    return { available, outside };
+}
+
+
+function renderTimeSlots() {
+    const grid        = document.getElementById('timeSlotsGrid');
+    const outsideSec  = document.getElementById('outsideSlotsSection');
+    const outsideGrid = document.getElementById('outsideSlotsGrid');
+
+    if (!grid) return;
+
+    // ✅ AVAILABLE SLOTS
+    if (currentRiderSlots.length === 0) {
+        grid.innerHTML = '<div class="text-center text-muted small py-2 w-100" style="grid-column:1/-1;">No time slots available</div>';
+    } else {
+        grid.innerHTML = currentRiderSlots.map((slot, idx) => {
+            const isSelected = isSlotInRange(slot.time, slot.endTime);
+            const isStart    = selectedSlotStart === slot.time;
+            const isEnd      = selectedSlotEnd === slot.endTime;
+
+            let bg = '#fff', border = '#86efac', color = '#15803d';
+            let cursor = 'pointer', opacity = '1';
+
+            if (slot.status === 'booked') {
+                bg = '#fef2f2'; border = '#fca5a5'; color = '#dc2626';
+                cursor = 'not-allowed'; opacity = '0.7';
+            } else if (slot.status === 'break') {
+                bg = '#f1f5f9'; border = '#cbd5e1'; color = '#94a3b8';
+                cursor = 'not-allowed'; opacity = '0.7';
+            } else if (isSelected) {
+                bg = '#2563eb'; border = '#2563eb'; color = '#fff';
+            }
+
+            const disabled  = slot.status !== 'available' ? 'disabled' : '';
+            const startMark = isStart ? '<i class="bi bi-play-fill" style="position:absolute;top:2px;left:4px;font-size:.7rem;"></i>' : '';
+            const endMark   = isEnd   ? '<i class="bi bi-stop-fill" style="position:absolute;bottom:2px;right:4px;font-size:.7rem;"></i>' : '';
+
+            return `
+                <button type="button"
+                    data-idx="${idx}"
+                    data-time="${slot.time}"
+                    data-end="${slot.endTime}"
+                    data-status="${slot.status}"
+                    ${disabled}
+                    onclick="handleSlotClick(${idx})"
+                    style="
+                        position:relative;
+                        padding:.65rem .25rem;
+                        font-size:.78rem;
+                        font-weight:600;
+                        background:${bg};
+                        border:1.5px solid ${border};
+                        border-radius:6px;
+                        color:${color};
+                        cursor:${cursor};
+                        opacity:${opacity};
+                        transition:all .15s;
+                    "
+                    onmouseover="if('${slot.status}' === 'available' && !this.disabled) this.style.transform='translateY(-1px)'; this.style.boxShadow='0 2px 6px rgba(0,0,0,.1)';"
+                    onmouseout="this.style.transform=''; this.style.boxShadow='';">
+                    ${slot.time}
+                    ${startMark}${endMark}
+                </button>
+            `;
+        }).join('');
+    }
+
+    // ✅ OUTSIDE SLOTS
+    if (outsideRiderSlots.length > 0) {
+        outsideSec.style.display = '';
+        outsideGrid.innerHTML = outsideRiderSlots.map(slot => `
+            <div style="
+                padding:.5rem .25rem;
+                font-size:.7rem;
+                font-weight:600;
+                background:#fff;
+                border:1.5px dashed #fca5a5;
+                border-radius:6px;
+                color:#dc2626;
+                text-align:center;
+                opacity:0.8;
+            ">
+                <div>${slot.time}</div>
+                <div style="font-size:.6rem;font-weight:400;">Not available</div>
+            </div>
+        `).join('');
+    } else {
+        outsideSec.style.display = 'none';
+    }
+}
+
+function handleSlotClick(idx) {
+    const slot = currentRiderSlots[idx];
+    if (!slot || slot.status !== 'available') return;
+
+    if (!selectedSlotStart || (selectedSlotStart && selectedSlotEnd)) {
+        // Start fresh
+        selectedSlotStart = slot.time;
+        selectedSlotEnd   = slot.endTime;
+    } else {
+        // Extend or restart
+        const startMins = timeToMins(selectedSlotStart);
+        const thisMins  = timeToMins(slot.time);
+
+        if (thisMins < startMins) {
+            selectedSlotStart = slot.time;
+            selectedSlotEnd   = slot.endTime;
+        } else {
+            const newEnd = slot.endTime;
+            const validation = validateSlotRange(selectedSlotStart, newEnd);
+            if (!validation.ok) {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'Invalid Range',
+                    text: validation.reason,
+                    timer: 2000,
+                    showConfirmButton: false
+                });
+                return;
+            }
+            selectedSlotEnd = newEnd;
+        }
+    }
+
+    updateSlotUI();
+}
+
+function isSlotInRange(start, end) {
+    if (!selectedSlotStart || !selectedSlotEnd) return false;
+    const s  = timeToMins(start);
+    const e  = timeToMins(end);
+    const rs = timeToMins(selectedSlotStart);
+    const re = timeToMins(selectedSlotEnd);
+    return s >= rs && e <= re;
+}
+
+function validateSlotRange(start, end) {
+    const s = timeToMins(start);
+    const e = timeToMins(end);
+    for (const slot of currentRiderSlots) {
+        const ss = timeToMins(slot.time);
+        const se = timeToMins(slot.endTime);
+        if (ss < e && se > s && slot.status !== 'available') {
+            return { ok: false, reason: `Hindi available ang ${slot.time}–${slot.endTime}` };
+        }
+    }
+    return { ok: true };
+}
+
+function updateSlotUI() {
+    renderTimeSlots();
+
+    const box = document.getElementById('selectedRangeBox');
+    const btn = document.getElementById('confirmAssignBtn');
+
+    if (selectedSlotStart && selectedSlotEnd) {
+        const duration = (timeToMins(selectedSlotEnd) - timeToMins(selectedSlotStart)) / 60;
+        document.getElementById('selectedTimeRange').textContent =
+            `${selectedSlotStart} – ${selectedSlotEnd}`;
+        document.getElementById('selectedDuration').textContent =
+            `${duration} hour${duration !== 1 ? 's' : ''}`;
+        box.style.display = '';
+        btn.disabled = false;
+    } else {
+        box.style.display = 'none';
+        btn.disabled = true;
+    }
+}
+
+async function loadRiderSlots() {
+    const riderId = document.getElementById('assignRiderSelect').value;
+    const date    = document.getElementById('assignDeliveryDate').value;
+
+    // ✅ Get selected slot duration
+    const durationInput = document.querySelector('input[name="slotDuration"]:checked');
+    const duration = durationInput ? parseInt(durationInput.value) : 60;
+
+    const grid = document.getElementById('timeSlotsGrid');
+    const info = document.getElementById('riderInfoCard');
+    const btn  = document.getElementById('confirmAssignBtn');
+
+    // Reset
+    selectedSlotStart = null;
+    selectedSlotEnd   = null;
+    currentRiderSlots = [];
+    outsideRiderSlots = [];
+    if (btn) btn.disabled = true;
+    document.getElementById('selectedRangeBox').style.display = 'none';
+    document.getElementById('validationMsg').style.display = 'none';
+    document.getElementById('outsideSlotsSection').style.display = 'none';
+
+    // Date label
+    if (date) {
+        const d = new Date(date + 'T00:00:00');
+        const formatted = d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+        document.getElementById('dateDayLabel').textContent = formatted;
+        document.getElementById('slotsDateLabel').textContent = formatted;
+    }
+
+    if (!riderId || !date) {
+        info.style.display = 'none';
+        grid.innerHTML = '<div class="text-center text-muted small py-2 w-100" style="grid-column:1/-1;">Select rider & date first</div>';
+        return;
+    }
+
+    grid.innerHTML = '<div class="text-center py-2 w-100" style="grid-column:1/-1;"><div class="spinner-border spinner-border-sm text-primary"></div></div>';
+
+    try {
+        const res = await fetch(
+            `${API_URL}?action=rider_availability&rider_id=${riderId}&date=${date}`,
+            { credentials: 'same-origin' }
+        );
+        const data = await res.json();
+
+        if (!data.success) {
+            grid.innerHTML = `<div class="text-center text-danger small py-2 w-100" style="grid-column:1/-1;">${esc(data.message)}</div>`;
+            return;
+        }
+
+        const schedule = data.data.schedule;
+        const booked   = data.data.booked || [];
+
+        if (schedule) {
+            info.style.display = '';
+            document.getElementById('riderHours').textContent =
+                `Working: ${schedule.time_in} – ${schedule.time_out}`;
+            document.getElementById('riderBreakInfo').textContent =
+                schedule.break_start ? `Break: ${schedule.break_start} – ${schedule.break_end}` : '';
+        } else {
+            info.style.display = '';
+            document.getElementById('riderHours').innerHTML =
+                '<span class="text-danger">⚠ No working schedule set for this date</span>';
+            document.getElementById('riderBreakInfo').textContent = '';
+            grid.innerHTML = '<div class="text-center text-warning small py-2 w-100" style="grid-column:1/-1;">Rider has no schedule for this date</div>';
+            return;
+        }
+
+        const result = generateHourlySlots(schedule, booked, duration);
+        currentRiderSlots = result.available;
+        outsideRiderSlots = result.outside;
+
+        renderTimeSlots();
+
+    } catch (err) {
+        console.error(err);
+        grid.innerHTML = `<div class="text-center text-danger small py-2 w-100" style="grid-column:1/-1;">Network error</div>`;
+    }
+}
+
+// ✅ Helper: convert time string to minutes
+function timeToMins(t) {
+    if (!t) return 0;
+    const parts = String(t).substring(0, 5).split(':');
+    return parseInt(parts[0]) * 60 + parseInt(parts[1]);
+}
+
+// ✅ Helper: minutes to HH:MM
+function minsToTime(m) {
+    const h = Math.floor(m / 60);
+    const min = m % 60;
+    return `${String(h).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+}
+
+// ✅ Attach listeners
+document.addEventListener('DOMContentLoaded', function () {
+    const riderSel = document.getElementById('assignRiderSelect');
+    const dateInp  = document.getElementById('assignDeliveryDate');
+
+    if (riderSel) riderSel.addEventListener('change', loadRiderSlots);
+    if (dateInp)  dateInp.addEventListener('change', loadRiderSlots);
+
+    // ✅ Slot duration toggle — re-render slots kapag pinalitan
+    document.querySelectorAll('input[name="slotDuration"]').forEach(radio => {
+        radio.addEventListener('change', function () {
+            // Reset selection kapag nagpalit ng duration
+            selectedSlotStart = null;
+            selectedSlotEnd   = null;
+
+            const rangeBox = document.getElementById('selectedRangeBox');
+            if (rangeBox) rangeBox.style.display = 'none';
+
+            const confirmBtn = document.getElementById('confirmAssignBtn');
+            if (confirmBtn) confirmBtn.disabled = true;
+
+            // Re-load slots with new duration
+            loadRiderSlots();
+        });
+    });
+});
 </script>

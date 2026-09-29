@@ -4,6 +4,197 @@ error_reporting(E_ALL);
 include '../includes/config.php';
 include '../includes/theme.php';
 
+// ============================================
+// ADDRESS AJAX HANDLERS
+// ============================================
+if (isset($_GET['addr_action'])) {
+    header('Content-Type: application/json');
+    
+    if (!isset($_SESSION['user_id'])) {
+        echo json_encode(['success' => false, 'message' => 'Unauthorized']);
+        exit;
+    }
+    
+    $uid = (int)$_SESSION['user_id'];
+    $action = $_GET['addr_action'];
+    
+    // ── GET ALL ADDRESSES ──
+    if ($action === 'list') {
+        $q = mysqli_query($conn, "
+            SELECT id, label, recipient_name, recipient_phone,
+                   street_address, barangay, city, province, zip_code, landmark,
+                   latitude, longitude, is_default
+            FROM user_addresses
+            WHERE user_id = $uid
+            ORDER BY is_default DESC, created_at DESC
+        ");
+        $list = [];
+        while ($r = mysqli_fetch_assoc($q)) {
+            $r['is_default'] = (int)$r['is_default'];
+            $list[] = $r;
+        }
+        echo json_encode(['success' => true, 'addresses' => $list]);
+        exit;
+    }
+    
+    // ── SAVE ADDRESS (INSERT or UPDATE) ──
+    if ($action === 'save') {
+        $id             = (int)($_POST['id'] ?? 0);
+        $label          = mysqli_real_escape_string($conn, trim($_POST['label'] ?? 'Home'));
+        $rname          = mysqli_real_escape_string($conn, trim($_POST['recipient_name'] ?? ''));
+        $rphone         = mysqli_real_escape_string($conn, trim($_POST['recipient_phone'] ?? ''));
+        $street         = mysqli_real_escape_string($conn, trim($_POST['street_address'] ?? ''));
+        $brgy           = mysqli_real_escape_string($conn, trim($_POST['barangay'] ?? ''));
+        $city           = mysqli_real_escape_string($conn, trim($_POST['city'] ?? ''));
+        $prov           = mysqli_real_escape_string($conn, trim($_POST['province'] ?? 'Cavite'));
+        $zip            = mysqli_real_escape_string($conn, trim($_POST['zip_code'] ?? ''));
+        $landmark       = mysqli_real_escape_string($conn, trim($_POST['landmark'] ?? ''));
+        $lat            = !empty($_POST['latitude']) ? (float)$_POST['latitude'] : null;
+        $lng            = !empty($_POST['longitude']) ? (float)$_POST['longitude'] : null;
+        $is_default     = !empty($_POST['is_default']) ? 1 : 0;
+        
+        // Validation
+        if (!$rname)  { echo json_encode(['success'=>false,'message'=>'Recipient name required.']); exit; }
+        if (!$rphone) { echo json_encode(['success'=>false,'message'=>'Phone number required.']); exit; }
+        if (!$street) { echo json_encode(['success'=>false,'message'=>'Street address required.']); exit; }
+        if (!$brgy)   { echo json_encode(['success'=>false,'message'=>'Barangay required.']); exit; }
+        if (!$city)   { echo json_encode(['success'=>false,'message'=>'City required.']); exit; }
+        if (!$zip)    { echo json_encode(['success'=>false,'message'=>'ZIP code required.']); exit; }
+        
+        if (stripos($prov, 'Cavite') === false) {
+            echo json_encode(['success'=>false,'message'=>'Only addresses in Cavite are supported.']);
+            exit;
+        }
+        
+        $lat_sql = $lat !== null ? $lat : 'NULL';
+        $lng_sql = $lng !== null ? $lng : 'NULL';
+        $landmark_sql = $landmark ? "'$landmark'" : 'NULL';
+        
+        // First address is automatically default
+        $c = (int)mysqli_fetch_assoc(mysqli_query($conn,
+            "SELECT COUNT(*) c FROM user_addresses WHERE user_id = $uid"))['c'];
+        if ($c === 0) $is_default = 1;
+        
+        // If setting default, unset others
+        if ($is_default) {
+            mysqli_query($conn, "UPDATE user_addresses SET is_default = 0 WHERE user_id = $uid");
+        }
+        
+        if ($id > 0) {
+            // UPDATE — verify ownership
+            if (mysqli_num_rows(mysqli_query($conn,
+                "SELECT id FROM user_addresses WHERE id = $id AND user_id = $uid")) === 0) {
+                echo json_encode(['success'=>false,'message'=>'Address not found.']);
+                exit;
+            }
+            mysqli_query($conn, "
+                UPDATE user_addresses SET
+                    label='$label', recipient_name='$rname', recipient_phone='$rphone',
+                    street_address='$street', barangay='$brgy', city='$city',
+                    province='$prov', zip_code='$zip', landmark=$landmark_sql,
+                    latitude=$lat_sql, longitude=$lng_sql, is_default=$is_default,
+                    updated_at=NOW()
+                WHERE id = $id AND user_id = $uid
+            ");
+            $new_id = $id;
+        } else {
+            mysqli_query($conn, "
+                INSERT INTO user_addresses
+                (user_id, label, recipient_name, recipient_phone, street_address,
+                 barangay, city, province, zip_code, landmark, latitude, longitude, is_default)
+                VALUES
+                ($uid, '$label', '$rname', '$rphone', '$street',
+                 '$brgy', '$city', '$prov', '$zip', $landmark_sql,
+                 $lat_sql, $lng_sql, $is_default)
+            ");
+            $new_id = mysqli_insert_id($conn);
+        }
+        
+        // Sync default to users.delivery_*
+        if ($is_default) {
+            mysqli_query($conn, "
+                UPDATE users SET
+                    delivery_address = '$street',
+                    delivery_barangay = '$brgy',
+                    delivery_city = '$city',
+                    delivery_province = '$prov',
+                    delivery_zip = '$zip'
+                WHERE id = $uid
+            ");
+        }
+        
+        echo json_encode(['success'=>true,'message'=>'Address saved.','id'=>$new_id]);
+        exit;
+    }
+    
+    // ── DELETE ──
+    if ($action === 'delete') {
+        $id = (int)($_POST['id'] ?? 0);
+        $row = mysqli_fetch_assoc(mysqli_query($conn,
+            "SELECT is_default FROM user_addresses WHERE id = $id AND user_id = $uid"));
+        
+        if (!$row) { echo json_encode(['success'=>false,'message'=>'Address not found.']); exit; }
+        
+        mysqli_query($conn, "DELETE FROM user_addresses WHERE id = $id AND user_id = $uid");
+        
+        // If deleted was default, promote next newest
+        if ((int)$row['is_default'] === 1) {
+            $next = mysqli_fetch_assoc(mysqli_query($conn,
+                "SELECT id FROM user_addresses WHERE user_id = $uid ORDER BY created_at DESC LIMIT 1"));
+            if ($next) {
+                mysqli_query($conn, "UPDATE user_addresses SET is_default = 1 WHERE id = {$next['id']}");
+                $a = mysqli_fetch_assoc(mysqli_query($conn, "SELECT * FROM user_addresses WHERE id = {$next['id']}"));
+                mysqli_query($conn, "
+                    UPDATE users SET
+                        delivery_address = '{$a['street_address']}',
+                        delivery_barangay = '{$a['barangay']}',
+                        delivery_city = '{$a['city']}',
+                        delivery_province = '{$a['province']}',
+                        delivery_zip = '{$a['zip_code']}'
+                    WHERE id = $uid
+                ");
+            } else {
+                mysqli_query($conn, "
+                    UPDATE users SET delivery_address=NULL, delivery_barangay=NULL,
+                        delivery_city=NULL, delivery_province=NULL, delivery_zip=NULL
+                    WHERE id = $uid
+                ");
+            }
+        }
+        
+        echo json_encode(['success'=>true,'message'=>'Address deleted.']);
+        exit;
+    }
+    
+    // ── SET DEFAULT ──
+    if ($action === 'set_default') {
+        $id = (int)($_POST['id'] ?? 0);
+        $row = mysqli_fetch_assoc(mysqli_query($conn,
+            "SELECT * FROM user_addresses WHERE id = $id AND user_id = $uid"));
+        
+        if (!$row) { echo json_encode(['success'=>false,'message'=>'Address not found.']); exit; }
+        
+        mysqli_query($conn, "UPDATE user_addresses SET is_default = 0 WHERE user_id = $uid");
+        mysqli_query($conn, "UPDATE user_addresses SET is_default = 1 WHERE id = $id");
+        
+        mysqli_query($conn, "
+            UPDATE users SET
+                delivery_address = '{$row['street_address']}',
+                delivery_barangay = '{$row['barangay']}',
+                delivery_city = '{$row['city']}',
+                delivery_province = '{$row['province']}',
+                delivery_zip = '{$row['zip_code']}'
+            WHERE id = $uid
+        ");
+        
+        echo json_encode(['success'=>true,'message'=>'Default updated.']);
+        exit;
+    }
+    
+    echo json_encode(['success'=>false,'message'=>'Unknown action.']);
+    exit;
+}
+
 // Check if logged in
 if (!isset($_SESSION['user_id'])) {
     header('Location: ../auth/user_login.php');
@@ -381,6 +572,63 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST') {
         header('Location: profile.php');
         exit();
     }
+}
+
+// ============================================
+// HANDLE AVATAR UPLOAD
+// ============================================
+if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_FILES['profile_picture'])) {
+    // Check avatar lock (24-hour limit)
+    if (!empty($user['avatar_updated_at']) && strtotime($user['avatar_updated_at']) > strtotime('-24 hours')) {
+        $_SESSION['error_message'] = 'You can only change your avatar once every 24 hours.';
+        header('Location: profile.php');
+        exit();
+    }
+    
+    $file = $_FILES['profile_picture'];
+    
+    if ($file['error'] == 0) {
+        $allowed = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        
+        if (!in_array($ext, $allowed)) {
+            $_SESSION['error_message'] = 'Invalid file type. Allowed: JPG, PNG, GIF, WEBP';
+            header('Location: profile.php');
+            exit();
+        }
+        
+        if ($file['size'] > 5 * 1024 * 1024) { // 5MB
+            $_SESSION['error_message'] = 'File too large. Max 5MB.';
+            header('Location: profile.php');
+            exit();
+        }
+        
+        $upload_dir = '../assets/images/profiles/';
+        if (!file_exists($upload_dir)) {
+            mkdir($upload_dir, 0777, true);
+        }
+        
+        // Delete old avatar
+        if (!empty($user['avatar']) && file_exists($upload_dir . $user['avatar'])) {
+            unlink($upload_dir . $user['avatar']);
+        }
+        
+        $new_filename = 'avatar_' . $user_id . '_' . time() . '.' . $ext;
+        $upload_path = $upload_dir . $new_filename;
+        
+        if (move_uploaded_file($file['tmp_name'], $upload_path)) {
+            mysqli_query($conn, "UPDATE users SET avatar = '$new_filename', avatar_updated_at = NOW() WHERE id = $user_id");
+            $_SESSION['user_avatar'] = $new_filename;
+            $_SESSION['success_message'] = 'Profile picture updated successfully!';
+        } else {
+            $_SESSION['error_message'] = 'Failed to upload image.';
+        }
+    } else {
+        $_SESSION['error_message'] = 'Please select a valid image.';
+    }
+    
+    header('Location: profile.php');
+    exit();
 }
 $avatar_path = '../assets/images/profiles/' . ($user['avatar'] ?? '');
 $avatar_exists = !empty($user['avatar']) && file_exists($avatar_path);
@@ -2591,6 +2839,254 @@ $is_home_active = in_array($current_page, $home_active_pages);
         .profile-card.edit-mode .btn-save {
             display: block;
         }
+
+        /* ═══════════════════════════════════════════════════════
+   ADDRESS MANAGER STYLES
+   ═══════════════════════════════════════════════════════ */
+.addr-modal-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55); backdrop-filter: blur(4px);
+    z-index: 8000; display: none;
+    align-items: center; justify-content: center; padding: 16px;
+}
+.addr-modal-overlay.show { display: flex; }
+
+.addr-modal {
+    background: var(--bg-secondary); border-radius: 20px;
+    width: 100%; max-width: 560px; max-height: 92vh;
+    overflow: hidden; box-shadow: var(--shadow-lg);
+    display: flex; flex-direction: column;
+    animation: addrModalIn 0.28s cubic-bezier(0.34,1.56,0.64,1);
+}
+@keyframes addrModalIn {
+    from { opacity: 0; transform: translateY(24px) scale(0.96); }
+    to   { opacity: 1; transform: none; }
+}
+
+.addr-modal-head {
+    background: var(--primary-gradient); color: white;
+    padding: 18px 22px; display: flex;
+    align-items: center; justify-content: space-between; flex-shrink: 0;
+}
+.addr-modal-head h3 {
+    font-size: 16px; font-weight: 700;
+    display: flex; align-items: center; gap: 10px; margin: 0;
+}
+.addr-modal-head .addr-close {
+    background: rgba(255,255,255,0.2); border: none; color: white;
+    width: 32px; height: 32px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; font-size: 15px; transition: background 0.2s;
+}
+.addr-modal-head .addr-close:hover { background: rgba(255,255,255,0.35); }
+
+.addr-modal-body {
+    padding: 20px 22px; overflow-y: auto; flex: 1;
+}
+.addr-modal-body::-webkit-scrollbar { width: 6px; }
+.addr-modal-body::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 6px; }
+
+/* ── Address cards ── */
+.addr-list { display: flex; flex-direction: column; gap: 12px; }
+
+.addr-card {
+    border: 2px solid var(--border-color); border-radius: 14px;
+    padding: 15px; transition: all 0.2s; position: relative;
+    background: var(--bg-primary);
+}
+.addr-card:hover {
+    border-color: var(--primary); background: var(--primary-light);
+}
+.addr-card.is-default::before {
+    content: 'DEFAULT'; position: absolute; top: -8px; right: 12px;
+    background: var(--primary); color: white;
+    font-size: 9px; font-weight: 800; letter-spacing: 0.06em;
+    padding: 3px 8px; border-radius: 20px;
+}
+.addr-card-label {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--primary-light); color: var(--primary);
+    font-size: 11px; font-weight: 700; padding: 3px 10px;
+    border-radius: 20px; text-transform: uppercase;
+    letter-spacing: 0.04em; margin-bottom: 8px;
+}
+.addr-card-name {
+    font-size: 14px; font-weight: 700;
+    color: var(--text-primary); margin-bottom: 3px;
+}
+.addr-card-phone {
+    font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;
+}
+.addr-card-address {
+    font-size: 12.5px; color: var(--text-secondary); line-height: 1.5;
+}
+.addr-card-actions {
+    display: flex; gap: 8px; margin-top: 12px;
+    padding-top: 12px; border-top: 1px dashed var(--border-color);
+}
+.addr-action-btn {
+    flex: 1; padding: 7px 10px; border-radius: 8px;
+    border: 1px solid var(--border-color); background: var(--bg-secondary);
+    color: var(--text-secondary); font-size: 11.5px; font-weight: 600;
+    cursor: pointer; transition: all 0.2s;
+    display: flex; align-items: center; justify-content: center; gap: 5px;
+}
+.addr-action-btn:hover {
+    border-color: var(--primary); color: var(--primary);
+    background: var(--primary-light);
+}
+.addr-action-btn.danger:hover {
+    border-color: var(--danger); color: var(--danger);
+    background: #fff5f5;
+}
+.addr-action-btn.primary {
+    background: var(--primary); color: white; border-color: var(--primary);
+}
+.addr-action-btn.primary:hover { background: var(--primary-dark); }
+
+/* ── Add new button ── */
+.addr-add-btn {
+    width: 100%; padding: 12px;
+    border: 2px dashed var(--primary); border-radius: 12px;
+    background: var(--primary-light); color: var(--primary);
+    font-size: 13px; font-weight: 700; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    transition: all 0.2s; font-family: inherit;
+}
+.addr-add-btn:hover {
+    background: var(--primary); color: white; border-style: solid;
+}
+
+/* ── Empty state ── */
+.addr-empty {
+    text-align: center; padding: 30px 20px;
+    background: var(--bg-primary); border-radius: 12px;
+}
+.addr-empty i {
+    font-size: 40px; color: var(--text-muted);
+    margin-bottom: 12px; display: block;
+}
+.addr-empty p {
+    font-size: 13px; color: var(--text-secondary); margin-bottom: 16px;
+}
+
+/* ── Form controls ── */
+.addr-form-group { margin-bottom: 14px; }
+.addr-form-label {
+    display: block; font-size: 11.5px; font-weight: 700;
+    color: var(--text-secondary); text-transform: uppercase;
+    letter-spacing: 0.05em; margin-bottom: 6px;
+}
+.addr-form-label .req { color: var(--danger); }
+.addr-form-input, .addr-form-select {
+    width: 100%; padding: 10px 14px;
+    border: 2px solid var(--border-color); border-radius: 10px;
+    font-size: 13.5px; background: var(--bg-primary);
+    color: var(--text-primary); font-family: inherit;
+    transition: all 0.2s; box-sizing: border-box;
+}
+.addr-form-input:focus, .addr-form-select:focus {
+    outline: none; border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--primary-light);
+}
+.addr-form-row-2 {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+}
+@media (max-width: 480px) { .addr-form-row-2 { grid-template-columns: 1fr; } }
+
+.addr-label-picker { display: flex; gap: 8px; flex-wrap: wrap; }
+.addr-label-btn {
+    padding: 8px 16px; border: 2px solid var(--border-color);
+    border-radius: 10px; background: var(--bg-primary);
+    font-size: 12.5px; font-weight: 600; color: var(--text-secondary);
+    cursor: pointer; transition: all 0.2s;
+    display: flex; align-items: center; gap: 6px;
+}
+.addr-label-btn:hover { border-color: var(--primary); }
+.addr-label-btn.selected {
+    background: var(--primary); color: white; border-color: var(--primary);
+}
+
+.addr-location-btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 9px 16px; border: 2px solid var(--primary);
+    border-radius: 10px; background: var(--primary-light);
+    color: var(--primary); font-size: 12.5px; font-weight: 700;
+    cursor: pointer; transition: all 0.2s; margin-bottom: 8px;
+}
+.addr-location-btn:hover {
+    background: var(--primary); color: white;
+}
+.addr-location-btn.loading { opacity: 0.7; pointer-events: none; }
+
+.addr-location-status {
+    font-size: 12px; margin-top: 4px; margin-bottom: 8px;
+    padding: 9px 12px; border-radius: 8px; display: none;
+}
+.addr-location-status.show { display: block; }
+.addr-location-status.success {
+    background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7;
+}
+.theme-dark .addr-location-status.success {
+    background: #064e3b; color: #6ee7b7; border-color: #047857;
+}
+.addr-location-status.error {
+    background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5;
+}
+.theme-dark .addr-location-status.error {
+    background: #7f1d1d; color: #fca5a5; border-color: #991b1b;
+}
+
+#addrMap {
+    width: 100%; height: 200px; border-radius: 12px;
+    margin-top: 8px; border: 2px solid var(--border-color);
+    display: none;
+}
+#addrMap.show { display: block; }
+
+.addr-default-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px; background: var(--primary-light);
+    border: 1px solid rgba(0,183,97,0.3); border-radius: 10px;
+    margin-top: 14px;
+}
+.addr-default-row input[type="checkbox"] {
+    width: 18px; height: 18px; accent-color: var(--primary);
+    cursor: pointer; flex-shrink: 0;
+}
+.addr-default-row label {
+    font-size: 13px; color: var(--primary-dark);
+    cursor: pointer; font-weight: 600; user-select: none;
+}
+.theme-dark .addr-default-row label { color: var(--primary); }
+
+.addr-form-actions {
+    display: flex; gap: 10px; margin-top: 18px;
+    padding-top: 16px; border-top: 1px solid var(--border-color);
+}
+.addr-form-actions button {
+    flex: 1; padding: 12px; border-radius: 10px;
+    font-size: 13.5px; font-weight: 700; cursor: pointer;
+    border: none; font-family: inherit; transition: all 0.2s;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+}
+.addr-btn-save {
+    background: var(--primary-gradient); color: white;
+}
+.addr-btn-save:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+.addr-btn-save:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+.addr-btn-cancel {
+    background: var(--bg-primary); color: var(--text-secondary);
+    border: 2px solid var(--border-color);
+}
+.addr-btn-cancel:hover { background: var(--border-color); }
+
+@media (max-width: 480px) {
+    .addr-modal { max-height: 96vh; border-radius: 16px; }
+    .addr-modal-head { padding: 14px 18px; }
+    .addr-modal-body { padding: 16px 18px; }
+    .addr-card { padding: 13px; }
+}
     </style>
 </head>
 <body>
@@ -3052,53 +3548,28 @@ $is_home_active = in_array($current_page, $home_active_pages);
                         <textarea name="address" class="form-control" rows="3" readonly><?php echo htmlspecialchars($user['address'] ?? 'Not provided'); ?></textarea>
                     </div>
 
-                    <!-- ═══════════════════════════════════════════════════ -->
-                    <!-- ✅ NEW: DELIVERY ADDRESS SECTION                    -->
-                    <!-- ═══════════════════════════════════════════════════ -->
-                    <div style="margin-top: 25px; padding-top: 20px; border-top: 2px dashed var(--border-light);">
-                        <h3 style="font-size: 14px; font-weight: 700; color: var(--text-primary); margin-bottom: 15px; display: flex; align-items: center; gap: 8px;">
-                            <i class="fas fa-truck" style="color: var(--primary);"></i>
-                            Delivery Address
-                            <span style="font-size: 11px; font-weight: 400; color: var(--text-muted); margin-left: 8px;">(for product deliveries)</span>
-                        </h3>
-                        
-                        <div class="form-group">
-                            <label><i class="fas fa-home"></i> Street Address</label>
-                            <input type="text" name="delivery_address" class="form-control" 
-                                   value="<?php echo htmlspecialchars($user['delivery_address'] ?? ''); ?>" 
-                                   placeholder="House no., street, subdivision" readonly>
-                        </div>
-                        
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                            <div class="form-group">
-                                <label><i class="fas fa-map-pin"></i> Barangay</label>
-                                <input type="text" name="delivery_barangay" class="form-control" 
-                                       value="<?php echo htmlspecialchars($user['delivery_barangay'] ?? ''); ?>" 
-                                       placeholder="Barangay" readonly>
-                            </div>
-                            <div class="form-group">
-                                <label><i class="fas fa-city"></i> City/Municipality</label>
-                                <input type="text" name="delivery_city" class="form-control" 
-                                       value="<?php echo htmlspecialchars($user['delivery_city'] ?? ''); ?>" 
-                                       placeholder="City" readonly>
-                            </div>
-                        </div>
-                        
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                            <div class="form-group">
-                                <label><i class="fas fa-map"></i> Province</label>
-                                <input type="text" name="delivery_province" class="form-control" 
-                                       value="<?php echo htmlspecialchars($user['delivery_province'] ?? ''); ?>" 
-                                       placeholder="Province" readonly>
-                            </div>
-                            <div class="form-group">
-                                <label><i class="fas fa-mail-bulk"></i> ZIP Code</label>
-                                <input type="text" name="delivery_zip" class="form-control" 
-                                       value="<?php echo htmlspecialchars($user['delivery_zip'] ?? ''); ?>" 
-                                       placeholder="ZIP Code" readonly>
-                            </div>
-                        </div>
-                    </div>
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- ✅ NEW: MY ADDRESSES SECTION (Shopee-style)         -->
+<!-- ═══════════════════════════════════════════════════ -->
+<div style="margin-top: 25px; padding-top: 20px; border-top: 2px dashed var(--border-light);">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px; flex-wrap:wrap; gap:10px;">
+        <h3 style="font-size: 14px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 8px; margin:0;">
+            <i class="fas fa-map-marked-alt" style="color: var(--primary);"></i>
+            My Addresses
+            <span style="font-size: 11px; font-weight: 400; color: var(--text-muted); margin-left: 8px;">(for product deliveries)</span>
+        </h3>
+        <button type="button" onclick="openAddressForm()" class="addr-add-btn" style="width:auto; padding:8px 16px; font-size:12.5px; margin:0;">
+            <i class="fas fa-plus"></i> Add New Address
+        </button>
+    </div>
+    
+    <div id="addressListContainer">
+        <div style="text-align:center; padding:30px; color:var(--text-muted);">
+            <i class="fas fa-spinner fa-spin" style="font-size:20px;"></i>
+            <p style="margin-top:8px; font-size:13px;">Loading addresses...</p>
+        </div>
+    </div>
+</div>
 
                     <button type="submit" name="update_profile" class="btn-save">
                         <i class="fas fa-save"></i> Save Changes
@@ -3414,7 +3885,138 @@ $is_home_active = in_array($current_page, $home_active_pages);
             </div>
         </div>
     </div>
-
+<!-- ═══════════════════════════════════════════════ -->
+<!-- ADDRESS FORM MODAL                               -->
+<!-- ═══════════════════════════════════════════════ -->
+<div class="addr-modal-overlay" id="addrFormOverlay">
+    <div class="addr-modal">
+        <div class="addr-modal-head">
+            <h3>
+                <i class="fas fa-map-marker-alt"></i>
+                <span id="addrFormTitle">Add New Address</span>
+            </h3>
+            <button class="addr-close" type="button" onclick="closeAddressForm()">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="addr-modal-body">
+            <input type="hidden" id="addr_id" value="0">
+            
+            <!-- Label -->
+            <div class="addr-form-group">
+                <label class="addr-form-label">Label</label>
+                <div class="addr-label-picker">
+                    <button type="button" class="addr-label-btn selected" data-label="Home" onclick="pickLabel(this)">
+                        <i class="fas fa-home"></i> Home
+                    </button>
+                    <button type="button" class="addr-label-btn" data-label="Work" onclick="pickLabel(this)">
+                        <i class="fas fa-briefcase"></i> Work
+                    </button>
+                    <button type="button" class="addr-label-btn" data-label="Other" onclick="pickLabel(this)">
+                        <i class="fas fa-map-pin"></i> Other
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Recipient -->
+            <div class="addr-form-row-2">
+                <div class="addr-form-group">
+                    <label class="addr-form-label">Recipient Name <span class="req">*</span></label>
+                    <input type="text" id="addr_rname" class="addr-form-input" placeholder="Full name">
+                </div>
+                <div class="addr-form-group">
+                    <label class="addr-form-label">Phone Number <span class="req">*</span></label>
+                    <input type="tel" id="addr_rphone" class="addr-form-input" placeholder="09XX XXX XXXX">
+                </div>
+            </div>
+            
+            <!-- Use Current Location -->
+            <div class="addr-form-group">
+                <label class="addr-form-label">Auto-fill via GPS</label>
+                <button type="button" class="addr-location-btn" id="addrLocationBtn" onclick="addrGetLocation()">
+                    <i class="fas fa-location-crosshairs"></i>
+                    Use Current Location
+                </button>
+                <div class="addr-location-status" id="addrLocationStatus"></div>
+                <div id="addrMap"></div>
+            </div>
+            
+            <!-- Street -->
+            <div class="addr-form-group">
+                <label class="addr-form-label">Street Address <span class="req">*</span></label>
+                <input type="text" id="addr_street" class="addr-form-input" placeholder="House no., street, subdivision">
+            </div>
+            
+            <div class="addr-form-row-2">
+                <div class="addr-form-group">
+                    <label class="addr-form-label">Barangay <span class="req">*</span></label>
+                    <input type="text" id="addr_barangay" class="addr-form-input" placeholder="Barangay">
+                </div>
+                <div class="addr-form-group">
+                    <label class="addr-form-label">City/Municipality <span class="req">*</span></label>
+                    <select id="addr_city" class="addr-form-select">
+                        <option value="">— Select City —</option>
+                        <option value="Cavite City">Cavite City</option>
+                        <option value="Bacoor">Bacoor</option>
+                        <option value="Imus">Imus</option>
+                        <option value="Dasmariñas">Dasmariñas</option>
+                        <option value="Tagaytay">Tagaytay</option>
+                        <option value="General Trias">General Trias</option>
+                        <option value="Kawit">Kawit</option>
+                        <option value="Tanza">Tanza</option>
+                        <option value="Trece Martires">Trece Martires</option>
+                        <option value="Naic">Naic</option>
+                        <option value="Silang">Silang</option>
+                        <option value="Amadeo">Amadeo</option>
+                        <option value="Alfonso">Alfonso</option>
+                        <option value="Carmona">Carmona</option>
+                        <option value="Gen. Mariano Alvarez">Gen. Mariano Alvarez</option>
+                        <option value="Magallanes">Magallanes</option>
+                        <option value="Maragondon">Maragondon</option>
+                        <option value="Mendez">Mendez</option>
+                        <option value="Ternate">Ternate</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="addr-form-row-2">
+                <div class="addr-form-group">
+                    <label class="addr-form-label">Province</label>
+                    <input type="text" id="addr_province" class="addr-form-input" value="Cavite" readonly style="background:#f0fdf4; color:#065f46; font-weight:700;">
+                </div>
+                <div class="addr-form-group">
+                    <label class="addr-form-label">ZIP Code <span class="req">*</span></label>
+                    <input type="text" id="addr_zip" class="addr-form-input" placeholder="4114" maxlength="4" inputmode="numeric">
+                </div>
+            </div>
+            
+            <div class="addr-form-group">
+                <label class="addr-form-label">Landmark (Optional)</label>
+                <input type="text" id="addr_landmark" class="addr-form-input" placeholder="e.g. Near church, beside SM">
+            </div>
+            
+            <!-- Hidden coords -->
+            <input type="hidden" id="addr_lat" value="">
+            <input type="hidden" id="addr_lng" value="">
+            
+            <!-- Default checkbox -->
+            <div class="addr-default-row">
+                <input type="checkbox" id="addr_default">
+                <label for="addr_default">Set as default address</label>
+            </div>
+            
+            <!-- Actions -->
+            <div class="addr-form-actions">
+                <button type="button" class="addr-btn-cancel" onclick="closeAddressForm()">
+                    <i class="fas fa-times"></i> Cancel
+                </button>
+                <button type="button" class="addr-btn-save" id="addrSaveBtn" onclick="saveAddress()">
+                    <i class="fas fa-check"></i> Save Address
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
     <!-- New Notification Alert -->
     <div class="new-notification-alert" id="newNotificationAlert" onclick="showNotifications()">
         <i class="fas fa-bell"></i>
@@ -3695,31 +4297,363 @@ $is_home_active = in_array($current_page, $home_active_pages);
             }
         });
 
-        function toggleEditMode() {
-            const profileCard = document.getElementById('profileCard');
-            const inputs = profileCard.querySelectorAll('.form-control');
-            const isEditMode = profileCard.classList.contains('edit-mode');
-            const saveBtn = profileCard.querySelector('.btn-save');
-            
-            if (isEditMode) {
-                profileCard.classList.remove('edit-mode');
-                profileCard.classList.add('view-mode');
-                inputs.forEach(input => input.readOnly = true);
-                if (saveBtn) saveBtn.style.display = 'none';
-                showToast('Edit mode disabled', 'info');
-                location.reload(); // Reload to show updated data
-            } else {
-                profileCard.classList.remove('view-mode');
-                profileCard.classList.add('edit-mode');
-                inputs.forEach(input => input.readOnly = false);
-                if (saveBtn) saveBtn.style.display = 'block';
-                showToast('Edit mode enabled - make your changes then click Save Changes', 'info');
-            }
-        }
+function toggleEditMode() {
+    const profileCard = document.getElementById('profileCard');
+    const inputs = profileCard.querySelectorAll('.form-control');
+    const isEditMode = profileCard.classList.contains('edit-mode');
+    const saveBtn = profileCard.querySelector('.btn-save');
+    
+    if (isEditMode) {
+        profileCard.classList.remove('edit-mode');
+        profileCard.classList.add('view-mode');
+        inputs.forEach(input => input.readOnly = true);
+        if (saveBtn) saveBtn.style.display = 'none';
+        showToast('Edit mode disabled', 'info');
+        // ❌ REMOVE: location.reload();  <-- HUWAG I-RELOAD DITO
+    } else {
+        profileCard.classList.remove('view-mode');
+        profileCard.classList.add('edit-mode');
+        inputs.forEach(input => input.readOnly = false);
+        if (saveBtn) saveBtn.style.display = 'block';
+        showToast('Edit mode enabled - make your changes then click Save Changes', 'info');
+    }
+}
         
         window.addEventListener('beforeunload', function() {
             // Silent cleanup - no error
         });
+
+/* ═══════════════════════════════════════════════════════
+   ADDRESS MANAGER
+   ═══════════════════════════════════════════════════════ */
+let addrMap = null;
+let addrMarker = null;
+let selectedLabel = 'Home';
+
+// ── Load list ──
+function loadAddresses() {
+    fetch('profile.php?addr_action=list')
+        .then(r => r.json())
+        .then(data => {
+            const container = document.getElementById('addressListContainer');
+            if (!data.success) {
+                container.innerHTML = '<div class="addr-empty"><p>Failed to load addresses.</p></div>';
+                return;
+            }
+            const list = data.addresses || [];
+            if (list.length === 0) {
+                container.innerHTML = `
+                    <div class="addr-empty">
+                        <i class="fas fa-map-marked-alt"></i>
+                        <p>You haven't added any addresses yet.</p>
+                        <button type="button" class="addr-add-btn" onclick="openAddressForm()" style="width:auto; padding:10px 20px; display:inline-flex;">
+                            <i class="fas fa-plus"></i> Add Your First Address
+                        </button>
+                    </div>`;
+                return;
+            }
+            let html = '<div class="addr-list">';
+            list.forEach(a => {
+                const isDef = a.is_default ? 'is-default' : '';
+                const labelIcon = a.label === 'Work' ? 'fa-briefcase'
+                                : a.label === 'Other' ? 'fa-map-pin' : 'fa-home';
+                html += `
+                    <div class="addr-card ${isDef}">
+                        <span class="addr-card-label">
+                            <i class="fas ${labelIcon}"></i> ${escapeHtml(a.label)}
+                        </span>
+                        <div class="addr-card-name">${escapeHtml(a.recipient_name)}</div>
+                        <div class="addr-card-phone">
+                            <i class="fas fa-phone" style="font-size:10px; opacity:0.7;"></i>
+                            ${escapeHtml(a.recipient_phone)}
+                        </div>
+                        <div class="addr-card-address">
+                            ${escapeHtml(a.street_address)}, ${escapeHtml(a.barangay)}<br>
+                            ${escapeHtml(a.city)}, ${escapeHtml(a.province)} ${escapeHtml(a.zip_code)}
+                            ${a.landmark ? `<br><em style="font-size:11.5px; color:var(--text-muted);">📍 ${escapeHtml(a.landmark)}</em>` : ''}
+                        </div>
+                        <div class="addr-card-actions">
+                            ${!a.is_default ? `<button type="button" class="addr-action-btn" onclick="setDefaultAddress(${a.id})">
+                                <i class="fas fa-star"></i> Set Default
+                            </button>` : ''}
+                            <button type="button" class="addr-action-btn" onclick='editAddress(${JSON.stringify(a).replace(/'/g, "&#39;")})'>
+                                <i class="fas fa-edit"></i> Edit
+                            </button>
+                            <button type="button" class="addr-action-btn danger" onclick="deleteAddress(${a.id})">
+                                <i class="fas fa-trash"></i> Delete
+                            </button>
+                        </div>
+                    </div>`;
+            });
+            html += '</div>';
+            container.innerHTML = html;
+        })
+        .catch(() => {
+            document.getElementById('addressListContainer').innerHTML =
+                '<div class="addr-empty"><p>Network error.</p></div>';
+        });
+}
+
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// ── Open form (add or edit) ──
+function openAddressForm(data) {
+    document.getElementById('addr_id').value = data ? data.id : 0;
+    document.getElementById('addrFormTitle').textContent = data ? 'Edit Address' : 'Add New Address';
+
+    // Set label
+    selectedLabel = data ? data.label : 'Home';
+    document.querySelectorAll('.addr-label-btn').forEach(b => {
+        b.classList.toggle('selected', b.dataset.label === selectedLabel);
+    });
+
+    // Fill fields
+    document.getElementById('addr_rname').value    = data ? data.recipient_name : '<?php echo htmlspecialchars($user["fullname"] ?? ""); ?>';
+    document.getElementById('addr_rphone').value   = data ? data.recipient_phone : '<?php echo htmlspecialchars($user["contact"] ?? ""); ?>';
+    document.getElementById('addr_street').value   = data ? data.street_address : '';
+    document.getElementById('addr_barangay').value = data ? data.barangay : '';
+    document.getElementById('addr_city').value     = data ? data.city : '';
+    document.getElementById('addr_province').value = data ? data.province : 'Cavite';
+    document.getElementById('addr_zip').value      = data ? data.zip_code : '';
+    document.getElementById('addr_landmark').value = data ? (data.landmark || '') : '';
+    document.getElementById('addr_lat').value      = data && data.latitude ? data.latitude : '';
+    document.getElementById('addr_lng').value      = data && data.longitude ? data.longitude : '';
+    document.getElementById('addr_default').checked = data ? !!data.is_default : false;
+
+    document.getElementById('addrFormOverlay').classList.add('show');
+    document.body.style.overflow = 'hidden';
+}
+
+function editAddress(data) {
+    openAddressForm(data);
+}
+
+function closeAddressForm() {
+    document.getElementById('addrFormOverlay').classList.remove('show');
+    document.body.style.overflow = '';
+    // Reset map
+    if (addrMap) { addrMap.remove(); addrMap = null; addrMarker = null; }
+    document.getElementById('addrMap').classList.remove('show');
+    document.getElementById('addrLocationStatus').classList.remove('show');
+}
+
+function pickLabel(btn) {
+    document.querySelectorAll('.addr-label-btn').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+    selectedLabel = btn.dataset.label;
+}
+
+// ── Save ──
+function saveAddress() {
+    const btn = document.getElementById('addrSaveBtn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Saving...';
+
+    const fd = new FormData();
+    fd.append('id', document.getElementById('addr_id').value);
+    fd.append('label', selectedLabel);
+    fd.append('recipient_name', document.getElementById('addr_rname').value.trim());
+    fd.append('recipient_phone', document.getElementById('addr_rphone').value.trim());
+    fd.append('street_address', document.getElementById('addr_street').value.trim());
+    fd.append('barangay', document.getElementById('addr_barangay').value.trim());
+    fd.append('city', document.getElementById('addr_city').value);
+    fd.append('province', document.getElementById('addr_province').value);
+    fd.append('zip_code', document.getElementById('addr_zip').value.trim());
+    fd.append('landmark', document.getElementById('addr_landmark').value.trim());
+    fd.append('latitude', document.getElementById('addr_lat').value);
+    fd.append('longitude', document.getElementById('addr_lng').value);
+    fd.append('is_default', document.getElementById('addr_default').checked ? '1' : '0');
+
+    fetch('profile.php?addr_action=save', { method: 'POST', body: fd })
+        .then(r => r.json())
+        .then(data => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-check"></i> Save Address';
+            if (data.success) {
+                showToast('Address saved successfully!', 'success');
+                closeAddressForm();
+                loadAddresses();
+            } else {
+                showToast(data.message || 'Failed to save.', 'error');
+            }
+        })
+        .catch(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-check"></i> Save Address';
+            showToast('Network error.', 'error');
+        });
+}
+
+// ── Delete ──
+function deleteAddress(id) {
+    if (!confirm('Delete this address?')) return;
+    const fd = new FormData();
+    fd.append('id', id);
+    fetch('profile.php?addr_action=delete', { method: 'POST', body: fd })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                showToast('Address deleted.', 'success');
+                loadAddresses();
+            } else {
+                showToast(data.message || 'Failed.', 'error');
+            }
+        });
+}
+
+// ── Set Default ──
+function setDefaultAddress(id) {
+    const fd = new FormData();
+    fd.append('id', id);
+    fetch('profile.php?addr_action=set_default', { method: 'POST', body: fd })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                showToast('Default address updated.', 'success');
+                loadAddresses();
+            } else {
+                showToast(data.message || 'Failed.', 'error');
+            }
+        });
+}
+
+// ── GPS / Location ──
+function addrGetLocation() {
+    if (!navigator.geolocation) {
+        showToast('Geolocation not supported.', 'error');
+        return;
+    }
+    const btn = document.getElementById('addrLocationBtn');
+    const status = document.getElementById('addrLocationStatus');
+
+    btn.classList.add('loading');
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Getting location...';
+    status.className = 'addr-location-status';
+    status.textContent = '';
+
+    navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+            await addrReverseGeocode(pos.coords.latitude, pos.coords.longitude);
+            btn.classList.remove('loading');
+            btn.innerHTML = '<i class="fas fa-location-crosshairs"></i> Refresh Location';
+        },
+        (err) => {
+            btn.classList.remove('loading');
+            btn.innerHTML = '<i class="fas fa-location-crosshairs"></i> Use Current Location';
+            status.className = 'addr-location-status error show';
+            const msgs = { 1: 'Permission denied.', 2: 'Unavailable.', 3: 'Timed out.' };
+            status.textContent = msgs[err.code] || 'Unknown error.';
+        },
+        { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
+    );
+}
+
+async function addrReverseGeocode(lat, lng) {
+    const status = document.getElementById('addrLocationStatus');
+    document.getElementById('addr_lat').value = lat;
+    document.getElementById('addr_lng').value = lng;
+
+    addrShowMap(lat, lng);
+
+    try {
+        const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&addressdetails=1&zoom=18`,
+            { headers: { 'Accept-Language': 'en' } });
+        const data = await res.json();
+        if (!data || !data.address) throw new Error('no address');
+
+        const a = data.address;
+        const province = [a.state, a.county, a.state_district].filter(Boolean).join(' ');
+        const isCavite = province.toLowerCase().includes('cavite');
+
+        if (!isCavite) {
+            status.className = 'addr-location-status error show';
+            status.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Outside Cavite. Only Cavite addresses are supported.';
+            return;
+        }
+
+        const road     = a.road || a.pedestrian || '';
+        const houseNum = a.house_number || '';
+        const street   = [houseNum, road].filter(Boolean).join(' ');
+        const barangay = a.village || a.suburb || a.quarter || a.neighbourhood || '';
+        const zip      = a.postcode || '';
+        const city     = a.city || a.town || a.municipality || a.county || '';
+
+        if (street)   document.getElementById('addr_street').value = street;
+        if (barangay) document.getElementById('addr_barangay').value = barangay;
+        if (zip)      document.getElementById('addr_zip').value = zip;
+        tryPickCity(city);
+
+        status.className = 'addr-location-status success show';
+        status.innerHTML = '<i class="fas fa-check-circle"></i> Location confirmed. Fields auto-filled — feel free to adjust.';
+    } catch (e) {
+        status.className = 'addr-location-status error show';
+        status.textContent = 'Address lookup failed. Coordinates saved.';
+    }
+}
+
+function tryPickCity(cityName) {
+    if (!cityName) return;
+    const sel = document.getElementById('addr_city');
+    const norm = cityName.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+    for (let i = 0; i < sel.options.length; i++) {
+        const v = sel.options[i].value.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+        if (!v) continue;
+        if (v === norm || v.includes(norm) || norm.includes(v)) {
+            sel.selectedIndex = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+function addrShowMap(lat, lng) {
+    const div = document.getElementById('addrMap');
+    div.classList.add('show');
+
+    if (typeof L === 'undefined') {
+        // Dynamically load Leaflet if not loaded
+        const link = document.createElement('link');
+        link.rel = 'stylesheet';
+        link.href = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css';
+        document.head.appendChild(link);
+
+        const s = document.createElement('script');
+        s.src = 'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js';
+        s.onload = () => addrShowMap(lat, lng);
+        document.head.appendChild(s);
+        return;
+    }
+
+    if (!addrMap) {
+        addrMap = L.map('addrMap').setView([lat, lng], 16);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap', maxZoom: 19
+        }).addTo(addrMap);
+        addrMarker = L.marker([lat, lng], { draggable: true }).addTo(addrMap);
+        addrMarker.on('dragend', () => {
+            const p = addrMarker.getLatLng();
+            addrReverseGeocode(p.lat, p.lng);
+        });
+        addrMap.on('click', (e) => {
+            addrMarker.setLatLng(e.latlng);
+            addrReverseGeocode(e.latlng.lat, e.latlng.lng);
+        });
+    } else {
+        addrMap.setView([lat, lng], 16);
+        addrMarker.setLatLng([lat, lng]);
+    }
+    setTimeout(() => addrMap.invalidateSize(), 200);
+}
+
+// ── Load list on page load ──
+document.addEventListener('DOMContentLoaded', function() {
+    loadAddresses();
+});
     </script>
 </body>
 </html>

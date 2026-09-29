@@ -1778,9 +1778,12 @@ mysqli_data_seek($reservations_query, 0);
 
 <?php 
 // ✅ FIXED: Hide warranty kapag cancelled/refunded/return
+// ✅ FIXED: Check lahat ng sources para sa refund status
 $hide_warranty = in_array($res['status'], ['cancelled', 'refunded']) 
+              || (isset($res['payment_status']) && $res['payment_status'] === 'refunded')
               || (isset($res['refund_status']) && in_array($res['refund_status'], ['pending', 'approved', 'processing', 'completed']))
-              || (isset($res['rr_refund_status']) && in_array($res['rr_refund_status'], ['pending', 'approved', 'processing', 'completed']));
+              || (isset($res['rr_refund_status']) && in_array($res['rr_refund_status'], ['pending', 'approved', 'processing', 'completed']))
+              || (isset($res['rr_status']) && in_array($res['rr_status'], ['pending', 'approved', 'processing', 'completed']));
 
 if ($has_warranty && !$hide_warranty): 
 ?>
@@ -2023,22 +2026,111 @@ if (!empty($effective_refund_status) && $effective_refund_status !== 'none'):
                                     <a href="3d-view.php?id=<?php echo $res['product_id']; ?>" class="btn btn-outline">
                                         <i class="fas fa-cube"></i> View 3D
                                     </a>
-                                <?php elseif ($res['status'] === 'delivered'): ?>
-                                    <?php 
-                                        $within_window = false;
-                                        if (!empty($res['delivered_at'])) {
-                                            $delivered_time = strtotime($res['delivered_at']);
-                                            $window_end = $delivered_time + (7 * 24 * 60 * 60);
-                                            $within_window = time() < $window_end;
-                                        }
-                                        $has_refund = !empty($res['refund_status']) && $res['refund_status'] !== 'none';
-                                    ?>
+<?php elseif ($res['status'] === 'delivered'): ?>
+    <?php 
+        $within_window = false;
+        if (!empty($res['delivered_at'])) {
+            $delivered_time = strtotime($res['delivered_at']);
+            $window_end = $delivered_time + (7 * 24 * 60 * 60);
+            $within_window = time() < $window_end;
+        }
+        
+        // ✅ FIXED: Check BOTH reservation refund_status AND refund_requests status
+        $has_refund = false;
+        
+        // Priority 1: Check reservations.refund_status
+        if (!empty($res['refund_status']) && $res['refund_status'] !== 'none') {
+            $has_refund = true;
+        }
+        
+        // Priority 2: Check refund_requests (rr_*) — from JOIN
+        if (!empty($res['rr_status']) && in_array($res['rr_status'], ['pending', 'approved', 'processing', 'completed'])) {
+            $has_refund = true;
+        }
+        
+        // Priority 3: Check refund_requests refund_status (rr_refund_status)
+        if (!empty($res['rr_refund_status']) && $res['rr_refund_status'] !== 'none') {
+            $has_refund = true;
+        }
+    ?>
                                     
-                                    <?php if ($has_refund): ?>
-                                        <a href="product-view.php?id=<?php echo $res['product_id']; ?>" class="btn btn-outline">
-                                            <i class="fas fa-eye"></i> View Product
-                                        </a>
-                                    <?php else: ?>
+    <?php if ($has_refund): ?>
+        <!-- ✅ Refund Request Approved — Show status card -->
+        <?php 
+            // Determine the current refund status
+            $refund_display_status = null;
+            
+            if (!empty($res['rr_refund_status']) && $res['rr_refund_status'] !== 'none') {
+                $refund_display_status = $res['rr_refund_status'];
+            } elseif (!empty($res['refund_status']) && $res['refund_status'] !== 'none') {
+                $refund_display_status = $res['refund_status'];
+            } elseif (!empty($res['rr_status'])) {
+                $refund_display_status = $res['rr_status'];
+            }
+            
+            // Status message map
+            $refund_messages = [
+                'pending'    => [
+                    'icon'  => 'fa-hourglass-half',
+                    'color' => 'warning',
+                    'title' => 'Refund Request Pending',
+                    'text'  => 'Your refund request is awaiting clinic approval.'
+                ],
+                'approved'   => [
+                    'icon'  => 'fa-check-circle',
+                    'color' => 'info',
+                    'title' => 'Refund Request Approved',
+                    'text'  => 'Please return the item using the return method you selected. Refund will be processed after we receive the item.'
+                ],
+                'processing' => [
+                    'icon'  => 'fa-spinner',
+                    'color' => 'info',
+                    'title' => 'Refund Processing',
+                    'text'  => 'We have received your item. Your refund is being processed.'
+                ],
+                'completed'  => [
+                    'icon'  => 'fa-check-double',
+                    'color' => 'success',
+                    'title' => 'Refund Completed',
+                    'text'  => 'Your refund has been completed.'
+                ],
+                'rejected'   => [
+                    'icon'  => 'fa-times-circle',
+                    'color' => 'danger',
+                    'title' => 'Refund Rejected',
+                    'text'  => 'Your refund request was not approved.'
+                ],
+            ];
+            
+            $msg = $refund_messages[$refund_display_status] ?? $refund_messages['pending'];
+        ?>
+        
+        <div style="
+            background: var(--bg-primary);
+            border-left: 4px solid var(--<?php echo $msg['color']; ?>);
+            border-radius: var(--radius-md);
+            padding: 12px 14px;
+            margin-bottom: 8px;
+            display: flex;
+            gap: 10px;
+            align-items: flex-start;
+        ">
+            <i class="fas <?php echo $msg['icon']; ?>" 
+               style="color: var(--<?php echo $msg['color']; ?>); font-size: 18px; margin-top: 2px;"></i>
+            <div>
+                <strong style="color: var(--text-primary); display: block; font-size: 13px; margin-bottom: 2px;">
+                    <?php echo $msg['title']; ?>
+                </strong>
+                <span style="color: var(--text-secondary); font-size: 12px;">
+                    <?php echo $msg['text']; ?>
+                </span>
+            </div>
+        </div>
+        
+        <a href="product-view.php?id=<?php echo $res['product_id']; ?>" class="btn btn-outline">
+            <i class="fas fa-eye"></i> View Product
+        </a>
+    <?php else: ?>
                                         <button class="btn btn-primary" onclick="markReceived(<?php echo $res['id']; ?>)">
                                             <i class="fas fa-check-circle"></i> Order Received
                                         </button>

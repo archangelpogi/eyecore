@@ -1,4 +1,8 @@
 <?php
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+// ... rest ng code
 ob_start();
 
 include '../includes/config.php';
@@ -51,28 +55,75 @@ if (mysqli_affected_rows($conn) > 0) {
     }
 }
 
-// ── POST handlers ─────────────────────────────────────────────────────────────
-
 // ============================================
 // CANCEL APPOINTMENT WITH VALIDATION
+// (With Reason, Notes & Reschedule Hint)
 // ============================================
 if (isset($_POST['cancel_appointment'], $_POST['appointment_id'])) {
-    ob_end_clean(); header('Content-Type: application/json');
-    $cid = (int)$_POST['appointment_id'];
     
-    $row = mysqli_fetch_assoc(mysqli_query($conn, "
-        SELECT a.*, c.cancellation_deadline, c.refund_policy
-        FROM appointments a
-        JOIN clinics c ON a.clinic_id = c.id
-        WHERE a.id=$cid AND a.user_id=$user_id AND a.status NOT IN ('cancelled','completed','missed')
-    "));
+    // ✅ TANGGALIN LAHAT NG BUFFERS — hindi lang isa
+    while (ob_get_level() > 0) { ob_end_clean(); }
     
-    if ($row) {
-        $apd = new DateTime($row['appointment_date']);
+    // ✅ I-set headers bago mag-echo
+    if (!headers_sent()) {
+        header('Content-Type: application/json; charset=utf-8');
+    }
+    
+    // ✅ I-wrap sa try-catch para hindi mag-500
+    try {
+        $cid = (int)$_POST['appointment_id'];
+        $cancel_reason = trim($_POST['cancel_reason'] ?? '');
+        $cancel_notes  = trim($_POST['cancel_notes'] ?? '');
+        
+        if ($cancel_reason === '') {
+            echo json_encode(['success' => false, 'message' => 'Please select a reason for cancellation.']);
+            exit();
+        }
+        if ($cancel_reason === 'Other' && $cancel_notes === '') {
+            echo json_encode(['success' => false, 'message' => 'Please specify your reason in the notes field.']);
+            exit();
+        }
+        if (strlen($cancel_notes) > 500) {
+            echo json_encode(['success' => false, 'message' => 'Notes must not exceed 500 characters.']);
+            exit();
+        }
+        
+        $allowed_reasons = [
+            'Schedule conflict','Personal emergency','Financial reasons',
+            'Found another clinic','Feeling unwell','Transportation issues',
+            'Changed my mind','Other'
+        ];
+        if (!in_array($cancel_reason, $allowed_reasons, true)) {
+            echo json_encode(['success' => false, 'message' => 'Invalid cancellation reason.']);
+            exit();
+        }
+        
+        $cancel_reason_esc = mysqli_real_escape_string($conn, $cancel_reason);
+        $cancel_notes_esc  = mysqli_real_escape_string($conn, $cancel_notes);
+        
+        $row = mysqli_fetch_assoc(mysqli_query($conn, "
+            SELECT a.*, 
+                   c.cancellation_deadline, 
+                   c.refund_policy,
+                   c.penalty_amount,
+                   c.clinic_name
+            FROM appointments a
+            JOIN clinics c ON a.clinic_id = c.id
+            WHERE a.id = $cid 
+              AND a.user_id = $user_id 
+              AND a.status NOT IN ('cancelled','completed','missed','no-show')
+        "));
+        
+        if (!$row) {
+            echo json_encode(['success' => false, 'message' => 'Appointment not found or cannot be cancelled.']);
+            exit();
+        }
+        
+        $apd = new DateTime($row['appointment_date'] . ' ' . ($row['appointment_time'] ?? '00:00:00'));
         $now = new DateTime();
         
         if ($apd < $now) {
-            echo json_encode(['success'=>false,'message'=>'Cannot cancel past appointments']);
+            echo json_encode(['success' => false, 'message' => 'Cannot cancel past appointments. Please contact the clinic directly.']);
             exit();
         }
         
@@ -81,59 +132,115 @@ if (isset($_POST['cancel_appointment'], $_POST['appointment_id'])) {
         $deadline_date->modify("-{$deadline_days} days");
         
         if ($now > $deadline_date) {
+            $clinic_name = $row['clinic_name'] ?? 'the clinic';
             echo json_encode([
                 'success' => false,
-                'message' => "Cancellation deadline is {$deadline_days} days before appointment. You can no longer cancel."
+                'message' => "Cancellation deadline is {$deadline_days} day(s) before the appointment. You can no longer cancel online. You may still reschedule, or contact {$clinic_name} directly."
             ]);
             exit();
         }
         
-        $ok = mysqli_query($conn, "UPDATE appointments SET status='cancelled', updated_at=NOW() WHERE id=$cid AND user_id=$user_id");
+        $combined_note = "Cancellation Reason: " . $cancel_reason;
+        if ($cancel_notes !== '') {
+            $combined_note .= " | Notes: " . $cancel_notes;
+        }
+        $combined_note_esc = mysqli_real_escape_string($conn, $combined_note);
+        $stamp = date('Y-m-d H:i:s');
         
-        if ($ok) {
-            $refund_policy = $row['refund_policy'] ?? '2:100|1:50|0:0';
-            $days_until = $now->diff($apd)->days;
-            $refund_percent = 0;
-            
-            $policy_parts = explode('|', $refund_policy);
-            foreach ($policy_parts as $part) {
-                list($days, $percent) = explode(':', $part);
+// ✅ Check BOTH columns individually
+$has_reason_col = false;
+$has_notes_col = false;
+
+$check_col = @mysqli_query($conn, "SHOW COLUMNS FROM appointments LIKE 'cancellation_reason'");
+if ($check_col && mysqli_num_rows($check_col) > 0) {
+    $has_reason_col = true;
+}
+
+$check_col2 = @mysqli_query($conn, "SHOW COLUMNS FROM appointments LIKE 'cancellation_notes'");
+if ($check_col2 && mysqli_num_rows($check_col2) > 0) {
+    $has_notes_col = true;
+}
+
+// ✅ Build SET clause dynamically
+$set_parts = ["status = 'cancelled'"];
+
+if ($has_reason_col) {
+    $set_parts[] = "cancellation_reason = '$cancel_reason_esc'";
+}
+if ($has_notes_col) {
+    $set_parts[] = "cancellation_notes = '$cancel_notes_esc'";
+}
+
+// Always append to notes field
+$set_parts[] = "notes = CONCAT(IFNULL(notes,''), '\n[{$stamp}] {$combined_note_esc}')";
+$set_parts[] = "updated_at = NOW()";
+
+$set_clause = implode(', ', $set_parts);
+
+$update_sql = "
+    UPDATE appointments 
+    SET {$set_clause}
+    WHERE id = $cid AND user_id = $user_id
+";
+        
+        $ok = mysqli_query($conn, $update_sql);
+        
+        if (!$ok) {
+            echo json_encode(['success' => false, 'message' => 'Database error: ' . mysqli_error($conn)]);
+            exit();
+        }
+        
+        // Compute refund
+        $refund_policy = $row['refund_policy'] ?? '2:100|1:50|0:0';
+        $days_until = $now->diff($apd)->days;
+        $refund_percent = 0;
+        
+        if (!empty($refund_policy)) {
+            foreach (explode('|', $refund_policy) as $part) {
+                if (strpos($part, ':') === false) continue;
+                list($days, $percent) = explode(':', $part, 2);
                 if ($days_until >= (int)$days) {
                     $refund_percent = (int)$percent;
                     break;
                 }
             }
-            
-            $downpayment = (float)($row['downpayment_amount'] ?? 0);
-            $eligible_amount = $downpayment * ($refund_percent / 100);
-            
-            mysqli_query($conn, "
-                UPDATE appointments 
-                SET 
-                    refund_eligible = " . ($refund_percent > 0 ? 1 : 0) . ",
-                    refund_percentage = $refund_percent,
-                    eligible_refund_amount = $eligible_amount
-                WHERE id = $cid
-            ");
-            
-            $msg = "Appointment cancelled successfully.";
-            if ($refund_percent > 0) {
-                $msg .= " You are eligible for {$refund_percent}% refund (₱" . number_format($eligible_amount, 2) . ").";
-            } else {
-                $msg .= " No refund is available for this cancellation.";
-            }
-            
-            echo json_encode([
-                'success' => true,
-                'message' => $msg,
-                'refund_percent' => $refund_percent,
-                'refund_amount' => $eligible_amount
-            ]);
-        } else {
-            echo json_encode(['success'=>false,'message'=>'Database error']);
         }
-    } else {
-        echo json_encode(['success'=>false,'message'=>'Appointment not found or cannot be cancelled']);
+        
+        $downpayment = (float)($row['downpayment_amount'] ?? 0);
+        if ($downpayment <= 0) $downpayment = (float)($row['amount_paid'] ?? 0);
+        $eligible_amount = $downpayment * ($refund_percent / 100);
+        
+        @mysqli_query($conn, "
+            UPDATE appointments 
+            SET refund_eligible = " . ($refund_percent > 0 ? 1 : 0) . ",
+                refund_percentage = $refund_percent,
+                eligible_refund_amount = $eligible_amount
+            WHERE id = $cid
+        ");
+        
+        // Notification
+        $notif_title = mysqli_real_escape_string($conn, "Appointment Cancelled");
+        $notif_msg = mysqli_real_escape_string($conn, "Your appointment on " . $apd->format('F j, Y g:i A') . " was cancelled. Reason: {$cancel_reason}.");
+        
+        @mysqli_query($conn, "
+            INSERT INTO notifications (user_id, title, message, type, link, is_read, created_at)
+            VALUES ($user_id, '$notif_title', '$notif_msg', 'appointment', 'my-appointments.php', 0, NOW())
+        ");
+        
+        echo json_encode([
+            'success'         => true,
+            'message'         => 'Appointment cancelled.',
+            'refund_percent'  => $refund_percent,
+            'refund_amount'   => $eligible_amount,
+            'reason'          => $cancel_reason,
+            'notes'           => $cancel_notes
+        ]);
+        
+    } catch (Throwable $e) {
+        echo json_encode([
+            'success' => false,
+            'message' => 'Server error: ' . $e->getMessage()
+        ]);
     }
     exit();
 }
@@ -433,6 +540,181 @@ if ($is_no_show && $downpayment_amount > 0) {
             $refund_rejected = true;
         }
     }
+}
+
+// ============================================
+// ✅ PAYMENT SUMMARY DATA
+// ============================================
+$payment_items = [];
+$payment_subtotal = 0;
+$payment_discount = 0;
+$payment_vat = 0;
+$payment_total = 0;
+$payment_ref = '';
+$payment_amount_paid = 0;
+$payment_balance = 0;
+$payment_status_label = 'Unpaid';
+$payment_status_class = 'unpaid';
+$payment_discount_type = 'none';
+$payment_discount_pct = 0;
+
+// ✅ Get payment record
+$payment_query = mysqli_query($conn, "
+    SELECT id, amount, payment_method, payment_status, payment_type,
+           reference_number, payment_date
+    FROM payments
+    WHERE appointment_id = $appointment_id
+    ORDER BY created_at DESC
+    LIMIT 1
+");
+$payment_record = $payment_query ? mysqli_fetch_assoc($payment_query) : null;
+if ($payment_record) {
+    $payment_ref = $payment_record['reference_number'] ?? '';
+}
+
+// ✅ Get sales record
+$sales_query = mysqli_query($conn, "
+    SELECT items, subtotal, discount, discount_type, discount_percentage, 
+           vat_amount, total_amount, amount_paid
+    FROM sales
+    WHERE appointment_id = $appointment_id
+    ORDER BY id DESC
+    LIMIT 1
+");
+$sales_record = $sales_query ? mysqli_fetch_assoc($sales_query) : null;
+
+// ✅ Parse items from sales
+if ($sales_record && !empty($sales_record['items'])) {
+    $decoded = json_decode($sales_record['items'], true);
+    if (is_array($decoded)) {
+        $payment_items = $decoded;
+    }
+}
+
+// ✅ Fallback: parse items from appointment
+if (empty($payment_items) && !empty($appointment['items'])) {
+    $decoded = json_decode($appointment['items'], true);
+    if (is_array($decoded)) {
+        $payment_items = $decoded;
+    }
+}
+
+// ✅ ENRICH: Add lens items from clinical_notes
+if (!empty($appointment['rec_lens_design']) 
+    || !empty($appointment['rec_lens_index']) 
+    || !empty($appointment['rec_lens_features'])) {
+    
+    $lensPrices = ['design' => [], 'index' => [], 'feature' => []];
+    $lensStmt = mysqli_query($conn, "
+        SELECT option_type, option_name, price
+        FROM lens_options
+        WHERE clinic_id = " . (int)$appointment['clinic_id'] . " AND is_active = 1
+    ");
+    if ($lensStmt) {
+        while ($opt = mysqli_fetch_assoc($lensStmt)) {
+            $lensPrices[$opt['option_type']][] = $opt;
+        }
+    }
+    
+    $findPrice = function($optionType, $searchName) use ($lensPrices) {
+        if (empty($lensPrices[$optionType]) || empty($searchName)) return 0;
+        $searchNorm = strtolower(preg_replace('/[^a-z0-9]/', '', $searchName));
+        foreach ($lensPrices[$optionType] as $opt) {
+            $optNorm = strtolower(preg_replace('/[^a-z0-9]/', '', $opt['option_name']));
+            if (strpos($optNorm, $searchNorm) !== false 
+                || strpos($searchNorm, $optNorm) !== false) {
+                return floatval($opt['price']);
+            }
+        }
+        return 0;
+    };
+    
+    if (!empty($appointment['rec_lens_design'])) {
+        $designPrice = $findPrice('design', $appointment['rec_lens_design']);
+        $payment_items[] = [
+            'name' => $appointment['rec_lens_design'] . ' Lens',
+            'price' => $designPrice,
+            'quantity' => 1,
+            'source' => 'doctor_recommendation'
+        ];
+    }
+    
+    if (!empty($appointment['rec_lens_index'])) {
+        $indexPrice = $findPrice('index', $appointment['rec_lens_index']);
+        $payment_items[] = [
+            'name' => $appointment['rec_lens_index'],
+            'price' => $indexPrice,
+            'quantity' => 1,
+            'source' => 'doctor_recommendation'
+        ];
+    }
+    
+    $recFeatures = [];
+    if (!empty($appointment['rec_lens_features'])) {
+        $decoded = json_decode($appointment['rec_lens_features'], true);
+        if (is_array($decoded)) $recFeatures = $decoded;
+    }
+    foreach ($recFeatures as $featureName) {
+        $featurePrice = $findPrice('feature', $featureName);
+        $payment_items[] = [
+            'name' => $featureName,
+            'price' => $featurePrice,
+            'quantity' => 1,
+            'source' => 'doctor_recommendation'
+        ];
+    }
+}
+
+// ✅ Compute subtotal
+foreach ($payment_items as $item) {
+    $price = floatval($item['price'] ?? $item['unit_price'] ?? 0);
+    $qty = intval($item['quantity'] ?? 1);
+    $payment_subtotal += $price * $qty;
+}
+
+// ✅ Get discount details
+$payment_discount_type = $appointment['discount_type'] ?? 'none';
+$payment_discount_pct = floatval($appointment['discount_percentage'] ?? 0);
+$payment_discount = floatval($appointment['discount_amount'] ?? 0);
+$payment_vat = floatval($appointment['vat_amount'] ?? 0);
+$payment_total = floatval($appointment['total_amount'] ?? 0);
+
+// ✅ BIR-COMPLIANT: VAT-exclusive muna bago discount
+if ($payment_subtotal > 0) {
+    if ($payment_discount_type !== 'none' && $payment_discount_pct > 0) {
+        // Step 1: Alisin ang VAT para makuha ang VAT-exclusive
+        $vat_exclusive = $payment_subtotal / 1.12;
+
+        // Step 2: Discount sa VAT-exclusive amount
+        $payment_discount = $vat_exclusive * ($payment_discount_pct / 100);
+
+        // Step 3: Total = VAT-exclusive − discount (VAT-exempt na)
+        $payment_total = $vat_exclusive - $payment_discount;
+        $payment_vat   = 0;
+    } else {
+        // Regular customer — may VAT
+        $payment_discount = 0;
+        $payment_vat      = $payment_subtotal - ($payment_subtotal / 1.12);
+        $payment_total    = $payment_subtotal;
+    }
+}
+
+// ✅ Get amount paid
+$payment_amount_paid = floatval($appointment['amount_paid'] ?? 0);
+if ($payment_amount_paid == 0) {
+    $payment_amount_paid = $downpayment_amount;
+}
+
+// ✅ Balance
+$payment_balance = max(0, $payment_total - $payment_amount_paid);
+
+// ✅ Payment status
+if ($payment_amount_paid >= $payment_total && $payment_total > 0) {
+    $payment_status_label = 'PAID';
+    $payment_status_class = 'paid';
+} elseif ($payment_amount_paid > 0 && $payment_amount_paid < $payment_total) {
+    $payment_status_label = 'PARTIAL';
+    $payment_status_class = 'partial';
 }
 
 // ── Image helpers ──────────────────────────────────────────────────────────────
@@ -752,7 +1034,205 @@ if (!empty($appointment['product_id'])) {
         .action-btn-secondary{background:var(--bg-primary);border:1px solid var(--border-color);color:var(--text-primary);} .action-btn-secondary:hover{background:var(--primary);color:white;border-color:var(--primary);}
         .action-btn-warning{background:#F59E0B;color:white;} .action-btn-warning:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(245,158,11,0.3);}
         .action-btn-success{background:#00B761;color:white;cursor:default;} .action-btn-success:hover{transform:none;}
+                /* ═══════════════════════════════════════════════════════
+           ✅ PAYMENT SUMMARY CARD (Compact)
+           ═══════════════════════════════════════════════════════ */
+        .payment-summary-card {
+            background: var(--bg-secondary);
+            border-radius: var(--radius-lg);
+            padding: 22px 25px;
+            border: 1px solid var(--border-light);
+            box-shadow: var(--shadow-sm);
+            margin-bottom: 25px;
+        }
 
+        .payment-summary-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 18px;
+            padding-bottom: 14px;
+            border-bottom: 1px solid var(--border-light);
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .payment-summary-title {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .payment-summary-title i {
+            width: 36px;
+            height: 36px;
+            background: var(--primary-light);
+            border-radius: var(--radius-full);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--primary);
+            font-size: 16px;
+            flex-shrink: 0;
+        }
+
+        .payment-summary-title h2 {
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text-primary);
+            margin: 0;
+        }
+
+        .payment-status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 14px;
+            border-radius: var(--radius-full);
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+        }
+        .payment-status-badge.paid { background: #D1FAE5; color: #065F46; }
+        .payment-status-badge.partial { background: #FEF3C7; color: #92400E; }
+        .payment-status-badge.unpaid { background: #FEE2E2; color: #991B1B; }
+        .theme-dark .payment-status-badge.paid { background: #064E3B; color: #A7F3D0; }
+        .theme-dark .payment-status-badge.partial { background: #78350F; color: #FDE68A; }
+        .theme-dark .payment-status-badge.unpaid { background: #7F1D1D; color: #FECACA; }
+
+        .payment-breakdown-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px 20px;
+            margin-bottom: 14px;
+        }
+        @media (max-width: 500px) {
+            .payment-breakdown-grid { grid-template-columns: 1fr; }
+        }
+
+        .payment-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
+            padding: 4px 0;
+        }
+
+        .payment-label {
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .payment-value {
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        .payment-row-discount .payment-value { color: #DC2626; }
+        .payment-row-vat .payment-value { color: #065F46; }
+        .theme-dark .payment-row-discount .payment-value { color: #FCA5A5; }
+        .theme-dark .payment-row-vat .payment-value { color: #6EE7B7; }
+
+        .payment-total-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-top: 2px solid var(--primary);
+            border-bottom: 2px solid var(--primary);
+            font-size: 16px;
+            font-weight: 800;
+            color: var(--primary);
+            margin-bottom: 14px;
+        }
+
+        .payment-paid-box {
+            background: linear-gradient(135deg, #F0FDF4, #ECFDF5);
+            border: 1px solid #BBF7D0;
+            border-radius: var(--radius-md);
+            padding: 12px 16px;
+            margin-bottom: 14px;
+        }
+        .theme-dark .payment-paid-box {
+            background: linear-gradient(135deg, #052E16, #064E3B);
+            border-color: #065F46;
+        }
+
+        .payment-paid-line {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 13px;
+            font-weight: 600;
+            color: #065F46;
+            padding: 3px 0;
+        }
+        .theme-dark .payment-paid-line { color: #86EFAC; }
+
+        .payment-paid-line i { margin-right: 4px; }
+
+        .payment-paid-amount {
+            font-size: 16px;
+            font-weight: 800;
+            color: #059669;
+        }
+
+        .payment-balance-line { border-top: 1px dashed #86EFAC; margin-top: 6px; padding-top: 6px; }
+        .payment-balance-amount {
+            font-size: 14px;
+            font-weight: 700;
+            color: #F59E0B;
+        }
+
+        .payment-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .payment-ref {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        .payment-ref i { color: var(--primary); }
+        .payment-ref strong {
+            color: var(--text-primary);
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        .payment-view-receipt-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 8px 16px;
+            background: var(--primary-gradient);
+            color: white;
+            border-radius: var(--radius-full);
+            text-decoration: none;
+            font-size: 12.5px;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .payment-view-receipt-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0,183,97,0.3);
+            color: white;
+        }
+
+        @media (max-width: 500px) {
+            .payment-summary-card { padding: 18px 16px; }
+            .payment-summary-title h2 { font-size: 15px; }
+            .payment-total-row { font-size: 15px; }
+            .payment-footer { flex-direction: column; align-items: stretch; }
+            .payment-view-receipt-btn { justify-content: center; }
+        }
         .image-modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.95);z-index:10000;cursor:pointer;align-items:center;justify-content:center;}
         .image-modal.show{display:flex;}
         .modal-image{max-width:90%;max-height:90%;object-fit:contain;border-radius:var(--radius-lg);}
@@ -983,6 +1463,76 @@ if (!empty($appointment['product_id'])) {
             <?php endif; ?>
         </div>
         <?php endif; ?>
+        <?php endif; ?>
+
+        <!-- ══════════════════════════════════════════════
+             ✅ PAYMENT SUMMARY CARD (Compact)
+             ══════════════════════════════════════════════ -->
+        <?php if (!empty($payment_items) || $payment_amount_paid > 0): ?>
+        <div class="payment-summary-card">
+            <div class="payment-summary-header">
+                <div class="payment-summary-title">
+                    <i class="fas fa-receipt"></i>
+                    <h2>Payment Summary</h2>
+                </div>
+                <div class="payment-status-badge <?php echo $payment_status_class; ?>">
+                    <i class="fas fa-<?php echo $payment_status_class === 'paid' ? 'check-circle' : ($payment_status_class === 'partial' ? 'clock' : 'exclamation-circle'); ?>"></i>
+                    <?php echo $payment_status_label; ?>
+                </div>
+            </div>
+
+            <div class="payment-breakdown-grid">
+                <div class="payment-row">
+                    <span class="payment-label">Subtotal:</span>
+                    <span class="payment-value">₱<?php echo number_format($payment_subtotal, 2); ?></span>
+                </div>
+
+                <?php if ($payment_discount_type !== 'none' && $payment_discount > 0): 
+                    $discount_icon = $payment_discount_type === 'senior' ? '👴' : ($payment_discount_type === 'pwd' ? '♿' : '🏷️');
+                ?>
+                <div class="payment-row payment-row-discount">
+                    <span class="payment-label">
+                        <?php echo $discount_icon; ?> <?php echo strtoupper($payment_discount_type); ?> (<?php echo round($payment_discount_pct); ?>%):
+                    </span>
+                    <span class="payment-value">-₱<?php echo number_format($payment_discount, 2); ?></span>
+                </div>
+                <?php endif; ?>
+
+                <div class="payment-row payment-row-vat">
+                    <span class="payment-label">📋 VAT:</span>
+                    <span class="payment-value">
+                        <?php echo $payment_vat > 0 ? '+₱' . number_format($payment_vat, 2) : 'Exempt'; ?>
+                    </span>
+                </div>
+            </div>
+
+            <div class="payment-total-row">
+                <span>TOTAL:</span>
+                <span>₱<?php echo number_format($payment_total, 2); ?></span>
+            </div>
+
+            <div class="payment-paid-box">
+                <div class="payment-paid-line">
+                    <span><i class="fas fa-check-circle"></i> Amount Paid:</span>
+                    <span class="payment-paid-amount">₱<?php echo number_format($payment_amount_paid, 2); ?></span>
+                </div>
+                <?php if ($payment_balance > 0): ?>
+                <div class="payment-paid-line payment-balance-line">
+                    <span><i class="fas fa-clock"></i> Balance:</span>
+                    <span class="payment-balance-amount">₱<?php echo number_format($payment_balance, 2); ?></span>
+                </div>
+                <?php endif; ?>
+            </div>
+
+            <div class="payment-footer">
+                <?php if (!empty($payment_ref)): ?>
+                <div class="payment-ref">
+                    <i class="fas fa-hashtag"></i>
+                    <span>Ref: <strong><?php echo htmlspecialchars($payment_ref); ?></strong></span>
+                </div>
+                <?php endif; ?>
+            </div>
+        </div>
         <?php endif; ?>
 
         <!-- Details Grid -->
@@ -1407,31 +1957,270 @@ function closeImageModal() { document.getElementById('imageModal').classList.rem
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeImageModal(); });
 
 // ══════════════════════════════════════════════════════════════
-// PHASE 3: CANCEL APPOINTMENT WITH VALIDATION
+// CANCEL APPOINTMENT — FIXED BUTTON LAYOUT
 // ══════════════════════════════════════════════════════════════
 async function cancelAppointment(id) {
-    const r = await Swal.fire({ 
-        title: 'Cancel Appointment?', 
-        text: 'This cannot be undone. Please check the cancellation policy.', 
-        icon: 'warning', 
-        showCancelButton: true, 
-        confirmButtonColor: '#EF4444', 
-        cancelButtonColor: '#6B7280', 
-        confirmButtonText: 'Yes, cancel it!', 
-        cancelButtonText: 'No, keep it' 
+    const cancellationDeadline = <?php echo (int)($appointment['cancellation_deadline'] ?? 2); ?>;
+    const refundPolicy = <?php echo json_encode($appointment['refund_policy'] ?? '2:100|1:50|0:0'); ?>;
+    const penaltyAmount = <?php echo (float)($appointment['penalty_amount'] ?? 500); ?>;
+    const clinicName = <?php echo json_encode($appointment['clinic_name'] ?? 'Clinic'); ?>;
+    const appointmentDate = <?php echo json_encode($formatted_date); ?>;
+    const appointmentTime = <?php echo json_encode($formatted_time); ?>;
+    const downpayment = <?php echo (float)$downpayment_amount; ?>;
+    
+    // Build refund rows
+    const policyParts = refundPolicy.split('|');
+    let policyRows = '';
+    policyParts.forEach(part => {
+        const [days, percent] = part.split(':');
+        const refundAmt = (downpayment * percent / 100).toFixed(2);
+        const pct = parseInt(percent);
+        const amtColor = pct > 0 ? '#059669' : '#9CA3AF';
+        policyRows += `
+            <div style="display:flex; justify-content:space-between; padding:5px 0; font-size:13px;">
+                <span style="color:#6B7280;">${days}+ days before</span>
+                <span style="color:${amtColor}; font-weight:600;">${percent}% · ₱${refundAmt}</span>
+            </div>`;
     });
     
-    if (!r.isConfirmed) return;
+    // ── STEP 1: Main cancellation dialog ──────────────────────
+    const result = await Swal.fire({
+        title: 'Cancel Appointment?',
+        html: `
+            <div style="text-align:left; font-family:inherit;">
+                
+                <!-- Policy Section -->
+                <div style="margin-bottom:16px; padding:14px 16px; background:#FAFAFA; border:1px solid #EFEFEF; border-radius:8px;">
+                    <div style="font-size:12px; font-weight:700; color:#374151; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:10px;">
+                        Cancellation Policy
+                    </div>
+                    <div style="font-size:13px; color:#6B7280; margin-bottom:10px;">
+                        Deadline: <strong style="color:#111;">${cancellationDeadline} day(s)</strong> before appointment
+                    </div>
+                    <div style="border-top:1px solid #E5E7EB; padding-top:8px;">
+                        ${policyRows}
+                    </div>
+                    <div style="display:flex; justify-content:space-between; padding:8px 0 0 0; margin-top:6px; border-top:1px solid #E5E7EB; font-size:13px;">
+                        <span style="color:#6B7280;">No-show penalty</span>
+                        <span style="color:#DC2626; font-weight:600;">₱${penaltyAmount.toFixed(2)}</span>
+                    </div>
+                </div>
+                
+                <!-- Appointment Section -->
+                <div style="margin-bottom:16px; padding:14px 16px; background:#F0F9FF; border:1px solid #E0F2FE; border-radius:8px;">
+                    <div style="font-size:12px; font-weight:700; color:#0369A1; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:8px;">
+                        Appointment
+                    </div>
+                    <div style="font-size:13px; color:#0C4A6E; line-height:1.6;">
+                        <strong style="color:#111;">${clinicName}</strong><br>
+                        ${appointmentDate} · ${appointmentTime}
+                    </div>
+                </div>
+                
+                <!-- Reschedule Hint -->
+                <div style="margin-bottom:16px; padding:12px 16px; background:#F0FDF4; border:1px solid #DCFCE7; border-radius:8px; font-size:12.5px; color:#166534; line-height:1.5;">
+                    <strong style="color:#15803D;">Tip:</strong> Instead of cancelling, you can reschedule to keep your slot and avoid penalties.
+                </div>
+                
+                <!-- Reason -->
+                <div style="margin-bottom:12px;">
+                    <label style="font-size:13px; font-weight:600; color:#111; display:block; margin-bottom:6px;">
+                        Reason for Cancellation <span style="color:#DC2626;">*</span>
+                    </label>
+                    <select id="cancel_reason" 
+                        style="width:100%; padding:10px 12px; border:1px solid #D1D5DB; border-radius:6px; font-size:13px; font-family:inherit; background:#fff; color:#111; outline:none;">
+                        <option value="">Select a reason</option>
+                        <option value="Schedule conflict">Schedule conflict</option>
+                        <option value="Personal emergency">Personal emergency</option>
+                        <option value="Financial reasons">Financial reasons</option>
+                        <option value="Found another clinic">Found another clinic</option>
+                        <option value="Feeling unwell">Feeling unwell</option>
+                        <option value="Transportation issues">Transportation issues</option>
+                        <option value="Changed my mind">Changed my mind</option>
+                        <option value="Other">Other</option>
+                    </select>
+                </div>
+                
+                <!-- Notes -->
+                <div style="margin-bottom:8px;">
+                    <label style="font-size:13px; font-weight:600; color:#111; display:block; margin-bottom:6px;">
+                        Additional notes <span style="color:#9CA3AF; font-weight:400;">(optional)</span>
+                    </label>
+                    <textarea id="cancel_notes" 
+                        placeholder="Add details..."
+                        style="width:100%; padding:10px 12px; border:1px solid #D1D5DB; border-radius:6px; font-size:13px; font-family:inherit; background:#fff; color:#111; outline:none; resize:vertical; min-height:70px; box-sizing:border-box;"
+                        maxlength="500"></textarea>
+                    <div style="font-size:11px; color:#9CA3AF; margin-top:4px;">Max 500 characters</div>
+                </div>
+                
+            </div>
+        `,
+        width: '460px',
+        padding: '24px',
+        heightAuto: false,
+        showCancelButton: true,
+        showDenyButton: true,
+        confirmButtonText: 'Confirm Cancel',
+        denyButtonText: 'Reschedule',
+        cancelButtonText: 'Go Back',
+        buttonsStyling: false,
+        didOpen: () => {
+            const styleBtn = (btn, type) => {
+                btn.style.padding = '11px 10px';
+                btn.style.borderRadius = '6px';
+                btn.style.fontSize = '12.5px';
+                btn.style.fontWeight = '600';
+                btn.style.cursor = 'pointer';
+                btn.style.margin = '0';
+                btn.style.whiteSpace = 'nowrap';
+                btn.style.width = '100%';
+                btn.style.boxSizing = 'border-box';
+                btn.style.transition = 'opacity 0.15s';
+                
+                if (type === 'confirm') {
+                    btn.style.background = '#DC2626';
+                    btn.style.color = '#fff';
+                    btn.style.border = '1px solid #DC2626';
+                } else if (type === 'deny') {
+                    btn.style.background = '#059669';
+                    btn.style.color = '#fff';
+                    btn.style.border = '1px solid #059669';
+                } else {
+                    btn.style.background = '#fff';
+                    btn.style.color = '#374151';
+                    btn.style.border = '1px solid #D1D5DB';
+                }
+            };
+            
+            styleBtn(Swal.getConfirmButton(), 'confirm');
+            styleBtn(Swal.getDenyButton(), 'deny');
+            styleBtn(Swal.getCancelButton(), 'cancel');
+            
+            const actions = Swal.getActions();
+            actions.style.display = 'grid';
+            actions.style.gridTemplateColumns = '1fr 1fr 1fr';
+            actions.style.gap = '8px';
+            actions.style.width = '100%';
+            actions.style.margin = '20px 0 0 0';
+            actions.style.padding = '0';
+        },
+        preConfirm: () => {
+            const reason = document.getElementById('cancel_reason').value;
+            const notes = document.getElementById('cancel_notes').value.trim();
+            
+            if (!reason) {
+                Swal.showValidationMessage('Please select a reason');
+                return false;
+            }
+            if (reason === 'Other' && !notes) {
+                Swal.showValidationMessage('Please specify your reason in the notes');
+                return false;
+            }
+            return { reason, notes };
+        }
+    });
     
+    // Handle Reschedule
+    if (result.isDenied) {
+        window.location.href = 'reschedule-appointment.php?id=' + id;
+        return;
+    }
+    
+    if (!result.isConfirmed) return;
+    
+    // ── STEP 2: Final confirmation ────────────────────────────
+    const daysUntil = <?php echo $days_until; ?>;
+    let refundPercent = 0;
+    policyParts.forEach(part => {
+        const [days, percent] = part.split(':');
+        if (daysUntil >= parseInt(days) && refundPercent === 0) {
+            refundPercent = parseInt(percent);
+        }
+    });
+    const refundAmount = (downpayment * refundPercent / 100).toFixed(2);
+    const refundColor = refundPercent > 0 ? '#059669' : '#9CA3AF';
+    
+    const finalConfirm = await Swal.fire({
+        title: 'Confirm Cancellation',
+        html: `
+            <div style="text-align:left; font-size:13px; line-height:1.6;">
+                <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #F3F4F6;">
+                    <span style="color:#6B7280;">Reason</span>
+                    <span style="color:#111; font-weight:600; text-align:right; max-width:60%;">${result.value.reason}</span>
+                </div>
+                ${result.value.notes ? `
+                <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #F3F4F6; gap:16px;">
+                    <span style="color:#6B7280; flex-shrink:0;">Notes</span>
+                    <span style="color:#111; text-align:right; word-break:break-word;">${result.value.notes}</span>
+                </div>` : ''}
+                <div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #F3F4F6;">
+                    <span style="color:#6B7280;">Refund</span>
+                    <span style="color:${refundColor}; font-weight:600;">${refundPercent}% · ₱${refundAmount}</span>
+                </div>
+                <div style="padding-top:12px; font-size:12px; color:#9CA3AF;">
+                    This action cannot be undone.
+                </div>
+            </div>
+        `,
+        width: '400px',
+        padding: '24px',
+        heightAuto: false,
+        showCancelButton: true,
+        confirmButtonText: 'Yes, Cancel',
+        cancelButtonText: 'Go Back',
+        buttonsStyling: false,
+        didOpen: () => {
+            const styleBtn = (btn, filled) => {
+                btn.style.padding = '11px 10px';
+                btn.style.borderRadius = '6px';
+                btn.style.fontSize = '13px';
+                btn.style.fontWeight = '600';
+                btn.style.cursor = 'pointer';
+                btn.style.margin = '0';
+                btn.style.whiteSpace = 'nowrap';
+                btn.style.width = '100%';
+                btn.style.boxSizing = 'border-box';
+                
+                if (filled) {
+                    btn.style.background = '#DC2626';
+                    btn.style.color = '#fff';
+                    btn.style.border = '1px solid #DC2626';
+                } else {
+                    btn.style.background = '#fff';
+                    btn.style.color = '#374151';
+                    btn.style.border = '1px solid #D1D5DB';
+                }
+            };
+            
+            styleBtn(Swal.getConfirmButton(), true);
+            styleBtn(Swal.getCancelButton(), false);
+            
+            const actions = Swal.getActions();
+            actions.style.display = 'grid';
+            actions.style.gridTemplateColumns = '1fr 1fr';
+            actions.style.gap = '8px';
+            actions.style.width = '100%';
+            actions.style.margin = '20px 0 0 0';
+            actions.style.padding = '0';
+        }
+    });
+    
+    if (!finalConfirm.isConfirmed) return;
+    
+    // ── STEP 3: Submit ────────────────────────────────────────
     Swal.fire({ 
-        title: 'Checking cancellation policy...', 
+        title: 'Cancelling...', 
         allowOutsideClick: false, 
+        showConfirmButton: false,
+        heightAuto: false,
         didOpen: () => Swal.showLoading() 
     });
     
     const fd = new URLSearchParams(); 
-    fd.append('cancel_appointment','1'); 
+    fd.append('cancel_appointment', '1'); 
     fd.append('appointment_id', id);
+    fd.append('cancel_reason', result.value.reason);
+    fd.append('cancel_notes', result.value.notes);
     
     try {
         const res = await fetch(window.location.href, { 
@@ -1442,41 +2231,100 @@ async function cancelAppointment(id) {
         const data = await res.json();
         
         if (data.success) {
-            let message = 'Appointment cancelled successfully!';
+            let html = '<div style="text-align:left; font-size:13px; line-height:1.6;">';
+            html += '<div style="display:flex; align-items:center; gap:8px; padding:10px 0; color:#059669; font-weight:600; border-bottom:1px solid #F3F4F6;">';
+            html += '<span style="font-size:16px;">✓</span> Appointment cancelled</div>';
+            
             if (data.refund_percent > 0) {
-                message += `<br><br>✅ You are eligible for <strong>${data.refund_percent}% refund</strong> (₱${data.refund_amount.toFixed(2)})`;
-                message += `<br><small>Click "Request Refund" below to claim.</small>`;
+                html += `<div style="display:flex; justify-content:space-between; padding:10px 0; border-bottom:1px solid #F3F4F6;">
+                            <span style="color:#6B7280;">Refund eligible</span>
+                            <span style="color:#059669; font-weight:600;">${data.refund_percent}% · ₱${data.refund_amount.toFixed(2)}</span>
+                         </div>
+                         <div style="padding-top:12px; font-size:12px; color:#9CA3AF;">
+                            Click "Request Refund" below to claim.
+                         </div>`;
             } else {
-                message += `<br><br>❌ No refund available for this cancellation (0% per clinic policy)`;
+                html += `<div style="padding:10px 0; font-size:12px; color:#9CA3AF;">
+                            No refund available based on clinic policy.
+                         </div>`;
             }
+            html += '</div>';
             
             await Swal.fire({ 
-                icon: 'success', 
-                title: 'Cancelled!', 
-                html: message, 
-                confirmButtonColor: '#00B761' 
+                title: 'Cancelled',
+                html: html,
+                width: '400px',
+                padding: '24px',
+                heightAuto: false,
+                confirmButtonText: 'Done',
+                buttonsStyling: false,
+                didOpen: () => {
+                    const btn = Swal.getConfirmButton();
+                    btn.style.padding = '11px 24px';
+                    btn.style.borderRadius = '6px';
+                    btn.style.fontSize = '13px';
+                    btn.style.fontWeight = '600';
+                    btn.style.background = '#059669';
+                    btn.style.color = '#fff';
+                    btn.style.border = '1px solid #059669';
+                    btn.style.cursor = 'pointer';
+                    btn.style.width = '100%';
+                    btn.style.margin = '20px 0 0 0';
+                    btn.style.boxSizing = 'border-box';
+                }
             });
             location.reload();
         } else {
             Swal.fire({ 
-                icon: 'error', 
-                title: 'Failed', 
+                title: 'Failed',
                 text: data.message, 
-                confirmButtonColor: '#EF4444' 
+                width: '400px',
+                padding: '24px',
+                heightAuto: false,
+                confirmButtonText: 'OK',
+                buttonsStyling: false,
+                didOpen: () => {
+                    const btn = Swal.getConfirmButton();
+                    btn.style.padding = '11px 24px';
+                    btn.style.borderRadius = '6px';
+                    btn.style.fontSize = '13px';
+                    btn.style.fontWeight = '600';
+                    btn.style.background = '#DC2626';
+                    btn.style.color = '#fff';
+                    btn.style.border = '1px solid #DC2626';
+                    btn.style.cursor = 'pointer';
+                    btn.style.width = '100%';
+                    btn.style.margin = '20px 0 0 0';
+                    btn.style.boxSizing = 'border-box';
+                }
             });
         }
     } catch (error) {
         Swal.fire({ 
-            icon: 'error', 
-            title: 'Error', 
-            text: 'An error occurred. Please try again.' 
+            title: 'Error',
+            text: 'Something went wrong. Please try again.',
+            width: '400px',
+            padding: '24px',
+            heightAuto: false,
+            confirmButtonText: 'OK',
+            buttonsStyling: false,
+            didOpen: () => {
+                const btn = Swal.getConfirmButton();
+                btn.style.padding = '11px 24px';
+                btn.style.borderRadius = '6px';
+                btn.style.fontSize = '13px';
+                btn.style.fontWeight = '600';
+                btn.style.background = '#DC2626';
+                btn.style.color = '#fff';
+                btn.style.border = '1px solid #DC2626';
+                btn.style.cursor = 'pointer';
+                btn.style.width = '100%';
+                btn.style.margin = '20px 0 0 0';
+                btn.style.boxSizing = 'border-box';
+            }
         });
     }
 }
-
-// ============================================
-// PHASE 5: REQUEST REFUND
-// ============================================
 async function requestRefund(id) {
     const amt = <?php echo $eligible_refund; ?>;
     const percent = <?php echo $refund_percent; ?>;

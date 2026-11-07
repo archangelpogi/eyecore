@@ -8,16 +8,24 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 require_once __DIR__ . '/../config/db.php';
+require_once __DIR__ . '/../include/subscription_guard.php';
 require_once __DIR__ . '/../include/RBACHelper.php';
 require_once __DIR__ . '/../include/SubscriptionHelper.php';
+
 
 // ✅ Initialize RBACHelper
 RBACHelper::init($pdo);
 
 // ✅ SUBSCRIPTION CHECK - Finance module (Professional or Enterprise plan required)
+// Note: Na-covered na ito ng subscription_guard.php, pero i-keep for double safety
 $subHelper = new SubscriptionHelper($pdo, $_SESSION['clinic_id']);
 if (!$subHelper->canAccessModule('finance')) {
-    header('Location: ../views/subscription.php');
+    // Smart redirect — handles both direct access and via main.php
+    if (!headers_sent()) {
+        header('Location: ../views/subscription.php');
+    } else {
+        echo '<script>window.location.replace("../views/subscription.php");</script>';
+    }
     exit;
 }
 
@@ -99,6 +107,7 @@ $query = "
         END AS customer_code,
         a.amount_paid,
         CASE 
+            WHEN a.status = 'waiting_payment' THEN 'Waiting Payment'
             WHEN a.status = 'refunded' THEN 'Refunded'
             WHEN a.amount_paid >= COALESCE(NULLIF(a.total_amount, 0), (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0))) 
                 AND COALESCE(NULLIF(a.total_amount, 0), (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0))) > 0 
@@ -126,6 +135,10 @@ $query = "
             )
         ) AS items,
         d.name as doctor_name,
+        a.frame_name,
+        a.order_source,
+        a.sent_to_sales_at,
+        a.sent_to_sales_by,
         NULL AS walk_in_name,
         NULL AS walk_in_contact,
         NULL AS walk_in_email
@@ -134,7 +147,7 @@ $query = "
     LEFT JOIN users u ON a.user_id = u.id
     LEFT JOIN doctors d ON a.doctor_id = d.id
     WHERE a.clinic_id = ?
-    AND a.status IN ('paid', 'completed', 'confirmed', 'pending', 'refunded', 'no-show')
+AND a.status IN ('waiting_payment', 'paid', 'completed', 'confirmed', 'pending', 'refunded', 'no-show', 'missed', 'cancelled', 'arrived', 'in_consultation')
     
     UNION ALL
     
@@ -178,6 +191,10 @@ $query = "
         END AS source_type,
         s.items,
         NULL AS doctor_name,
+        NULL AS frame_name,
+        NULL AS order_source,
+        NULL AS sent_to_sales_at,
+        NULL AS sent_to_sales_by,
         s.walk_in_name,
         s.walk_in_contact,
         s.walk_in_email
@@ -214,6 +231,7 @@ $statsStmt = $pdo->prepare("
     SELECT 
         COALESCE(SUM(CASE WHEN sale_date = ? AND status = 'Paid' THEN total_amount END), 0) as today_sales,
         COUNT(CASE WHEN sale_date = ? AND status = 'Paid' THEN 1 END) as today_count,
+        COUNT(CASE WHEN status = 'Waiting Payment' THEN 1 END) as waiting_payment_count,
         COALESCE(SUM(CASE WHEN status = 'Paid' THEN total_amount END), 0) as paid_amount,
         COALESCE(SUM(CASE WHEN status = 'Partial' THEN total_amount END), 0) as partial_amount,
         COALESCE(SUM(CASE WHEN status = 'Unpaid' THEN total_amount END), 0) as unpaid_amount,
@@ -223,6 +241,7 @@ $statsStmt = $pdo->prepare("
         SELECT 
             appointment_date as sale_date,
             CASE 
+                WHEN a.status = 'waiting_payment' THEN 'Waiting Payment'
                 WHEN a.status = 'refunded' THEN 'Refunded'
                 WHEN a.amount_paid >= (CASE WHEN a.subtotal > 0 THEN (a.subtotal - COALESCE(a.discount_amount, 0) + COALESCE(a.vat_amount, 0)) ELSE a.total_amount END) THEN 'Paid'
                 WHEN a.amount_paid > 0 THEN 'Partial'
@@ -234,7 +253,7 @@ $statsStmt = $pdo->prepare("
             END as total_amount
         FROM appointments a
         WHERE a.clinic_id = ?
-        AND a.status IN ('paid', 'completed', 'confirmed', 'pending', 'refunded', 'no-show')
+AND a.status IN ('waiting_payment', 'paid', 'completed', 'confirmed', 'pending', 'refunded', 'no-show', 'missed', 'cancelled', 'arrived', 'in_consultation')
         
         UNION ALL
         
@@ -258,6 +277,7 @@ $stats = $statsStmt->fetch(PDO::FETCH_ASSOC);
 
 $stats['today_sales'] = $stats['today_sales'] ?? 0;
 $stats['today_count'] = $stats['today_count'] ?? 0;
+$stats['waiting_payment_count'] = $stats['waiting_payment_count'] ?? 0;
 $stats['paid_amount'] = $stats['paid_amount'] ?? 0;
 $stats['partial_amount'] = $stats['partial_amount'] ?? 0;
 $stats['unpaid_amount'] = $stats['unpaid_amount'] ?? 0;
@@ -322,15 +342,51 @@ $allItems = array_merge($products, $services);
 
 // Process invoices with correct balance and subtotal
 foreach ($invoices as &$invoice) {
-    $total_amount = $invoice['total_amount'] ?? 0;
-    $amount_paid = $invoice['amount_paid'] ?? 0;
+    $total_amount = floatval($invoice['total_amount'] ?? 0);
+    $amount_paid = floatval($invoice['amount_paid'] ?? 0);
+    $discount_pct = floatval($invoice['discount_percentage'] ?? 0);
+    $discount_type = $invoice['discount_type'] ?? 'none';
+    $vat_amount_db = floatval($invoice['vat_amount'] ?? 0);
+    
     $balance = $total_amount - $amount_paid;
     if ($balance < 0) {
         $balance = 0;
     }
     $invoice['balance'] = $balance;
     
-    // ✅ COMPUTE SUBTOTAL FROM ITEMS
+    // ═══════════════════════════════════════════════════════
+    // ✅ DYNAMIC SUBTOTAL COMPUTATION
+    // ═══════════════════════════════════════════════════════
+    // Formula: subtotal = total / (1 - discount_pct/100) kung VAT exempt
+    //          subtotal = (total - vat) / (1 - discount_pct/100) kung may VAT
+    
+    $computed_subtotal = 0;
+    $computed_discount = 0;
+    
+    if ($discount_type === 'senior' || $discount_type === 'pwd') {
+        // ✅ FIXED: PWD/Senior — total = (subtotal / 1.12) × 0.80
+        // Reverse: subtotal = total × 1.12 / 0.80
+        $computed_subtotal = ($total_amount / (1 - ($discount_pct / 100))) * 1.12;
+        $computed_discount = ($total_amount / (1 - ($discount_pct / 100))) - $total_amount;
+    } elseif ($discount_type !== 'none' && $discount_pct > 0) {
+        // ✅ Manual discount (may VAT)
+        $total_before_vat = $total_amount - $vat_amount_db;
+        $divisor = 1 - ($discount_pct / 100);
+        
+        if ($divisor > 0) {
+            $computed_subtotal = $total_before_vat / $divisor;
+            $computed_discount = $computed_subtotal * ($discount_pct / 100);
+        } else {
+            $computed_subtotal = $total_amount;
+            $computed_discount = 0;
+        }
+    } else {
+        // ✅ Walang discount: subtotal = total - vat
+        $computed_subtotal = $total_amount - $vat_amount_db;
+        $computed_discount = 0;
+    }
+    
+    // ✅ Also compute from items JSON (as cross-check)
     $items_raw = trim($invoice['items'] ?? '[]');
     $items = json_decode($items_raw, true);
     if (json_last_error() !== JSON_ERROR_NONE) {
@@ -338,30 +394,44 @@ foreach ($invoices as &$invoice) {
         $items = json_decode($items_raw, true);
     }
     
-    // ✅ Calculate subtotal from items
-    $computed_subtotal = 0;
+    $items_subtotal = 0;
     if (is_array($items) && !empty($items)) {
         foreach ($items as $item) {
-            $price = floatval($item['price'] ?? 0);
+            $price = floatval($item['price'] ?? $item['unit_price'] ?? 0);
             $qty = intval($item['quantity'] ?? 1);
-            $computed_subtotal += $price * $qty;
+            $items_subtotal += $price * $qty;
         }
     }
     
-    // ✅ Use computed subtotal if available, otherwise use stored
-    $invoice['display_subtotal'] = ($computed_subtotal > 0) ? $computed_subtotal : ($invoice['subtotal'] ?? $total_amount);
+    // ✅ Use the HIGHER value (para accurate)
+    if ($items_subtotal > $computed_subtotal) {
+        $invoice['display_subtotal'] = $items_subtotal;
+    } else {
+        $invoice['display_subtotal'] = $computed_subtotal > 0 ? $computed_subtotal : ($items_subtotal > 0 ? $items_subtotal : $total_amount);
+    }
     
-    // ✅ Determine status display
-    if ($invoice['status'] === 'refunded') {
+    // ✅ Store computed discount for display
+    $invoice['computed_discount'] = $computed_discount;
+    
+    // ✅ Determine status display — with waiting_payment priority
+    if ($invoice['status'] === 'waiting_payment') {
+        $invoice['payment_status'] = 'Waiting Payment';
+        $invoice['is_waiting_payment'] = true;
+    } elseif ($invoice['status'] === 'refunded') {
         $invoice['payment_status'] = 'Refunded';
+        $invoice['is_waiting_payment'] = false;
     } elseif ($amount_paid >= $total_amount && $total_amount > 0) {
         $invoice['payment_status'] = 'Paid';
+        $invoice['is_waiting_payment'] = false;
     } elseif ($amount_paid > 0 && $amount_paid < $total_amount) {
         $invoice['payment_status'] = 'Partial';
+        $invoice['is_waiting_payment'] = false;
     } else {
         $invoice['payment_status'] = 'Unpaid';
+        $invoice['is_waiting_payment'] = false;
     }
 }
+unset($invoice);
 unset($invoice);
 ?>
 <!DOCTYPE html>
@@ -739,7 +809,10 @@ unset($invoice);
         .badge-status.cancelled { background: #f1f5f9; color: #475569; }
         .badge-status.cancelled .dot { background: #94a3b8; }
         .badge-status.refunded { background: #f3e8ff; color: #6d28d9; }
-        .badge-status.refunded .dot { background: #8b5cf6; }
+.badge-status.refunded .dot { background: #8b5cf6; }
+/* ✅ BAGO: Waiting Payment badge (galing sa Doctor) */
+.badge-status.waiting-payment { background: #e0f2fe; color: #0284c7; }
+.badge-status.waiting-payment .dot { background: #0284c7; }
 
         /* Table Footer */
         .table-footer {
@@ -794,6 +867,55 @@ unset($invoice);
             color: white;
             border-color: var(--primary);
         }
+
+        /* ═══════════════════════════════════════════════════════════════
+   FINALIZE ORDER MODAL — MINIMAL TEAL STYLES
+   ═══════════════════════════════════════════════════════════════ */
+
+/* Teal button (para sa Confirm) */
+.btn-teal {
+    background: #0d9488;
+    border-color: #0d9488;
+    color: white;
+}
+.btn-teal:hover {
+    background: #0f766e;
+    border-color: #0f766e;
+    color: white;
+}
+
+/* Feature checkboxes container */
+#finalize_features_container .form-check {
+    padding: 8px 12px 8px 32px;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    transition: all 0.15s;
+    min-width: 180px;
+}
+#finalize_features_container .form-check:hover {
+    border-color: #0d9488;
+    background: #f0fdfa;
+}
+#finalize_features_container .form-check:has(input:checked) {
+    border-color: #0d9488;
+    background: #f0fdfa;
+}
+#finalize_features_container .form-check-input {
+    accent-color: #0d9488;
+    cursor: pointer;
+}
+#finalize_features_container .form-check-label {
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+}
+
+/* Focus teal */
+.form-control:focus,
+.form-select:focus {
+    border-color: #0d9488;
+    box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.1);
+}
 
         /* Action Buttons */
         .action-btns {
@@ -872,48 +994,54 @@ unset($invoice);
         </div>
     </div>
 
-    <!-- ============================================ -->
-    <!-- STATS CARDS -->
-    <!-- ============================================ -->
-    <div class="stats-grid">
-        <div class="stat-card">
-            <div class="stat-label">Today's Sales</div>
-            <div class="stat-value">₱<?php echo number_format($stats['today_sales'] ?? 0); ?></div>
-            <div class="stat-change up">↑ <?php echo $stats['today_count'] ?? 0; ?> transactions</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">Paid</div>
-            <div class="stat-value" style="color: #059669;">₱<?php echo number_format($stats['paid_amount'] ?? 0); ?></div>
-            <div class="stat-change up">Fully paid invoices</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">Pending Balance</div>
-            <div class="stat-value" style="color: #d97706;">₱<?php echo number_format($stats['partial_amount'] ?? 0); ?></div>
-            <div class="stat-change" style="color: #d97706;">Awaiting payment</div>
-        </div>
-        <div class="stat-card">
-            <div class="stat-label">Refunded</div>
-            <div class="stat-value" style="color: #6d28d9;">₱<?php echo number_format($stats['refunded_amount'] ?? 0); ?></div>
-            <div class="stat-change" style="color: #6d28d9;"><?php echo $stats['refunded_count'] ?? 0; ?> refunded</div>
+<div class="stats-grid" style="grid-template-columns: repeat(5, 1fr);">
+    <div class="stat-card">
+        <div class="stat-label">Today's Sales</div>
+        <div class="stat-value">₱<?php echo number_format($stats['today_sales'] ?? 0); ?></div>
+        <div class="stat-change up">↑ <?php echo $stats['today_count'] ?? 0; ?> transactions</div>
+    </div>
+    <!-- ✅ BAGO: Waiting Payment (from Doctor) -->
+    <div class="stat-card" style="border-color: #0284c7; background: #f0f9ff;">
+        <div class="stat-label" style="color: #0284c7;">From Doctor</div>
+        <div class="stat-value" style="color: #0284c7;"><?php echo $stats['waiting_payment_count'] ?? 0; ?></div>
+        <div class="stat-change" style="color: #0284c7;">
+            <i class="bi bi-arrow-right-circle me-1"></i>Waiting for order
         </div>
     </div>
+    <div class="stat-card">
+        <div class="stat-label">Paid</div>
+        <div class="stat-value" style="color: #059669;">₱<?php echo number_format($stats['paid_amount'] ?? 0); ?></div>
+        <div class="stat-change up">Fully paid invoices</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Pending Balance</div>
+        <div class="stat-value" style="color: #d97706;">₱<?php echo number_format($stats['partial_amount'] ?? 0); ?></div>
+        <div class="stat-change" style="color: #d97706;">Awaiting payment</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-label">Refunded</div>
+        <div class="stat-value" style="color: #6d28d9;">₱<?php echo number_format($stats['refunded_amount'] ?? 0); ?></div>
+        <div class="stat-change" style="color: #6d28d9;"><?php echo $stats['refunded_count'] ?? 0; ?> refunded</div>
+    </div>
+</div>
 
     <!-- ============================================ -->
     <!-- TOOLBAR -->
     <!-- ============================================ -->
     <div class="toolbar">
         <div class="toolbar-left">
-            <div class="filter-group">
-                <label>Status</label>
-                <select id="filterStatus" onchange="filterTable()">
-                    <option value="all">All Status</option>
-                    <option value="paid">Paid</option>
-                    <option value="partial">Partial</option>
-                    <option value="unpaid">Unpaid</option>
-                    <option value="refunded">Refunded</option>
-                    <option value="cancelled">Cancelled</option>
-                </select>
-            </div>
+<div class="filter-group">
+    <label>Status</label>
+    <select id="filterStatus" onchange="filterTable()">
+        <option value="all">All Status</option>
+        <option value="waiting-payment">⏳ From Doctor (Waiting Payment)</option>
+        <option value="paid">Paid</option>
+        <option value="partial">Partial</option>
+        <option value="unpaid">Unpaid</option>
+        <option value="refunded">Refunded</option>
+        <option value="cancelled">Cancelled</option>
+    </select>
+</div>
             <div class="filter-group">
                 <label>Payment</label>
                 <select id="filterPayment" onchange="filterTable()">
@@ -974,91 +1102,116 @@ unset($invoice);
                         </td>
                     </tr>
                     <?php else: ?>
-                    <?php foreach ($invoices as $invoice): 
-                        $total_amount = $invoice['total_amount'] ?? 0;
-                        $amount_paid = $invoice['amount_paid'] ?? 0;
-                        $balance = $invoice['balance'] ?? 0;
-                        $payment_status = $invoice['payment_status'] ?? 'Unpaid';
-                        $display_subtotal = $invoice['display_subtotal'] ?? $total_amount;
-                        $statusClass = match($payment_status) {
-                            'Paid' => 'paid',
-                            'Partial' => 'partial',
-                            'Unpaid' => 'unpaid',
-                            'Refunded' => 'refunded',
-                            default => 'unpaid'
-                        };
-                        
-                        // Get items count
-                        $items_raw = trim($invoice['items'] ?? '[]');
-                        $items = json_decode($items_raw, true);
-                        if (json_last_error() !== JSON_ERROR_NONE) {
-                            $items_raw = preg_replace('/[\x00-\x1F\x80-\xFF]/', '', $items_raw);
-                            $items = json_decode($items_raw, true);
-                        }
-                        $itemCount = is_array($items) ? count($items) : 0;
-                        $itemNames = [];
-                        if (is_array($items) && !empty($items)) {
-                            foreach ($items as $item) {
-                                $itemNames[] = $item['name'] ?? $item['item_name'] ?? 'Item';
-                            }
-                        }
-                    ?>
-                    <tr>
-                        <td>
-                            <strong style="color: var(--primary);"><?php echo $invoice['invoice_id']; ?></strong>
-                        </td>
-                        <td>
-                            <div style="font-weight: 500;"><?php echo htmlspecialchars($invoice['customer_name']); ?></div>
-                            <div style="font-size: 12px; color: var(--gray-400);">
-                                <?php 
-                                if (!empty($invoice['reservation_id'])) {
-                                    echo 'Order (Reservation)';
-                                } elseif (!empty($invoice['appointment_id'])) {
-                                    echo 'Appointment';
-                                } elseif (!empty($invoice['walk_in_name'])) {
-                                    echo 'Walk-in';
-                                }
-                                ?>
-                            </div>
-                        </td>
-                        <td><?php echo date('M d, Y', strtotime($invoice['sale_date'])); ?></td>
-                        <td>
-                            <div><?php echo $itemCount; ?> item<?php echo $itemCount > 1 ? 's' : ''; ?></div>
-                            <?php if (!empty($itemNames)): ?>
-                                <div style="font-size: 12px; color: var(--gray-400); max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                                    <?php echo htmlspecialchars(implode(', ', array_slice($itemNames, 0, 2))); ?>
-                                    <?php echo count($itemNames) > 2 ? '...' : ''; ?>
-                                </div>
-                            <?php endif; ?>
-                        </td>
-                        <td style="font-weight: 600;">₱<?php echo number_format($display_subtotal, 2); ?></td>
-                        <td style="color: #059669;">₱<?php echo number_format($amount_paid, 2); ?></td>
-                        <td style="font-weight: 500; <?php echo $balance > 0 ? 'color: #dc2626;' : 'color: #059669;'; ?>">
-                            ₱<?php echo number_format($balance, 2); ?>
-                        </td>
-                        <td>
-                            <span class="badge-status <?php echo $statusClass; ?>">
-                                <span class="dot"></span>
-                                <?php echo $payment_status; ?>
-                            </span>
-                        </td>
-                        <td>
-                            <div class="action-btns">
-                                <button class="btn-icon view" onclick="viewInvoice(<?php echo $invoice['id']; ?>, '<?php echo $invoice['source_type']; ?>')" title="View">
-                                    <i class="bi bi-eye"></i>
-                                </button>
-                                <button class="btn-icon print" onclick="printInvoice(<?php echo $invoice['id']; ?>, '<?php echo $invoice['source_type']; ?>')" title="Print">
-                                    <i class="bi bi-printer"></i>
-                                </button>
-                                <?php if ($canEdit && $payment_status !== 'Paid' && $payment_status !== 'Refunded'): ?>
-                                <button class="btn-icon pay" onclick="recordPayment(<?php echo $invoice['id']; ?>, <?php echo $total_amount; ?>, <?php echo $amount_paid; ?>, '<?php echo $invoice['source_type']; ?>')" title="Record Payment">
-                                    <i class="bi bi-cash"></i>
-                                </button>
-                                <?php endif; ?>
-                            </div>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
+<?php foreach ($invoices as $invoice): 
+    $total_amount = $invoice['total_amount'] ?? 0;
+    $amount_paid = $invoice['amount_paid'] ?? 0;
+    $balance = $invoice['balance'] ?? 0;
+    $payment_status = $invoice['payment_status'] ?? 'Unpaid';
+    $display_subtotal = $invoice['display_subtotal'] ?? $total_amount;
+    
+    // ✅ Check kung waiting_payment
+    $is_waiting_payment = !empty($invoice['is_waiting_payment']) || ($invoice['status'] ?? '') === 'waiting_payment';
+    
+    $statusClass = match($payment_status) {
+        'Paid' => 'paid',
+        'Partial' => 'partial',
+        'Unpaid' => 'unpaid',
+        'Refunded' => 'refunded',
+        'Waiting Payment' => 'waiting-payment',
+        default => 'unpaid'
+    };
+    
+    // Get items count
+    $items_raw = trim($invoice['items'] ?? '[]');
+    $items = json_decode($items_raw, true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        $items_raw = preg_replace('/[\x00-\x1F\x80-\xFF]/', '', $items_raw);
+        $items = json_decode($items_raw, true);
+    }
+    $itemCount = is_array($items) ? count($items) : 0;
+    $itemNames = [];
+    if (is_array($items) && !empty($items)) {
+        foreach ($items as $item) {
+            $itemNames[] = $item['name'] ?? $item['item_name'] ?? 'Item';
+        }
+    }
+?>
+<tr style="<?php echo $is_waiting_payment ? 'background: #f0f9ff;' : ''; ?>">
+    <td>
+        <strong style="color: var(--primary);"><?php echo $invoice['invoice_id']; ?></strong>
+        <?php if ($is_waiting_payment): ?>
+            <div style="font-size: 10px; color: #0284c7; margin-top: 2px;">
+                <i class="bi bi-arrow-right-circle me-1"></i>From Doctor
+            </div>
+        <?php endif; ?>
+    </td>
+    <td>
+        <div style="font-weight: 500;"><?php echo htmlspecialchars($invoice['customer_name']); ?></div>
+        <div style="font-size: 12px; color: var(--gray-400);">
+            <?php 
+            if (!empty($invoice['reservation_id'])) {
+                echo 'Order (Reservation)';
+            } elseif (!empty($invoice['appointment_id'])) {
+                echo 'Appointment';
+            } elseif (!empty($invoice['walk_in_name'])) {
+                echo 'Walk-in';
+            }
+            ?>
+        </div>
+        <?php if (!empty($invoice['frame_name'])): ?>
+            <div style="font-size: 11px; color: var(--gray-500); margin-top: 2px;">
+                <i class="bi bi-eyeglasses me-1"></i><?php echo htmlspecialchars($invoice['frame_name']); ?>
+            </div>
+        <?php endif; ?>
+    </td>
+    <td><?php echo date('M d, Y', strtotime($invoice['sale_date'])); ?></td>
+    <td>
+        <div><?php echo $itemCount; ?> item<?php echo $itemCount > 1 ? 's' : ''; ?></div>
+        <?php if (!empty($itemNames)): ?>
+            <div style="font-size: 12px; color: var(--gray-400); max-width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                <?php echo htmlspecialchars(implode(', ', array_slice($itemNames, 0, 2))); ?>
+                <?php echo count($itemNames) > 2 ? '...' : ''; ?>
+            </div>
+        <?php endif; ?>
+    </td>
+    <td style="font-weight: 600;">₱<?php echo number_format($display_subtotal, 2); ?></td>
+    <td style="color: #059669;">₱<?php echo number_format($amount_paid, 2); ?></td>
+    <td style="font-weight: 500; <?php echo $balance > 0 ? 'color: #dc2626;' : 'color: #059669;'; ?>">
+        ₱<?php echo number_format($balance, 2); ?>
+    </td>
+    <td>
+        <span class="badge-status <?php echo $statusClass; ?>">
+            <span class="dot"></span>
+            <?php echo $payment_status; ?>
+        </span>
+    </td>
+    <td>
+        <div class="action-btns">
+            <?php if ($is_waiting_payment): ?>
+                <!-- ✅ FINALIZE ORDER button para sa waiting_payment -->
+                <button class="btn-icon" 
+                        style="background: #0284c7; color: white;" 
+                        onclick="finalizeOrder(<?php echo $invoice['id']; ?>)" 
+                        title="Finalize Order & Price">
+                    <i class="bi bi-cart-check"></i>
+                </button>
+            <?php else: ?>
+                <button class="btn-icon view" onclick="viewInvoice(<?php echo $invoice['id']; ?>, '<?php echo $invoice['source_type']; ?>')" title="View">
+                    <i class="bi bi-eye"></i>
+                </button>
+                <button class="btn-icon print" onclick="printInvoice(<?php echo $invoice['id']; ?>, '<?php echo $invoice['source_type']; ?>')" title="Print">
+                    <i class="bi bi-printer"></i>
+                </button>
+                <?php if ($canEdit && $payment_status !== 'Paid' && $payment_status !== 'Refunded'): ?>
+                <button class="btn-icon pay" onclick="recordPayment(<?php echo $invoice['id']; ?>, <?php echo $total_amount; ?>, <?php echo $amount_paid; ?>, '<?php echo $invoice['source_type']; ?>')" title="Record Payment">
+                    <i class="bi bi-cash"></i>
+                </button>
+                <?php endif; ?>
+            <?php endif; ?>
+        </div>
+    </td>
+</tr>
+<?php endforeach; ?>
                     <?php endif; ?>
                 </tbody>
             </table>
@@ -1321,6 +1474,360 @@ unset($invoice);
     </div>
 </div>
 
+<!-- ═══════════════════════════════════════════════════════════════
+     FINALIZE ORDER MODAL — SIMPLIFIED (Minimal CSS, Bootstrap Native)
+═══════════════════════════════════════════════════════════════ -->
+<div class="modal fade" id="finalizeOrderModal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable" style="max-height: 95vh;">
+        <div class="modal-content" style="border-radius: 16px; border: none; max-height: 95vh; display: flex; flex-direction: column;">
+            
+            <div class="modal-header" style="background: #0d9488; color: white; border-radius: 16px 16px 0 0; flex-shrink: 0;">
+                <h5 class="modal-title fw-bold">
+                    <i class="bi bi-cart-check me-2"></i>Finalize Order
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            
+            <form id="finalizeOrderForm" style="display: flex; flex-direction: column; max-height: 95vh; overflow: hidden;">
+                <div class="modal-body" style="padding: 24px; overflow-y: auto; flex: 1 1 auto;">
+                    <input type="hidden" id="finalize_appointment_id">
+                    
+                    <!-- ══════ PATIENT & DOCTOR INFO ══════ -->
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-6">
+                            <div class="p-3 rounded-3" style="background: #f8fafc; border: 1px solid #e2e8f0;">
+                                <div class="fw-bold mb-2" style="color: #0d9488; font-size: 12px; text-transform: uppercase;">
+                                    <i class="bi bi-person-circle me-1"></i>Patient
+                                </div>
+                                <div class="fw-bold mb-1" id="finalize_patient_name" style="font-size: 16px;">—</div>
+                                <div class="text-muted small" id="finalize_patient_meta">—</div>
+                                <div class="text-muted small mt-1" id="finalize_frame_name">
+                                    <i class="bi bi-eyeglasses me-1"></i>—
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-6">
+                            <div class="p-3 rounded-3" style="background: #f0fdfa; border: 1px solid #99f6e4;">
+                                <div class="fw-bold mb-2" style="color: #0d9488; font-size: 12px; text-transform: uppercase;">
+                                    <i class="bi bi-person-badge me-1"></i>Doctor &amp; Source
+                                </div>
+                                <div class="fw-bold mb-1" id="finalize_doctor_name" style="font-size: 14px;">—</div>
+                                <div class="text-muted small" id="finalize_sent_at">—</div>
+                                <div class="text-muted small" id="finalize_order_source">—</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+<!-- ══════ PRESCRIPTION ══════ -->
+<div class="card mb-4" id="prescription_card" style="border: 1px solid #e2e8f0;">
+    <div class="card-header" style="background: #f8fafc; font-size: 13px; font-weight: 700; text-transform: uppercase; color: #475569;">
+        <i class="bi bi-eye me-2"></i>Prescription (from Doctor)
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-sm table-bordered mb-0" style="font-size: 13px;">
+                <thead class="table-light">
+                    <tr>
+                        <th style="width: 20%;"></th>
+                        <th class="text-center">SPH</th>
+                        <th class="text-center">CYL</th>
+                        <th class="text-center">AXIS</th>
+                        <th class="text-center">ADD</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td class="fw-bold" style="color: #0d9488;">OD (Right)</td>
+                        <td class="text-center fw-semibold" id="finalize_sph_r">—</td>
+                        <td class="text-center fw-semibold" id="finalize_cyl_r">—</td>
+                        <td class="text-center fw-semibold" id="finalize_axis_r">—</td>
+                        <td class="text-center fw-semibold" id="finalize_add_r">—</td>
+                    </tr>
+                    <tr>
+                        <td class="fw-bold" style="color: #0d9488;">OS (Left)</td>
+                        <td class="text-center fw-semibold" id="finalize_sph_l">—</td>
+                        <td class="text-center fw-semibold" id="finalize_cyl_l">—</td>
+                        <td class="text-center fw-semibold" id="finalize_axis_l">—</td>
+                        <td class="text-center fw-semibold" id="finalize_add_l">—</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="mt-3 p-2 rounded-2" style="background: #f0fdfa; border: 1px solid #99f6e4;">
+            <div class="d-flex justify-content-between align-items-center">
+                <span class="fw-semibold" style="color: #0f766e; font-size: 13px;">
+                    <i class="bi bi-rulers me-1"></i>PD (Pupillary Distance):
+                </span>
+                <span class="fw-bold" style="color: #0d9488; font-size: 15px;" id="finalize_pd">—</span>
+            </div>
+        </div>
+    </div>
+</div>
+                    
+<!-- ══════ DOCTOR'S RECOMMENDATION ══════ -->
+<div class="alert mb-4" id="doctor_rec_card" style="background: #fffbeb; border: 1px solid #fcd34d;">
+    <div class="fw-bold mb-2" style="color: #92400e; font-size: 12px; text-transform: uppercase;">
+        <i class="bi bi-lightbulb me-1"></i>Doctor's Recommendation (Baseline)
+    </div>
+    <div class="row g-2" style="font-size: 13px;">
+        <div class="col-md-6">
+            <div class="d-flex justify-content-between mb-1">
+                <span style="color: #78350f;">Lens Design:</span>
+                <span class="fw-bold" style="color: #92400e;" id="finalize_rec_design">—</span>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="d-flex justify-content-between mb-1">
+                <span style="color: #78350f;">Lens Index:</span>
+                <span class="fw-bold" style="color: #92400e;" id="finalize_rec_index">—</span>
+            </div>
+        </div>
+        <div class="col-12">
+            <div class="d-flex justify-content-between mb-1">
+                <span style="color: #78350f;">Features:</span>
+                <span class="fw-bold" style="color: #92400e; text-align: right;" id="finalize_rec_features">—</span>
+            </div>
+        </div>
+        <div class="col-12 mt-1 pt-2" style="border-top: 1px dashed #fcd34d;">
+            <div class="fst-italic" style="color: #78350f; font-size: 12px;" id="finalize_rec_notes">—</div>
+        </div>
+    </div>
+</div>
+                    <!-- ══════ CONTACT LENS ASSESSMENT ══════ -->
+                    <div class="card mb-4" id="cl_assessment_card" style="border: 1px solid #0d9488; display: none;">
+                        <div class="card-header" style="background: #f0fdfa; font-size: 13px; font-weight: 700; text-transform: uppercase; color: #0d9488;">
+                            <i class="bi bi-eye-fill me-2"></i>Contact Lens Assessment
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-3">
+                                <div class="col-md-3 col-6">
+                                    <small class="text-muted d-block">Base Curve (BC)</small>
+                                    <div class="fw-bold" id="finalize_cl_base_curve">—</div>
+                                </div>
+                                <div class="col-md-3 col-6">
+                                    <small class="text-muted d-block">Diameter (DIA)</small>
+                                    <div class="fw-bold" id="finalize_cl_diameter">—</div>
+                                </div>
+                                <div class="col-md-3 col-6">
+                                    <small class="text-muted d-block">Power (SPH)</small>
+                                    <div class="fw-bold" id="finalize_cl_power">—</div>
+                                </div>
+                                <div class="col-md-3 col-6">
+                                    <small class="text-muted d-block">Cylinder (CYL)</small>
+                                    <div class="fw-bold" id="finalize_cl_cylinder">—</div>
+                                </div>
+                                <div class="col-md-3 col-6">
+                                    <small class="text-muted d-block">Axis</small>
+                                    <div class="fw-bold" id="finalize_cl_axis">—</div>
+                                </div>
+                                <div class="col-md-3 col-6">
+                                    <small class="text-muted d-block">Lens Type</small>
+                                    <div class="fw-bold" id="finalize_cl_lens_type">—</div>
+                                </div>
+                                <div class="col-md-3 col-6">
+                                    <small class="text-muted d-block">Color / Variant</small>
+                                    <div class="fw-bold" id="finalize_cl_color">—</div>
+                                </div>
+                                <div class="col-md-3 col-6">
+                                    <small class="text-muted d-block">Trial Lens Used</small>
+                                    <div class="fw-bold" id="finalize_cl_trial_lens">—</div>
+                                </div>
+                                <div class="col-12 mt-2 pt-2" style="border-top: 1px dashed #99f6e4;">
+                                    <small class="text-muted d-block">Fit Assessment</small>
+                                    <div class="fst-italic" id="finalize_cl_fit_assessment">—</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- ══════ FINAL LENS CONFIGURATION ══════ -->
+                    <div class="card mb-4" id="final_lens_config_card" style="border: 1px solid #0d9488;">
+                        <div class="card-header" style="background: #f0fdfa; font-size: 13px; font-weight: 700; text-transform: uppercase; color: #0d9488;">
+                            <i class="bi bi-sliders me-2"></i>Final Lens Configuration
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label class="form-label fw-semibold">Lens Design</label>
+                                    <select class="form-select" id="finalize_lens_design" onchange="calculateFinalizeTotal()">
+                                        <option value="">Select…</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label fw-semibold">Lens Index</label>
+                                    <select class="form-select" id="finalize_lens_index" onchange="calculateFinalizeTotal()">
+                                        <option value="">Select…</option>
+                                    </select>
+                                </div>
+                                <div class="col-12">
+                                    <label class="form-label fw-semibold">Features</label>
+                                    <div id="finalize_features_container" class="d-flex flex-wrap gap-3"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- ══════ TOTAL SUMMARY ══════ -->
+                    <div class="card mb-4" style="border: 1px solid #e2e8f0;">
+                        <div class="card-body">
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="text-muted">Frame / Product:</span>
+                                <span class="fw-bold" id="finalize_frame_price">₱0.00</span>
+                            </div>
+                            <div id="finalize_lens_breakdown">
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Lens Design:</span>
+                                    <span class="fw-bold" id="finalize_design_price">₱0.00</span>
+                                </div>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Lens Index:</span>
+                                    <span class="fw-bold" id="finalize_index_price">₱0.00</span>
+                                </div>
+                                <div class="d-flex justify-content-between mb-2">
+                                    <span class="text-muted">Features:</span>
+                                    <span class="fw-bold" id="finalize_features_price">₱0.00</span>
+                                </div>
+                            </div>
+                            <hr>
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="fw-semibold">Subtotal:</span>
+                                <span class="fw-bold" id="finalize_subtotal">₱0.00</span>
+                            </div>
+                            
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-6">
+                                    <label class="form-label small mb-1">Discount Type</label>
+                                    <select class="form-select form-select-sm" id="finalize_discount_type" onchange="calculateFinalizeTotal()">
+                                        <option value="none">None</option>
+                                        <option value="senior">👴 Senior Citizen (20%)</option>
+                                        <option value="pwd">♿ PWD (20%)</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label small mb-1">Discount Amount</label>
+                                    <input type="text" class="form-control form-control-sm bg-light" id="finalize_discount_amount" readonly value="-₱0.00">
+                                </div>
+                            </div>
+                            
+                            <div class="d-flex justify-content-between mb-2">
+                                <span class="fw-semibold">VAT:</span>
+                                <span class="fw-bold" id="finalize_vat">₱0.00</span>
+                            </div>
+                            
+                            <hr>
+                            
+                            <div class="d-flex justify-content-between align-items-center p-3 rounded-3" style="background: #f0fdfa; border: 1px solid #99f6e4;">
+                                <span class="fw-bold" style="font-size: 15px; color: #0f766e;">FINAL TOTAL:</span>
+                                <span class="fw-bold" style="font-size: 22px; color: #0d9488;" id="finalize_total">₱0.00</span>
+                            </div>
+                            
+                            <div id="finalize_paid_summary" style="display: none; margin-top: 12px;">
+                                <div class="d-flex justify-content-between" style="color: #0d9488;">
+                                    <span class="fw-semibold">Already Paid Online:</span>
+                                    <span class="fw-bold" id="finalize_paid_display">-₱0.00</span>
+                                </div>
+                                <div class="d-flex justify-content-between align-items-center p-3 rounded-3 mt-2" style="background: #fef2f2; border: 1px solid #fecaca;">
+                                    <span class="fw-bold" style="color: #dc2626;">REMAINING BALANCE:</span>
+                                    <span class="fw-bold" style="font-size: 20px; color: #dc2626;" id="finalize_remaining_display">₱0.00</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- ══════ ALREADY PAID ONLINE ══════ -->
+                    <div class="row g-3 mb-3" id="already_paid_section" style="display: none;">
+                        <div class="col-12">
+                            <div class="p-3 rounded-3" style="background: #f0fdfa; border: 1px solid #0d9488;">
+                                <div class="d-flex align-items-center justify-content-between">
+                                    <div class="d-flex align-items-center gap-2">
+                                        <i class="bi bi-check-circle-fill" style="color: #0d9488; font-size: 22px;"></i>
+                                        <div>
+                                            <div class="fw-bold" style="color: #0d9488; font-size: 13px; text-transform: uppercase;">
+                                                Already Paid Online
+                                            </div>
+                                            <small class="text-muted" id="finalize_online_paid_at">—</small>
+                                        </div>
+                                    </div>
+                                    <div class="text-end">
+                                        <div class="fw-bold" style="color: #0d9488; font-size: 20px;" id="finalize_online_paid">₱0.00</div>
+                                        <small class="text-muted" id="finalize_online_ref">—</small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- ══════ PAYMENT ══════ -->
+                    <div class="card mb-3" style="border: 1px solid #e2e8f0;">
+                        <div class="card-header" style="background: #f8fafc; font-size: 13px; font-weight: 700; text-transform: uppercase; color: #475569;">
+                            <i class="bi bi-credit-card me-2"></i>Payment
+                        </div>
+                        <div class="card-body">
+                            <div class="row g-3">
+                                <div class="col-md-4">
+                                    <label class="form-label fw-semibold">Payment Method</label>
+                                    <select class="form-select" id="finalize_payment_method" onchange="toggleFinalizeReference()">
+                                        <option value="cash">Cash</option>
+                                        <option value="gcash">GCash</option>
+                                        <option value="paymaya">PayMaya</option>
+                                        <option value="credit_card">Credit Card</option>
+                                        <option value="bank_transfer">Bank Transfer</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="form-label fw-semibold">Amount Paid</label>
+                                    <input type="number" class="form-control" id="finalize_amount_paid" step="0.01" min="0" onchange="calculateFinalizeChange()">
+                                </div>
+                                <div class="col-md-4" id="finalize_reference_field" style="display: none;">
+                                    <label class="form-label fw-semibold">Reference No.</label>
+                                    <input type="text" class="form-control" id="finalize_reference_no" placeholder="e.g., GCash ref">
+                                </div>
+                            </div>
+                            
+                            <div class="row g-3 mt-2">
+                                <div class="col-md-6">
+                                    <div class="p-2 rounded" style="background: #f0fdf4; border: 1px solid #bbf7d0;">
+                                        <div class="d-flex justify-content-between">
+                                            <span class="text-success fw-semibold">Change:</span>
+                                            <span class="fw-bold text-success" id="finalize_change">₱0.00</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="p-2 rounded" id="finalize_balance_box" style="background: #fef2f2; border: 1px solid #fecaca;">
+                                        <div class="d-flex justify-content-between">
+                                            <span class="text-danger fw-semibold">Balance:</span>
+                                            <span class="fw-bold text-danger" id="finalize_balance">₱0.00</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <div class="mt-3">
+                                <label class="form-label fw-semibold">Notes (Optional)</label>
+                                <textarea class="form-control" id="finalize_notes" rows="2" placeholder="Additional notes…"></textarea>
+                            </div>
+                        </div>
+                    </div>
+                    
+                </div>
+                
+                <div class="modal-footer" style="background: white; border-top: 1px solid #e2e8f0; border-radius: 0 0 16px 16px;">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-outline-secondary" onclick="saveFinalizeDraft()">
+                        <i class="bi bi-save me-1"></i>Save as Draft
+                    </button>
+                    <button type="submit" class="btn" style="background: #0d9488; color: white;">
+                        <i class="bi bi-check-lg me-1"></i>Confirm Order &amp; Print Receipt
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+    </div>
+</div>
+
 <!-- Record Payment Modal -->
 <div class="modal fade" id="recordPaymentModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
@@ -1492,8 +1999,22 @@ function filterTable() {
     let filtered = allInvoices.filter(function(inv) {
         let match = true;
         
-        if (status !== 'all' && inv.payment_status?.toLowerCase() !== status) {
-            match = false;
+        // ✅ Handle "waiting-payment" filter
+        if (status !== 'all') {
+            if (status === 'waiting-payment') {
+                // Match kung waiting_payment status
+                const isWaiting = (inv.status === 'waiting_payment') || 
+                                  (inv.payment_status === 'Waiting Payment') ||
+                                  (inv.is_waiting_payment === true);
+                if (!isWaiting) {
+                    match = false;
+                }
+            } else {
+                // Normal status match
+                if ((inv.payment_status || '').toLowerCase() !== status) {
+                    match = false;
+                }
+            }
         }
         
         if (payment !== 'all') {
@@ -1508,7 +2029,8 @@ function filterTable() {
                 inv.invoice_id || '',
                 inv.customer_name || '',
                 inv.customer_code || '',
-                inv.walk_in_name || ''
+                inv.walk_in_name || '',
+                inv.frame_name || ''
             ].join(' ').toLowerCase();
             if (!searchable.includes(search)) {
                 match = false;
@@ -1564,7 +2086,19 @@ function renderTableRows(rows) {
         const balance = invoice.balance || 0;
         const payment_status = invoice.payment_status || 'Unpaid';
         const display_subtotal = invoice.display_subtotal || total_amount;
-        const statusClass = payment_status.toLowerCase();
+        
+        // ✅ Check kung waiting_payment
+        const isWaitingPayment = (invoice.status === 'waiting_payment') || 
+                                 (invoice.payment_status === 'Waiting Payment') ||
+                                 (invoice.is_waiting_payment === true);
+        
+        // ✅ Status class mapping
+        let statusClass = 'unpaid';
+        if (isWaitingPayment) {
+            statusClass = 'waiting-payment';
+        } else {
+            statusClass = (payment_status || '').toLowerCase();
+        }
         
         let items = [];
         try {
@@ -1579,9 +2113,10 @@ function renderTableRows(rows) {
         const isRefunded = payment_status === 'Refunded';
         
         html += `
-            <tr>
+            <tr style="${isWaitingPayment ? 'background: #f0f9ff;' : ''}">
                 <td>
                     <strong style="color: var(--primary);">${invoice.invoice_id || 'N/A'}</strong>
+                    ${isWaitingPayment ? `<div style="font-size: 10px; color: #0284c7; margin-top: 2px;"><i class="bi bi-arrow-right-circle me-1"></i>From Doctor</div>` : ''}
                 </td>
                 <td>
                     <div style="font-weight: 500;">${escapeHtml(invoice.customer_name || 'N/A')}</div>
@@ -1591,6 +2126,7 @@ function renderTableRows(rows) {
                         invoice.walk_in_name ? 'Walk-in' :
                         ''
                     }</div>
+                    ${invoice.frame_name ? `<div style="font-size: 11px; color: var(--gray-500); margin-top: 2px;"><i class="bi bi-eyeglasses me-1"></i>${escapeHtml(invoice.frame_name)}</div>` : ''}
                 </td>
                 <td>${invoice.sale_date ? new Date(invoice.sale_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A'}</td>
                 <td>
@@ -1605,23 +2141,33 @@ function renderTableRows(rows) {
                 <td>
                     <span class="badge-status ${statusClass}">
                         <span class="dot"></span>
-                        ${payment_status}
+                        ${isWaitingPayment ? 'Waiting Payment' : payment_status}
                     </span>
                 </td>
                 <td>
                     <div class="action-btns">
-                        <button class="btn-icon view" onclick="viewInvoice(${invoice.id}, '${invoice.source_type || 'appointment'}')" title="View">
-                            <i class="bi bi-eye"></i>
-                        </button>
-                        <button class="btn-icon print" onclick="printInvoice(${invoice.id}, '${invoice.source_type || 'appointment'}')" title="Print">
-                            <i class="bi bi-printer"></i>
-                        </button>
-                        ${permissions.canEdit && payment_status !== 'Paid' && payment_status !== 'Refunded' ? `
-                        <button class="btn-icon pay" onclick="recordPayment(${invoice.id}, ${Number(total_amount)}, ${Number(amount_paid)}, '${invoice.source_type || 'appointment'}')" title="Record Payment">
-                            <i class="bi bi-cash"></i>
-                        </button>
-                        ` : ''}
-                        ${isRefunded ? `<span class="badge" style="background: #f3e8ff; color: #6d28d9; padding: 2px 8px; border-radius: 12px; font-size: 10px;"><i class="bi bi-arrow-return-left me-1"></i>Refunded</span>` : ''}
+                        ${isWaitingPayment ? `
+                            <!-- ✅ FINALIZE ORDER button -->
+                            <button class="btn-icon" 
+                                    style="background: #0284c7; color: white;" 
+                                    onclick="finalizeOrder(${invoice.id})" 
+                                    title="Finalize Order & Price">
+                                <i class="bi bi-cart-check"></i>
+                            </button>
+                        ` : `
+                            <button class="btn-icon view" onclick="viewInvoice(${invoice.id}, '${invoice.source_type || 'appointment'}')" title="View">
+                                <i class="bi bi-eye"></i>
+                            </button>
+                            <button class="btn-icon print" onclick="printInvoice(${invoice.id}, '${invoice.source_type || 'appointment'}')" title="Print">
+                                <i class="bi bi-printer"></i>
+                            </button>
+                            ${permissions.canEdit && payment_status !== 'Paid' && payment_status !== 'Refunded' ? `
+                            <button class="btn-icon pay" onclick="recordPayment(${invoice.id}, ${Number(total_amount)}, ${Number(amount_paid)}, '${invoice.source_type || 'appointment'}')" title="Record Payment">
+                                <i class="bi bi-cash"></i>
+                            </button>
+                            ` : ''}
+                            ${isRefunded ? `<span class="badge" style="background: #f3e8ff; color: #6d28d9; padding: 2px 8px; border-radius: 12px; font-size: 10px;"><i class="bi bi-arrow-return-left me-1"></i>Refunded</span>` : ''}
+                        `}
                     </div>
                 </td>
             </tr>
@@ -2145,6 +2691,22 @@ function showBillFromAppointment(bill) {
     }
     if (!Array.isArray(items)) items = [];
     
+    // ✅ Parse doctor's recommended features
+    var recFeatures = [];
+    if (bill.rec_lens_features) {
+        try {
+            recFeatures = typeof bill.rec_lens_features === 'string' 
+                ? JSON.parse(bill.rec_lens_features) 
+                : bill.rec_lens_features;
+            if (!Array.isArray(recFeatures)) recFeatures = [];
+        } catch(e) {
+            recFeatures = String(bill.rec_lens_features).split(',').map(s => s.trim()).filter(Boolean);
+        }
+    }
+    
+    // ✅ Check kung may doctor's recommendation
+    var hasRecommendation = bill.rec_lens_design || bill.rec_lens_index || recFeatures.length > 0;
+    
     // ✅ COMPUTE SUBTOTAL FROM ITEMS (mas accurate)
     var computedSubtotal = 0;
     if (items.length > 0) {
@@ -2157,6 +2719,33 @@ function showBillFromAppointment(bill) {
     // ✅ Use computed subtotal if available, otherwise use stored
     var displaySubtotal = (computedSubtotal > 0) ? computedSubtotal : subtotal;
     
+// ═══════════════════════════════════════════════════════
+// ✅ TAMANG COMPUTATION PARA SA PWD/SENIOR (RA 9994 / RA 10754)
+// ═══════════════════════════════════════════════════════
+var displayDiscount = discountAmount;
+var displayVat = vatAmount;
+var displayTotal = 0;
+var displaySubtotalVatExclusive = displaySubtotal;
+var vatRate = 0.12;
+
+if (discountType === 'senior' || discountType === 'pwd') {
+    // ✅ PWD/Senior: VAT-EXCLUSIVE muna, tapos 20% discount, VAT-exempt
+    displaySubtotalVatExclusive = displaySubtotal / (1 + vatRate);
+    displayDiscount = displaySubtotalVatExclusive * (discountPercentage / 100);
+    displayVat = 0;
+    displayTotal = displaySubtotalVatExclusive - displayDiscount;
+} else if (discountType !== 'none' && discountPercentage > 0) {
+    // ✅ Manual discount (regular): apply sa subtotal, may VAT
+    displayDiscount = displaySubtotal * (discountPercentage / 100);
+    displayVat = (displaySubtotal - displayDiscount) * vatRate;
+    displayTotal = (displaySubtotal - displayDiscount) + displayVat;
+} else {
+    // ✅ Walang discount
+    displayDiscount = 0;
+    displayVat = displaySubtotal * vatRate;
+    displayTotal = displaySubtotal + displayVat;
+}
+    
     // ✅ Determine status
     var status = 'Unpaid';
     var statusClass = 'danger';
@@ -2164,10 +2753,10 @@ function showBillFromAppointment(bill) {
     if (isRefunded) {
         status = 'Refunded';
         statusClass = 'secondary';
-    } else if (totalPaid >= totalAmount && totalAmount > 0) {
+    } else if (totalPaid >= displayTotal && displayTotal > 0) {
         status = 'Paid';
         statusClass = 'success';
-    } else if (totalPaid > 0 && totalPaid < totalAmount) {
+    } else if (totalPaid > 0 && totalPaid < displayTotal) {
         status = 'Partial';
         statusClass = 'warning';
     }
@@ -2196,38 +2785,50 @@ function showBillFromAppointment(bill) {
         });
     }
     
-    // ✅ Build discount display
-    var discountDisplay = '';
-    if (discountType !== 'none' && discountAmount > 0) {
-        var discountLabel = discountType.toUpperCase() + ' Discount';
-        if (bill.is_manual_discount) {
-            discountLabel = 'Manual Discount (Unverified)';
-        } else if (bill.is_verified_discount) {
-            discountLabel = discountType.toUpperCase() + ' Discount (Verified)';
-        }
+var discountDisplay = '';
+if (discountType !== 'none' && displayDiscount > 0) {
+    var discountLabel = discountType.toUpperCase() + ' Discount';
+    if (bill.is_manual_discount) {
+        discountLabel = 'Manual Discount (Unverified)';
+    } else if (bill.is_verified_discount) {
+        discountLabel = discountType.toUpperCase() + ' Discount (Verified)';
+    }
+    
+    // ✅ Kung PWD/Senior, ipakita ang VAT-exclusive subtotal bago ang discount
+    if (discountType === 'senior' || discountType === 'pwd') {
+        discountDisplay = `
+            <div class="d-flex justify-content-between text-muted small">
+                <span>VAT-Exclusive Subtotal:</span>
+                <span>₱${displaySubtotalVatExclusive.toFixed(2)}</span>
+            </div>
+            <div class="d-flex justify-content-between text-danger">
+                <span>${discountLabel} (${discountPercentage}%):</span>
+                <span>-₱${displayDiscount.toFixed(2)}</span>
+            </div>
+        `;
+    } else {
         discountDisplay = `
             <div class="d-flex justify-content-between text-danger">
                 <span>${discountLabel} (${discountPercentage}%):</span>
-                <span>-₱${discountAmount.toFixed(2)}</span>
+                <span>-₱${displayDiscount.toFixed(2)}</span>
             </div>
         `;
     }
+}
     
-    // ✅ Build VAT display
-    var vatDisplay = vatAmount > 0 ? 
-        `<div class="d-flex justify-content-between text-warning"><span>VAT (${vatPercentage}%):</span><span>+₱${vatAmount.toFixed(2)}</span></div>` :
-        `<div class="d-flex justify-content-between text-success"><span>VAT:</span><span>Exempt</span></div>`;
+var vatDisplay = displayVat > 0 ? 
+    `<div class="d-flex justify-content-between text-warning"><span>VAT (12%):</span><span>+₱${displayVat.toFixed(2)}</span></div>` :
+    `<div class="d-flex justify-content-between text-success"><span>VAT:</span><span>Exempt</span></div>`;
     
     // ✅ Build payment display
     var paymentDisplay = '';
     if (isRefunded) {
-        // ✅ REFUNDED DISPLAY
         paymentDisplay = `
             <div class="d-flex justify-content-between text-danger">
                 <span>Forfeited Amount:</span>
                 <span class="fw-bold">₱${forfeitedAmount.toFixed(2)}</span>
             </div>
-            <div class="d-flex justify-content-between text-purple" style="color: #6d28d9;">
+            <div class="d-flex justify-content-between" style="color: #6d28d9;">
                 <span>Refunded Amount:</span>
                 <span class="fw-bold">₱${refundedAmount.toFixed(2)}</span>
             </div>
@@ -2280,6 +2881,72 @@ function showBillFromAppointment(bill) {
                 </div>
             </div>
         </div>
+        
+        <!-- ✅ FRAME SECTION -->
+        ${bill.product_name ? `
+        <div class="row mb-4">
+            <div class="col-12">
+                <h6 class="fw-semibold border-bottom pb-2 mb-3">
+                    <i class="bi bi-eyeglasses me-2"></i>Frame
+                </h6>
+                <div class="d-flex justify-content-between mb-2">
+                    <span>${escapeHtml(bill.product_name)}</span>
+                    <span class="fw-bold">₱${parseFloat(bill.product_price || 0).toFixed(2)}</span>
+                </div>
+                ${bill.color_name ? `
+                <div class="d-flex justify-content-between text-muted small">
+                    <span>Color</span>
+                    <span>${escapeHtml(bill.color_name)}</span>
+                </div>
+                ` : ''}
+            </div>
+        </div>
+        ` : ''}
+        
+        <!-- ✅ DOCTOR'S RECOMMENDATION -->
+        ${hasRecommendation ? `
+        <div class="row mb-4">
+            <div class="col-12">
+                <div style="background: #fef3c7; padding: 14px; border-radius: 10px; border-left: 4px solid #d97706;">
+                    <div class="fw-bold mb-2" style="color: #92400e; font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;">
+                        <i class="bi bi-lightbulb-fill me-1"></i>Doctor's Recommendation
+                    </div>
+                    
+                    ${bill.rec_lens_design ? `
+                    <div class="d-flex justify-content-between mb-2">
+                        <span style="color: #78350f;">Lens Design</span>
+                        <span style="color: #92400e; font-weight: 600;">${escapeHtml(bill.rec_lens_design)}</span>
+                    </div>
+                    ` : ''}
+                    
+                    ${bill.rec_lens_index ? `
+                    <div class="d-flex justify-content-between mb-2">
+                        <span style="color: #78350f;">Lens Index</span>
+                        <span style="color: #92400e; font-weight: 600;">${escapeHtml(bill.rec_lens_index)}</span>
+                    </div>
+                    ` : ''}
+                    
+                    ${recFeatures.length > 0 ? `
+                    <div style="margin-top: 8px;">
+                        <span style="color: #78350f; font-size: 12px;">Features:</span>
+                        <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;">
+                            ${recFeatures.map(f => 
+                                `<span class="badge bg-warning text-dark" style="font-size: 11px; font-weight: 600;">✓ ${escapeHtml(f)}</span>`
+                            ).join('')}
+                        </div>
+                    </div>
+                    ` : ''}
+                    
+                    ${bill.rec_lens_notes ? `
+                    <div style="margin-top: 10px; padding: 8px 10px; background: rgba(255,255,255,0.7); border-radius: 6px; font-size: 12px; font-style: italic; color: #78350f;">
+                        <i class="bi bi-chat-left-quote me-1"></i>${escapeHtml(bill.rec_lens_notes)}
+                    </div>
+                    ` : ''}
+                </div>
+            </div>
+        </div>
+        ` : ''}
+        
         <div class="row mb-4">
             <div class="col-12">
                 <h6 class="fw-semibold border-bottom pb-2 mb-3">Items</h6>
@@ -2293,7 +2960,7 @@ function showBillFromAppointment(bill) {
                             <tr><td colspan="4" class="text-end fw-semibold">Subtotal:</td><td class="text-end fw-bold">₱${displaySubtotal.toFixed(2)}</td></tr>
                             ${discountDisplay}
                             ${vatDisplay}
-                            <tr class="table-primary"><td colspan="4" class="text-end fw-bold fs-5">TOTAL:</td><td class="text-end fw-bold fs-5" style="color: var(--primary);">₱${totalAmount.toFixed(2)}</td></tr>
+                            <tr class="table-primary"><td colspan="4" class="text-end fw-bold fs-5">TOTAL:</td><td class="text-end fw-bold fs-5" style="color: var(--primary);">₱${displayTotal.toFixed(2)}</td></tr>
                             ${paymentDisplay}
                         </tfoot>
                     </table>
@@ -2303,7 +2970,7 @@ function showBillFromAppointment(bill) {
         <div class="row mt-3">
             <div class="col-12 text-end">
                 ${balanceAmount > 0 && !isRefunded ? `
-                    <button class="btn btn-warning me-2" onclick="recordPayment(${bill.id}, ${totalAmount}, ${totalPaid}, '${bill.source_type || 'appointment'}')">
+                    <button class="btn btn-warning me-2" onclick="recordPayment(${bill.id}, ${displayTotal}, ${totalPaid}, '${bill.source_type || 'appointment'}')">
                         <i class="bi bi-credit-card me-2"></i>Record Payment
                     </button>
                 ` : ''}
@@ -2394,19 +3061,29 @@ function generatePrintView(bill) {
         });
     }
     
-    var discountRows = '';
-    if (discountType !== 'none' && discountAmount > 0) {
-        var discountLabel = discountType.toUpperCase() + ' Discount';
-        if (bill.is_manual_discount) {
-            discountLabel = 'Manual Discount (Unverified)';
-        } else if (bill.is_verified_discount) {
-            discountLabel = discountType.toUpperCase() + ' Discount (Verified)';
-        }
+var discountRows = '';
+if (discountType !== 'none' && discountAmount > 0) {
+    var discountLabel = discountType.toUpperCase() + ' Discount';
+    if (bill.is_manual_discount) {
+        discountLabel = 'Manual Discount (Unverified)';
+    } else if (bill.is_verified_discount) {
+        discountLabel = discountType.toUpperCase() + ' Discount (Verified)';
+    }
+    
+    // ✅ Kung PWD/Senior, VAT-exclusive muna bago discount
+    if (discountType === 'senior' || discountType === 'pwd') {
+        var vatExclusive = subtotal / 1.12;
+        var correctDiscount = vatExclusive * (discountPercentage / 100);
+        discountRows = `
+            <tr><td colspan="3" style="text-align:right;font-weight:600;color:#64748b;">VAT-Exclusive Subtotal:</td><td style="text-align:right;color:#64748b;">₱${vatExclusive.toFixed(2)}</td></tr>
+            <tr><td colspan="3" style="text-align:right;font-weight:600;color:#dc2626;">${discountLabel} (${discountPercentage}%):</td><td style="text-align:right;color:#dc2626;">-₱${correctDiscount.toFixed(2)}</td></tr>
+        `;
+    } else {
         discountRows = `
             <tr><td colspan="3" style="text-align:right;font-weight:600;color:#dc2626;">${discountLabel} (${discountPercentage}%):</td><td style="text-align:right;color:#dc2626;">-₱${discountAmount.toFixed(2)}</td></tr>
-            <tr><td colspan="3" style="text-align:right;font-weight:600;">Subtotal after discount:</td><td style="text-align:right;">₱${(subtotal - discountAmount).toFixed(2)}</td></tr>
         `;
     }
+}
     
     var vatRows = vatAmount > 0 ?
         `<tr><td colspan="3" style="text-align:right;font-weight:600;color:#d97706;">VAT (${vatPercentage}%):</td><td style="text-align:right;color:#d97706;">+₱${vatAmount.toFixed(2)}</td></tr>` :
@@ -2777,9 +3454,778 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+
+/* ═══════════════════════════════════════════════════════════════
+   ★ NEW: VIEW ORDER DETAILS (para sa waiting_payment)
+   ═══════════════════════════════════════════════════════════════ */
+function viewOrderDetails(appointmentId) {
+    Swal.fire({
+        title: 'Loading Order...',
+        allowOutsideClick: false,
+        didOpen: () => Swal.showLoading()
+    });
+    
+    fetch(`api/sales.php?action=get_order_details&appointment_id=${appointmentId}`)
+    .then(res => res.json())
+    .then(data => {
+        Swal.close();
+        if (data.success && data.order) {
+            // Show order details
+            showOrderDetailsModal(data.order);
+        } else {
+            Swal.fire('Error', data.message || 'Order not found', 'error');
+        }
+    })
+    .catch(err => {
+        Swal.close();
+        Swal.fire('Error', 'Connection error', 'error');
+    });
+}
 // Initialize
 calculateTotal();
 togglePaymentFields();
+
+/* ═══════════════════════════════════════════════════════════════
+   ★ FINALIZE ORDER MODAL — COMPLETE LOGIC
+   ═══════════════════════════════════════════════════════════════ */
+
+// Global variable para sa current finalize data
+let finalizeData = {
+    appointmentId: null,
+    framePrice: 0,
+    frameName: '',
+    lensDesigns: [],
+    lensIndexes: [],
+    lensFeatures: [],
+    discountType: 'none',
+    subtotal: 0,
+    discountAmount: 0,
+    vatAmount: 0,
+    finalTotal: 0
+};
+
+function finalizeOrder(appointmentId) {
+    if (!permissions.canEdit) {
+        Swal.fire('Access Denied', 'You don\'t have permission to finalize orders', 'error');
+        return;
+    }
+    
+    // ✅ IDAGDAG ANG DEBUG
+    console.log('finalizeOrder called with appointmentId:', appointmentId);
+    console.log('Type:', typeof appointmentId);
+    
+    if (!appointmentId || appointmentId === 'undefined' || appointmentId === 'null') {
+        Swal.fire('Error', 'Invalid appointment ID: ' + appointmentId, 'error');
+        console.error('Invalid appointmentId:', appointmentId);
+        return;
+    }
+    
+    // Show loading
+    Swal.fire({
+        title: 'Loading Order...',
+        allowOutsideClick: false,
+        didOpen: () => Swal.showLoading()
+    });
+    
+    const url = `api/sales.php?action=get_order_details&appointment_id=${appointmentId}`;
+    console.log('Fetching URL:', url);
+    
+    // Fetch order details
+    fetch(url)
+        .then(res => {
+            console.log('Response status:', res.status);
+            return res.json();
+        })
+        .then(data => {
+            Swal.close();
+            console.log('API Response:', data);
+            
+            if (data.success && data.order) {
+                openFinalizeModal(data.order, data.lens_options || {});
+            } else {
+                let errorMsg = data.message || 'Order not found';
+                if (data.debug) {
+                    errorMsg += '\n\nDebug: ' + JSON.stringify(data.debug, null, 2);
+                }
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    html: `<pre style="text-align:left; font-size:12px;">${errorMsg}</pre>`
+                });
+            }
+        })
+        .catch(err => {
+            Swal.close();
+            console.error('Fetch error:', err);
+            Swal.fire('Error', 'Connection error: ' + err.message, 'error');
+        });
+}
+
+
+function openFinalizeModal(order, lensOptions) {
+    const modalEl = document.getElementById('finalizeOrderModal');
+    if (!modalEl) {
+        Swal.fire('Error', 'Finalize modal not found in DOM.', 'error');
+        return;
+    }
+    
+    function setText(id, val) { const el = document.getElementById(id); if (el) el.textContent = val ?? '—'; }
+    function setVal(id, val) { const el = document.getElementById(id); if (el) el.value = val ?? ''; }
+    function setHtml(id, val) { const el = document.getElementById(id); if (el) el.innerHTML = val ?? ''; }
+    
+    document.getElementById('finalizeOrderForm')?.reset();
+    
+    // ✅ DETECT PRODUCT TYPE
+    const isContactLens = order.is_contact_lens === true;
+    const isEyeglass = order.is_eyeglass === true;
+    const isService = order.is_service === true;
+    
+    console.log('[openFinalizeModal] Type:', { isContactLens, isEyeglass, isService });
+    
+    // ✅ GET ALL CONDITIONAL SECTIONS
+    const clAssessmentCard = document.getElementById('cl_assessment_card');
+    const finalLensConfigCard = document.getElementById('final_lens_config_card');
+    const prescriptionCard = document.getElementById('prescription_card');
+    const doctorRecCard = document.getElementById('doctor_rec_card');
+    const lensBreakdown = document.getElementById('finalize_lens_breakdown');
+    
+    // ✅ SHOW/HIDE SECTIONS BASE SA TYPE
+    if (isContactLens) {
+        // CONTACT LENS: Show CL Assessment, Hide the rest
+        if (clAssessmentCard) clAssessmentCard.style.display = 'block';
+        if (prescriptionCard) prescriptionCard.style.display = 'none';
+        if (doctorRecCard) doctorRecCard.style.display = 'none';
+        if (finalLensConfigCard) finalLensConfigCard.style.display = 'none';
+        if (lensBreakdown) lensBreakdown.style.display = 'none';
+        
+    } else if (isEyeglass) {
+        // EYEGLASS: Show Prescription, Doctor Rec, Lens Config, Lens Breakdown
+        if (clAssessmentCard) clAssessmentCard.style.display = 'none';
+        if (prescriptionCard) prescriptionCard.style.display = 'block';
+        if (doctorRecCard) doctorRecCard.style.display = 'block';
+        if (finalLensConfigCard) finalLensConfigCard.style.display = 'block';
+        if (lensBreakdown) lensBreakdown.style.display = 'block';
+        
+    } else {
+        // SERVICE / OTHER
+        if (clAssessmentCard) clAssessmentCard.style.display = 'none';
+        if (prescriptionCard) prescriptionCard.style.display = 'block';
+        if (doctorRecCard) doctorRecCard.style.display = 'none';
+        if (finalLensConfigCard) finalLensConfigCard.style.display = 'none';
+        if (lensBreakdown) lensBreakdown.style.display = 'none';
+    }
+    
+    // ✅ PATIENT INFO
+    finalizeData.appointmentId = order.appointment_id;
+    setVal('finalize_appointment_id', order.appointment_id);
+    setText('finalize_patient_name', order.patient_name || '—');
+    setText('finalize_patient_meta', `${order.age || '?'} yrs · ${order.gender || '?'} · ${order.patient_type || 'Regular'}`);
+    
+    const frameName = order.frame_name || 'No frame selected';
+    setHtml('finalize_frame_name', `<i class="bi bi-eyeglasses me-1"></i>${escapeHtml(frameName)}`);
+    
+    setText('finalize_doctor_name', order.doctor_name ? `Dr. ${order.doctor_name}` : '—');
+    setText('finalize_sent_at', order.sent_to_sales_at ? `Sent: ${new Date(order.sent_to_sales_at).toLocaleString()}` : '—');
+    setText('finalize_order_source', order.order_source === 'online' ? '🌐 Online Booking' : '🚶 Walk-in');
+    
+    // ✅ PRESCRIPTION (formatting helpers)
+    function fmtD(val) {
+        if (val === null || val === undefined || val === '') return '—';
+        const n = parseFloat(val);
+        if (isNaN(n)) return '—';
+        return (n >= 0 ? '+' : '') + n.toFixed(2);
+    }
+    function fmtA(val) {
+        if (val === null || val === undefined || val === '') return '—';
+        const n = parseInt(val);
+        if (isNaN(n) || n < 0 || n > 180) return '⚠️';
+        return n + '°';
+    }
+    
+    setText('finalize_sph_r', fmtD(order.sph_r));
+    setText('finalize_cyl_r', fmtD(order.cyl_r));
+    setText('finalize_axis_r', fmtA(order.axis_r));
+    setText('finalize_add_r', fmtD(order.add_r));
+    setText('finalize_sph_l', fmtD(order.sph_l));
+    setText('finalize_cyl_l', fmtD(order.cyl_l));
+    setText('finalize_axis_l', fmtA(order.axis_l));
+    setText('finalize_add_l', fmtD(order.add_l));
+    
+    const pdValue = parseFloat(order.pd);
+    setText('finalize_pd', !isNaN(pdValue) ? `${pdValue} (${order.pd_type || 'Binocular'})` : '—');
+    
+    // ✅ CONTACT LENS ASSESSMENT VALUES
+    if (isContactLens) {
+        setText('finalize_cl_base_curve', order.cl_base_curve || '—');
+        setText('finalize_cl_diameter', order.cl_diameter || '—');
+        setText('finalize_cl_power', order.cl_power || '—');
+        setText('finalize_cl_cylinder', order.cl_cylinder || '—');
+        setText('finalize_cl_axis', order.cl_axis || '—');
+        
+        const lensTypeMap = {
+            'daily': 'Daily Disposable',
+            'monthly': 'Monthly Wear',
+            'toric': 'Toric'
+        };
+        const lensTypeDisplay = lensTypeMap[order.cl_lens_type] || order.cl_lens_type || '—';
+        setText('finalize_cl_lens_type', lensTypeDisplay);
+        
+        setText('finalize_cl_color', order.color_name || '—');
+        setText('finalize_cl_trial_lens', order.cl_trial_lens || '—');
+        setText('finalize_cl_fit_assessment', order.cl_fit_assessment || '—');
+    }
+    
+    // ✅ DOCTOR'S RECOMMENDATION
+    setText('finalize_rec_design', order.rec_lens_design || '—');
+    setText('finalize_rec_index', order.rec_lens_index || '—');
+    
+    let recFeatures = [];
+    if (Array.isArray(order.rec_lens_features)) {
+        recFeatures = order.rec_lens_features;
+    } else if (typeof order.rec_lens_features === 'string' && order.rec_lens_features) {
+        try { recFeatures = JSON.parse(order.rec_lens_features); } 
+        catch(e) { recFeatures = order.rec_lens_features.split(',').map(s => s.trim()).filter(Boolean); }
+    }
+    setText('finalize_rec_features', recFeatures.length > 0 ? recFeatures.join(', ') : '—');
+    setText('finalize_rec_notes', order.rec_lens_notes || '—');
+    
+    // ✅ FRAME PRICE
+    finalizeData.framePrice = parseFloat(order.frame_price || 0);
+    finalizeData.frameName = order.frame_name || '';
+    
+    // ✅ Store final items from API
+    finalizeData.finalItems = order.final_items || [];
+    finalizeData.finalSubtotal = parseFloat(order.final_subtotal || 0);
+    finalizeData.finalDiscount = parseFloat(order.final_discount || 0);
+    finalizeData.finalVat = parseFloat(order.final_vat || 0);
+    finalizeData.finalTotalFromDB = parseFloat(order.final_total || 0);
+    
+    // ✅ Online payment info
+    finalizeData.onlinePaid = parseFloat(order.amount_paid || 0);
+    finalizeData.paymongoRef = order.paymongo_payment_id || null;
+    finalizeData.paidAt = order.paid_at || null;
+    finalizeData.isAlreadyPaid = finalizeData.onlinePaid > 0;
+    
+    // ✅ Store category flags
+    finalizeData.isContactLens = isContactLens;
+    finalizeData.isEyeglass = isEyeglass;
+    finalizeData.isService = isService;
+    
+    // ═══════════════════════════════════════════════════════
+    // ✅ POPULATE LENS DROPDOWNS (only for eyeglass)
+    // ═══════════════════════════════════════════════════════
+    if (!isContactLens) {
+        // ─── Lens Design Dropdown ───
+        const designSelect = document.getElementById('finalize_lens_design');
+        if (designSelect) {
+            designSelect.innerHTML = '<option value="">Select…</option>';
+            (lensOptions.designs || []).forEach(d => {
+                const option = document.createElement('option');
+                option.value = d.id;
+                option.dataset.price = d.price;
+                option.dataset.name = d.option_name;
+                option.textContent = `${d.option_name} — ₱${parseFloat(d.price).toFixed(2)}`;
+                const recName = (order.rec_lens_design || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                const optName = (d.option_name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                if (recName && optName && (recName === optName || recName.includes(optName) || optName.includes(recName))) {
+                    option.selected = true;
+                    option.textContent += ' ✅ Recommended';
+                }
+                designSelect.appendChild(option);
+            });
+        }
+        
+        // ─── Lens Index Dropdown ───
+        const indexSelect = document.getElementById('finalize_lens_index');
+        if (indexSelect) {
+            indexSelect.innerHTML = '<option value="">Select…</option>';
+            (lensOptions.indexes || []).forEach(i => {
+                const option = document.createElement('option');
+                option.value = i.id;
+                option.dataset.price = i.price;
+                option.dataset.name = i.option_name;
+                option.textContent = `${i.option_name} — ₱${parseFloat(i.price).toFixed(2)}`;
+                const recName = (order.rec_lens_index || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                const optName = (i.option_name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                if (recName && optName && (recName === optName || recName.includes(optName) || optName.includes(recName))) {
+                    option.selected = true;
+                    option.textContent += ' ✅ Recommended';
+                }
+                indexSelect.appendChild(option);
+            });
+        }
+        
+        // ─── Features Checkboxes ───
+        const featuresContainer = document.getElementById('finalize_features_container');
+        if (featuresContainer) {
+            featuresContainer.innerHTML = '';
+            (lensOptions.features || []).forEach(f => {
+                const isRecommended = recFeatures.some(rf => {
+                    const rfNorm = (rf || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                    const optNorm = (f.option_name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                    return rfNorm && optNorm && (
+                        rfNorm === optNorm 
+                        || rfNorm.includes(optNorm) 
+                        || optNorm.includes(rfNorm)
+                    );
+                });
+                const div = document.createElement('div');
+                div.className = 'form-check';
+                div.innerHTML = `
+                    <input class="form-check-input finalize-feature" type="checkbox" 
+                           id="finalize_feature_${f.id}" value="${f.id}"
+                           data-price="${f.price}" data-name="${escapeHtml(f.option_name)}"
+                           onchange="calculateFinalizeTotal()" ${isRecommended ? 'checked' : ''}>
+                    <label class="form-check-label" for="finalize_feature_${f.id}">
+                        ${escapeHtml(f.option_name)} — ₱${parseFloat(f.price).toFixed(2)}
+                        ${isRecommended ? '<span class="badge bg-success ms-1" style="font-size: 10px;">Recommended</span>' : ''}
+                    </label>
+                `;
+                featuresContainer.appendChild(div);
+            });
+        }
+    }   // ✅ CLOSING BRACE NG `if (!isContactLens)` — ITO ANG DATING KULANG!
+    
+    // ✅ DISCOUNT — pre-select
+    const discountSelect = document.getElementById('finalize_discount_type');
+    if (discountSelect) {
+        if (order.is_pwd_senior || order.discount_type === 'senior' || order.discount_type === 'pwd') {
+            discountSelect.value = order.discount_type || 'senior';
+        } else {
+            discountSelect.value = 'none';
+        }
+    }
+    
+    // ✅ Display "Already Paid" section
+    const alreadyPaidSection = document.getElementById('already_paid_section');
+    if (alreadyPaidSection) {
+        if (finalizeData.isAlreadyPaid) {
+            alreadyPaidSection.style.display = 'block';
+            document.getElementById('finalize_online_paid').textContent = `₱${finalizeData.onlinePaid.toFixed(2)}`;
+            document.getElementById('finalize_online_ref').textContent = finalizeData.paymongoRef ? `Ref: ${finalizeData.paymongoRef}` : 'Online Payment';
+            document.getElementById('finalize_online_paid_at').textContent = finalizeData.paidAt ? `Paid on: ${new Date(finalizeData.paidAt).toLocaleString()}` : 'Payment confirmed';
+        } else {
+            alreadyPaidSection.style.display = 'none';
+        }
+    }
+    
+    // ✅ Compute final total
+    calculateFinalizeTotal();
+    
+    // ✅ Show modal
+    new bootstrap.Modal(modalEl).show();
+}
+
+function toggleFinalizeReference() {
+    const method = document.getElementById('finalize_payment_method').value;
+    document.getElementById('finalize_reference_field').style.display = 
+        method === 'cash' ? 'none' : 'block';
+}
+
+function calculateFinalizeTotal() {
+    const isContactLens = finalizeData.isContactLens === true;
+    
+    let designPrice = 0;
+    let indexPrice = 0;
+    let featuresPrice = 0;
+    
+    if (isContactLens) {
+        // ═══════════════════════════════════════════════════════
+        // CONTACT LENS: Walang lens design/index/features
+        // ═══════════════════════════════════════════════════════
+        // Ang framePrice lang ang kasama (which is the contact lens price)
+        
+    } else {
+        // ═══════════════════════════════════════════════════════
+        // EYEGLASS: Existing logic
+        // ═══════════════════════════════════════════════════════
+        const designSelect = document.getElementById('finalize_lens_design');
+        const indexSelect = document.getElementById('finalize_lens_index');
+        
+        designPrice = designSelect?.selectedOptions[0]?.dataset.price 
+            ? parseFloat(designSelect.selectedOptions[0].dataset.price) : 0;
+        indexPrice = indexSelect?.selectedOptions[0]?.dataset.price 
+            ? parseFloat(indexSelect.selectedOptions[0].dataset.price) : 0;
+        
+        document.querySelectorAll('.finalize-feature:checked').forEach(cb => {
+            featuresPrice += parseFloat(cb.dataset.price) || 0;
+        });
+    }
+    
+    const subtotal = finalizeData.framePrice + designPrice + indexPrice + featuresPrice;
+    const discountType = document.getElementById('finalize_discount_type')?.value || 'none';
+    const vatRate = 0.12;
+    
+    // ✅ DECLARE LAHAT NG VARIABLES BAGO GAMITIN
+    let discountAmount = 0;
+    let vatAmount = 0;
+    let finalTotal = 0;
+    
+    if (discountType === 'senior' || discountType === 'pwd') {
+        // ✅ PWD/Senior: VAT-EXCLUSIVE → discount → VAT-exempt
+        const vatExclusiveSubtotal = subtotal / (1 + vatRate);
+        discountAmount = vatExclusiveSubtotal * 0.20;
+        vatAmount = 0;
+        finalTotal = vatExclusiveSubtotal - discountAmount;
+    } else {
+        // ✅ Regular: VAT-inclusive
+        discountAmount = 0;
+        vatAmount = subtotal - (subtotal / (1 + vatRate));
+        finalTotal = subtotal;
+    }
+    
+    // ✅ Store sa finalizeData
+    finalizeData.subtotal = subtotal;
+    finalizeData.discountAmount = discountAmount;
+    finalizeData.vatAmount = vatAmount;
+    finalizeData.finalTotal = finalTotal;
+    finalizeData.discountType = discountType;
+    
+    // ✅ Update UI
+    const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+    
+    setTxt('finalize_frame_price', `₱${finalizeData.framePrice.toFixed(2)}`);
+    
+    const designPriceEl = document.getElementById('finalize_design_price');
+    const indexPriceEl = document.getElementById('finalize_index_price');
+    const featuresPriceEl = document.getElementById('finalize_features_price');
+    
+    if (designPriceEl) designPriceEl.textContent = `₱${designPrice.toFixed(2)}`;
+    if (indexPriceEl) indexPriceEl.textContent = `₱${indexPrice.toFixed(2)}`;
+    if (featuresPriceEl) featuresPriceEl.textContent = `₱${featuresPrice.toFixed(2)}`;
+    
+    setTxt('finalize_subtotal', `₱${subtotal.toFixed(2)}`);
+    
+    const discountInput = document.getElementById('finalize_discount_amount');
+    if (discountInput) discountInput.value = `-₱${discountAmount.toFixed(2)}`;
+    
+    setTxt('finalize_vat', vatAmount > 0 ? `₱${vatAmount.toFixed(2)}` : '₱0.00 (Exempt)');
+    setTxt('finalize_total', `₱${finalTotal.toFixed(2)}`);
+    
+    // ✅ Compute REMAINING BALANCE
+    const onlinePaid = finalizeData.onlinePaid || 0;
+    const remainingBalance = Math.max(0, finalTotal - onlinePaid);
+    
+    // ✅ Display paid summary
+    const paidSummary = document.getElementById('finalize_paid_summary');
+    if (paidSummary) {
+        if (onlinePaid > 0) {
+            paidSummary.style.display = 'block';
+            document.getElementById('finalize_paid_display').textContent = `-₱${onlinePaid.toFixed(2)}`;
+            document.getElementById('finalize_remaining_display').textContent = `₱${remainingBalance.toFixed(2)}`;
+        } else {
+            paidSummary.style.display = 'none';
+        }
+    }
+    
+    // ✅ Auto-fill amount paid = remaining balance
+    const amountPaidInput = document.getElementById('finalize_amount_paid');
+    if (amountPaidInput && (!amountPaidInput.value || parseFloat(amountPaidInput.value) === 0)) {
+        amountPaidInput.value = remainingBalance.toFixed(2);
+    }
+    
+    finalizeData.remainingBalance = remainingBalance;
+    
+    calculateFinalizeChange();
+}
+function calculateFinalizeChange() {
+    const finalTotal = finalizeData.finalTotal || 0;
+    const onlinePaid = finalizeData.onlinePaid || 0;
+    const remainingBalance = Math.max(0, finalTotal - onlinePaid);
+    
+    const amountPaidToday = parseFloat(document.getElementById('finalize_amount_paid').value) || 0;
+    
+    const change = Math.max(0, amountPaidToday - remainingBalance);
+    const balance = Math.max(0, remainingBalance - amountPaidToday);
+    
+    document.getElementById('finalize_change').textContent = `₱${change.toFixed(2)}`;
+    document.getElementById('finalize_balance').textContent = `₱${balance.toFixed(2)}`;
+    
+    const balanceEl = document.getElementById('finalize_balance');
+    const balanceContainer = balanceEl.closest('.p-2');
+    if (balance > 0) {
+        balanceContainer.style.background = '#fef2f2';
+        balanceContainer.style.borderColor = '#fecaca';
+        balanceEl.style.color = '#dc2626';
+    } else {
+        balanceContainer.style.background = '#f0fdf4';
+        balanceContainer.style.borderColor = '#bbf7d0';
+        balanceEl.style.color = '#16a34a';
+    }
+}
+// ✅ Save as Draft
+function saveFinalizeDraft() {
+    Swal.fire({
+        icon: 'info',
+        title: 'Save as Draft?',
+        text: 'The order will be saved but not finalized. You can continue later.',
+        showCancelButton: true,
+        confirmButtonText: 'Save Draft',
+        cancelButtonText: 'Cancel'
+    }).then(result => {
+        if (result.isConfirmed) {
+            Swal.fire('Info', 'Draft saved. (Feature to be implemented)', 'info');
+        }
+    });
+}
+
+document.getElementById('finalizeOrderForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    
+    // ✅ Get values
+    const amountPaid = parseFloat(document.getElementById('finalize_amount_paid').value) || 0;
+    const finalTotal = finalizeData.finalTotal || 0;
+    const onlinePaid = finalizeData.onlinePaid || 0;
+    const remainingBalance = Math.max(0, finalTotal - onlinePaid);
+    
+    // ✅ Validate: may items ba?
+    if (finalizeData.subtotal === 0) {
+        Swal.fire('Warning', 'Please select lens configuration', 'warning');
+        return;
+    }
+    
+    // ═══════════════════════════════════════════════════════
+    // ✅ CASE 1: FULLY PAID NA (Remaining Balance = ₱0.00)
+    // Walang kailangan i-input — diretso confirm
+    // ═══════════════════════════════════════════════════════
+    if (remainingBalance <= 0) {
+        Swal.fire({
+            title: 'Confirm Order?',
+            html: `
+                <p style="font-size:13px;">This order is <strong>fully paid online</strong>.</p>
+                <div style="text-align:left; background:#f0fdf4; padding:12px; border-radius:8px; margin:10px 0; font-size:12.5px; border:1px solid #bbf7d0;">
+                    <div><strong>Final Total:</strong> ₱${finalTotal.toFixed(2)}</div>
+                    <div><strong>Already Paid Online:</strong> -₱${onlinePaid.toFixed(2)}</div>
+                    <div style="border-top:1px dashed #86efac; padding-top:6px; margin-top:6px; color:#16a34a;">
+                        <strong>Remaining Balance:</strong> ₱0.00 ✅
+                    </div>
+                </div>
+                <p style="font-size:12px; color:#16a34a;">No payment needed — you may proceed to confirm.</p>
+            `,
+            icon: 'question',
+            showCancelButton: true,
+            confirmButtonText: 'Yes, Confirm Order',
+            confirmButtonColor: '#0d9488',
+            cancelButtonText: 'Cancel'
+        }).then(result => {
+            if (result.isConfirmed) {
+                submitFinalizeOrder(0, finalTotal);  // ✅ amountPaid = 0
+            }
+        });
+        return;
+    }
+    
+    // ═══════════════════════════════════════════════════════
+    // ✅ CASE 2: MAY BALANCE PA (Remaining Balance > ₱0.00)
+    // Kailangan may amount paid
+    // ═══════════════════════════════════════════════════════
+    if (amountPaid <= 0) {
+        Swal.fire({
+            icon: 'warning',
+            title: 'Amount Required',
+            html: `
+                <p style="font-size:13px;">There is a remaining balance that needs to be paid.:</p>
+                <div style="text-align:left; background:#fef3c7; padding:12px; border-radius:8px; margin:10px 0; font-size:12.5px; border:1px solid #fde68a;">
+                    <div><strong>Remaining Balance:</strong> ₱${remainingBalance.toFixed(2)}</div>
+                </div>
+                <p style="font-size:12px; color:#92400e;">Please enter the amount paid.</p>
+            `,
+            confirmButtonText: 'OK'
+        });
+        return;
+    }
+    
+    // ═══════════════════════════════════════════════════════
+    // ✅ CASE 3: PARTIAL PAYMENT (Amount Paid < Remaining)
+    // ═══════════════════════════════════════════════════════
+    if (amountPaid < remainingBalance) {
+        Swal.fire({
+            icon: 'question',
+            title: 'Partial Payment?',
+            html: `
+                <p style="font-size:13px;">Amount paid is less than remaining balance.</p>
+                <div style="text-align:left; background:#f8fafc; padding:12px; border-radius:8px; margin:10px 0; font-size:12.5px;">
+                    <div><strong>Final Total:</strong> ₱${finalTotal.toFixed(2)}</div>
+                    <div><strong>Already Paid Online:</strong> -₱${onlinePaid.toFixed(2)}</div>
+                    <div style="border-top:1px dashed #cbd5e1; padding-top:6px; margin-top:6px;">
+                        <strong>Remaining Balance:</strong> ₱${remainingBalance.toFixed(2)}
+                    </div>
+                    <div style="margin-top:6px;"><strong>Amount Paid Now:</strong> ₱${amountPaid.toFixed(2)}</div>
+                </div>
+                <p style="font-size:12px; color:#dc2626;">Continue as partial payment?</p>
+            `,
+            showCancelButton: true,
+            confirmButtonText: 'Yes, Continue',
+            cancelButtonText: 'Cancel'
+        }).then(result => {
+            if (result.isConfirmed) {
+                submitFinalizeOrder(amountPaid, finalTotal);
+            }
+        });
+        return;
+    }
+    
+    // ═══════════════════════════════════════════════════════
+    // ✅ CASE 4: FULL PAYMENT (Amount Paid >= Remaining)
+    // ═══════════════════════════════════════════════════════
+    Swal.fire({
+        title: 'Confirm Order?',
+        html: `
+            <p style="font-size:13px;">This will create the final order and mark as <strong>Paid</strong>.</p>
+            <div style="text-align:left; background:#f0fdf4; padding:12px; border-radius:8px; margin:10px 0; font-size:12.5px; border:1px solid #bbf7d0;">
+                <div><strong>Final Total:</strong> ₱${finalTotal.toFixed(2)}</div>
+                ${onlinePaid > 0 ? `<div><strong>Already Paid Online:</strong> -₱${onlinePaid.toFixed(2)}</div>` : ''}
+                ${onlinePaid > 0 ? `<div style="border-top:1px dashed #86efac; padding-top:6px; margin-top:6px;"><strong>Remaining Balance:</strong> ₱${remainingBalance.toFixed(2)}</div>` : ''}
+                <div style="margin-top:6px; color:#16a34a;"><strong>Amount Paid Now:</strong> ₱${amountPaid.toFixed(2)}</div>
+            </div>
+        `,
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonText: 'Yes, Confirm',
+        confirmButtonColor: '#0d9488',
+        cancelButtonText: 'Cancel'
+    }).then(result => {
+        if (result.isConfirmed) {
+            submitFinalizeOrder(amountPaid, finalTotal);
+        }
+    });
+});
+function submitFinalizeOrder(amountPaid, finalTotal) {
+    const isContactLens = finalizeData.isContactLens === true;
+    
+    let lensDesignData = {
+        lens_design_id: '',
+        lens_design_name: '',
+        lens_design_price: 0
+    };
+    let lensIndexData = {
+        lens_index_id: '',
+        lens_index_name: '',
+        lens_index_price: 0
+    };
+    let features = [];
+    
+    if (!isContactLens) {
+        // ✅ Eyeglass: collect lens data
+        const designSelect = document.getElementById('finalize_lens_design');
+        const indexSelect = document.getElementById('finalize_lens_index');
+        
+        lensDesignData = {
+            lens_design_id: designSelect?.value || '',
+            lens_design_name: designSelect?.selectedOptions[0]?.dataset.name || '',
+            lens_design_price: parseFloat(designSelect?.selectedOptions[0]?.dataset.price || 0)
+        };
+        
+        lensIndexData = {
+            lens_index_id: indexSelect?.value || '',
+            lens_index_name: indexSelect?.selectedOptions[0]?.dataset.name || '',
+            lens_index_price: parseFloat(indexSelect?.selectedOptions[0]?.dataset.price || 0)
+        };
+        
+        document.querySelectorAll('.finalize-feature:checked').forEach(cb => {
+            features.push({
+                id: cb.value,
+                name: cb.dataset.name,
+                price: parseFloat(cb.dataset.price)
+            });
+        });
+    }
+    
+    const data = {
+        appointment_id: finalizeData.appointmentId,
+        frame_name: finalizeData.frameName,
+        frame_price: finalizeData.framePrice,
+        ...lensDesignData,
+        ...lensIndexData,
+        features: features,
+        discount_type: document.getElementById('finalize_discount_type').value,
+        subtotal: finalizeData.subtotal,
+        discount_amount: finalizeData.discountAmount,
+        vat_amount: finalizeData.vatAmount,
+        final_total: finalTotal,
+        online_paid: finalizeData.onlinePaid || 0,
+        payment_method: document.getElementById('finalize_payment_method').value,
+        amount_paid: amountPaid,
+        reference_no: document.getElementById('finalize_reference_no').value,
+        notes: document.getElementById('finalize_notes').value,
+        is_contact_lens: isContactLens
+    };
+    
+    // ═══════════════════════════════════════════════════════
+    // ✅ SEND TO BACKEND
+    // ═══════════════════════════════════════════════════════
+    Swal.fire({
+        title: 'Processing...',
+        html: 'Please wait while we finalize the order.',
+        allowOutsideClick: false,
+        showConfirmButton: false,
+        didOpen: () => Swal.showLoading()
+    });
+    
+    fetch('api/sales.php?action=finalize_order', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    })
+    .then(res => res.json())
+    .then(resp => {
+        Swal.close();
+        if (resp.success) {
+            // ✅ Hide modal
+            const modalInstance = bootstrap.Modal.getInstance(document.getElementById('finalizeOrderModal'));
+            if (modalInstance) modalInstance.hide();
+            
+            // ✅ Success message
+            Swal.fire({
+                icon: 'success',
+                title: 'Order Finalized! 🎉',
+                html: `
+                    <div class="text-start">
+                        <div class="p-3 rounded-3 mb-3" style="background: #f0fdf4; border: 1px solid #bbf7d0;">
+                            <div class="fw-bold mb-2">Receipt Details:</div>
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Receipt No:</span>
+                                <span class="fw-bold">${resp.receipt_no}</span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Total:</span>
+                                <span class="fw-bold">₱${parseFloat(resp.total_amount).toFixed(2)}</span>
+                            </div>
+                            <div class="d-flex justify-content-between mb-1">
+                                <span>Paid:</span>
+                                <span class="fw-bold text-success">₱${parseFloat(resp.amount_paid).toFixed(2)}</span>
+                            </div>
+                            <div class="d-flex justify-content-between">
+                                <span>Status:</span>
+                                <span class="badge bg-success">${resp.status}</span>
+                            </div>
+                        </div>
+                    </div>
+                `,
+                showCancelButton: true,
+                confirmButtonText: '<i class="bi bi-printer me-1"></i>Print Receipt',
+                cancelButtonText: 'Close',
+                confirmButtonColor: '#0d9488'
+            }).then(result => {
+                if (result.isConfirmed) {
+                    // Print receipt
+                    printInvoice(resp.sale_id, 'walkin');
+                }
+                // Reload page
+                location.reload();
+            });
+        } else {
+            Swal.fire('Error', resp.message || 'Failed to finalize order', 'error');
+        }
+    })
+    .catch(err => {
+        Swal.close();
+        console.error('Error:', err);
+        Swal.fire('Error', 'Connection error. Please try again.', 'error');
+    });
+}
+// ✅ Override ang dating finalizeOrder function
+window.finalizeOrder = finalizeOrder;
 </script>
 </body>
 </html>

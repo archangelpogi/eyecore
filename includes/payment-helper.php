@@ -54,58 +54,66 @@ function getTaxSettings($conn) {
     return $cached;
 }
 
-/**
- * ============================================
- * NEW: Apply VAT and/or PWD/Senior discount to a subtotal.
- *
- * Rules (per Philippine law):
- * - Regular customer: subtotal + 12% VAT
- * - PWD/Senior: (subtotal - 20% discount), and VAT-EXEMPT (no VAT added)
- *   These are mutually exclusive — PWD/Senior never pays VAT on top
- *   of their discount.
- * ============================================
- */
-function applyTaxAndDiscount($conn, $subtotal, $is_pwd_senior = false) {
+function applyTaxAndDiscount($conn, $subtotal, $is_pwd_senior = false, $discountable_amount = null) {
     $subtotal = (float)$subtotal;
     $tax = getTaxSettings($conn);
 
     $vat_rate       = $tax['vat_rate'];
     $discount_rate  = $tax['pwd_senior_discount'];
-    $vat_exempt_law = (bool)$tax['pwd_senior_vat_exempt'];
 
+    // Kung walang ibinigay na discountable_amount, gamitin ang buong subtotal
+    if ($discountable_amount === null) {
+        $discountable_amount = $subtotal;
+    }
+    $discountable_amount = (float)$discountable_amount;
+
+    // ============================================
+    // PWD/SENIOR — Discount sa pinakamahal na item lang
+    // ============================================
     if ($is_pwd_senior) {
-        $discount_amount = round($subtotal * $discount_rate, 2);
-        $discounted_subtotal = round($subtotal - $discount_amount, 2);
-
-        // Legally VAT-exempt — vat_amount stays 0 regardless of vat_rate setting,
-        // unless someone has explicitly (and incorrectly) turned the exemption off.
-        $vat_amount = $vat_exempt_law ? 0 : round($discounted_subtotal * $vat_rate, 2);
-
-        $final_total = round($discounted_subtotal + $vat_amount, 2);
+        // VAT-exclusive ng DISCOUNTABLE amount lang (hindi buong subtotal)
+        $vat_exclusive_discountable = round($discountable_amount / (1 + $vat_rate), 2);
+        
+        // 20% discount sa VAT-exclusive ng discountable item
+        $discount_amount = round($vat_exclusive_discountable * $discount_rate, 2);
+        
+        // VAT exempt amount = VAT ng discountable item
+        $vat_exempt_amount = round($discountable_amount - $vat_exclusive_discountable, 2);
+        
+        // Final total = buong subtotal - discount - VAT exempt ng discountable item
+        $final_total = round($subtotal - $discount_amount - $vat_exempt_amount, 2);
 
         return [
-            'subtotal'         => $subtotal,
-            'is_pwd_senior'    => true,
-            'discount_rate'    => $discount_rate,
-            'discount_amount'  => $discount_amount,
-            'vat_rate'         => $vat_exempt_law ? 0 : $vat_rate,
-            'vat_amount'       => $vat_amount,
-            'final_total'      => $final_total,
+            'subtotal'               => $subtotal,
+            'discountable_amount'    => $discountable_amount,
+            'vat_exclusive'          => $vat_exclusive_discountable,
+            'is_pwd_senior'          => true,
+            'discount_rate'          => $discount_rate,
+            'discount_amount'        => $discount_amount,
+            'vat_exempt_amount'      => $vat_exempt_amount,
+            'vat_rate'               => 0,
+            'vat_amount'             => 0,
+            'final_total'            => $final_total,
         ];
     }
 
-    // Regular customer — VAT applies, no discount
-    $vat_amount  = round($subtotal * $vat_rate, 2);
-    $final_total = round($subtotal + $vat_amount, 2);
+    // ============================================
+    // REGULAR CUSTOMER — VAT-inclusive
+    // ============================================
+    $vat_exclusive = round($subtotal / (1 + $vat_rate), 2);
+    $vat_amount    = round($subtotal - $vat_exclusive, 2);
 
     return [
-        'subtotal'        => $subtotal,
-        'is_pwd_senior'   => false,
-        'discount_rate'   => 0,
-        'discount_amount' => 0,
-        'vat_rate'        => $vat_rate,
-        'vat_amount'      => $vat_amount,
-        'final_total'     => $final_total,
+        'subtotal'               => $subtotal,
+        'discountable_amount'    => $subtotal,
+        'vat_exclusive'          => $vat_exclusive,
+        'is_pwd_senior'          => false,
+        'discount_rate'          => 0,
+        'discount_amount'        => 0,
+        'vat_exempt_amount'      => 0,
+        'vat_rate'               => $vat_rate,
+        'vat_amount'             => $vat_amount,
+        'final_total'            => $subtotal,
     ];
 }
 
@@ -161,31 +169,24 @@ function getClinicPaymentPolicy($conn, $clinic_id) {
     return $policy;
 }
 
-/**
- * Calculate payment amounts based on clinic policy
- * WORKS WITH BOTH MYSQLI AND PDO
- *
- * NEW: now also applies VAT / PWD-Senior discount before computing
- * the downpayment split, via the optional $is_pwd_senior flag.
- * $total_amount passed in here is treated as the SUBTOTAL
- * (sum of service/product prices, before tax/discount).
- */
-function calculatePaymentAmounts($conn, $clinic_id, $total_amount, $is_pwd_senior = false) {
+function calculatePaymentAmounts($conn, $clinic_id, $total_amount, $is_pwd_senior = false, $discountable_amount = null) {
     $policy             = getClinicPaymentPolicy($conn, $clinic_id);
     $payment_policy     = $policy['payment_policy'];
     $downpayment_percent = $policy['downpayment_percentage'] ?? 30;
 
     $subtotal = (float)$total_amount;
 
-    // NEW: apply VAT / PWD-Senior discount to get the real amount owed
-    $tax_calc     = applyTaxAndDiscount($conn, $subtotal, $is_pwd_senior);
-    $total_amount = $tax_calc['final_total']; // this is now the tax-inclusive / discount-applied total
+    // ✅ I-pass ang discountable_amount sa applyTaxAndDiscount
+    $tax_calc     = applyTaxAndDiscount($conn, $subtotal, $is_pwd_senior, $discountable_amount);
+    $total_amount = $tax_calc['final_total'];
 
     $result = [
         'subtotal'               => $tax_calc['subtotal'],
+        'discountable_amount'    => $tax_calc['discountable_amount'] ?? $subtotal,
         'is_pwd_senior'          => $tax_calc['is_pwd_senior'],
         'discount_rate'          => $tax_calc['discount_rate'],
         'discount_amount'        => $tax_calc['discount_amount'],
+        'vat_exempt_amount'      => $tax_calc['vat_exempt_amount'] ?? 0,
         'vat_rate'               => $tax_calc['vat_rate'],
         'vat_amount'             => $tax_calc['vat_amount'],
         'total_amount'           => $total_amount,
@@ -196,9 +197,7 @@ function calculatePaymentAmounts($conn, $clinic_id, $total_amount, $is_pwd_senio
     ];
 
     switch ($payment_policy) {
-
         case 'full_payment':
-            // Bayad lahat agad
             $result['downpayment_amount'] = $total_amount;
             $result['balance_amount']     = 0;
             $result['payment_type']       = 'full';
@@ -206,7 +205,6 @@ function calculatePaymentAmounts($conn, $clinic_id, $total_amount, $is_pwd_senio
             break;
 
         case 'downpayment_30':
-            // 30% muna, yung natira sa clinic
             $result['downpayment_amount'] = round($total_amount * 0.30, 2);
             $result['balance_amount']     = round($total_amount - $result['downpayment_amount'], 2);
             $result['payment_type']       = 'downpayment';
@@ -214,7 +212,6 @@ function calculatePaymentAmounts($conn, $clinic_id, $total_amount, $is_pwd_senio
             break;
 
         case 'downpayment_custom':
-            // Custom % na itinakda ng clinic
             $result['downpayment_amount'] = round($total_amount * ($downpayment_percent / 100), 2);
             $result['balance_amount']     = round($total_amount - $result['downpayment_amount'], 2);
             $result['payment_type']       = 'downpayment';
@@ -222,7 +219,6 @@ function calculatePaymentAmounts($conn, $clinic_id, $total_amount, $is_pwd_senio
             break;
 
         case 'no_payment':
-            // Libre, walang babayaran
             $result['downpayment_amount'] = 0;
             $result['balance_amount']     = 0;
             $result['payment_type']       = 'free';
@@ -230,7 +226,6 @@ function calculatePaymentAmounts($conn, $clinic_id, $total_amount, $is_pwd_senio
             break;
 
         case 'pay_on_site':
-            // Bayad sa clinic mismo, walang online payment
             $result['downpayment_amount'] = 0;
             $result['balance_amount']     = $total_amount;
             $result['payment_type']       = 'onsite';
@@ -238,14 +233,12 @@ function calculatePaymentAmounts($conn, $clinic_id, $total_amount, $is_pwd_senio
             break;
 
         default:
-            // Fallback — 30% downpayment kung walang nakilalang policy
             $result['downpayment_amount'] = round($total_amount * 0.30, 2);
             $result['balance_amount']     = round($total_amount - $result['downpayment_amount'], 2);
             $result['payment_type']       = 'downpayment';
             $result['requires_payment']   = true;
     }
     
-    // ✅ FIX: Ensure downpayment is not zero when payment is required
     if ($result['requires_payment'] && $result['downpayment_amount'] <= 0 && $total_amount > 0) {
         $result['downpayment_amount'] = $total_amount;
         $result['balance_amount'] = 0;

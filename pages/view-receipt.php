@@ -17,9 +17,6 @@ if (!$input_id) {
     exit();
 }
 
-// ============================================
-// ✅ UPDATED QUERY - WITH DISCOUNT AND VAT
-// ============================================
 $query = "
     SELECT s.*, 
            p.first_name, p.last_name, p.email, p.phone, p.address as patient_address,
@@ -29,7 +26,6 @@ $query = "
            a.appointment_date, 
            a.appointment_time, 
            a.ref_no,
-           -- ✅ DISCOUNT AND VAT FIELDS
            s.subtotal,
            s.discount,
            s.discount_type,
@@ -46,11 +42,20 @@ $query = "
            a.vat_amount as appt_vat_amount,
            a.subtotal as appt_subtotal,
            a.forfeited_amount as appt_forfeited_amount,
-           a.status as appt_status
+           a.status as appt_status,
+           a.amount_paid as appt_amount_paid,
+           a.ref_no as appt_ref_no,
+           a.items as appt_items,
+           -- ✅ Doctor's recommendation from clinical_notes
+           cn.rec_lens_design,
+           cn.rec_lens_index,
+           cn.rec_lens_features,
+           cn.rec_lens_notes
     FROM sales s
     INNER JOIN patients p ON s.patient_id = p.id
     INNER JOIN clinics c ON s.clinic_id = c.id
     LEFT JOIN appointments a ON s.appointment_id = a.id
+    LEFT JOIN clinical_notes cn ON cn.appointment_id = s.appointment_id
     WHERE s.id = $input_id OR s.appointment_id = $input_id
 ";
 
@@ -97,8 +102,132 @@ while ($row = mysqli_fetch_assoc($items_result)) {
     $items[] = $row;
 }
 
-// Get payments
-$payments_query = "SELECT * FROM payments WHERE sale_id = " . (int)$sale_id . " ORDER BY payment_date DESC";
+// ✅ FIX: Fallback — parse items from sales.items JSON kung walang sale_items
+if (empty($items) && !empty($invoice['items'])) {
+    $decoded = json_decode($invoice['items'], true);
+    if (is_array($decoded) && !empty($decoded)) {
+        foreach ($decoded as $it) {
+            $items[] = [
+                'item_name' => $it['name'] ?? $it['item_name'] ?? 'Item',
+                'item_type' => $it['type'] ?? $it['item_type'] ?? 'product',
+                'quantity' => $it['quantity'] ?? 1,
+                'unit_price' => $it['price'] ?? $it['unit_price'] ?? 0,
+                'total_price' => ($it['price'] ?? $it['unit_price'] ?? 0) * ($it['quantity'] ?? 1),
+                'source' => $it['source'] ?? null
+            ];
+        }
+    }
+}
+
+// ✅ FIX: Fallback — parse items from appointments.items JSON
+if (empty($items) && !empty($invoice['appt_items'])) {
+    $decoded = json_decode($invoice['appt_items'], true);
+    if (is_array($decoded) && !empty($decoded)) {
+        foreach ($decoded as $it) {
+            $items[] = [
+                'item_name' => $it['name'] ?? $it['item_name'] ?? 'Item',
+                'item_type' => $it['type'] ?? $it['item_type'] ?? 'product',
+                'quantity' => $it['quantity'] ?? 1,
+                'unit_price' => $it['price'] ?? $it['unit_price'] ?? 0,
+                'total_price' => ($it['price'] ?? $it['unit_price'] ?? 0) * ($it['quantity'] ?? 1),
+                'source' => $it['source'] ?? null
+            ];
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════
+// ✅ ENRICH ITEMS: Add lens items from clinical_notes
+// ═══════════════════════════════════════════════════════
+if (!empty($invoice['rec_lens_design']) 
+    || !empty($invoice['rec_lens_index']) 
+    || !empty($invoice['rec_lens_features'])) {
+    
+    // ✅ Get lens prices from lens_options
+    $lensPrices = ['design' => [], 'index' => [], 'feature' => []];
+    $lensStmt = mysqli_query($conn, "
+        SELECT option_type, option_name, price
+        FROM lens_options
+        WHERE clinic_id = " . (int)$invoice['clinic_id'] . " AND is_active = 1
+    ");
+    if ($lensStmt) {
+        while ($opt = mysqli_fetch_assoc($lensStmt)) {
+            $lensPrices[$opt['option_type']][] = $opt;
+        }
+    }
+    
+    // ✅ Helper: Find price by name match
+    $findPrice = function($optionType, $searchName) use ($lensPrices) {
+        if (empty($lensPrices[$optionType]) || empty($searchName)) return 0;
+        $searchNorm = strtolower(preg_replace('/[^a-z0-9]/', '', $searchName));
+        foreach ($lensPrices[$optionType] as $opt) {
+            $optNorm = strtolower(preg_replace('/[^a-z0-9]/', '', $opt['option_name']));
+            if (strpos($optNorm, $searchNorm) !== false 
+                || strpos($searchNorm, $optNorm) !== false) {
+                return floatval($opt['price']);
+            }
+        }
+        return 0;
+    };
+    
+    // ✅ Add Lens Design
+    if (!empty($invoice['rec_lens_design'])) {
+        $designPrice = $findPrice('design', $invoice['rec_lens_design']);
+        $items[] = [
+            'item_name' => $invoice['rec_lens_design'] . ' Lens',
+            'item_type' => 'service',
+            'quantity' => 1,
+            'unit_price' => $designPrice,
+            'total_price' => $designPrice,
+            'source' => 'doctor_recommendation'
+        ];
+    }
+    
+    // ✅ Add Lens Index
+    if (!empty($invoice['rec_lens_index'])) {
+        $indexPrice = $findPrice('index', $invoice['rec_lens_index']);
+        $items[] = [
+            'item_name' => $invoice['rec_lens_index'],
+            'item_type' => 'service',
+            'quantity' => 1,
+            'unit_price' => $indexPrice,
+            'total_price' => $indexPrice,
+            'source' => 'doctor_recommendation'
+        ];
+    }
+    
+    // ✅ Add Features
+    $recFeatures = [];
+    if (!empty($invoice['rec_lens_features'])) {
+        $decoded = json_decode($invoice['rec_lens_features'], true);
+        if (is_array($decoded)) {
+            $recFeatures = $decoded;
+        }
+    }
+    
+    foreach ($recFeatures as $featureName) {
+        $featurePrice = $findPrice('feature', $featureName);
+        $items[] = [
+            'item_name' => $featureName,
+            'item_type' => 'service',
+            'quantity' => 1,
+            'unit_price' => $featurePrice,
+            'total_price' => $featurePrice,
+            'source' => 'doctor_recommendation'
+        ];
+    }
+}
+
+// ✅ FIX: Get payments — kasama ang online (appointment_id) at cash (sale_id)
+$appointment_id_for_payments = (int)($invoice['appointment_id'] ?? 0);
+
+$payments_query = "
+    SELECT * FROM payments 
+    WHERE (sale_id = " . (int)$sale_id . " 
+           OR appointment_id = $appointment_id_for_payments)
+    AND payment_status IN ('paid', 'completed', 'refunded')
+    ORDER BY payment_date ASC, created_at ASC
+";
 $payments_result = mysqli_query($conn, $payments_query);
 $payments = [];
 if ($payments_result) {
@@ -106,19 +235,63 @@ if ($payments_result) {
         $payments[] = $row;
     }
 }
+
+// ✅ FIX: Total paid — kasama ang online + cash
 $total_paid = array_sum(array_column($payments, 'amount'));
-$balance = floatval($invoice['total_amount']) - $total_paid;
+
+// ✅ FIX: Kung walang payments records, gamitin ang amount_paid mula sa appointments
+if ($total_paid == 0 && !empty($invoice['appt_amount_paid'])) {
+    $total_paid = (float)$invoice['appt_amount_paid'];
+}
+
+// ✅ FIX: Balance
+$balance = max(0, floatval($invoice['total_amount']) - $total_paid);
 
 // ✅ Get discount and VAT info
 $discount_type = $invoice['discount_type'] ?? $invoice['appt_discount_type'] ?? 'none';
-$discount_amount = (float)($invoice['discount'] ?? $invoice['appt_discount_amount'] ?? 0);
 $discount_percentage = (float)($invoice['discount_percentage'] ?? $invoice['appt_discount_percentage'] ?? 0);
 $vat_amount = (float)($invoice['vat_amount'] ?? $invoice['appt_vat_amount'] ?? 0);
 $vat_percentage = (float)($invoice['vat_percentage'] ?? $invoice['appt_vat_percentage'] ?? 0);
-$subtotal = (float)($invoice['subtotal'] ?? $invoice['appt_subtotal'] ?? $invoice['total_amount'] ?? 0);
 $forfeited = (float)($invoice['forfeited_amount'] ?? $invoice['appt_forfeited_amount'] ?? 0);
 $refunded = (float)($invoice['refunded_amount'] ?? 0);
 $status = $invoice['sale_status'] ?? $invoice['appt_status'] ?? 'Unpaid';
+$total_amount = (float)($invoice['total_amount'] ?? 0);
+
+// ═══════════════════════════════════════════════════════
+// ✅ DYNAMIC SUBTOTAL + DISCOUNT COMPUTATION
+// ═══════════════════════════════════════════════════════
+$subtotal = 0;
+$discount_amount = 0;
+
+// ✅ STEP 1: Compute subtotal from items array (na-parse na sa taas)
+if (!empty($items)) {
+    foreach ($items as $item) {
+        $price = (float)($item['unit_price'] ?? $item['price'] ?? 0);
+        $qty = (int)($item['quantity'] ?? 1);
+        $subtotal += $price * $qty;
+    }
+}
+
+// ✅ STEP 2: Fallback — reverse compute from total_amount
+if ($subtotal == 0) {
+    if ($discount_type !== 'none' && $discount_percentage > 0) {
+        $total_before_vat = $total_amount - $vat_amount;
+        $divisor = 1 - ($discount_percentage / 100);
+        if ($divisor > 0) {
+            $subtotal = $total_before_vat / $divisor;
+        } else {
+            $subtotal = $total_amount;
+        }
+    } else {
+        $subtotal = $total_amount - $vat_amount;
+    }
+}
+
+// ✅ STEP 3: Compute discount base sa subtotal
+if ($discount_type !== 'none' && $discount_percentage > 0 && $subtotal > 0) {
+    $discount_amount = $subtotal * ($discount_percentage / 100);
+}
+
 
 // Check if refunded
 $is_refunded = ($status === 'Refunded' || $status === 'refunded');
@@ -720,12 +893,16 @@ function getClinicImg($c) {
                             <?php echo htmlspecialchars($invoice['clinic_address'] ?? ''); ?>
                         </div>
                     </div>
-                    <div class="receipt-title">
-                        <div class="receipt-badge">RECEIPT</div>
-                        <div style="font-size: 14px; color: var(--text-secondary); margin-top: 5px;">
-                            #<?php echo htmlspecialchars($invoice['invoice_code'] ?? $sale_id); ?>
-                        </div>
-                    </div>
+<div class="receipt-title">
+    <div class="receipt-badge">RECEIPT</div>
+    <div style="font-size: 14px; color: var(--text-secondary); margin-top: 5px;">
+        <?php 
+        // ✅ FIX: Gamitin ang ref_no kung available, else invoice_code
+        $receipt_display = $invoice['ref_no'] ?? $invoice['appt_ref_no'] ?? $invoice['invoice_code'] ?? ('INV-' . $sale_id);
+        echo htmlspecialchars($receipt_display);
+        ?>
+    </div>
+</div>
                 </div>
 
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
@@ -776,17 +953,24 @@ function getClinicImg($c) {
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ($items as $item): ?>
-                        <tr>
-                            <td>
-                                <?php echo htmlspecialchars($item['item_name']); ?>
-                                <small style="display:block; color:var(--text-muted);"><?php echo ucfirst($item['item_type']); ?></small>
-                            </td>
-                            <td style="text-align:center"><?php echo $item['quantity']; ?></td>
-                            <td style="text-align:right">₱<?php echo number_format($item['unit_price'], 2); ?></td>
-                            <td style="text-align:right">₱<?php echo number_format($item['total_price'], 2); ?></td>
-                        </tr>
-                        <?php endforeach; ?>
+<?php foreach ($items as $item): 
+    $is_rec = !empty($item['source']) && $item['source'] === 'doctor_recommendation';
+?>
+<tr>
+    <td>
+        <?php echo htmlspecialchars($item['item_name']); ?>
+        <?php if ($is_rec): ?>
+        <span style="background: #FEF3C7; color: #92400E; font-size: 10px; padding: 2px 6px; border-radius: 10px; margin-left: 6px; font-weight: 600;">
+            💡 Doctor Rec
+        </span>
+        <?php endif; ?>
+        <small style="display:block; color:var(--text-muted);"><?php echo ucfirst($item['item_type']); ?></small>
+    </td>
+    <td style="text-align:center"><?php echo $item['quantity']; ?></td>
+    <td style="text-align:right">₱<?php echo number_format($item['unit_price'], 2); ?></td>
+    <td style="text-align:right">₱<?php echo number_format($item['total_price'], 2); ?></td>
+</tr>
+<?php endforeach; ?>
                     </tbody>
                     <tfoot>
                         <!-- ✅ SUBTOTAL -->
@@ -969,11 +1153,11 @@ function getClinicImg($c) {
                     </div>
                     <?php endif; ?>
 
-                    <div class="apt-ref-row">
-                        <i class="fas fa-receipt"></i>
-                        <span>Receipt #:</span>
-                        <strong><?php echo htmlspecialchars($invoice['invoice_code'] ?? $sale_id); ?></strong>
-                    </div>
+<div class="apt-ref-row">
+    <i class="fas fa-receipt"></i>
+    <span>Receipt #:</span>
+    <strong><?php echo htmlspecialchars($receipt_display); ?></strong>
+</div>
 
                     <?php if ($is_refunded): ?>
                     <div class="apt-ref-row" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border-light);">

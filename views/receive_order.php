@@ -456,9 +456,6 @@ $inventory_items = $invQuery->fetchAll(PDO::FETCH_ASSOC);
                     <a href="main.php?view=purchase_orders&filter=to_receive" class="btn btn-outline-secondary flex-fill py-2">
                         <i class="bi bi-x-lg me-2"></i>Cancel
                     </a>
-                    <a href="/main.php?view=returns&po_id=<?php echo $po_id; ?>" class="btn btn-outline-warning flex-fill py-2">
-                        <i class="bi bi-arrow-return-left me-2"></i>Return/Refund
-                    </a>
                     <button type="button" class="btn btn-teal flex-fill py-2" onclick="submitReceiveOrder()">
                         <i class="bi bi-check-lg me-2"></i>Confirm Receipt
                     </button>

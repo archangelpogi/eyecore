@@ -58,10 +58,12 @@ $stmt = $pdo->prepare("
            p.name AS product_name, p.category AS product_category, p.image AS product_image,
            rd.name AS rider_name,
            cu.first_name AS collector_first, cu.last_name AS collector_last,
-           -- ✅ BAGO: Prescription data
-           up.od_sph, up.od_cyl, up.od_axis,
-           up.os_sph, up.os_cyl, up.os_axis,
-           up.prescription_source,
+            -- ✅ BAGO: Prescription data
+            up.od_sph, up.od_cyl, up.od_axis,
+            up.os_sph, up.os_cyl, up.os_axis,
+            up.prescription_source,
+            up.prescription_file,
+            up.created_at AS prescription_created_at,
            -- ✅ NEW: Refund request data
            rr.id AS refund_request_id,
            rr.status AS rr_status,
@@ -880,6 +882,9 @@ function getReturnStatusInfo($status) {
         <button class="ec-tab" data-status="refund_requests" id="refundTab">
             💰 Refund Requests <span class="ec-tab-count" id="refundTabCount">0</span>
         </button>
+        <button class="ec-tab" data-status="remittances" id="remitTab">
+            💵 Remittances <span class="ec-tab-count" id="remitTabCount">0</span>
+        </button>
     </div>
 
     <!-- ═══ FILTER BAR ═══ -->
@@ -1253,7 +1258,7 @@ if ($has_refund_request && in_array($refund_req_status, ['pending', 'approved', 
             <button class="ec-refund-filter" data-filter="approved">Approved <span class="count" id="refundCountApproved">0</span></button>
             <button class="ec-refund-filter" data-filter="processing">Processing <span class="count" id="refundCountProcessing">0</span></button>
             <button class="ec-refund-filter" data-filter="completed">Completed <span class="count" id="refundCountCompleted">0</span></button>
-            <button class="ec-refund-filter" data-filter="rejected">Rejected <span class="count" id="refundCountRejected">0</span></button>
+            <button class="ec-refund-filter" data-filter="rejected">Declined <span class="count" id="refundCountRejected">0</span></button>
         </div>
 
         <!-- Refund List -->
@@ -1261,6 +1266,40 @@ if ($has_refund_request && in_array($refund_req_status, ['pending', 'approved', 
             <div class="text-center py-5 text-muted">
                 <div class="spinner-border text-primary" role="status"></div>
                 <p class="mt-3 mb-0">Loading refunds...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <!-- ✅ PHASE 5: REMITTANCES CONTAINER                        -->
+    <!-- ═══════════════════════════════════════════════════════ -->
+    <div id="remittanceContainer" class="ec-refund-container">
+        <!-- Header -->
+        <div class="d-flex justify-content-between align-items-start mb-4 flex-wrap gap-2">
+            <div>
+                <h5 class="fw-bold mb-1">
+                    <i class="bi bi-cash-stack me-2"></i>COD Remittances
+                </h5>
+                <p class="text-muted small mb-0">Review and approve rider cash remittances</p>
+            </div>
+            <button class="btn btn-outline-secondary btn-sm" onclick="loadRemittances()">
+                <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+            </button>
+        </div>
+
+        <!-- Filter Pills -->
+        <div class="ec-refund-filters" id="remittanceFilters">
+            <button class="ec-refund-filter active" data-filter="">All <span class="count" id="remitCountAll">0</span></button>
+            <button class="ec-refund-filter" data-filter="pending">Pending <span class="count" id="remitCountPending">0</span></button>
+            <button class="ec-refund-filter" data-filter="completed">Completed <span class="count" id="remitCountCompleted">0</span></button>
+            <button class="ec-refund-filter" data-filter="rejected">Declined <span class="count" id="remitCountRejected">0</span></button>
+        </div>
+
+        <!-- Remittance List -->
+        <div id="remittanceList">
+            <div class="text-center py-5 text-muted">
+                <div class="spinner-border text-primary" role="status"></div>
+                <p class="mt-3 mb-0">Loading remittances...</p>
             </div>
         </div>
     </div>
@@ -1353,7 +1392,7 @@ if ($has_refund_request && in_array($refund_req_status, ['pending', 'approved', 
                         </div>
                         <div class="small text-muted mt-1" style="font-size:.72rem;">
                             <i class="bi bi-info-circle me-1"></i>
-                            Pumili base sa order volume — 30-min kapag marami, 1-hour kapag normal.
+                            Choose based on order volume — 30-min for heavy load, 1-hour for normal.
                         </div>
                     </div>
 
@@ -1411,14 +1450,110 @@ if ($has_refund_request && in_array($refund_req_status, ['pending', 'approved', 
                     <!-- Validation message -->
                     <div id="validationMsg" style="display:none"></div>
 
-                    <!-- Notes -->
-                    <div class="mb-0">
-                        <label class="form-label small fw-semibold">
-                            Notes <span class="text-muted fw-normal">(optional)</span>
-                        </label>
-                        <textarea class="form-control form-control-sm" id="assignDeliveryNotes"
-                                  rows="2" placeholder="Instructions for the rider..."></textarea>
-                    </div>
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ✅ LIVE CAMERA — Parcel Photos with Timestamp                  -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="mb-3" id="handoverPhotoSection">
+    <label class="form-label small fw-semibold">
+        <i class="bi bi-camera-fill text-success me-1"></i>
+        Parcel Photos <span class="text-danger">*</span>
+        <span class="text-muted fw-normal" style="font-size:.75rem;">(Live capture only)</span>
+    </label>
+    
+    <div class="alert alert-warning small mb-2 py-2 px-3" style="font-size:.75rem;">
+        <i class="bi bi-info-circle me-1"></i>
+        Capture a live photo of the parcel before handing it to the rider. 
+        Ito ay <strong>proof of condition</strong> para sa lahat.
+    </div>
+
+    <!-- 📷 Live Camera Preview -->
+    <div id="cameraContainer" style="display:none;position:relative;border-radius:8px;overflow:hidden;background:#000;">
+        <video id="cameraStream" autoplay playsinline muted
+               style="width:100%;max-height:280px;object-fit:cover;display:block;transform:scaleX(-1);"></video>
+        
+        <!-- Timestamp overlay preview -->
+        <div id="cameraTimestamp"
+             style="position:absolute;bottom:8px;left:8px;color:#fff;background:rgba(0,0,0,.6);
+                    padding:4px 8px;border-radius:4px;font-size:11px;font-family:monospace;
+                    font-weight:600;text-shadow:0 1px 2px rgba(0,0,0,.5);pointer-events:none;">
+        </div>
+
+        <!-- Capture button -->
+        <div style="position:absolute;bottom:12px;left:50%;transform:translateX(-50%);display:flex;gap:8px;">
+            <button type="button" onclick="captureLivePhoto()"
+                    style="background:#fff;color:#111;border:none;border-radius:50%;
+                           width:56px;height:56px;font-size:22px;cursor:pointer;
+                           display:flex;align-items:center;justify-content:center;
+                           box-shadow:0 4px 12px rgba(0,0,0,.3);">
+                <i class="bi bi-camera"></i>
+            </button>
+        </div>
+
+        <!-- Close button -->
+        <button type="button" onclick="stopLiveCamera()"
+                style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,.6);
+                       color:#fff;border:none;border-radius:50%;width:32px;height:32px;
+                       cursor:pointer;display:flex;align-items:center;justify-content:center;">
+            <i class="bi bi-x-lg" style="font-size:.85rem;"></i>
+        </button>
+
+        <!-- Camera switch (front/back) -->
+        <button type="button" onclick="switchCamera()"
+                style="position:absolute;top:8px;left:8px;background:rgba(0,0,0,.6);
+                       color:#fff;border:none;border-radius:50%;width:32px;height:32px;
+                       cursor:pointer;display:flex;align-items:center;justify-content:center;">
+            <i class="bi bi-arrow-repeat" style="font-size:.85rem;"></i>
+        </button>
+    </div>
+
+    <!-- 🎬 Start Camera Button -->
+    <div id="startCameraBtnWrap" 
+         style="border:2px dashed #cbd5e1;border-radius:8px;padding:1.5rem;text-align:center;
+                cursor:pointer;transition:all .2s;background:#f8fafc;"
+         onclick="startLiveCamera()"
+         onmouseover="this.style.borderColor='#0d6e6e'; this.style.background='#e6f4f4';"
+         onmouseout="this.style.borderColor='#cbd5e1'; this.style.background='#f8fafc';">
+        <i class="bi bi-camera-video-fill" style="font-size:2rem;color:#0d6e6e;"></i>
+        <div class="mt-2" style="font-size:.85rem;font-weight:600;color:#334155;">
+            Open Camera
+        </div>
+        <div style="font-size:.72rem;color:#94a3b8;margin-top:.25rem;">
+            Live photo only — uploads from gallery are not allowed
+        </div>
+    </div>
+
+    <!-- 📸 Captured Photos Grid -->
+    <div id="capturedPhotosGrid" style="display:none;margin-top:.75rem;">
+        <div style="font-size:.75rem;color:#334155;font-weight:600;margin-bottom:.5rem;">
+            Captured Photos: <span id="photoCount">0</span> / 3
+        </div>
+        <div id="photosGrid" style="
+            display:grid;
+            grid-template-columns:repeat(3,1fr);
+            gap:.5rem;
+        "></div>
+    </div>
+
+    <!-- Error message -->
+    <div id="cameraError" style="display:none;margin-top:.5rem;"></div>
+</div>
+
+<!-- Notes -->
+<div class="mb-3">
+    <label class="form-label small fw-semibold">
+        Handover Notes <span class="text-muted fw-normal">(optional)</span>
+    </label>
+    <input type="text" class="form-control form-control-sm" id="handoverNotes"
+           placeholder="e.g., 2 boxes, fragile, handled with care" maxlength="200">
+</div>
+
+<div class="mb-0">
+    <label class="form-label small fw-semibold">
+        Delivery Notes <span class="text-muted fw-normal">(optional)</span>
+    </label>
+    <textarea class="form-control form-control-sm" id="assignDeliveryNotes"
+              rows="2" placeholder="Instructions for the rider..."></textarea>
+</div>
                 <?php endif; ?>
             </div>
 
@@ -1610,22 +1745,22 @@ if ($has_refund_request && in_array($refund_req_status, ['pending', 'approved', 
     <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title"><i class="bi bi-x-circle text-danger me-2"></i>Reject Refund</h5>
+                <h5 class="modal-title"><i class="bi bi-x-circle text-danger me-2"></i>Decline Refund</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
                 <p class="mb-2">Order: <strong id="rejectRefundOrder"></strong></p>
                 <p class="text-muted small mb-3">Amount: <strong id="rejectRefundAmount" class="text-danger"></strong></p>
 
-                <label class="form-label fw-semibold">Rejection Reason <span class="text-danger">*</span></label>
-                <textarea class="form-control" id="rejectRefundReason" rows="3" placeholder="Why is this refund being rejected?"></textarea>
+<label class="form-label fw-semibold">Decline Reason <span class="text-danger">*</span></label>
+<textarea class="form-control" id="rejectRefundReason" rows="3" placeholder="Why is this refund being declined?"></textarea>
                 <small class="text-muted">This will be sent to the customer.</small>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                <button class="btn btn-danger" id="confirmRejectRefundBtn">
-                    <i class="bi bi-x-lg me-1"></i>Reject Refund
-                </button>
+<button class="btn btn-danger" id="confirmRejectRefundBtn">
+    <i class="bi bi-x-lg me-1"></i>Decline Refund
+</button>
             </div>
         </div>
     </div>
@@ -1656,6 +1791,113 @@ if ($has_refund_request && in_array($refund_req_status, ['pending', 'approved', 
                 <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button class="btn btn-success" id="confirmMarkRefundedBtn">
                     <i class="bi bi-check-lg me-1"></i>Mark as Refunded
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- ✅ PHASE 5: REMITTANCE REVIEW MODAL                      -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="modal fade" id="remittanceReviewModal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header" style="background:linear-gradient(135deg, #0d6e6e, #095050);color:#fff;border:none;">
+                <h5 class="modal-title">
+                    <i class="bi bi-cash-stack me-2"></i>Review Remittance
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="remittanceReviewBody">
+                <!-- Content will be injected by JS -->
+            </div>
+            <div class="modal-footer" id="remittanceReviewFooter">
+                <!-- Buttons will be injected by JS -->
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- ✅ PHASE 5: APPROVE REMITTANCE MODAL                     -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="modal fade" id="approveRemitModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="bi bi-check-circle text-success me-2"></i>Approve Remittance
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2">
+                    Rider: <strong id="approveRemitRider"></strong>
+                </p>
+                <p class="text-muted small mb-3">
+                    Amount: <strong id="approveRemitAmount" class="text-success"></strong>
+                </p>
+
+                <div class="alert alert-warning small mb-3">
+                    <i class="bi bi-exclamation-triangle me-1"></i>
+                    <strong>Confirm you have received the cash.</strong><br>
+                    Ang wallet balance ng rider ay mababawasan ng amount na ito.
+                </div>
+
+                <div class="mb-0">
+                    <label class="form-label">
+                        Admin Notes <small class="text-muted">(optional)</small>
+                    </label>
+                    <textarea class="form-control" id="approveRemitNotes" rows="2" 
+                              placeholder="e.g., Cash received and verified..."></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-success" id="confirmApproveRemitBtn">
+                    <i class="bi bi-check-lg me-1"></i>Confirm Approval
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- ✅ PHASE 5: REJECT REMITTANCE MODAL                      -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="modal fade" id="rejectRemitModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+<h5 class="modal-title">
+    <i class="bi bi-x-circle text-danger me-2"></i>Decline Remittance
+</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-2">Rider: <strong id="rejectRemitRider"></strong></p>
+                <p class="text-muted small mb-3">
+                    Amount: <strong id="rejectRemitAmount" class="text-danger"></strong>
+                </p>
+
+                <div class="alert alert-warning small mb-3">
+                    <i class="bi bi-exclamation-triangle me-1"></i>
+                    <strong>Rider's wallet balance will NOT change.</strong><br>
+                    Ang rider ay makakatanggap ng notification na may decline reason.
+                </div>
+
+                <label class="form-label fw-semibold">
+                    Decline Reason <span class="text-danger">*</span>
+                </label>
+                <textarea class="form-control" id="rejectRemitReason" rows="3" 
+                          placeholder="e.g., Amount mismatch, unclear proof, no cash received..."></textarea>
+                <small class="text-muted">This will be sent to the rider.</small>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button class="btn btn-danger" id="confirmRejectRemitBtn">
+                    <i class="bi bi-x-lg me-1"></i>Decline Remittance
                 </button>
             </div>
         </div>
@@ -1725,48 +1967,122 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById(id)?.addEventListener('change', applyFilters);
     });
 
-document.getElementById('confirmAssignBtn')?.addEventListener('click', function () {
+document.getElementById('confirmAssignBtn')?.addEventListener('click', async function () {
     const riderId = document.getElementById('assignRiderSelect').value;
     const eta     = document.getElementById('assignDeliveryDate').value;
     const notes   = document.getElementById('assignDeliveryNotes').value.trim();
+    const handoverNotes = document.getElementById('handoverNotes')?.value.trim() || '';
 
+    // ✅ Validations
     if (!riderId) { Swal.fire('Missing','Please select a rider','warning'); return; }
     if (!eta)     { Swal.fire('Missing','Please select delivery date','warning'); return; }
     if (!selectedSlotStart || !selectedSlotEnd) {
         Swal.fire('Missing','Please select a time range from the grid','warning');
         return;
     }
+    
+    // ✅ REQUIRE photos
+    if (capturedPhotos.length === 0) {
+        Swal.fire({
+            icon: 'warning',
+            title: 'Parcel Photo Required',
+            html: `
+                <p>Kailangan ng <strong>live photo</strong> ng parcel bago ibigay sa rider.</p>
+                <p class="text-muted small mb-0">This serves as proof of condition for everyone.</p>
+            `,
+            confirmButtonText: 'Okay'
+        });
+        return;
+    }
 
     const timeStart = selectedSlotStart;
     const timeEnd   = selectedSlotEnd;
 
-    // ✅ BULK
+    // ✅ Stop camera before submitting
+    stopLiveCamera();
+
+    // ✅ Build FormData with photos
+    const formData = new FormData();
+    
     if (pendingBulkIds && pendingBulkIds.length > 0) {
+        // BULK
         assignRiderModal.hide();
-        bulkAction('bulk_assign_rider', pendingBulkIds, {
-            rider_id: riderId,
-            delivery_date: eta,
-            delivery_time_start: timeStart,
-            delivery_time_end: timeEnd,
-            delivery_notes: notes
-        });
+        
+        formData.append('action', 'bulk_assign_rider');
+        pendingBulkIds.forEach(id => formData.append('ids[]', id));
+        formData.append('rider_id', riderId);
+        formData.append('delivery_date', eta);
+        formData.append('delivery_time_start', timeStart);
+        formData.append('delivery_time_end', timeEnd);
+        formData.append('delivery_notes', notes);
+        formData.append('handover_notes', handoverNotes);
+        
+        // ✅ Send photos as base64 JSON
+        formData.append('handover_photos', JSON.stringify(
+            capturedPhotos.map(p => ({ data: p.dataUrl, timestamp: p.timestamp }))
+        ));
+        
+        submitAssignWithPhotos(formData);
         pendingBulkIds = null;
         return;
     }
 
-    // ✅ SINGLE
+    // SINGLE
     if (!pendingAssignId) return;
     assignRiderModal.hide();
-    postAction('assign_rider', pendingAssignId, {
-        rider_id: riderId,
-        delivery_date: eta,
-        delivery_time_start: timeStart,
-        delivery_time_end: timeEnd,
-        delivery_notes: notes
-    });
+    
+    formData.append('action', 'assign_rider');
+    formData.append('reservation_id', pendingAssignId);
+    formData.append('rider_id', riderId);
+    formData.append('delivery_date', eta);
+    formData.append('delivery_time_start', timeStart);
+    formData.append('delivery_time_end', timeEnd);
+    formData.append('delivery_notes', notes);
+    formData.append('handover_notes', handoverNotes);
+    
+    formData.append('handover_photos', JSON.stringify(
+        capturedPhotos.map(p => ({ data: p.dataUrl, timestamp: p.timestamp }))
+    ));
+    
+    submitAssignWithPhotos(formData);
     pendingAssignId = null;
 });
-    document.getElementById('confirmCancelBtn')?.addEventListener('click', function () {
+
+// ✅ Helper: Submit with photos
+async function submitAssignWithPhotos(formData) {
+    Swal.fire({
+        title: 'Saving photos...',
+        html: 'Please wait',
+        allowOutsideClick: false,
+        didOpen: () => Swal.showLoading()
+    });
+    
+    try {
+        const res = await fetch(API_URL, {
+            method: 'POST',
+            body: formData,
+            credentials: 'same-origin'
+        });
+        const data = await res.json();
+        
+        if (data.success) {
+            Swal.fire({
+                icon: 'success',
+                title: 'Rider Assigned!',
+                text: data.message,
+                timer: 1500,
+                showConfirmButton: false
+            }).then(() => location.reload());
+        } else {
+            Swal.fire('Error', data.message || 'Something went wrong', 'error');
+        }
+    } catch (err) {
+        console.error('Assign rider error:', err);
+        Swal.fire('Error', 'Network error: ' + err.message, 'error');
+    }
+}
+
+document.getElementById('confirmCancelBtn')?.addEventListener('click', function () {
         if (!pendingCancelId) return;
         const reason = document.getElementById('cancelReason').value.trim() || 'Cancelled by clinic';
         cancelModal.hide();
@@ -1989,15 +2305,19 @@ if (action === 'bulk_assign_rider') {
     pendingBulkIds = selected.map(o => o.id);
     pendingAssignId = null;
 
-    // ✅ Reset slot state
     selectedSlotStart = null;
     selectedSlotEnd   = null;
     currentRiderSlots = [];
     outsideRiderSlots = [];
-        // ✅ Reset slot duration to 1 hour default
+    
     const slotDur60 = document.getElementById('slotDur60');
     if (slotDur60) slotDur60.checked = true;
+
+    // ✅ BAGO: Reset camera + photos
+    resetCameraState();
     
+    const handoverNotes = document.getElementById('handoverNotes');
+    if (handoverNotes) handoverNotes.value = '';
 
     document.getElementById('assignOrderCode').textContent = `${selected.length} order(s)`;
     document.getElementById('assignRiderSelect').value = '';
@@ -2020,7 +2340,6 @@ if (action === 'bulk_assign_rider') {
     assignRiderModal.show();
     return;
 }
-
     if (action === 'bulk_cancel') {
         Swal.fire({
             title: 'Cancel Orders?',
@@ -2129,6 +2448,10 @@ function viewOrder(o) {
     const deliveryDateFmt   = o.delivery_date_formatted     || (o.delivery_date ? new Date(o.delivery_date).toLocaleDateString() : '—');
     const preferredDateFmt  = o.preferred_date_formatted    || (o.preferred_date ? new Date(o.preferred_date).toLocaleDateString() : '—');
 
+    // ✅ Helper: build image clickable (opens in modal)
+    const imgClick = (src, alt) =>
+        `onclick="openImageModal('${esc(src).replace(/'/g, "\\'")}', '${esc(alt || '').replace(/'/g, "\\'")}')"`;
+
     body.innerHTML = `
         <div class="ec-detail-section">
             <div class="ec-detail-section-title"><i class="bi bi-info-circle"></i>Order Information</div>
@@ -2144,47 +2467,150 @@ function viewOrder(o) {
             <div class="ec-detail-row"><span class="label">Email</span><span class="value">${esc(o.user_email||'—')}</span></div>
             <div class="ec-detail-row"><span class="label">Contact</span><span class="value">${esc(o.user_contact||'—')}</span></div>
         </div>
-<div class="ec-detail-section">
-    <div class="ec-detail-section-title"><i class="bi bi-bag"></i>Product</div>
-    <div class="d-flex gap-3 align-items-start">
-        ${o.product_image ? `<img src="${esc(o.product_image)}" style="width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--ec-border)">` : `<div style="width:64px;height:64px;border-radius:8px;background:var(--ec-bg-soft);display:flex;align-items:center;justify-content:center"><i class="bi bi-eyeglasses fs-3 text-muted"></i></div>`}
-        <div class="flex-grow-1">
-            <div class="fw-semibold">${esc(o.product_name)}</div>
-            <div class="small text-muted">${esc(o.color_name||'—')} • Qty ${o.quantity}</div>
-            <div class="small text-muted">Lens: <strong>${esc(o.lens_type||'—')}</strong>${o.lens_index ? ' • Index: <strong style="color:var(--ec-primary)">' + esc(o.lens_index) + '</strong>' : ''}</div>
-        </div>
-    </div>
-</div>
 
-<!-- ✅ BAGO: Prescription Section -->
-<div class="ec-detail-section">
-    <div class="ec-detail-section-title"><i class="bi bi-prescription"></i>Prescription</div>
-    ${o.prescription_id && o.od_sph ? `
-        <div class="ec-detail-row">
-            <span class="label">Right Eye (OD)</span>
-            <span class="value">SPH: ${esc(o.od_sph || '—')}, CYL: ${esc(o.od_cyl || '—')}, AXIS: ${esc(o.od_axis || '—')}</span>
+        <div class="ec-detail-section">
+            <div class="ec-detail-section-title"><i class="bi bi-bag"></i>Product</div>
+            <div class="d-flex gap-3 align-items-start">
+                ${o.product_image
+                    ? `<img src="${esc(o.product_image)}" style="width:64px;height:64px;object-fit:cover;border-radius:8px;border:1px solid var(--ec-border);cursor:zoom-in;" ${imgClick(o.product_image, 'Product Image')}>`
+                    : `<div style="width:64px;height:64px;border-radius:8px;background:var(--ec-bg-soft);display:flex;align-items:center;justify-content:center"><i class="bi bi-eyeglasses fs-3 text-muted"></i></div>`}
+                <div class="flex-grow-1">
+                    <div class="fw-semibold">${esc(o.product_name)}</div>
+                    <div class="small text-muted">
+                        <i class="bi bi-palette me-1"></i>Color: <strong>${esc(o.color_name || '—')}</strong>
+                        ${o.color_code ? `<span style="display:inline-block;width:12px;height:12px;border-radius:50%;background:${esc(o.color_code)};border:1px solid #ccc;vertical-align:middle;margin-left:.25rem;"></span>` : ''}
+                    </div>
+                    <div class="small text-muted">
+                        <i class="bi bi-hash me-1"></i>Quantity: <strong>${o.quantity}</strong>
+                    </div>
+                </div>
+            </div>
         </div>
-        <div class="ec-detail-row">
-            <span class="label">Left Eye (OS)</span>
-            <span class="value">SPH: ${esc(o.os_sph || '—')}, CYL: ${esc(o.os_cyl || '—')}, AXIS: ${esc(o.os_axis || '—')}</span>
+
+        <!-- ✅ FIXED: Prescription + Lens Details Section -->
+        <div class="ec-detail-section">
+            <div class="ec-detail-section-title"><i class="bi bi-prescription"></i>Prescription & Lens Details</div>
+            
+            ${(o.prescription_id || o.prescription_file) ? `
+                ${(o.od_sph || o.os_sph) ? `
+                    <div class="ec-detail-row">
+                        <span class="label">Right Eye (OD)</span>
+                        <span class="value">
+                            SPH: <strong>${esc(o.od_sph || '—')}</strong>, 
+                            CYL: <strong>${esc(o.od_cyl || '—')}</strong>, 
+                            AXIS: <strong>${esc(o.od_axis || '—')}</strong>
+                        </span>
+                    </div>
+                    <div class="ec-detail-row">
+                        <span class="label">Left Eye (OS)</span>
+                        <span class="value">
+                            SPH: <strong>${esc(o.os_sph || '—')}</strong>, 
+                            CYL: <strong>${esc(o.os_cyl || '—')}</strong>, 
+                            AXIS: <strong>${esc(o.os_axis || '—')}</strong>
+                        </span>
+                    </div>
+                ` : `
+                    <div class="ec-detail-row">
+                        <span class="label">Values</span>
+                        <span class="value" style="color: var(--ec-text-muted);">
+                            <i class="bi bi-clock-history me-1"></i>Pending optometrist input
+                        </span>
+                    </div>
+                `}
+                
+                ${o.prescription_source ? `
+                    <div class="ec-detail-row">
+                        <span class="label">Source</span>
+                        <span class="value">
+                            <span class="ec-badge ec-badge-${o.prescription_source === 'user_input' ? 'confirmed' : 'ready'}">
+                                <i class="bi bi-${o.prescription_source === 'user_input' ? 'pencil' : 'stethoscope'} me-1"></i>
+                                ${o.prescription_source === 'user_input' ? 'Provided by Customer' : 'From Eye Exam'}
+                            </span>
+                        </span>
+                    </div>
+                ` : ''}
+                
+                ${o.prescription_file ? `
+                    <div class="ec-detail-row" style="align-items:flex-start;">
+                        <span class="label">Prescription File</span>
+                        <span class="value" style="display:flex;flex-direction:column;gap:.4rem;align-items:flex-end;">
+                            <img src="../${esc(o.prescription_file)}" 
+                                 alt="Prescription" 
+                                 style="max-width:180px;max-height:180px;border-radius:8px;border:1px solid var(--ec-border);cursor:zoom-in;object-fit:cover;"
+                                 ${imgClick('../' + o.prescription_file, 'Prescription File')}
+                                 onerror="this.style.display='none'; this.nextElementSibling.style.display='inline-block';">
+                            <a href="../${esc(o.prescription_file)}" target="_blank" class="btn btn-sm btn-outline-primary" style="display:none;">
+                                <i class="bi bi-file-earmark-medical me-1"></i>View File
+                            </a>
+                        </span>
+                    </div>
+                ` : ''}
+                
+                ${o.prescription_created_at ? `
+                    <div class="ec-detail-row">
+                        <span class="label">Submitted</span>
+                        <span class="value text-muted small">${esc(o.prescription_created_at)}</span>
+                    </div>
+                ` : ''}
+            ` : `
+                <div class="ec-detail-row">
+                    <span class="label">Status</span>
+                    <span class="value" style="color: var(--ec-text-muted);">
+                        <i class="bi bi-stethoscope me-1"></i>Eye exam required
+                    </span>
+                </div>
+                <div class="ec-detail-row">
+                    <span class="label">Note</span>
+                    <span class="value" style="color: var(--ec-text-muted); font-size: .8rem;">
+                        Prescription will be filled by optometrist during appointment
+                    </span>
+                </div>
+            `}
+            
+            <!-- ✅ Lens Design -->
+            ${o.lens_type && o.lens_type !== 'frame_only' ? `
+                <div class="ec-detail-row" style="border-top:1px solid var(--ec-border); padding-top:.6rem; margin-top:.4rem;">
+                    <span class="label">Lens Design</span>
+                    <span class="value">
+                        <span class="ec-badge ec-badge-confirmed">
+                            <i class="bi bi-layers me-1"></i>
+                            ${esc(o.lens_type.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()))}
+                        </span>
+                    </span>
+                </div>
+            ` : ''}
+            
+            <!-- ✅ Lens Index -->
+            ${o.lens_index ? `
+                <div class="ec-detail-row">
+                    <span class="label">Lens Index</span>
+                    <span class="value">
+                        <strong style="color: var(--ec-primary); font-size: 1rem;">${esc(o.lens_index)}</strong>
+                        <span class="text-muted small">(Refractive Index)</span>
+                    </span>
+                </div>
+            ` : ''}
+            
+            <!-- ✅ Lens Features -->
+            ${o.lens_features && o.lens_features !== '[]' ? `
+                <div class="ec-detail-row" style="flex-direction:column; align-items:flex-start;">
+                    <span class="label" style="margin-bottom:.4rem;">Lens Features:</span>
+                    <div style="display:flex; flex-wrap:wrap; gap:.35rem;">
+                        ${renderLensFeatures(o.lens_features, o.lens_features_price)}
+                    </div>
+                </div>
+            ` : ''}
+            
+            <!-- ✅ Lens Features Total Price -->
+            ${o.lens_features_price && parseFloat(o.lens_features_price) > 0 ? `
+                <div class="ec-detail-row">
+                    <span class="label">Features Total</span>
+                    <span class="value" style="color: var(--ec-primary); font-weight:700;">
+                        +₱${parseFloat(o.lens_features_price).toFixed(2)}
+                    </span>
+                </div>
+            ` : ''}
         </div>
-        <div class="ec-detail-row">
-            <span class="label">Source</span>
-            <span class="value">${esc(o.prescription_source === 'user_input' ? 'Provided by customer' : 'From eye exam')}</span>
-        </div>
-    ` : `
-        <div class="ec-detail-row">
-            <span class="label">Status</span>
-            <span class="value" style="color: var(--ec-text-muted);">
-                <i class="bi bi-stethoscope me-1"></i>Eye exam required
-            </span>
-        </div>
-        <div class="ec-detail-row">
-            <span class="label">Note</span>
-            <span class="value" style="color: var(--ec-text-muted); font-size: .8rem;">Prescription will be filled by optometrist during appointment</span>
-        </div>
-    `}
-</div>
 
         <div class="ec-detail-section">
             <div class="ec-detail-section-title"><i class="bi bi-credit-card"></i>Payment</div>
@@ -2225,6 +2651,62 @@ function viewOrder(o) {
             `}
         </div>
 
+        <!-- ✅ BAGO: HANDOVER PHOTOS SECTION -->
+        ${(() => {
+            if (!o.handover_photos) return '';
+            
+            let photos = [];
+            try {
+                photos = typeof o.handover_photos === 'string' 
+                    ? JSON.parse(o.handover_photos) 
+                    : o.handover_photos;
+            } catch (e) {
+                console.error('Failed to parse handover_photos:', e);
+                return '';
+            }
+            
+            if (!Array.isArray(photos) || photos.length === 0) return '';
+            
+            return `
+            <div class="ec-detail-section">
+                <div class="ec-detail-section-title">
+                    <i class="bi bi-shield-check" style="color:#0d6e6e;"></i>
+                    Parcel Photos (Before Handover to Rider)
+                </div>
+                <div class="ec-proof-section" style="border-color:#86efac;background:#f0fdf4;">
+<div style="font-size:.75rem;color:#166534;margin-bottom:.5rem;">
+    <i class="bi bi-info-circle me-1"></i>
+    Proof of condition before handover to rider — ${photos.length} photo(s)
+</div>
+                    <div style="display:grid;grid-template-columns:repeat(${Math.min(photos.length, 3)}, 1fr);gap:.5rem;margin-bottom:.75rem;">
+${photos.map((p, i) => `
+    <div style="position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;border:2px solid #86efac;background:#fff;cursor:zoom-in;"
+         ${imgClick('../../' + p, 'Parcel Photo ' + (i + 1))}>
+        <img src="../../${esc(p)}" 
+             style="width:100%;height:100%;object-fit:cover;display:block;">
+                                <div style="position:absolute;top:6px;left:6px;background:rgba(13,110,110,.9);color:#fff;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:.75rem;font-weight:700;">
+                                    ${i + 1}
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                    ${o.handover_notes ? `
+                        <div class="ec-detail-row">
+                            <span class="label">Notes:</span>
+                            <span class="value">${esc(o.handover_notes)}</span>
+                        </div>
+                    ` : ''}
+                    ${o.handover_photo_at ? `
+                        <div class="ec-detail-row">
+                            <span class="label">Captured:</span>
+                            <span class="value">${esc(o.handover_photo_at)}</span>
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+            `;
+        })()}
+
         ${o.delivery_proof_image ? `
         <div class="ec-detail-section">
             <div class="ec-detail-section-title"><i class="bi bi-camera"></i>Proof of Delivery</div>
@@ -2232,7 +2714,8 @@ function viewOrder(o) {
                 <img src="../${esc(o.delivery_proof_image)}" 
                      alt="Proof of Delivery" 
                      class="ec-proof-img mb-2"
-                     onclick="window.open('../${esc(o.delivery_proof_image)}', '_blank')">
+                     style="cursor:zoom-in;"
+                     ${imgClick('../' + o.delivery_proof_image, 'Proof of Delivery')}>
                 ${o.delivery_proof_notes ? `
                     <div class="ec-detail-row">
                         <span class="label">Rider Notes:</span>
@@ -2255,7 +2738,6 @@ function viewOrder(o) {
     `;
     detailsModal.show();
 }
-
 function renderTimeline(currentStatus, isDelivery, createdAtFormatted, deliveredAtFormatted) {
     const steps = isDelivery
         ? [
@@ -2308,9 +2790,17 @@ function openAssignRiderModal(id, code) {
     selectedSlotEnd   = null;
     currentRiderSlots = [];
     outsideRiderSlots = [];
-        // ✅ Reset slot duration to 1 hour default
+    
+    // ✅ Reset slot duration
     const slotDur60 = document.getElementById('slotDur60');
     if (slotDur60) slotDur60.checked = true;
+
+    // ✅ BAGO: Reset camera + photos
+    resetCameraState();
+    
+    // ✅ Reset notes
+    const handoverNotes = document.getElementById('handoverNotes');
+    if (handoverNotes) handoverNotes.value = '';
 
     document.getElementById('assignRiderSelect').value = '';
     document.getElementById('assignDeliveryDate').value = new Date().toISOString().split('T')[0];
@@ -2325,14 +2815,12 @@ function openAssignRiderModal(id, code) {
     document.getElementById('dateDayLabel').textContent = '';
     document.getElementById('slotsDateLabel').textContent = '';
 
-    // ✅ Trigger date label update
     const d = new Date();
     const formatted = d.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
     document.getElementById('dateDayLabel').textContent = formatted;
 
     assignRiderModal.show();
 }
-
 function cancelOrder(id, code) {
     if (!userPermissions.reject) {
         Swal.fire('Access Denied','You do not have permission to cancel orders','error');
@@ -2362,7 +2850,28 @@ function postAction(action, reservationId, extra = {}) {
                 Swal.fire({ icon:'success', title:'Done!', text:data.message, timer:1500, showConfirmButton:false })
                     .then(() => location.reload());
             } else {
-                Swal.fire('Error', data.message || 'Something went wrong','error');
+                // ═══════════════════════════════════════════════════════
+                // ✅ PHASE 4: Handle blocked response
+                // ═══════════════════════════════════════════════════════
+                const errCode = data.data && data.data.code;
+                
+                if (errCode === 'blocked_cod' || errCode === 'blocked_all') {
+                    const isAllBlocked = errCode === 'blocked_all';
+                    Swal.fire({
+                        title: isAllBlocked ? '🚫 Rider Restricted' : '⚠️ Rider COD Blocked',
+                        html: `
+                            <div style="text-align:left;font-size:14px;color:#374151;line-height:1.5;">
+                                ${data.message}
+                            </div>
+                        `,
+                        icon: 'warning',
+                        width: '440px',
+                        confirmButtonColor: isAllBlocked ? '#DC2626' : '#EF4444',
+                        confirmButtonText: 'OK'
+                    });
+                } else {
+                    Swal.fire('Error', data.message || 'Something went wrong','error');
+                }
             }
         })
         .catch(err => {
@@ -2503,7 +3012,7 @@ document.getElementById('confirmApproveRefundBtn')?.addEventListener('click', fu
         if (!currentRefundId) return;
         const reason = document.getElementById('rejectRefundReason').value.trim();
         if (!reason) {
-            Swal.fire('Missing', 'Please enter a rejection reason', 'warning');
+            Swal.fire('Missing', 'Please enter a decline reason', 'warning');
             return;
         }
         rejectRefundModal.hide();
@@ -2591,7 +3100,7 @@ function renderRefunds() {
             approved:   { label: 'Approved',   cls: 'approved',   icon: 'check-circle' },
             processing: { label: 'Processing', cls: 'processing', icon: 'arrow-repeat' },
             completed:  { label: 'Completed',  cls: 'completed',  icon: 'check2-all' },
-            rejected:   { label: 'Rejected',   cls: 'rejected',   icon: 'x-circle' },
+            rejected:   { label: 'Declined',   cls: 'rejected',   icon: 'x-circle' },
             failed:     { label: 'Failed',     cls: 'failed',     icon: 'exclamation-triangle' }
         };
         const st = statusMap[r.status] || statusMap.pending;
@@ -2618,7 +3127,7 @@ if (r.status === 'pending') {
                     <i class="bi bi-eye me-1"></i>View
                 </button>
                 <button class="btn btn-danger btn-sm" onclick='openRejectRefund(${r.id}, "${esc(r.reservation_code)}", ${r.amount})'>
-                    <i class="bi bi-x-lg me-1"></i>Reject
+                    <i class="bi bi-x-lg me-1"></i>Decline
                 </button>
                 ${canAuto ? `
                     <button class="btn btn-success btn-sm" onclick='openApproveRefund(${r.id}, "${esc(r.reservation_code)}", ${r.amount}, true)'>
@@ -2894,7 +3403,7 @@ if (r.status === 'pending') {
 
     footerHtml += `
         <button class="btn btn-danger" onclick='refundDetailsModal.hide(); openRejectRefund(${r.id}, "${esc(r.reservation_code)}", ${r.amount})'>
-            <i class="bi bi-x-lg me-1"></i>Reject
+            <i class="bi bi-x-lg me-1"></i>Decline
         </button>
         ${canAuto ? `
             <button class="btn btn-success" onclick='refundDetailsModal.hide(); openApproveRefund(${r.id}, "${esc(r.reservation_code)}", ${r.amount}, true)'>
@@ -3372,4 +3881,857 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     });
 });
+
+// ✅ Helper: Render lens features as badges
+function renderLensFeatures(featuresJson, totalPrice) {
+    if (!featuresJson) return '<span class="text-muted">None</span>';
+    
+    let features = [];
+    try {
+        features = typeof featuresJson === 'string' 
+            ? JSON.parse(featuresJson) 
+            : featuresJson;
+    } catch (e) {
+        console.error('Failed to parse lens_features:', e);
+        return '<span class="text-muted">Invalid data</span>';
+    }
+    
+    if (!Array.isArray(features) || features.length === 0) {
+        return '<span class="text-muted">None</span>';
+    }
+    
+    // Feature icons + labels
+    const featureInfo = {
+        'blue_cut':          { label: 'Blue Cut',           icon: 'shield-check',  price: 800 },
+        'ar':                { label: 'Anti-Reflective',    icon: 'circle-half',   price: 500 },
+        'anti_reflective':   { label: 'Anti-Reflective',    icon: 'circle-half',   price: 500 },
+        'photochromic':      { label: 'Photochromic',       icon: 'brightness-high', price: 1200 },
+        'scratch_resistant': { label: 'Scratch Resistant',  icon: 'shield-plus',   price: 300 },
+        'uv_protection':     { label: 'UV Protection',      icon: 'sun',           price: 200 }
+    };
+    
+    return features.map(f => {
+        const key = typeof f === 'object' ? f.value : f;
+        const price = typeof f === 'object' ? f.price : (featureInfo[key]?.price || 0);
+        const info = featureInfo[key] || { label: key.replace(/_/g, ' '), icon: 'star', price };
+        
+        return `
+            <span class="ec-badge" style="
+                background: linear-gradient(135deg, #dbeafe, #bfdbfe);
+                color: #1e40af;
+                padding: .3rem .65rem;
+                font-size: .75rem;
+                font-weight: 600;
+                display: inline-flex;
+                align-items: center;
+                gap: .3rem;
+            ">
+                <i class="bi bi-${info.icon}"></i>
+                ${esc(info.label)}
+                ${price > 0 ? `<span style="opacity:.75; font-weight:400;">+₱${price}</span>` : ''}
+            </span>
+        `;
+    }).join('');
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ IMAGE MODAL — para sa prescription, product, proof of delivery
+// ═══════════════════════════════════════════════════════════════
+function openImageModal(src, alt = '') {
+    let modalEl = document.getElementById('imageViewerModal');
+    
+    // ✅ Gumawa ng modal kung wala pa
+    if (!modalEl) {
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = `
+            <div class="modal fade" id="imageViewerModal" tabindex="-1" style="z-index: 9999;">
+                <div class="modal-dialog modal-dialog-centered modal-xl" style="max-width: 95vw;">
+                    <div class="modal-content" style="background:#0f172a;border:none;">
+                        <div class="modal-header" style="border-bottom:1px solid #334155;">
+                            <h5 class="modal-title text-white" id="imageViewerTitle" style="font-size:.95rem;">
+                                <i class="bi bi-image me-2"></i>Image Preview
+                            </h5>
+                            <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body text-center" style="padding:1rem;">
+                            <img id="imageViewerImg" src="" alt="" 
+                                 style="max-width:100%;max-height:80vh;border-radius:8px;object-fit:contain;">
+                        </div>
+                        <div class="modal-footer" style="border-top:1px solid #334155;justify-content:space-between;">
+                            <a id="imageViewerDownload" href="" download target="_blank" class="btn btn-sm btn-outline-light">
+                                <i class="bi bi-download me-1"></i>Open / Download
+                            </a>
+                            <button class="btn btn-sm btn-light" data-bs-dismiss="modal">Close</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(wrapper.firstElementChild);
+        modalEl = document.getElementById('imageViewerModal');
+    }
+
+    document.getElementById('imageViewerImg').src = src;
+    document.getElementById('imageViewerImg').alt = alt;
+    document.getElementById('imageViewerTitle').innerHTML =
+        `<i class="bi bi-image me-2"></i>${alt || 'Image Preview'}`;
+    document.getElementById('imageViewerDownload').href = src;
+
+    const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+    modal.show();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ LIVE CAMERA — Parcel Photos with Timestamp Watermark
+// ═══════════════════════════════════════════════════════════════
+let cameraStream = null;
+let currentFacingMode = 'environment'; // back camera default
+let capturedPhotos = []; // Array of { dataUrl: string, timestamp: string }
+
+const MAX_PHOTOS = 3;
+
+async function startLiveCamera() {
+    const errorBox = document.getElementById('cameraError');
+    errorBox.style.display = 'none';
+
+    // ✅ Check kung supported ang getUserMedia
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        showCameraError('Live camera is not supported by your browser. Please use a modern browser (Chrome, Safari, Edge).');
+        return;
+    }
+
+    try {
+        // ✅ Stop existing stream kung meron
+        if (cameraStream) {
+            cameraStream.getTracks().forEach(t => t.stop());
+        }
+
+        // ✅ Request live camera (NOT file input)
+        cameraStream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                facingMode: { ideal: currentFacingMode },
+                width:  { ideal: 1280 },
+                height: { ideal: 720 }
+            },
+            audio: false
+        });
+
+        const video = document.getElementById('cameraStream');
+        video.srcObject = cameraStream;
+        
+        // ✅ Show camera, hide start button
+        document.getElementById('cameraContainer').style.display = '';
+        document.getElementById('startCameraBtnWrap').style.display = 'none';
+
+        // ✅ Live timestamp update (every second)
+        updateCameraTimestamp();
+        window._timestampInterval = setInterval(updateCameraTimestamp, 1000);
+
+    } catch (err) {
+        console.error('Camera error:', err);
+        let msg = 'Failed to access camera. ';
+        
+        if (err.name === 'NotAllowedError') {
+            msg += 'Please allow camera access in your browser settings.';
+        } else if (err.name === 'NotFoundError') {
+            msg += 'No camera found on this device.';
+        } else if (err.name === 'NotReadableError') {
+            msg += 'Camera is already in use by another app.';
+        } else {
+            msg += err.message;
+        }
+        
+        showCameraError(msg);
+    }
+}
+
+function updateCameraTimestamp() {
+    const el = document.getElementById('cameraTimestamp');
+    if (!el) return;
+    
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    
+    const stamp = `${months[now.getMonth()]} ${pad(now.getDate())}, ${now.getFullYear()} ` +
+                  `(${days[now.getDay()]}) ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    
+    el.textContent = '📅 ' + stamp;
+}
+
+function stopLiveCamera() {
+    if (cameraStream) {
+        cameraStream.getTracks().forEach(t => t.stop());
+        cameraStream = null;
+    }
+    
+    if (window._timestampInterval) {
+        clearInterval(window._timestampInterval);
+        window._timestampInterval = null;
+    }
+    
+    document.getElementById('cameraContainer').style.display = 'none';
+    document.getElementById('startCameraBtnWrap').style.display = '';
+}
+
+async function switchCamera() {
+    currentFacingMode = currentFacingMode === 'environment' ? 'user' : 'environment';
+    await startLiveCamera();
+}
+
+// ✅ CAPTURE PHOTO with timestamp watermark
+function captureLivePhoto() {
+    if (capturedPhotos.length >= MAX_PHOTOS) {
+        Swal.fire({
+            icon: 'warning',
+            title: 'Maximum Reached',
+            text: `Maximum of ${MAX_PHOTOS} photos only.`,
+            timer: 2000,
+            showConfirmButton: false
+        });
+        return;
+    }
+
+    const video = document.getElementById('cameraStream');
+    if (!video || !video.videoWidth) {
+        Swal.fire('Error', 'Camera not ready. Please wait a moment.', 'warning');
+        return;
+    }
+
+    // ✅ Create canvas matching video dimensions
+    const canvas = document.createElement('canvas');
+    canvas.width  = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+
+    // ✅ Mirror flip kung front camera
+    if (currentFacingMode === 'user') {
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+    }
+
+    // ✅ Draw video frame
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    // ✅ Reset transform
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+    // ═══════════════════════════════════════════════════════════
+    // ✅ WATERMARK — Timestamp + Clinic Branding
+    // ═══════════════════════════════════════════════════════════
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const months = ['January', 'February', 'March', 'April', 'May', 'June',
+                    'July', 'August', 'September', 'October', 'November', 'December'];
+    
+    const dateStr = `${months[now.getMonth()]} ${pad(now.getDate())}, ${now.getFullYear()}`;
+    const dayStr  = days[now.getDay()];
+    const timeStr = `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const fullStamp = `${dateStr} (${dayStr}) • ${timeStr}`;
+
+    // ✅ Font sizes relative to image size
+    const baseSize = Math.max(canvas.width, canvas.height);
+    const mainFontSize = Math.round(baseSize * 0.028);
+    const subFontSize  = Math.round(baseSize * 0.020);
+    const padding      = Math.round(baseSize * 0.020);
+    const boxHeight    = mainFontSize + subFontSize + padding * 1.5;
+    const boxY         = canvas.height - boxHeight - padding;
+
+    // ✅ Semi-transparent dark background
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+    ctx.fillRect(padding, boxY, canvas.width - padding * 2, boxHeight);
+
+    // ✅ Green accent bar on left
+    ctx.fillStyle = '#0d6e6e';
+    ctx.fillRect(padding, boxY, Math.round(baseSize * 0.006), boxHeight);
+
+    // ✅ Main timestamp text
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${mainFontSize}px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif`;
+    ctx.textBaseline = 'top';
+    ctx.fillText(
+        '📅 ' + fullStamp,
+        padding + Math.round(baseSize * 0.02),
+        boxY + padding * 0.5
+    );
+
+    // ✅ Sub-text (clinic name + parcel handover)
+    ctx.fillStyle = '#86efac';
+    ctx.font = `600 ${subFontSize}px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif`;
+    ctx.fillText(
+        '✓ PARCEL HANDOVER — Proof of Condition',
+        padding + Math.round(baseSize * 0.02),
+        boxY + padding * 0.5 + mainFontSize + Math.round(subFontSize * 0.3)
+    );
+
+    // ✅ Convert to data URL (JPEG 85% quality para maliit ang file)
+    const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+
+    // ✅ Store
+    capturedPhotos.push({
+        dataUrl: dataUrl,
+        timestamp: fullStamp,
+        capturedAt: now.toISOString()
+    });
+
+    // ✅ Render grid
+    renderCapturedPhotos();
+
+    // ✅ Flash effect
+    const container = document.getElementById('cameraContainer');
+    const flash = document.createElement('div');
+    flash.style.cssText = 'position:absolute;inset:0;background:#fff;opacity:0.7;pointer-events:none;transition:opacity 0.3s;';
+    container.appendChild(flash);
+    setTimeout(() => flash.style.opacity = '0', 50);
+    setTimeout(() => flash.remove(), 350);
+
+    // ✅ Vibrate on mobile
+    if (navigator.vibrate) navigator.vibrate(50);
+}
+
+function renderCapturedPhotos() {
+    const grid = document.getElementById('photosGrid');
+    const wrap = document.getElementById('capturedPhotosGrid');
+    const countEl = document.getElementById('photoCount');
+
+    if (!grid) return;
+
+    if (capturedPhotos.length === 0) {
+        wrap.style.display = 'none';
+        updateConfirmAssignButton();
+        return;
+    }
+
+    wrap.style.display = '';
+    countEl.textContent = capturedPhotos.length;
+
+    grid.innerHTML = capturedPhotos.map((photo, idx) => `
+        <div style="position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;
+                    border:2px solid #86efac;background:#f8fafc;">
+            <img src="${photo.dataUrl}" 
+                 style="width:100%;height:100%;object-fit:cover;cursor:zoom-in;display:block;"
+                 onclick="openImageModal('${photo.dataUrl.replace(/'/g, "\\'")}', 'Parcel Photo ${idx + 1}')">
+            
+            <!-- Photo number badge -->
+            <div style="position:absolute;top:4px;left:4px;background:rgba(13,110,110,.9);
+                        color:#fff;width:22px;height:22px;border-radius:50%;
+                        display:flex;align-items:center;justify-content:center;
+                        font-size:.7rem;font-weight:700;">
+                ${idx + 1}
+            </div>
+            
+            <!-- Delete button -->
+            <button type="button" 
+                    onclick="removePhoto(${idx})"
+                    style="position:absolute;top:4px;right:4px;background:rgba(220,38,38,.9);
+                           color:#fff;border:none;border-radius:50%;width:22px;height:22px;
+                           cursor:pointer;display:flex;align-items:center;justify-content:center;
+                           font-size:.65rem;">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+    `).join('');
+
+    updateConfirmAssignButton();
+}
+
+function removePhoto(idx) {
+    if (idx < 0 || idx >= capturedPhotos.length) return;
+    
+    Swal.fire({
+        title: 'Remove photo?',
+        text: 'Are you sure you want to remove this photo?',
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonColor: '#dc2626',
+        cancelButtonColor: '#6b7280',
+        confirmButtonText: 'Yes, remove',
+        cancelButtonText: 'Cancel'
+    }).then(result => {
+        if (result.isConfirmed) {
+            capturedPhotos.splice(idx, 1);
+            renderCapturedPhotos();
+        }
+    });
+}
+
+function showCameraError(msg) {
+    const errorBox = document.getElementById('cameraError');
+    errorBox.style.display = '';
+    errorBox.innerHTML = `
+        <div class="alert alert-danger small mb-0 py-2 px-3">
+            <i class="bi bi-exclamation-triangle me-1"></i>${msg}
+        </div>
+    `;
+}
+
+function resetCameraState() {
+    stopLiveCamera();
+    capturedPhotos = [];
+    renderCapturedPhotos();
+    document.getElementById('cameraContainer').style.display = 'none';
+    document.getElementById('startCameraBtnWrap').style.display = '';
+    document.getElementById('cameraError').style.display = 'none';
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ UPDATE ASSIGN BUTTON — Enable/disable base sa requirements
+// ═══════════════════════════════════════════════════════════════
+function updateConfirmAssignButton() {
+    const btn = document.getElementById('confirmAssignBtn');
+    if (!btn) return;
+    
+    const hasSlot   = selectedSlotStart && selectedSlotEnd;
+    const hasRider  = document.getElementById('assignRiderSelect')?.value;
+    const hasDate   = document.getElementById('assignDeliveryDate')?.value;
+    const hasPhotos = (typeof capturedPhotos !== 'undefined') && capturedPhotos.length > 0;
+    
+    // ✅ REQUIREMENTS: rider + date + slot + LIVE PHOTO
+    btn.disabled = !(hasSlot && hasRider && hasDate && hasPhotos);
+    
+    // ✅ Update tooltip para malaman ng user kung ano kulang
+    if (btn.disabled) {
+        let missing = [];
+        if (!hasRider)   missing.push('rider');
+        if (!hasDate)    missing.push('date');
+        if (!hasSlot)    missing.push('time slot');
+        if (!hasPhotos)  missing.push('live parcel photo');
+        btn.title = 'Kailangan: ' + missing.join(', ');
+    } else {
+        btn.title = 'Ready to assign';
+    }
+}
+
+        // ═══════════════════════════════════════════════════════════
+        // ✅ PHASE 5: REMITTANCES — Clinic Side
+        // ═══════════════════════════════════════════════════════════
+
+        let remittanceModal, approveRemitModal, rejectRemitModal;
+        let allRemittances = [];
+        let currentRemittanceFilter = '';
+        let currentRemittanceId = null;
+
+        document.addEventListener('DOMContentLoaded', function() {
+            const reviewEl = document.getElementById('remittanceReviewModal');
+            const approveEl = document.getElementById('approveRemitModal');
+            const rejectEl = document.getElementById('rejectRemitModal');
+
+            if (reviewEl) remittanceModal = new bootstrap.Modal(reviewEl);
+            if (approveEl) approveRemitModal = new bootstrap.Modal(approveEl);
+            if (rejectEl) rejectRemitModal = new bootstrap.Modal(rejectEl);
+
+            // Filter pills
+            document.querySelectorAll('#remittanceFilters .ec-refund-filter').forEach(btn => {
+                btn.addEventListener('click', function() {
+                    document.querySelectorAll('#remittanceFilters .ec-refund-filter').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                    currentRemittanceFilter = this.dataset.filter || '';
+                    renderRemittances();
+                });
+            });
+
+            // Confirm approve
+            document.getElementById('confirmApproveRemitBtn')?.addEventListener('click', function() {
+                if (!currentRemittanceId) return;
+                const notes = document.getElementById('approveRemitNotes').value.trim();
+                approveRemitModal.hide();
+                processRemittanceAction('approve_cash_remittance', currentRemittanceId, {
+                    admin_notes: notes
+                });
+            });
+
+            // Confirm reject
+            document.getElementById('confirmRejectRemitBtn')?.addEventListener('click', function() {
+                if (!currentRemittanceId) return;
+                const reason = document.getElementById('rejectRemitReason').value.trim();
+                if (!reason) {
+                    Swal.fire('Missing', 'Please enter a decline reason', 'warning');
+                    return;
+                }
+                rejectRemitModal.hide();
+                processRemittanceAction('reject_cash_remittance', currentRemittanceId, {
+                    rejection_reason: reason
+                });
+            });
+        });
+
+        // ═══════════════════════════════════════════════════════════
+        // Load Remittances from API
+        // ═══════════════════════════════════════════════════════════
+        function loadRemittances() {
+            const list = document.getElementById('remittanceList');
+            if (!list) return;
+            
+            list.innerHTML = '<div class="text-center py-5 text-muted"><div class="spinner-border text-primary" role="status"></div><p class="mt-3 mb-0">Loading remittances...</p></div>';
+
+            // ✅ Get clinic remittances via API
+            fetch('../api/reservations.php?action=list_remittances', { credentials: 'same-origin' })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success && data.data) {
+                        allRemittances = data.data.remittances || [];
+                        updateRemittanceCounts();
+                        renderRemittances();
+                    } else {
+                        list.innerHTML = '<div class="ec-refund-empty"><i class="bi bi-exclamation-triangle"></i><p>Failed to load remittances</p></div>';
+                    }
+                })
+                .catch(err => {
+                    console.error('Remittance fetch error:', err);
+                    list.innerHTML = '<div class="ec-refund-empty"><i class="bi bi-exclamation-triangle"></i><p>Network error</p></div>';
+                });
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // Update Counts
+        // ═══════════════════════════════════════════════════════════
+        function updateRemittanceCounts() {
+            const counts = {
+                all: allRemittances.length,
+                pending: 0,
+                completed: 0,
+                rejected: 0
+            };
+            allRemittances.forEach(r => {
+                if (counts[r.status] !== undefined) counts[r.status]++;
+            });
+
+            document.getElementById('remitCountAll').textContent = counts.all;
+            document.getElementById('remitCountPending').textContent = counts.pending;
+            document.getElementById('remitCountCompleted').textContent = counts.completed;
+            document.getElementById('remitCountRejected').textContent = counts.rejected;
+
+            const tabCount = document.getElementById('remitTabCount');
+            if (tabCount) {
+                tabCount.textContent = counts.pending;
+                tabCount.style.display = counts.pending > 0 ? '' : 'none';
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // Render Remittances
+        // ═══════════════════════════════════════════════════════════
+        function renderRemittances() {
+            const list = document.getElementById('remittanceList');
+            if (!list) return;
+            
+            const filtered = currentRemittanceFilter
+                ? allRemittances.filter(r => r.status === currentRemittanceFilter)
+                : allRemittances;
+
+            if (filtered.length === 0) {
+                list.innerHTML = '<div class="ec-refund-empty"><i class="bi bi-inbox"></i><p>No remittances' + (currentRemittanceFilter ? ' with status "' + currentRemittanceFilter + '"' : '') + '</p></div>';
+                return;
+            }
+
+            list.innerHTML = filtered.map(r => {
+                const statusMap = {
+                    pending:    { label: 'Pending',    cls: 'pending',    icon: 'hourglass-split' },
+                    completed:  { label: 'Completed',  cls: 'completed',  icon: 'check2-all' },
+                    rejected:   { label: 'Declined',   cls: 'rejected',   icon: 'x-circle' },
+                    failed:     { label: 'Failed',     cls: 'failed',     icon: 'exclamation-triangle' }
+                };
+                const st = statusMap[r.status] || statusMap.pending;
+
+                const methodBadge = r.method === 'online' 
+                    ? '<span class="badge" style="background:#dbeafe;color:#1e40af;font-size:.65rem;font-weight:700;">🌐 ONLINE</span>'
+                    : '<span class="badge" style="background:#fef3c7;color:#92400e;font-size:.65rem;font-weight:700;">💵 CASH</span>';
+
+                let actions = '';
+                if (r.status === 'pending' && r.method === 'cash') {
+                    actions = `
+                        <button class="btn btn-outline-secondary btn-sm" onclick='viewRemittance(${JSON.stringify(r).replace(/'/g, "\\'")})'>
+                            <i class="bi bi-eye me-1"></i>View
+                        </button>
+                        <button class="btn btn-danger btn-sm" onclick='openRejectRemit(${r.id}, "${esc(r.rider_name)}", ${r.amount})'>
+                            <i class="bi bi-x-lg me-1"></i>Decline
+                        </button>
+                        <button class="btn btn-success btn-sm" onclick='openApproveRemit(${r.id}, "${esc(r.rider_name)}", ${r.amount})'>
+                            <i class="bi bi-check-lg me-1"></i>Approve
+                        </button>
+                    `;
+                } else {
+                    actions = `
+                        <button class="btn btn-outline-secondary btn-sm" onclick='viewRemittance(${JSON.stringify(r).replace(/'/g, "\\'")})'>
+                            <i class="bi bi-eye me-1"></i>View
+                        </button>
+                    `;
+                }
+
+                return `
+                    <div class="ec-refund-card">
+                        <div class="ec-refund-header">
+                            <div>
+                                <div class="ec-refund-id">${esc(r.remittance_code)}</div>
+                                <div class="ec-refund-date">
+                                    <i class="bi bi-clock me-1"></i>${esc(r.submitted_at_formatted || '')}
+                                </div>
+                            </div>
+                            <div class="d-flex gap-2 align-items-center">
+                                ${methodBadge}
+                                <span class="ec-refund-status ec-refund-${st.cls}">
+                                    <i class="bi bi-${st.icon}"></i>${st.label}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div class="ec-refund-body">
+                            <div style="
+                                width:56px;height:56px;border-radius:12px;
+                                background:linear-gradient(135deg, #0d6e6e, #00B761);
+                                display:flex;align-items:center;justify-content:center;
+                                color:#fff;font-size:24px;flex-shrink:0;font-weight:800;
+                            ">
+                                ${esc((r.rider_name || '?').charAt(0).toUpperCase())}
+                            </div>
+                            <div class="ec-refund-info">
+                                <div class="ec-refund-customer">${esc(r.rider_name || 'Unknown Rider')}</div>
+                                <div style="font-size:12px;color:#6b7280;margin-top:4px;">
+                                    ${esc(r.notes || 'No notes provided')}
+                                </div>
+                            </div>
+                            <div class="ec-refund-right">
+                                <div style="font-size:1.25rem;font-weight:800;color:#00B761;">
+                                    ₱${parseFloat(r.amount).toFixed(2)}
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="ec-refund-actions">
+                            ${actions}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // View Remittance Details
+        // ═══════════════════════════════════════════════════════════
+        function viewRemittance(r) {
+            const body = document.getElementById('remittanceReviewBody');
+            const footer = document.getElementById('remittanceReviewFooter');
+
+            const statusMap = {
+                pending:    { label: 'Pending',    cls: 'pending' },
+                completed:  { label: 'Completed',  cls: 'completed' },
+                rejected:   { label: 'Rejected',   cls: 'rejected' },
+                failed:     { label: 'Failed',     cls: 'failed' }
+            };
+            const st = statusMap[r.status] || statusMap.pending;
+
+            const methodLabel = r.method === 'online' 
+                ? '<span class="badge" style="background:#dbeafe;color:#1e40af;">🌐 Online</span>'
+                : '<span class="badge" style="background:#fef3c7;color:#92400e;">💵 Cash</span>';
+
+            // Proof image handling
+            let proofHtml = '<p class="text-muted small">No proof uploaded</p>';
+            if (r.proof_image) {
+                let imgUrl = r.proof_image;
+                if (imgUrl.startsWith('uploads/')) {
+                    imgUrl = '../' + imgUrl;
+                } else if (!imgUrl.startsWith('/') && !imgUrl.startsWith('http')) {
+                    imgUrl = '../uploads/remittance_proofs/' + imgUrl;
+                }
+                proofHtml = `
+                    <div style="border:2px solid #86efac;border-radius:10px;overflow:hidden;">
+                        <img src="${esc(imgUrl)}" 
+                             style="width:100%;max-height:400px;object-fit:contain;background:#f8fafc;cursor:pointer;display:block;"
+                             onclick="window.open(this.src, '_blank')"
+                             onerror="this.parentElement.innerHTML='<div style=\\'padding:20px;text-align:center;color:#94a3b8;\\'><i class=\\'bi bi-image fs-3\\'></i><br>Image not found</div>'">
+                    </div>
+                `;
+            }
+
+            body.innerHTML = `
+                <div class="mb-3">
+                    <div class="ec-detail-section-title">
+                        <i class="bi bi-info-circle"></i>Remittance Info
+                    </div>
+                    <div class="ec-refund-detail-row">
+                        <span class="label">Code</span>
+                        <span class="value" style="font-family:monospace;">${esc(r.remittance_code)}</span>
+                    </div>
+                    <div class="ec-refund-detail-row">
+                        <span class="label">Rider</span>
+                        <span class="value">${esc(r.rider_name || '—')}</span>
+                    </div>
+                    <div class="ec-refund-detail-row">
+                        <span class="label">Method</span>
+                        <span class="value">${methodLabel}</span>
+                    </div>
+                    <div class="ec-refund-detail-row">
+                        <span class="label">Amount</span>
+                        <span class="value" style="color:#00B761;font-size:1.15rem;font-weight:800;">₱${parseFloat(r.amount).toFixed(2)}</span>
+                    </div>
+                    <div class="ec-refund-detail-row">
+                        <span class="label">Status</span>
+                        <span class="value"><span class="ec-refund-status ec-refund-${st.cls}">${st.label}</span></span>
+                    </div>
+                    <div class="ec-refund-detail-row">
+                        <span class="label">Submitted</span>
+                        <span class="value">${esc(r.submitted_at_formatted || '—')}</span>
+                    </div>
+                    ${r.completed_at_formatted ? `
+                        <div class="ec-refund-detail-row">
+                            <span class="label">Completed</span>
+                            <span class="value">${esc(r.completed_at_formatted)}</span>
+                        </div>
+                    ` : ''}
+                </div>
+
+                ${r.notes ? `
+                    <div class="mb-3">
+                        <div class="ec-detail-section-title">
+                            <i class="bi bi-chat-left-text"></i>Rider Notes
+                        </div>
+                        <div style="background:#f8fafc;padding:10px 12px;border-radius:8px;font-size:13px;">
+                            ${esc(r.notes)}
+                        </div>
+                    </div>
+                ` : ''}
+
+                ${r.method === 'cash' ? `
+                    <div class="mb-3">
+                        <div class="ec-detail-section-title">
+                            <i class="bi bi-camera-fill"></i>Proof Photo
+                        </div>
+                        ${proofHtml}
+                    </div>
+                ` : ''}
+
+                ${r.admin_notes ? `
+                    <div class="mb-3">
+                        <div class="ec-detail-section-title">
+                            <i class="bi bi-shield-check"></i>Admin Notes
+                        </div>
+                        <div style="background:#f0fdf4;padding:10px 12px;border-radius:8px;font-size:13px;color:#065f46;">
+                            ${esc(r.admin_notes)}
+                        </div>
+                    </div>
+                ` : ''}
+
+                ${r.rejection_reason ? `
+                    <div class="mb-3">
+                        <div class="ec-detail-section-title">
+                            <i class="bi bi-x-circle-fill"></i>Decline Reason
+                        </div>
+                        <div style="background:#fef2f2;padding:10px 12px;border-radius:8px;font-size:13px;color:#991b1b;">
+                            ${esc(r.rejection_reason)}
+                        </div>
+                    </div>
+                ` : ''}
+            `;
+
+            // Footer buttons
+            let footerHtml = '<button class="btn btn-secondary" data-bs-dismiss="modal">Close</button>';
+
+            if (r.status === 'pending' && r.method === 'cash') {
+                footerHtml += `
+                    <button class="btn btn-danger" onclick='remittanceModal.hide(); openRejectRemit(${r.id}, "${esc(r.rider_name)}", ${r.amount})'>
+                        <i class="bi bi-x-lg me-1"></i>Decline
+                    </button>
+                    <button class="btn btn-success" onclick='remittanceModal.hide(); openApproveRemit(${r.id}, "${esc(r.rider_name)}", ${r.amount})'>
+                        <i class="bi bi-check-lg me-1"></i>Approve
+                    </button>
+                `;
+            }
+            footer.innerHTML = footerHtml;
+
+            remittanceModal.show();
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // Approve Remittance
+        // ═══════════════════════════════════════════════════════════
+        function openApproveRemit(remittanceId, riderName, amount) {
+            currentRemittanceId = remittanceId;
+            document.getElementById('approveRemitRider').textContent = riderName;
+            document.getElementById('approveRemitAmount').textContent = '₱' + parseFloat(amount).toFixed(2);
+            document.getElementById('approveRemitNotes').value = '';
+            approveRemitModal.show();
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // Reject Remittance
+        // ═══════════════════════════════════════════════════════════
+        function openRejectRemit(remittanceId, riderName, amount) {
+            currentRemittanceId = remittanceId;
+            document.getElementById('rejectRemitRider').textContent = riderName;
+            document.getElementById('rejectRemitAmount').textContent = '₱' + parseFloat(amount).toFixed(2);
+            document.getElementById('rejectRemitReason').value = '';
+            rejectRemitModal.show();
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // Process Remittance Action
+        // ═══════════════════════════════════════════════════════════
+        function processRemittanceAction(action, remittanceId, extra = {}) {
+            Swal.fire({
+                title: 'Processing...',
+                allowOutsideClick: false,
+                showConfirmButton: false,
+                didOpen: () => Swal.showLoading()
+            });
+
+            const formData = new FormData();
+            formData.append('action', action);
+            formData.append('remittance_id', remittanceId);
+            Object.entries(extra).forEach(([k, v]) => formData.append(k, v));
+
+            fetch('../api/reservations.php', {
+                method: 'POST',
+                body: formData,
+                credentials: 'same-origin'
+            })
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) {
+                        Swal.fire({
+                            icon: 'success',
+                            title: 'Done!',
+                            text: data.message,
+                            timer: 1500,
+                            showConfirmButton: false
+                        }).then(() => {
+                            loadRemittances();
+                            setTimeout(() => location.reload(), 800);
+                        });
+                    } else {
+                        Swal.fire('Error', data.message || 'Something went wrong', 'error');
+                    }
+                })
+                .catch(err => {
+                    console.error('Remittance action error:', err);
+                    Swal.fire('Error', 'Network error: ' + err.message, 'error');
+                });
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // Hook remittance tab into existing tab click handler
+        // ═══════════════════════════════════════════════════════════
+        document.addEventListener('DOMContentLoaded', function() {
+            const remitTab = document.getElementById('remitTab');
+            if (remitTab) {
+                // Replace default tab behavior
+                remitTab.addEventListener('click', function(e) {
+                    e.stopImmediatePropagation();
+                    
+                    document.querySelectorAll('.ec-tab').forEach(t => t.classList.remove('active'));
+                    this.classList.add('active');
+                    
+                    document.getElementById('filterBar').style.display = 'none';
+                    document.getElementById('selectAllBar').style.display = 'none';
+                    document.getElementById('bulkToolbar').classList.remove('show');
+                    document.getElementById('ordersContainer').style.display = 'none';
+                    document.getElementById('noResultsMsg').classList.add('d-none');
+                    document.getElementById('refundContainer').classList.remove('active');
+                    document.getElementById('remittanceContainer').classList.add('active');
+                    
+                    loadRemittances();
+                }, true); // ← use capture phase
+            }
+        });
 </script>

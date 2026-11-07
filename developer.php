@@ -1,4 +1,5 @@
 <?php
+
 // index.php - SuperAdmin Dashboard
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -35,6 +36,7 @@ $page = $_GET['page'] ?? 'dashboards';
 $superAdminModules = [
     'dashboards',
     'clinics',
+    'supplier_approvals',
     'subscription_income',
     '3d_requests',
     'patients',
@@ -47,7 +49,8 @@ $superAdminModules = [
     'users',
     'settings',
     'logs',
-    'reports'
+    'reports',
+    'support_inbox'
 ];
 
 // BLOCK UNAUTHORIZED PAGE ACCESS

@@ -1,18 +1,20 @@
 <?php
 /**
- * ocr_extract.php — Google Cloud Vision OCR + improved parsing
- * Requires: config/api_keys.php with define('GOOGLE_VISION_API_KEY', '...')
+ * ocr_extract.php — OCR.space API + improved parsing
+ * Requires: config/api_keys.php with define('OCR_SPACE_API_KEY', '...')
  */
 
 header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
 
-// TEMPORARY - i-on muna natin para makita ang totoong error (i-off pagkatapos ma-debug)
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    echo json_encode(['error' => 'Method not allowed']);
+    echo json_encode([
+        'error'  => 'Method not allowed',
+        'method' => $_SERVER['REQUEST_METHOD'],
+    ]);
     exit;
 }
 
@@ -33,38 +35,39 @@ if (!$base64) {
 
 require_once __DIR__ . '/../config/api_keys.php';
 
-$apiKey = defined('GOOGLE_VISION_API_KEY') ? GOOGLE_VISION_API_KEY : null;
+$apiKey = defined('OCR_SPACE_API_KEY') ? OCR_SPACE_API_KEY : null;
 if (!$apiKey) {
-    error_log('GOOGLE_VISION_API_KEY is not set (check config/api_keys.php)');
+    error_log('OCR_SPACE_API_KEY is not set (check config/api_keys.php)');
+    $emptyResult['_debug'] = ['error' => 'API key missing'];
     echo json_encode($emptyResult);
     exit;
 }
 
+// PDF not supported by OCR.space free tier
 if ($mimeType === 'application/pdf') {
-    $debugInfo['note'] = 'PDF direct OCR not supported in this simple version. Mag-upload ng JPG/PNG na litrato ng document.';
+    $debugInfo['note'] = 'PDF not supported. Please upload JPG/PNG.';
     $emptyResult['_debug'] = $debugInfo;
     echo json_encode($emptyResult);
     exit;
 }
 
-$payload = [
-    'requests' => [
-        [
-            'image' => ['content' => $base64],
-            'features' => [
-                ['type' => 'DOCUMENT_TEXT_DETECTION'],
-            ],
-        ],
-    ],
+// Build multipart request for OCR.space
+$postFields = [
+    'apikey'            => $apiKey,
+    'base64Image'       => 'data:' . $mimeType . ';base64,' . $base64,
+    'language'          => 'eng',
+    'isOverlayRequired' => 'false',
+    'detectOrientation' => 'true',
+    'scale'             => 'true',
+    'OCREngine'         => '2',
 ];
 
 $ch = curl_init();
-curl_setopt($ch, CURLOPT_URL, 'https://vision.googleapis.com/v1/images:annotate?key=' . urlencode($apiKey));
+curl_setopt($ch, CURLOPT_URL, 'https://api.ocr.space/parse/image');
 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
 curl_setopt($ch, CURLOPT_POST, true);
 curl_setopt($ch, CURLOPT_TIMEOUT, 60);
-curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
-curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($payload));
+curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
 
 $response = curl_exec($ch);
 $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -75,19 +78,39 @@ $result = $emptyResult;
 
 if ($httpCode === 200 && $response) {
     $data = json_decode($response, true);
-    $text = $data['responses'][0]['fullTextAnnotation']['text'] ?? '';
 
-    if (!$text) {
-        $debugInfo['note'] = 'Walang na-detect na text sa image (baka malabo ang litrato).';
+    if (!empty($data['IsErroredOnProcessing'])) {
+        $debugInfo['api_error'] = $data['ErrorMessage'] ?? 'Unknown OCR error';
     } else {
-        $result = extractFieldsFromText($text, $docName);
-        $debugInfo['raw_text_preview'] = substr($text, 0, 500);
+        $text = '';
+        if (!empty($data['ParsedResults'])) {
+            foreach ($data['ParsedResults'] as $pr) {
+                $text .= ($pr['ParsedText'] ?? '') . "\n";
+            }
+        }
+        $text = trim($text);
+
+        // 1. Detect kung blurry (taasan natin sa 100 characters)
+        if (strlen($text) < 100) {
+            $debugInfo['note'] = 'Image is blurry or contains very little text.';
+            $result['warning'] = 'blurry';
+        } else {
+            // 2. Extract fields (Name, Dates)
+            $result = extractFieldsFromText($text, $docName);
+            $debugInfo['raw_text_preview'] = substr($text, 0, 500);
+
+            // 3. Detect kung walang "Cavite" sa address
+            $textLower = strtolower($text);
+            if (strpos($textLower, 'cavite') === false) {
+                $result['warning'] = 'address_mismatch';
+            }
+        }
     }
 } else {
-    error_log("Google Vision API error ({$httpCode}) for {$docName}: {$curlErr} | {$response}");
+    error_log("OCR.space error ({$httpCode}) for {$docName}: {$curlErr} | {$response}");
     $debugInfo['http_code'] = $httpCode;
     $debugInfo['curl_error'] = $curlErr;
-    $debugInfo['api_response'] = $response;
+    $debugInfo['api_response'] = substr($response, 0, 500);
 }
 
 error_log("OCR Result for {$docName}: " . json_encode($result));
@@ -96,8 +119,17 @@ if (!empty($debugInfo)) {
     $result['_debug'] = $debugInfo;
 }
 
+// Siguraduhing may warning key (null kung wala)
+if (!isset($result['warning'])) {
+    $result['warning'] = null;
+}
+
 echo json_encode($result);
 
+
+// ═══════════════════════════════════════════════════════════
+// PARSER
+// ═══════════════════════════════════════════════════════════
 
 function extractFieldsFromText(string $text, string $docName): array
 {
@@ -109,43 +141,35 @@ function extractFieldsFromText(string $text, string $docName): array
 
     $result['owner_name'] = extractOwnerName($text);
 
-    // ── DATES ───────────────────────────────────────────────────
-    $months = 'January|February|March|April|May|June|July|August|September|October|November|December|' .
-              'Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec';
+    $months = 'January|February|March|April|May|June|July|August|September|October|November|December|'
+            . 'Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec';
 
-    // Isang "buong petsa" fragment na magagamit natin paulit-ulit --
-    // kasama dito ang optional comma sa loob mismo ng petsa
-    // (hal. "January 05, 2026"), para hindi ito ma-cut ng ibang pattern.
-    $dateFragment = '(?:(?:' . $months . ')\.?\s+\d{1,2},?\s+\d{4}'
+    $dateFragment = '(?:'
+        . '(?:' . $months . ')\.?\s+\d{1,2},?\s+\d{4}'
         . '|\d{1,2}\s+(?:' . $months . ')\.?,?\s+\d{4}'
         . '|\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}'
-        . '|\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})';
-
-    $datePatterns = [
-        '/(' . $dateFragment . ')/i',
-    ];
+        . '|\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}'
+        . ')';
 
     $allDates = [];
-    foreach ($datePatterns as $pattern) {
-        if (preg_match_all($pattern, $text, $matches, PREG_OFFSET_CAPTURE)) {
-            foreach ($matches[1] as $match) {
-                $raw = $match[0];
-                $pos = $match[1];
-                $norm = normalizeDate($raw);
-                if ($norm) {
-                    $allDates[] = ['raw' => $raw, 'pos' => $pos, 'normalized' => $norm];
-                }
+    if (preg_match_all('/(' . $dateFragment . ')/i', $text, $matches, PREG_OFFSET_CAPTURE)) {
+        foreach ($matches[1] as $match) {
+            $raw  = $match[0];
+            $pos  = $match[1];
+            $norm = normalizeDate($raw);
+            if ($norm) {
+                $allDates[] = ['raw' => $raw, 'pos' => $pos, 'normalized' => $norm];
             }
         }
     }
 
     $releaseDate = null;
     $expiryDate  = null;
-    $releaseKeywords = '/(?:date\s*issued|issued\s*on|released|date\s*of\s*issue|release\s*date)/i';
-    $expiryKeywords  = '/(?:valid\s*until|valid\s*thru|valid\s*up\s*to|expiry|expires|expiration)/i';
+    $releaseKeywords = '/(?:date\s*issued|issued\s*on|released|date\s*of\s*issue|release\s*date|issued\s*date)/i';
+    $expiryKeywords  = '/(?:valid\s*until|valid\s*thru|valid\s*up\s*to|expiry|expires|expiration|validity|good\s*until|good\s*thru)/i';
 
     foreach ($allDates as $d) {
-        $contextStart = max(0, $d['pos'] - 60);
+        $contextStart = max(0, $d['pos'] - 80);
         $context = substr($text, $contextStart, $d['pos'] - $contextStart);
 
         if (!$releaseDate && preg_match($releaseKeywords, $context)) {
@@ -155,12 +179,9 @@ function extractFieldsFromText(string $text, string $docName): array
         }
     }
 
-    // "is valid from X to Y" style -- gamitin ang parehong $dateFragment
-    // dito para hindi mahati ang petsa sa maling comma.
     if ((!$releaseDate || !$expiryDate) && preg_match(
-        '/valid\s+from\s+(' . $dateFragment . ')\s+to\s+(' . $dateFragment . ')/i',
-        $text,
-        $vm
+        '/valid\s+from\s+(' . $dateFragment . ')\s+(?:to|until)\s+(' . $dateFragment . ')/i',
+        $text, $vm
     )) {
         $fromNorm = normalizeDate(trim($vm[1]));
         $toNorm   = normalizeDate(trim($vm[2]));
@@ -212,6 +233,9 @@ function extractOwnerName(string $text): ?string
         '/issued\s+to/i',
         '/this\s+is\s+to\s+certify\s+that/i',
         '/this\s+certifies\s+that/i',
+        '/business\s+name/i',
+        '/trade\s+name/i',
+        '/registered\s+name/i',
     ];
 
     foreach ($labelPatterns as $pattern) {
@@ -221,7 +245,6 @@ function extractOwnerName(string $text): ?string
             }
 
             $colInLine = $m[0][1] + strlen($m[0][0]);
-
             $sameLineRemainder = substr($line, $colInLine);
             $sameLineRemainder = trim(preg_replace('/^[\s:\-–—]+/', '', $sameLineRemainder));
 
@@ -232,9 +255,7 @@ function extractOwnerName(string $text): ?string
 
             for ($i = $lineIndex + 1; $i < count($lines) && $i <= $lineIndex + 4; $i++) {
                 $next = trim($lines[$i]);
-                if ($next === '') {
-                    continue;
-                }
+                if ($next === '') continue;
                 $candidate = cleanNameCandidate($next);
                 if ($candidate) {
                     return $candidate;
@@ -252,20 +273,13 @@ function cleanNameCandidate(string $candidate): ?string
     $candidate = trim(preg_replace('/\s+/', ' ', $candidate));
     $candidate = trim($candidate, " \t\n\r\0\x0B.:-–—");
 
-    if ($candidate === '') {
-        return null;
-    }
-    if (strlen($candidate) < 3 || strlen($candidate) > 60) {
-        return null;
-    }
-    if (!preg_match('/^[A-Za-zÀ-ÿ\'\.\-\s]+$/', $candidate)) {
-        return null;
-    }
+    if ($candidate === '') return null;
+    if (strlen($candidate) < 3 || strlen($candidate) > 60) return null;
+    if (!preg_match('/^[A-Za-zÀ-ÿ\'\.\-\s]+$/', $candidate)) return null;
+
     $rejectWords = '/^(Barangay|City|Municipality|Province|Republic|Philippines|'
-        . 'Office|Department|Sample|Certificate|This|Address|Business)\b/i';
-    if (preg_match($rejectWords, $candidate)) {
-        return null;
-    }
+        . 'Office|Department|Sample|Certificate|This|Address|Business|Trade)\b/i';
+    if (preg_match($rejectWords, $candidate)) return null;
 
     $roleStopWords = ['the', 'a', 'an', 'of', 'to', 'taxpayer', 'applicant',
         'licensee', 'licensed', 'practitioner', 'owner', 'proprietor',
@@ -273,9 +287,7 @@ function cleanNameCandidate(string $candidate): ?string
         'record', 'sample', 'name'];
     $words = array_filter(explode(' ', strtolower($candidate)), 'strlen');
     $nonStopWords = array_filter($words, fn($w) => !in_array($w, $roleStopWords, true));
-    if (empty($nonStopWords)) {
-        return null;
-    }
+    if (empty($nonStopWords)) return null;
 
     return $candidate;
 }

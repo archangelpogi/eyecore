@@ -519,10 +519,12 @@ $canDelete = RBACHelper::hasPermission('crm_messages_delete');
                 <form id="newMessageForm">
                     <div class="mb-3">
                         <label class="form-label fw-semibold">Send To</label>
-                        <select id="receiver_type" class="form-select mb-2" style="border-radius: 12px;">
-                            <option value="user">Staff Member</option>
-                            <option value="patient">Patient</option>
-                        </select>
+<select id="receiver_type" class="form-select mb-2" style="border-radius: 12px;">
+    <option value="user">Staff Member</option>
+    <option value="patient">Patient</option>
+    <option value="rider">🛵 Rider</option>
+    <option value="supplier_rider">🚚 Supplier Rider</option>
+</select>
                         <select id="receiver_id" class="form-select" style="border-radius: 12px;" required>
                             <option value="">Select...</option>
                         </select>
@@ -728,7 +730,13 @@ function openConversation(convId, otherName, otherType, avatar) {
     $('#chatHeader').removeClass('d-none');
     $('#chatAvatar').html(avatar ? `<img src="${avatar}" class="w-100 h-100 rounded-3 object-fit-cover">` : `<i class="bi bi-person fs-4"></i>`);
     $('#chatWithName').text(otherName);
-    $('#chatWithStatus').text(otherType === 'user' ? 'Staff Member' : 'Patient');
+    const typeLabels = {
+    'user': 'Staff Member',
+    'patient': 'Patient',
+    'rider': 'Clinic Rider',
+    'supplier_rider': 'Supplier Rider'
+};
+$('#chatWithStatus').text(typeLabels[otherType] || otherType);
     
     if (canSend) {
         $('#messageInputArea').removeClass('d-none').show();
@@ -751,6 +759,7 @@ function loadMessages(convId) {
                     // m.sender_type = 'clinic' means clinic staff sent it (OUTGOING)
                     // m.sender_type = 'user' means patient sent it (INCOMING)
                     const isOutgoing = (m.sender_type === 'clinic');
+const isIncoming = (m.sender_type === 'user' || m.sender_type === 'patient' || m.sender_type === 'rider' || m.sender_type === 'supplier_rider');
                     const side = isOutgoing ? 'justify-content-end' : 'justify-content-start';
                     const bubbleClass = isOutgoing ? 'message-outgoing' : 'message-incoming';
                     const senderClass = isOutgoing ? 'text-white-50' : 'text-teal';

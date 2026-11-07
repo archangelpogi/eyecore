@@ -86,20 +86,22 @@ if ($action === 'dashboard_stats') {
     exit;
 }
 
-// ============================================
-// PURCHASE ORDERS MODULE
-// ============================================
-
-// GET POs by status
 if ($action === 'get_pos') {
     try {
         $status = $_GET['status'] ?? 'all';
         
-        $sql = "SELECT po.*, pr.pr_number, pr.department, pr.purpose,
-                       CONCAT(u.first_name, ' ', u.last_name) as requested_by
+        $sql = "SELECT po.*, 
+                       pr.pr_number, 
+                       pr.department, 
+                       pr.purpose,
+                       CONCAT(u.first_name, ' ', u.last_name) as requested_by,
+                       r.full_name as rider_name,
+                       r.phone as rider_phone,
+                       (SELECT COUNT(*) FROM pr_items WHERE pr_id = po.pr_id) AS item_count
                 FROM purchase_orders po
                 JOIN purchase_requests pr ON po.pr_id = pr.id
                 LEFT JOIN users u ON pr.requested_by = u.id
+                LEFT JOIN supplier_riders r ON po.assigned_rider_id = r.id
                 WHERE po.supplier_id = ?";
         
         $params = [$supplier_id];
@@ -122,13 +124,11 @@ if ($action === 'get_pos') {
     }
     exit;
 }
-
 // GET single PO details with items - WITH COMPLETE CLINIC AND REQUESTER INFO
 if ($action === 'get_po_details') {
     try {
         $po_id = $_GET['id'] ?? 0;
         
-        // Get PO details with clinic and requester info
         $po = $pdo->prepare("
             SELECT 
                 po.*, 
@@ -140,10 +140,14 @@ if ($action === 'get_po_details') {
                 u.first_name,
                 u.last_name,
                 u.email as requester_email,
-                c.contact as requester_phone,
                 c.clinic_name,
                 c.address as clinic_address,
+                c.street_address,
+                c.barangay,
                 c.city as clinic_city,
+                c.province as clinic_state,
+                c.postal_code as clinic_postal,
+                c.contact as clinic_contact,
                 c.phone as clinic_phone,
                 c.clinic_email as clinic_email
             FROM purchase_orders po
@@ -166,15 +170,42 @@ if ($action === 'get_po_details') {
         $po_data['items'] = $items->fetchAll(PDO::FETCH_ASSOC);
         
         // Format requester name
-        $po_data['requester_name'] = trim($po_data['first_name'] . ' ' . $po_data['last_name']);
+        $po_data['requester_name'] = trim(($po_data['first_name'] ?? '') . ' ' . ($po_data['last_name'] ?? ''));
         
-        // Format full clinic address
+        // ✅ Build full clinic address (structured)
         $clinic_address_parts = [];
-        if (!empty($po_data['clinic_address'])) $clinic_address_parts[] = $po_data['clinic_address'];
-        if (!empty($po_data['clinic_city'])) $clinic_address_parts[] = $po_data['clinic_city'];
-        if (!empty($po_data['clinic_state'])) $clinic_address_parts[] = $po_data['clinic_state'];
-        if (!empty($po_data['clinic_postal'])) $clinic_address_parts[] = $po_data['clinic_postal'];
+        if (!empty($po_data['street_address'])) $clinic_address_parts[] = $po_data['street_address'];
+        if (!empty($po_data['barangay']))       $clinic_address_parts[] = 'Brgy. ' . $po_data['barangay'];
+        if (!empty($po_data['clinic_city']))    $clinic_address_parts[] = $po_data['clinic_city'];
+        if (!empty($po_data['clinic_state']))   $clinic_address_parts[] = $po_data['clinic_state'];
+        if (!empty($po_data['clinic_postal']))  $clinic_address_parts[] = $po_data['clinic_postal'];
+        
+        // Fallback sa simpleng address
+        if (empty($clinic_address_parts) && !empty($po_data['clinic_address'])) {
+            $clinic_address_parts[] = $po_data['clinic_address'];
+        }
+        
         $po_data['full_clinic_address'] = implode(', ', $clinic_address_parts);
+        
+        // ✅ Contact fallbacks
+        if (empty($po_data['contact_person'])) {
+            $po_data['contact_person'] = $po_data['clinic_contact'] ?? '';
+        }
+        if (empty($po_data['contact_phone'])) {
+            $po_data['contact_phone'] = $po_data['clinic_phone'] ?? '';
+        }
+        if (empty($po_data['contact_email'])) {
+            $po_data['contact_email'] = $po_data['clinic_email'] ?? '';
+        }
+        
+        // ✅ Payment & VAT fallbacks
+        $po_data['payment_method'] = $po_data['payment_method'] ?? 'Bank Transfer';
+        $po_data['vat_rate']       = $po_data['vat_rate'] ?? 0.12;
+        
+        if (empty($po_data['subtotal']) && !empty($po_data['total_amount'])) {
+            $po_data['subtotal']   = $po_data['total_amount'] / (1 + $po_data['vat_rate']);
+            $po_data['vat_amount'] = $po_data['total_amount'] - $po_data['subtotal'];
+        }
         
         echo json_encode(['success' => true, 'data' => $po_data]);
         
@@ -1182,6 +1213,441 @@ if ($action === 'delete_contact') {
         echo json_encode(['success' => true, 'message' => 'Contact deleted successfully']);
         
     } catch (Exception $e) {
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+    exit;
+}
+
+// ============================================================
+// ASSIGN RIDER — with scheduling
+// ============================================================
+if ($action === 'assign_rider') {
+    try {
+        $po_id = (int)($_POST['po_id'] ?? 0);
+        $rider_id = (int)($_POST['rider_id'] ?? 0);
+        $delivery_date = $_POST['delivery_date'] ?? '';
+        $time_start = $_POST['time_start'] ?? '';
+        $time_end = $_POST['time_end'] ?? '';
+        $notes = trim($_POST['notes'] ?? '');
+        
+        // Validate
+        if (!$po_id || !$rider_id || empty($delivery_date) || empty($time_start) || empty($time_end)) {
+            throw new Exception('PO ID, rider, date, and time window are required');
+        }
+        
+        // Normalize time
+        if (strlen($time_start) === 5) $time_start .= ':00';
+        if (strlen($time_end) === 5) $time_end .= ':00';
+        
+        if ($time_start >= $time_end) {
+            throw new Exception('Time start must be before time end');
+        }
+        
+        // Verify PO belongs to supplier and is assignable
+        $poStmt = $pdo->prepare("
+            SELECT po.*, pr.pr_number, pr.requested_by, pr.clinic_id
+            FROM purchase_orders po
+            JOIN purchase_requests pr ON po.pr_id = pr.id
+            WHERE po.id = ? AND po.supplier_id = ?
+        ");
+        $poStmt->execute([$po_id, $supplier_id]);
+        $po = $poStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$po) {
+            throw new Exception('PO not found');
+        }
+        
+        if (!in_array($po['status'], ['To Ship', 'Shipped'])) {
+            throw new Exception('PO must be in "To Ship" or "Shipped" status');
+        }
+        
+        // Verify rider belongs to supplier, active, verified
+        $riderStmt = $pdo->prepare("
+            SELECT id, full_name, phone 
+            FROM supplier_riders
+            WHERE id = ? AND supplier_id = ? 
+              AND status = 'Active' 
+              AND verification_status = 'Verified'
+        ");
+        $riderStmt->execute([$rider_id, $supplier_id]);
+        $rider = $riderStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$rider) {
+            throw new Exception('Rider not found, inactive, or not verified');
+        }
+        
+        // ========== CHECK SCHEDULE CONFLICT ==========
+        $day_of_week = (int)date('N', strtotime($delivery_date));
+        
+        $schedCheck = $pdo->prepare("
+            SELECT time_in, time_out, break_start, break_end, is_active
+            FROM supplier_rider_schedules
+            WHERE rider_id = ? AND day_of_week = ?
+        ");
+        $schedCheck->execute([$rider_id, $day_of_week]);
+        $sched = $schedCheck->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$sched) {
+            throw new Exception('Rider has no schedule for this day of week');
+        }
+        
+        if (!$sched['is_active']) {
+            throw new Exception('Rider is on day off for this date');
+        }
+        
+        if ($time_start < $sched['time_in'] || $time_end > $sched['time_out']) {
+            throw new Exception("Time window must be within shift: " . 
+                substr($sched['time_in'], 0, 5) . " - " . substr($sched['time_out'], 0, 5));
+        }
+        
+        if ($sched['break_start'] && $sched['break_end']) {
+            if (($time_start < $sched['break_end']) && ($time_end > $sched['break_start'])) {
+                throw new Exception("Time window conflicts with break: " . 
+                    substr($sched['break_start'], 0, 5) . " - " . substr($sched['break_end'], 0, 5));
+            }
+        }
+        
+        // ========== CHECK EXISTING DELIVERY CONFLICT ==========
+        $conflictCheck = $pdo->prepare("
+            SELECT po_number, scheduled_time_start, scheduled_time_end
+            FROM purchase_orders
+            WHERE assigned_rider_id = ?
+              AND scheduled_delivery_date = ?
+              AND status IN ('To Ship', 'Shipped')
+              AND id != ?
+        ");
+        $conflictCheck->execute([$rider_id, $delivery_date, $po_id]);
+        $conflicts = $conflictCheck->fetchAll(PDO::FETCH_ASSOC);
+        
+        foreach ($conflicts as $c) {
+            if (($time_start < $c['scheduled_time_end']) && ($time_end > $c['scheduled_time_start'])) {
+                throw new Exception("Time conflict with existing delivery {$c['po_number']} (" . 
+                    substr($c['scheduled_time_start'], 0, 5) . " - " . 
+                    substr($c['scheduled_time_end'], 0, 5) . ")");
+            }
+        }
+        
+        // ========== ASSIGN ==========
+        $pdo->beginTransaction();
+        
+        $updateStmt = $pdo->prepare("
+            UPDATE purchase_orders SET
+                assigned_rider_id = ?,
+                rider_assigned_at = NOW(),
+                scheduled_delivery_date = ?,
+                scheduled_time_start = ?,
+                scheduled_time_end = ?
+            WHERE id = ? AND supplier_id = ?
+        ");
+        $updateStmt->execute([
+            $rider_id,
+            $delivery_date,
+            $time_start,
+            $time_end,
+            $po_id,
+            $supplier_id
+        ]);
+        
+        // Log sa expense_activity_log (kung may table)
+        try {
+            $logStmt = $pdo->prepare("
+                INSERT INTO expense_activity_log 
+                (expense_id, action, user_id, user_name, details, created_at)
+                VALUES (?, 'RIDER_ASSIGNED', ?, 'Supplier', ?, NOW())
+            ");
+            // Kunin ang expense_id kung may matching na expense
+            $logStmt->execute([
+                $po_id,
+                $_SESSION['user_id'] ?? 0,
+                "Assigned to {$rider['full_name']} on {$delivery_date} {$time_start}-{$time_end}. {$notes}"
+            ]);
+        } catch (Exception $logErr) {
+            // Silent fail kung walang expense_activity_log
+            error_log('Activity log failed: ' . $logErr->getMessage());
+        }
+        
+        $pdo->commit();
+        
+        echo json_encode([
+            'success' => true,
+            'message' => "Assigned to {$rider['full_name']} on " . 
+                date('M d, Y', strtotime($delivery_date)) . 
+                " from " . substr($time_start, 0, 5) . " to " . substr($time_end, 0, 5),
+            'rider' => [
+                'id' => $rider_id,
+                'name' => $rider['full_name'],
+                'phone' => $rider['phone'],
+            ],
+            'schedule' => [
+                'date' => $delivery_date,
+                'time_start' => substr($time_start, 0, 5),
+                'time_end' => substr($time_end, 0, 5),
+            ]
+        ]);
+        
+    } catch (Exception $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+    exit;
+}
+
+// ============================================================
+// UNASSIGN RIDER
+// ============================================================
+if ($action === 'unassign_rider') {
+    try {
+        $po_id = (int)($_POST['po_id'] ?? 0);
+        
+        if (!$po_id) {
+            throw new Exception('PO ID is required');
+        }
+        
+        $updateStmt = $pdo->prepare("
+            UPDATE purchase_orders SET
+                assigned_rider_id = NULL,
+                rider_assigned_at = NULL,
+                scheduled_delivery_date = NULL,
+                scheduled_time_start = NULL,
+                scheduled_time_end = NULL
+            WHERE id = ? AND supplier_id = ?
+              AND status IN ('To Ship', 'Shipped')
+        ");
+        $updateStmt->execute([$po_id, $supplier_id]);
+        
+        if ($updateStmt->rowCount() === 0) {
+            throw new Exception('PO not found or cannot be unassigned');
+        }
+        
+        echo json_encode([
+            'success' => true,
+            'message' => 'Rider unassigned successfully'
+        ]);
+        
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+    exit;
+}
+
+// ============================================================
+// SHIP AND ASSIGN RIDER — COMBINED ACTION
+// ============================================================
+if ($action === 'ship_and_assign') {
+    try {
+        $po_id = (int)($_POST['po_id'] ?? 0);
+        $pr_id = (int)($_POST['pr_id'] ?? 0);
+        $shipping_fee = floatval($_POST['shipping_fee'] ?? 0);
+        $delivery_date = $_POST['delivery_date'] ?? '';
+        $time_start = $_POST['time_start'] ?? '';
+        $time_end = $_POST['time_end'] ?? '';
+        $rider_id = (int)($_POST['rider_id'] ?? 0);
+        $remarks = trim($_POST['remarks'] ?? '');
+        
+        // Validate
+        if (!$po_id || !$rider_id || empty($delivery_date) || empty($time_start) || empty($time_end)) {
+            throw new Exception('PO, rider, date, and time are required');
+        }
+        
+        if ($shipping_fee <= 0) {
+            throw new Exception('Shipping fee is required');
+        }
+        
+        // Normalize time
+        if (strlen($time_start) === 5) $time_start .= ':00';
+        if (strlen($time_end) === 5) $time_end .= ':00';
+        
+        if ($time_start >= $time_end) {
+            throw new Exception('Time start must be before time end');
+        }
+        
+        // Get PO details
+        $poStmt = $pdo->prepare("
+            SELECT po.*, pr.pr_number, pr.requested_by, pr.clinic_id
+            FROM purchase_orders po
+            JOIN purchase_requests pr ON po.pr_id = pr.id
+            WHERE po.id = ? AND po.supplier_id = ?
+        ");
+        $poStmt->execute([$po_id, $supplier_id]);
+        $po = $poStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$po) throw new Exception('PO not found');
+        
+        if (!in_array($po['status'], ['To Ship', 'Shipped'])) {
+            throw new Exception('PO must be in "To Ship" or "Shipped" status');
+        }
+        
+        // Get rider
+        $riderStmt = $pdo->prepare("
+            SELECT id, full_name, phone FROM supplier_riders
+            WHERE id = ? AND supplier_id = ? AND status = 'Active' AND verification_status = 'Verified'
+        ");
+        $riderStmt->execute([$rider_id, $supplier_id]);
+        $rider = $riderStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$rider) throw new Exception('Rider not found, inactive, or not verified');
+        
+        // Check schedule conflict
+        $day_of_week = (int)date('N', strtotime($delivery_date));
+        
+        $schedCheck = $pdo->prepare("
+            SELECT time_in, time_out, break_start, break_end, is_active
+            FROM supplier_rider_schedules
+            WHERE rider_id = ? AND day_of_week = ?
+        ");
+        $schedCheck->execute([$rider_id, $day_of_week]);
+        $sched = $schedCheck->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$sched) throw new Exception('Rider has no schedule for this day');
+        if (!$sched['is_active']) throw new Exception('Rider is on day off');
+        if ($time_start < $sched['time_in'] || $time_end > $sched['time_out']) {
+            throw new Exception("Time must be within shift: " . substr($sched['time_in'],0,5) . " - " . substr($sched['time_out'],0,5));
+        }
+        
+        if ($sched['break_start'] && $sched['break_end']) {
+            if (($time_start < $sched['break_end']) && ($time_end > $sched['break_start'])) {
+                throw new Exception("Time conflicts with break");
+            }
+        }
+        
+        // Check existing deliveries conflict
+        $conflictCheck = $pdo->prepare("
+            SELECT po_number, scheduled_time_start, scheduled_time_end
+            FROM purchase_orders
+            WHERE assigned_rider_id = ? AND scheduled_delivery_date = ?
+              AND status IN ('To Ship', 'Shipped') AND id != ?
+        ");
+        $conflictCheck->execute([$rider_id, $delivery_date, $po_id]);
+        
+        foreach ($conflictCheck->fetchAll(PDO::FETCH_ASSOC) as $c) {
+            if (($time_start < $c['scheduled_time_end']) && ($time_end > $c['scheduled_time_start'])) {
+                throw new Exception("Time conflict with existing delivery {$c['po_number']}");
+            }
+        }
+        
+        // Handle photo uploads
+        $photo_paths = [];
+        if (!empty($_FILES['shipment_photos']['name'][0])) {
+            $upload_dir = __DIR__ . '/../uploads/shipment_photos/';
+            if (!is_dir($upload_dir)) mkdir($upload_dir, 0755, true);
+            
+            $allowed = ['image/jpeg', 'image/png', 'image/webp'];
+            $max_size = 5 * 1024 * 1024;
+            
+            foreach ($_FILES['shipment_photos']['tmp_name'] as $i => $tmp) {
+                $type = $_FILES['shipment_photos']['type'][$i];
+                $size = $_FILES['shipment_photos']['size'][$i];
+                $error = $_FILES['shipment_photos']['error'][$i];
+                
+                if ($error !== UPLOAD_ERR_OK || !in_array($type, $allowed) || $size > $max_size) continue;
+                
+                $ext = pathinfo($_FILES['shipment_photos']['name'][$i], PATHINFO_EXTENSION);
+                $filename = 'ship_' . $po_id . '_' . time() . '_' . $i . '.' . $ext;
+                
+                if (move_uploaded_file($tmp, $upload_dir . $filename)) {
+                    $photo_paths[] = 'uploads/shipment_photos/' . $filename;
+                }
+            }
+        }
+        
+        if (empty($photo_paths)) throw new Exception('At least one photo is required');
+        
+        $photos_json = json_encode($photo_paths);
+        $tracking = 'SHP-' . date('Ymd') . '-' . str_pad($po_id, 4, '0', STR_PAD_LEFT);
+        
+        // Get supplier name
+        $getSupplier = $pdo->prepare("SELECT supplier_name FROM suppliers WHERE id = ?");
+        $getSupplier->execute([$supplier_id]);
+        $supplier = $getSupplier->fetch(PDO::FETCH_ASSOC);
+        $supplier_name = $supplier['supplier_name'] ?? 'Supplier';
+        
+        $pdo->beginTransaction();
+        
+        // Update PO — ship + assign rider
+        $update = $pdo->prepare("
+            UPDATE purchase_orders SET
+                status = 'Shipped',
+                tracking_number = ?,
+                carrier = NULL,
+                shipping_fee = ?,
+                shipping_photos = ?,
+                shipping_remarks = ?,
+                shipped_date = NOW(),
+                assigned_rider_id = ?,
+                rider_assigned_at = NOW(),
+                scheduled_delivery_date = ?,
+                scheduled_time_start = ?,
+                scheduled_time_end = ?
+            WHERE id = ? AND supplier_id = ?
+        ");
+        $update->execute([
+            $tracking, $shipping_fee, $photos_json, $remarks,
+            $rider_id, $delivery_date, $time_start, $time_end,
+            $po_id, $supplier_id
+        ]);
+        
+        // Update PR
+        $pdo->prepare("UPDATE purchase_requests SET status = 'Shipped' WHERE id = ?")->execute([$pr_id]);
+        
+        // Update expense
+        $pdo->prepare("UPDATE expenses SET status = 'Waiting For Delivery' WHERE pr_id = ?")->execute([$pr_id]);
+        
+        // Notification
+        $clinic_id = $po['clinic_id'];
+        $po_number = $po['po_number'];
+        $pr_number = $po['pr_number'];
+        
+        $insertNotif = $pdo->prepare("
+            INSERT INTO notifications 
+            (user_id, title, message, type, reference_number, link, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, NOW())
+        ");
+        
+        $fee_display = '₱' . number_format($shipping_fee, 2);
+        $message = "Supplier {$supplier_name} SHIPPED PO #{$po_number} (PR #{$pr_number}). "
+                 . "Reference: {$tracking}. Shipping fee: {$fee_display}. "
+                 . "Rider: {$rider['full_name']} (scheduled {$delivery_date} " 
+                 . substr($time_start,0,5) . "-" . substr($time_end,0,5) . ").";
+        
+        // Notify SCM
+        $getSCM = $pdo->prepare("SELECT id FROM users WHERE clinic_id = ? AND role = 'SCM' AND status = 'Active'");
+        $getSCM->execute([$clinic_id]);
+        foreach ($getSCM->fetchAll() as $user) {
+            $insertNotif->execute([$user['id'], 'Order Shipped by Supplier', $message, 'info', $po_number, "purchase_order.php?view=details&id={$po_id}&tab=tracking"]);
+        }
+        
+        // Notify ClinicAdmin
+        $getAdmin = $pdo->prepare("SELECT id FROM users WHERE clinic_id = ? AND role = 'ClinicAdmin' AND status = 'Active'");
+        $getAdmin->execute([$clinic_id]);
+        foreach ($getAdmin->fetchAll() as $user) {
+            $insertNotif->execute([$user['id'], 'Order Shipped', $message, 'info', $po_number, "purchase_order.php?view=details&id={$po_id}"]);
+        }
+        
+        // Notify Finance
+        $getFinance = $pdo->prepare("SELECT id FROM users WHERE clinic_id = ? AND role = 'Finance' AND status = 'Active'");
+        $getFinance->execute([$clinic_id]);
+        foreach ($getFinance->fetchAll() as $user) {
+            $insertNotif->execute([$user['id'], 'Order Shipped - Shipping Fee Added', "Order #{$po_number} SHIPPED. Fee: {$fee_display}", 'warning', $po_number, "purchase_order.php?view=details&id={$po_id}"]);
+        }
+        
+        // Notify requester
+        if ($po['requested_by']) {
+            $insertNotif->execute([$po['requested_by'], 'Your Order has been Shipped', "Order #{$po_number} SHIPPED. Ref: {$tracking}.", 'success', $po_number, "purchase_request.php?view=details&id={$pr_id}"]);
+        }
+        
+        $pdo->commit();
+        
+        echo json_encode([
+            'success' => true,
+            'message' => 'Shipped and rider assigned successfully',
+            'tracking' => $tracking,
+            'shipping_fee' => $shipping_fee,
+            'rider_name' => $rider['full_name'],
+            'photos' => $photo_paths
+        ]);
+        
+    } catch (Exception $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
         echo json_encode(['success' => false, 'error' => $e->getMessage()]);
     }
     exit;

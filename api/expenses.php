@@ -212,36 +212,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 }
             }
             
-            $expenseQuery = "INSERT INTO expenses (
-                expense_code, pr_id, description, category, amount, 
-                expense_date, due_date, vendor, department, 
-                requested_by, requested_by_name, status, 
-                payment_method, payment_reference, has_receipt, notes,
-                supplier_json, clinic_id, created_by,
-                approved_by, approved_by_name, approved_at
-            ) VALUES (?, ?, ?, ?, ?, CURDATE(), DATE_ADD(CURDATE(), INTERVAL 15 DAY), 
-                ?, ?, ?, ?, 'Approved', ?, ?, FALSE, ?, ?, ?, ?, ?, ?, NOW())";
+$expenseQuery = "INSERT INTO expenses (
+    expense_code, pr_id, description, category, 
+    amount, estimated_amount, 
+    expense_date, due_date, vendor, department, 
+    requested_by, requested_by_name, status, 
+    payment_method, payment_reference, has_receipt, notes,
+    supplier_json, clinic_id, created_by,
+    approved_by, approved_by_name, approved_at
+) VALUES (?, ?, ?, ?, ?, ?, CURDATE(), DATE_ADD(CURDATE(), INTERVAL 15 DAY), 
+    ?, ?, ?, ?, 'Approved', ?, ?, FALSE, ?, ?, ?, ?, ?, ?, NOW())";
 
-            $expenseStmt = $pdo->prepare($expenseQuery);
-            $expenseStmt->execute([
-                $expense_code,
-                $pr_id,
-                $pr['purpose'],
-                $category,
-                $pr['total_amount'],
-                $vendor_string,
-                $pr['department'],
-                $pr['requested_by'],
-                $pr['requester_name'] ?? $pr['requested_by'],
-                $payment_method,
-                $payment_reference,
-                $expenseNotes,
-                json_encode($supplier_details),
-                $clinic_id,
-                $current_user_id,
-                $current_user_id,
-                $approver_name
-            ]);
+$expenseStmt = $pdo->prepare($expenseQuery);
+$expenseStmt->execute([
+    $expense_code,
+    $pr_id,
+    $pr['purpose'],
+    $category,
+    $pr['total_amount'],       // ✅ amount (provisional = estimated)
+    $pr['total_amount'],       // ✅ estimated_amount (reference)
+    $vendor_string,
+    $pr['department'],
+    $pr['requested_by'],
+    $pr['requester_name'] ?? $pr['requested_by'],
+    $payment_method,
+    $payment_reference,
+    $expenseNotes,
+    json_encode($supplier_details),
+    $clinic_id,
+    $current_user_id,
+    $current_user_id,
+    $approver_name
+]);
             
             $expense_id = $pdo->lastInsertId();
             
@@ -1484,6 +1486,118 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['action']) && $_GET['act
     exit;
 }
 
+// ============================================
+// APPROVE PRICE CHANGE (Finance re-approval)
+// ============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'approve_price_change') {
+    try {
+        if (!canApproveExpense()) {
+            http_response_code(403);
+            echo json_encode(['error' => 'You do not have permission to approve price changes']);
+            exit;
+        }
+        
+        $expense_id = (int)($_POST['expense_id'] ?? 0);
+        $approval_notes = trim($_POST['approval_notes'] ?? '');
+        
+        if (!$expense_id) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Expense ID is required']);
+            exit;
+        }
+        
+        // Get expense details
+        $expenseStmt = $pdo->prepare("SELECT * FROM expenses WHERE id = ? AND clinic_id = ?");
+        $expenseStmt->execute([$expense_id, $clinic_id]);
+        $expense = $expenseStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$expense) {
+            http_response_code(404);
+            echo json_encode(['error' => 'Expense not found']);
+            exit;
+        }
+        
+        if ($expense['status'] !== 'Pending Re-approval') {
+            http_response_code(400);
+            echo json_encode(['error' => 'Expense is not pending re-approval']);
+            exit;
+        }
+        
+        $pdo->beginTransaction();
+        
+        // Get current user name
+        $userQuery = "SELECT CONCAT(first_name, ' ', last_name) as full_name FROM users WHERE id = ?";
+        $userStmt = $pdo->prepare($userQuery);
+        $userStmt->execute([$current_user_id]);
+        $userData = $userStmt->fetch();
+        $approver_name = $userData ? $userData['full_name'] : $user_name;
+        
+        // ✅ Approve price change
+        $pdo->prepare("
+            UPDATE expenses SET 
+                status = 'Approved',
+                price_change_approved_by = ?,
+                price_change_approved_at = NOW(),
+                price_change_reason = CONCAT(
+                    COALESCE(price_change_reason, ''), 
+                    '\n\n[Approved by ', ?, ' on ', NOW(), ']',
+                    CASE WHEN ? != '' THEN CONCAT('\nNotes: ', ?) ELSE '' END
+                ),
+                updated_at = NOW()
+            WHERE id = ?
+        ")->execute([
+            $current_user_id,
+            $approver_name,
+            $approval_notes,
+            $approval_notes,
+            $expense_id
+        ]);
+        
+        // Log activity
+        $pdo->prepare("
+            INSERT INTO expense_activity_log 
+            (expense_id, action, user_id, user_name, details, ip_address, created_at)
+            VALUES (?, 'PRICE_CHANGE_APPROVED', ?, ?, ?, ?, NOW())
+        ")->execute([
+            $expense_id,
+            $current_user_id,
+            $approver_name,
+            "Approved price change: ₱" . number_format($expense['estimated_amount'], 2) 
+                . " → ₱" . number_format($expense['amount'], 2)
+                . " (+" . number_format($expense['price_change_percent'], 2) . "%)",
+            $_SERVER['REMOTE_ADDR'] ?? ''
+        ]);
+        
+        // Notify Procurement
+        $notifStmt = $pdo->prepare("
+            INSERT INTO notifications 
+            (user_id, title, message, type, reference_number, link, created_at)
+            SELECT id, 'Price Change Approved', ?, 'success', ?, 
+                   'purchase_orders.php', NOW()
+            FROM users 
+            WHERE clinic_id = ? AND role = 'SCM' AND status = 'Active'
+        ");
+        $notifStmt->execute([
+            "Expense {$expense['expense_code']} price change approved by {$approver_name}. You can now create the PO.",
+            $expense['expense_code'],
+            $clinic_id
+        ]);
+        
+        $pdo->commit();
+        
+        echo json_encode([
+            'success' => true,
+            'message' => 'Price change approved successfully',
+            'expense_id' => $expense_id
+        ]);
+        
+    } catch (Exception $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        http_response_code(500);
+        echo json_encode(['error' => 'Database error: ' . $e->getMessage()]);
+    }
+    exit;
+}
 // SAVE BUDGET
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_budget') {
     try {

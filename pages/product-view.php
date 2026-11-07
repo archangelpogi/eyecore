@@ -531,12 +531,70 @@ if (isset($_POST['ajax_action'])) {
         }
     }
 
+    // ═══════════════════════════════════════════════════
+// ✅ LENS FEATURES PROCESSING (DEFINE EARLY!)
+// Dapat nasa TAAS ito para magamit sa BOTH appointment at reservation
+// ═══════════════════════════════════════════════════
+$lens_features_json = $_POST['lens_features'] ?? '[]';
+$lens_features_arr = json_decode($lens_features_json, true);
+$lens_features_total = 0;
+$lens_features_labels = [];
+
+if (is_array($lens_features_arr) && !empty($lens_features_arr)) {
+    $feature_prices = [
+        'blue_cut'          => 800,
+        'ar'                => 500,
+        'photochromic'      => 1200,
+        'scratch_resistant' => 300,
+        'uv_protection'     => 200,
+    ];
+    
+    foreach ($lens_features_arr as $feat) {
+        if (is_array($feat) && isset($feat['value'])) {
+            $feat_key = $feat['value'];
+            $feat_price = (float)($feat['price'] ?? ($feature_prices[$feat_key] ?? 0));
+        } else {
+            $feat_key = (string)$feat;
+            $feat_price = $feature_prices[$feat_key] ?? 0;
+        }
+        
+        $lens_features_total += $feat_price;
+        $lens_features_labels[] = ucwords(str_replace('_', ' ', $feat_key));
+    }
+    
+    error_log("Lens Features: " . $lens_features_json . " = ₱" . $lens_features_total);
+}
+
+$lens_features_json_esc = mysqli_real_escape_string($conn, $lens_features_json);
+
+    // ✅ Handle RX upload
+    $rx_method = mysqli_real_escape_string($conn, $_POST['rx_method'] ?? 'manual');
+    $uploaded_rx_path = null;
+
+    if ($rx_method === 'upload' && isset($_FILES['rx_upload']) && $_FILES['rx_upload']['error'] === UPLOAD_ERR_OK) {
+        $upload_dir = '../uploads/prescriptions/';
+        if (!is_dir($upload_dir)) mkdir($upload_dir, 0777, true);
+
+        $file_ext = strtolower(pathinfo($_FILES['rx_upload']['name'], PATHINFO_EXTENSION));
+        $allowed_ext = ['jpg', 'jpeg', 'png', 'pdf'];
+
+        if (in_array($file_ext, $allowed_ext) && $_FILES['rx_upload']['size'] <= 5 * 1024 * 1024) {
+            $new_filename = 'rx_' . $user_id . '_' . time() . '.' . $file_ext;
+            $upload_path = $upload_dir . $new_filename;
+
+            if (move_uploaded_file($_FILES['rx_upload']['tmp_name'], $upload_path)) {
+                $uploaded_rx_path = 'uploads/prescriptions/' . $new_filename;
+            }
+        }
+    }
+
     $prescription_id = null;
-    if (!$make_appointment && $prescription_knowledge === 'know' && ($od_sph || $os_sph)) {
+    if (!$make_appointment && $prescription_knowledge === 'know' && ($od_sph || $os_sph || $uploaded_rx_path)) {
+        $pres_file_sql = $uploaded_rx_path ? "'$uploaded_rx_path'" : 'NULL';
         $insert_pres = mysqli_query($conn, "
             INSERT INTO user_prescriptions
-            (user_id, product_id, od_sph, od_cyl, od_axis, os_sph, os_cyl, os_axis, prescription_source)
-            VALUES ($user_id, $product_id, '$od_sph', '$od_cyl', '$od_axis', '$os_sph', '$os_cyl', '$os_axis', 'user_input')
+            (user_id, product_id, od_sph, od_cyl, od_axis, os_sph, os_cyl, os_axis, prescription_source, prescription_file)
+            VALUES ($user_id, $product_id, '$od_sph', '$od_cyl', '$od_axis', '$os_sph', '$os_cyl', '$os_axis', 'user_input', $pres_file_sql)
         ");
         if ($insert_pres) $prescription_id = mysqli_insert_id($conn);
     }
@@ -567,19 +625,23 @@ if (isset($_POST['ajax_action'])) {
         $notes_final = $notes ?: ($IS_SERVICE ? 'Service booking' : 'Needs eye exam before lens fitting');
         $item_type_db = $IS_SERVICE ? 'service' : 'product';
 
-        // ✅ BAGO: Include lens_index sa appointment
-        mysqli_query($conn, "
-            INSERT INTO appointments
-            (ref_no, clinic_id, item_id, item_type, user_id, product_id,
-             appointment_date, appointment_time, status, payment_status,
-             appointment_type, total_amount, downpayment_amount, balance_amount,
-             notes, contact_number, lens_type, lens_index)
-            VALUES
-            ('$ref_no', $clinic_id, $product_id, '$item_type_db', $user_id, $product_id,
-             '$preferred_date', '$preferred_time', 'pending', 'pending',
-             'online', {$product['price']}, 0, {$product['price']},
-             '$notes_final', '$contact_number', '$lens_type', '$lens_index')
-        ");
+// ✅ BAGO: Include lens_index AND lens_features sa appointment
+$lens_features_json_esc = mysqli_real_escape_string($conn, $lens_features_json);
+
+mysqli_query($conn, "
+    INSERT INTO appointments
+    (ref_no, clinic_id, item_id, item_type, user_id, product_id,
+     appointment_date, appointment_time, status, payment_status,
+     appointment_type, total_amount, downpayment_amount, balance_amount,
+     notes, contact_number, lens_type, lens_index,
+     lens_features, lens_features_price)
+    VALUES
+    ('$ref_no', $clinic_id, $product_id, '$item_type_db', $user_id, $product_id,
+     '$preferred_date', '$preferred_time', 'pending', 'pending',
+     'online', {$display_price}, 0, {$display_price},
+     '$notes_final', '$contact_number', '$lens_type', '$lens_index',
+     '$lens_features_json_esc', $lens_features_total)
+");
 
         $appointment_id = mysqli_insert_id($conn);
 
@@ -612,37 +674,77 @@ if (isset($_POST['ajax_action'])) {
         exit();
     }
 
-    $lens_prices = [
-        'frame_only'      => 0,
-        'single_vision'   => 500,
-        'progressive'     => 1500,
-        'blue_cut'        => 800,
-        'contact_daily'   => 0,
-        'contact_monthly' => 0,
+$lens_prices = [
+    'frame_only'      => 0,
+    'single_vision'   => 500,
+    'progressive'     => 1500,
+    'blue_cut'        => 800,
+    'contact_daily'   => 0,
+    'contact_monthly' => 0,
+];
+
+// ✅ Base lens price
+$lens_price_add = $lens_prices[$lens_type] ?? 0;
+
+// ✅ ADD: Lens index add-on price (from database, not hardcoded)
+if (!empty($lens_index) && $lens_index_price > 0) {
+    $lens_price_add += $lens_index_price;
+}
+
+// ✅ Fallback: kung may lens_index pero walang price na pinasa, kunin sa DB
+if (!empty($lens_index) && $lens_index_price <= 0) {
+    $li_row = mysqli_fetch_assoc(mysqli_query($conn, "
+        SELECT price FROM lens_index_addons 
+        WHERE clinic_id = $clinic_id 
+          AND lens_type = '" . mysqli_real_escape_string($conn, $lens_type) . "'
+          AND index_value = '" . mysqli_real_escape_string($conn, $lens_index) . "'
+          AND is_active = 1
+        LIMIT 1
+    "));
+    if ($li_row) {
+        $lens_price_add += (float)$li_row['price'];
+    }
+}
+
+
+
+// ✅ BAGO: LENS FEATURES (Blue Cut, AR, Photochromic, etc.)
+$lens_features_json = $_POST['lens_features'] ?? '[]';
+$lens_features_arr = json_decode($lens_features_json, true);
+$lens_features_total = 0;
+$lens_features_labels = [];
+
+if (is_array($lens_features_arr) && !empty($lens_features_arr)) {
+    // Presyo ng features (dapat tugma sa frontend data-price)
+    $feature_prices = [
+        'blue_cut'      => 800,
+        'ar'            => 500,
+        'photochromic'  => 1200,
+        'scratch_resistant' => 300,
+        'uv_protection' => 200,
     ];
-
-    // ✅ Base lens price
-    $lens_price_add = $lens_prices[$lens_type] ?? 0;
-
-    // ✅ ADD: Lens index add-on price (from database, not hardcoded)
-    if (!empty($lens_index) && $lens_index_price > 0) {
-        $lens_price_add += $lens_index_price;
-    }
-
-    // ✅ Fallback: kung may lens_index pero walang price na pinasa, kunin sa DB
-    if (!empty($lens_index) && $lens_index_price <= 0) {
-        $li_row = mysqli_fetch_assoc(mysqli_query($conn, "
-            SELECT price FROM lens_index_addons 
-            WHERE clinic_id = $clinic_id 
-              AND lens_type = '" . mysqli_real_escape_string($conn, $lens_type) . "'
-              AND index_value = '" . mysqli_real_escape_string($conn, $lens_index) . "'
-              AND is_active = 1
-            LIMIT 1
-        "));
-        if ($li_row) {
-            $lens_price_add += (float)$li_row['price'];
+    
+    foreach ($lens_features_arr as $feat) {
+        // Maaaring array of objects: [{value, price}, ...]
+        // o array of strings: ['blue_cut', 'ar']
+        if (is_array($feat) && isset($feat['value'])) {
+            $feat_key = $feat['value'];
+            $feat_price = (float)($feat['price'] ?? ($feature_prices[$feat_key] ?? 0));
+        } else {
+            $feat_key = (string)$feat;
+            $feat_price = $feature_prices[$feat_key] ?? 0;
         }
+        
+        $lens_features_total += $feat_price;
+        $lens_features_labels[] = ucwords(str_replace('_', ' ', $feat_key));
     }
+    
+    // ✅ I-add ang features price sa lens_price_add
+    $lens_price_add += $lens_features_total;
+    
+    // ✅ I-log para sa debugging
+    error_log("Lens Features: " . $lens_features_json . " = ₱" . $lens_features_total);
+}
 
     // Dynamic delivery fee
     $delivery_fee_final = 0;
@@ -667,33 +769,38 @@ if (isset($_POST['ajax_action'])) {
             $estimated_days = 2;
         }
 
-        $subtotal_before_free = $product['price'] + $lens_price_add;
+       $subtotal_before_free = $display_price + $lens_price_add;
         if ($free_delivery_min > 0 && $subtotal_before_free >= $free_delivery_min) {
             $delivery_fee_final = 0;
         }
     }
 
-    $subtotal_amount = $product['price'] + $lens_price_add + $delivery_fee_final;
+$base_subtotal = $display_price + $lens_price_add;
 
-    $is_pwd_senior = false;
-    if (function_exists('getPwdSeniorDiscountStatus')) {
-        $pwd_status = getPwdSeniorDiscountStatus($conn, $user_id, $clinic_id);
-        $is_pwd_senior = !empty($pwd_status['eligible']);
-    }
+$is_pwd_senior = false;
+if (function_exists('getPwdSeniorDiscountStatus')) {
+    $pwd_status = getPwdSeniorDiscountStatus($conn, $user_id, $clinic_id);
+    $is_pwd_senior = !empty($pwd_status['eligible']);
+}
 
-    $payment_info = calculatePaymentAmounts($conn, $clinic_id, $subtotal_amount, $is_pwd_senior);
+// ✅ Para sa product-view, ang discountable amount ay ang FRAME (display_price) lang
+$discountable_amount = $display_price;
 
-    $subtotal_amount     = $payment_info['subtotal'];
-    $vat_amount          = $payment_info['vat_amount'];
-    $discount_amount     = $payment_info['discount_amount'];
-    $total_amount        = $payment_info['total_amount'];
-    $downpayment_amount  = $payment_info['downpayment_amount'];
-    $balance_amount      = $payment_info['balance_amount'];
-    $requires_payment    = $payment_info['requires_payment'];
-    $payment_policy      = $payment_info['policy'];
-    $payment_type        = $payment_info['payment_type'];
+// Compute discount base sa base_subtotal (walang delivery fee)
+$payment_info = calculatePaymentAmounts($conn, $clinic_id, $base_subtotal, $is_pwd_senior, $discountable_amount);
 
-    $reservation_code = 'RES-' . strtoupper(substr(uniqid(), -8));
+// ✅ I-add ang delivery fee AFTER discount
+$subtotal_amount     = $payment_info['subtotal'] + $delivery_fee_final;
+$vat_amount          = $payment_info['vat_amount'];
+$discount_amount     = $payment_info['discount_amount'];
+$total_amount        = $payment_info['total_amount'] + $delivery_fee_final;
+$downpayment_amount  = $payment_info['downpayment_amount'] + $delivery_fee_final;
+$balance_amount      = $payment_info['balance_amount'];
+$requires_payment    = $payment_info['requires_payment'];
+$payment_policy      = $payment_info['policy'];
+$payment_type        = $payment_info['payment_type'];
+
+$reservation_code = 'RES-' . strtoupper(substr(uniqid(), -8));
 
     // ═══════════════════════════════════════════════════
     // ✅ COD DETECTION — Delivery only
@@ -744,28 +851,33 @@ if (isset($_POST['ajax_action'])) {
         $delivery_date_sql = "DATE_ADD(CURDATE(), INTERVAL $estimated_days DAY)";
     }
 
-    $insert_query = "
-        INSERT INTO reservations
-        (reservation_code, user_id, product_id, clinic_id, lens_type, lens_index, prescription_id,
-         color_code, color_name,
-         total_amount, downpayment_amount, balance_amount,
-         preferred_date, preferred_time, notes, status, payment_status, expires_at, created_at,
-         fulfillment_type, delivery_name, delivery_phone, delivery_address,
-         delivery_barangay, delivery_city, delivery_province, delivery_zip,
-         delivery_landmark, delivery_fee, delivery_status, delivery_date)
-        VALUES
-        ('$reservation_code', $user_id, $product_id, $clinic_id, '$lens_type', '$lens_index',
-         " . ($prescription_id ? $prescription_id : 'NULL') . ",
-         '$color_code', '$color_name',
-         $total_amount, $downpayment_amount, $balance_amount,
-         '$preferred_date', '$preferred_time', '$notes', '$reservation_status', '$payment_status', '$expires_at', NOW(),
-         '$fulfillment_type',
-         $delivery_name_sql, $delivery_phone_sql, $delivery_address_sql,
-         $delivery_barangay_sql, $delivery_city_sql, $delivery_province_sql, $delivery_zip_sql,
-         $delivery_landmark_sql, $delivery_fee_final,
-         'pending',
-         $delivery_date_sql)
-    ";
+// ✅ I-escape ang JSON para sa SQL
+$lens_features_json_esc = mysqli_real_escape_string($conn, $lens_features_json);
+
+$insert_query = "
+    INSERT INTO reservations
+    (reservation_code, user_id, product_id, clinic_id, lens_type, lens_index, prescription_id,
+     color_code, color_name,
+     lens_features, lens_features_price,
+     total_amount, downpayment_amount, balance_amount,
+     preferred_date, preferred_time, notes, status, payment_status, expires_at, created_at,
+     fulfillment_type, delivery_name, delivery_phone, delivery_address,
+     delivery_barangay, delivery_city, delivery_province, delivery_zip,
+     delivery_landmark, delivery_fee, delivery_status, delivery_date)
+    VALUES
+    ('$reservation_code', $user_id, $product_id, $clinic_id, '$lens_type', '$lens_index',
+     " . ($prescription_id ? $prescription_id : 'NULL') . ",
+     '$color_code', '$color_name',
+     '$lens_features_json_esc', $lens_features_total,
+     $total_amount, $downpayment_amount, $balance_amount,
+     '$preferred_date', '$preferred_time', '$notes', '$reservation_status', '$payment_status', '$expires_at', NOW(),
+     '$fulfillment_type',
+     $delivery_name_sql, $delivery_phone_sql, $delivery_address_sql,
+     $delivery_barangay_sql, $delivery_city_sql, $delivery_province_sql, $delivery_zip_sql,
+     $delivery_landmark_sql, $delivery_fee_final,
+     'pending',
+     $delivery_date_sql)
+";
 
     $result = mysqli_query($conn, $insert_query);
 
@@ -1054,6 +1166,32 @@ if (isset($_GET['addr_action'])) {
     echo json_encode(['success'=>false,'message'=>'Unknown action.']);
     exit;
 }
+
+// ============================================
+// ✅ PWD/SENIOR STATUS CHECK
+// I-check kung eligible sa discount. Lalabas lang sa MODAL preview,
+// hindi sa main price display.
+// ============================================
+$is_pwd_senior_page = false;
+$pwd_status_page_info = null;
+
+if (function_exists('getPwdSeniorDiscountStatus')) {
+    $pwd_status_page_info = getPwdSeniorDiscountStatus($conn, $user_id, $clinic_id);
+    $is_pwd_senior_page = !empty($pwd_status_page_info['eligible']);
+}
+
+// ============================================
+// ✅ GET TAX SETTINGS FROM DATABASE (NOT hardcoded!)
+// ============================================
+$tax_settings = getTaxSettings($conn);
+
+$frontend_vat_rate              = (float)($tax_settings['vat_rate'] ?? 0.12);
+$frontend_pwd_discount_rate     = (float)($tax_settings['pwd_senior_discount'] ?? 0.20);
+$frontend_pwd_vat_exempt        = !empty($tax_settings['pwd_senior_vat_exempt']);
+
+// ✅ CHECK KUNG VAT-INCLUSIVE ANG PRICES (base sa system setting kung meron)
+// Kung walang setting sa DB, i-assume na VAT-inclusive (default sa 'yo)
+$frontend_prices_vat_inclusive = true; // ← Adjust kung may setting ka sa DB
 
 $active_nav = 'discover';
 include '../includes/navbar.php';
@@ -1364,6 +1502,112 @@ include '../includes/navbar.php';
         display: flex; align-items: center; gap: 8px; margin-bottom: 18px;
     }
     .flow-card-title i { color: var(--primary); }
+
+    /* ═══════════════════════════════════════════════════════
+       ✅ BAGO: PURCHASE TYPE STYLES (Recommended Flow Step 1)
+       ═══════════════════════════════════════════════════════ */
+    .purchase-type-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+    .purchase-type-btn {
+        display: flex;
+        align-items: flex-start;
+        gap: 14px;
+        padding: 16px 18px;
+        border: 2px solid var(--border-color);
+        border-radius: var(--radius-md);
+        background: var(--bg-primary);
+        cursor: pointer;
+        transition: all 0.2s;
+        text-align: left;
+        font-family: var(--font-main);
+        width: 100%;
+    }
+    .purchase-type-btn:hover {
+        border-color: var(--primary);
+        background: var(--primary-light);
+    }
+    .purchase-type-btn.selected {
+        border-color: var(--primary);
+        background: var(--primary-light);
+        box-shadow: 0 0 0 3px rgba(0,183,97,0.12);
+    }
+    .purchase-type-btn > i {
+        font-size: 22px;
+        color: var(--text-muted);
+        margin-top: 2px;
+        flex-shrink: 0;
+        transition: color 0.2s;
+    }
+    .purchase-type-btn.selected > i {
+        color: var(--primary);
+    }
+    .purchase-type-btn .pt-content {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+    }
+    .purchase-type-btn .pt-title {
+        font-size: 14.5px;
+        font-weight: 700;
+        color: var(--text-primary);
+    }
+    .purchase-type-btn.selected .pt-title {
+        color: var(--primary);
+    }
+    .purchase-type-btn .pt-desc {
+        font-size: 12.5px;
+        color: var(--text-secondary);
+        line-height: 1.4;
+    }
+
+    /* ✅ Lens Features (checkboxes) */
+    .features-list {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+    .feature-checkbox {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 16px;
+        border: 2px solid var(--border-color);
+        border-radius: var(--radius-md);
+        background: var(--bg-primary);
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+    .feature-checkbox:hover {
+        border-color: var(--primary);
+        background: var(--primary-light);
+    }
+    .feature-checkbox:has(input:checked) {
+        border-color: var(--primary);
+        background: var(--primary-light);
+    }
+    .feature-checkbox input[type="checkbox"] {
+        width: 20px;
+        height: 20px;
+        accent-color: var(--primary);
+        cursor: pointer;
+        flex-shrink: 0;
+    }
+    .feature-checkbox span {
+        font-size: 14px;
+        color: var(--text-primary);
+        flex: 1;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    .feature-checkbox span strong {
+        color: var(--primary);
+        font-weight: 700;
+    }
 
     .lens-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 6px; }
     @media (max-width: 500px) { .lens-grid { grid-template-columns: 1fr; } }
@@ -1764,6 +2008,413 @@ include '../includes/navbar.php';
     .af-label-btn.selected {
         background: var(--primary); color: white; border-color: var(--primary);
     }
+
+    /* ═══════════════════════════════════════════════════════
+       ✅ BAGO: RX METHOD SELECTION STYLES
+       ═══════════════════════════════════════════════════════ */
+    .rx-method-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        margin-top: 12px;
+    }
+    .rx-method-btn {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 16px 18px;
+        border: 2px solid var(--border-color);
+        border-radius: var(--radius-md);
+        background: var(--bg-primary);
+        cursor: pointer;
+        transition: all 0.2s;
+        text-align: left;
+        font-family: var(--font-main);
+        width: 100%;
+    }
+    .rx-method-btn:hover {
+        border-color: var(--primary);
+        background: var(--primary-light);
+    }
+    .rx-method-btn.selected {
+        border-color: var(--primary);
+        background: var(--primary-light);
+        box-shadow: 0 0 0 3px rgba(0,183,97,0.12);
+    }
+    .rx-method-btn > i:first-child {
+        font-size: 22px;
+        color: var(--text-muted);
+        flex-shrink: 0;
+        transition: color 0.2s;
+    }
+    .rx-method-btn.selected > i:first-child {
+        color: var(--primary);
+    }
+    .rx-method-btn > i:last-child {
+        font-size: 14px;
+        color: var(--text-muted);
+        margin-left: auto;
+    }
+    .rx-method-btn.selected > i:last-child {
+        color: var(--primary);
+    }
+    .rx-method-btn .rm-content {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+    }
+    .rx-method-btn .rm-title {
+        font-size: 14.5px;
+        font-weight: 700;
+        color: var(--text-primary);
+    }
+    .rx-method-btn.selected .rm-title {
+        color: var(--primary);
+    }
+    .rx-method-btn .rm-desc {
+        font-size: 12.5px;
+        color: var(--text-secondary);
+    }
+
+    /* ✅ Upload Area */
+    .upload-area {
+        border: 2px dashed var(--border-color);
+        border-radius: var(--radius-md);
+        padding: 32px 20px;
+        text-align: center;
+        cursor: pointer;
+        transition: all 0.2s;
+        background: var(--bg-primary);
+    }
+    .upload-area:hover {
+        border-color: var(--primary);
+        background: var(--primary-light);
+    }
+    .upload-area i {
+        font-size: 36px;
+        color: var(--primary);
+        margin-bottom: 12px;
+        display: block;
+    }
+    .upload-area p {
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin-bottom: 4px;
+    }
+    .upload-area small {
+        font-size: 11px;
+        color: var(--text-muted);
+    }
+
+    /* ✅ Recommended Badge */
+    .recommended-badge {
+        display: inline-block;
+        background: linear-gradient(135deg, #3B82F6, #2563EB);
+        color: white;
+        font-size: 9px;
+        font-weight: 800;
+        padding: 2px 8px;
+        border-radius: 20px;
+        margin-left: 6px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        vertical-align: middle;
+    }
+    .recommended-badge.hidden {
+        display: none;
+    }
+
+    /* ✅ Auto-Detected Box */
+    .auto-detect-note {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        background: linear-gradient(135deg, #EFF6FF, #DBEAFE);
+        border: 1px solid #BFDBFE;
+        border-radius: var(--radius-md);
+        margin-bottom: 12px;
+        font-size: 12.5px;
+        color: #1E40AF;
+        font-weight: 600;
+    }
+    .theme-dark .auto-detect-note {
+        background: linear-gradient(135deg, #1E3A5F, #1E40AF);
+        border-color: #3B82F6;
+        color: #BFDBFE;
+    }
+    .auto-detect-note i {
+        font-size: 16px;
+        color: #3B82F6;
+    }
+
+    /* ═══════════════════════════════════════════════════════
+       ✅ EYE EXAM INFO BOX STYLES
+       ═══════════════════════════════════════════════════════ */
+    .eye-exam-info-box {
+        background: linear-gradient(135deg, #EFF6FF, #DBEAFE);
+        border: 2px solid #BFDBFE;
+        border-radius: var(--radius-md);
+        padding: 20px;
+        margin-top: 20px;
+    }
+    .theme-dark .eye-exam-info-box {
+        background: linear-gradient(135deg, #1E3A5F, #1E40AF);
+        border-color: #3B82F6;
+    }
+    .eei-header {
+        display: flex;
+        align-items: flex-start;
+        gap: 14px;
+        margin-bottom: 16px;
+    }
+    .eei-header > i {
+        font-size: 28px;
+        color: #3B82F6;
+        flex-shrink: 0;
+        margin-top: 2px;
+    }
+    .eei-header strong {
+        display: block;
+        font-size: 16px;
+        color: #1E40AF;
+        margin-bottom: 4px;
+        font-weight: 700;
+    }
+    .theme-dark .eei-header strong {
+        color: #BFDBFE;
+    }
+    .eei-header p {
+        font-size: 13px;
+        color: #1E3A8A;
+        line-height: 1.5;
+        margin: 0;
+    }
+    .theme-dark .eei-header p {
+        color: #93C5FD;
+    }
+    .eei-checklist {
+        list-style: none;
+        padding: 0;
+        margin: 0 0 14px 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 20px;
+    }
+    .eei-checklist li {
+        font-size: 13px;
+        color: #1E40AF;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    .theme-dark .eei-checklist li {
+        color: #BFDBFE;
+    }
+    .eei-checklist li i {
+        color: #10B981;
+        font-size: 15px;
+    }
+    .eei-action {
+        padding: 10px 14px;
+        background: rgba(255,255,255,0.6);
+        border-radius: 10px;
+        font-size: 12.5px;
+        color: #1E40AF;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+    .theme-dark .eei-action {
+        background: rgba(0,0,0,0.2);
+        color: #BFDBFE;
+    }
+    .eei-action i {
+        color: #3B82F6;
+    }
+
+        /* ═══════════════════════════════════════════════════════
+       ✅ HOW IT WORKS — Para sa need_exam flow
+       ═══════════════════════════════════════════════════════ */
+    .how-it-works-card {
+        background: var(--bg-secondary);
+        border: 2px solid var(--primary);
+        border-radius: var(--radius-lg);
+        padding: 24px;
+        box-shadow: var(--shadow-sm);
+    }
+    .hiw-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 20px;
+        padding-bottom: 16px;
+        border-bottom: 2px dashed var(--border-color);
+    }
+    .hiw-header i {
+        font-size: 24px;
+        color: var(--primary);
+    }
+    .hiw-header h3 {
+        font-size: 16px;
+        font-weight: 800;
+        color: var(--text-primary);
+        letter-spacing: 0.05em;
+        margin: 0;
+    }
+    .hiw-step {
+        display: flex;
+        gap: 14px;
+        margin-bottom: 18px;
+        align-items: flex-start;
+    }
+    .hiw-step:last-of-type {
+        margin-bottom: 0;
+    }
+    .hiw-num {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        background: var(--primary-gradient);
+        color: white;
+        font-size: 14px;
+        font-weight: 800;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        box-shadow: 0 2px 8px rgba(0,183,97,0.3);
+    }
+    .hiw-content {
+        flex: 1;
+        padding-top: 4px;
+    }
+    .hiw-content strong {
+        display: block;
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 4px;
+    }
+    .hiw-content p {
+        font-size: 12.5px;
+        color: var(--text-secondary);
+        line-height: 1.5;
+        margin: 0;
+    }
+    .hiw-content ul {
+        list-style: none;
+        padding: 0;
+        margin: 6px 0 0 0;
+    }
+    .hiw-content ul li {
+        font-size: 12.5px;
+        color: var(--text-secondary);
+        padding: 3px 0 3px 18px;
+        position: relative;
+        line-height: 1.4;
+    }
+    .hiw-content ul li::before {
+        content: '☐';
+        position: absolute;
+        left: 0;
+        color: var(--primary);
+        font-weight: 700;
+        font-size: 14px;
+    }
+    .hiw-note {
+        display: flex;
+        gap: 10px;
+        margin-top: 20px;
+        padding: 14px 16px;
+        background: var(--primary-light);
+        border-radius: var(--radius-md);
+        border-left: 4px solid var(--primary);
+        align-items: flex-start;
+    }
+    .hiw-note i {
+        color: var(--primary);
+        font-size: 18px;
+        flex-shrink: 0;
+        margin-top: 2px;
+    }
+    .hiw-note span {
+        font-size: 12.5px;
+        color: var(--text-secondary);
+        line-height: 1.5;
+    }
+    .hiw-note span strong {
+        color: var(--primary-dark);
+        font-weight: 700;
+    }
+    /* ═══════════════════════════════════════════════════════
+       ✅ LOCKED LENS INDEX STYLES
+       ═══════════════════════════════════════════════════════ */
+    .locked-index-box {
+        background: linear-gradient(135deg, #FEF3C7, #FDE68A);
+        border: 2px solid #FCD34D;
+        border-radius: var(--radius-md);
+        padding: 18px;
+        position: relative;
+    }
+    .theme-dark .locked-index-box {
+        background: linear-gradient(135deg, #78350F, #92400E);
+        border-color: #F59E0B;
+    }
+    .lib-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 10px;
+    }
+    .lib-header i {
+        font-size: 20px;
+        color: #D97706;
+        flex-shrink: 0;
+    }
+    .theme-dark .lib-header i {
+        color: #FCD34D;
+    }
+    .lib-header strong {
+        font-size: 14px;
+        color: #92400E;
+        font-weight: 700;
+    }
+    .theme-dark .lib-header strong {
+        color: #FEF3C7;
+    }
+    .lib-desc {
+        font-size: 12.5px;
+        color: #78350F;
+        line-height: 1.5;
+        margin: 0 0 12px 0;
+    }
+    .theme-dark .lib-desc {
+        color: #FDE68A;
+    }
+    .lib-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 14px;
+        background: rgba(255,255,255,0.7);
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: 700;
+        color: #92400E;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+    }
+    .theme-dark .lib-status {
+        background: rgba(0,0,0,0.3);
+        color: #FEF3C7;
+    }
+    .lib-status i {
+        color: #D97706;
+    }
     </style>
 </head>
 <body>
@@ -1891,6 +2542,7 @@ include '../includes/navbar.php';
                 </div>
                 <?php endif; ?>
 
+                <!-- 
                 <div class="payment-policy-card">
                     <div class="policy-title">
                         <i class="fas fa-credit-card"></i> Payment Policy: <?php echo $clinic_payment_policy_display; ?>
@@ -1913,6 +2565,7 @@ include '../includes/navbar.php';
                         <?php endif; ?>
                     </div>
                 </div>
+                -->
 
                 <?php if (!empty($product['description'])): ?>
                 <p class="product-desc"><?php echo nl2br(htmlspecialchars($product['description'])); ?></p>
@@ -2011,39 +2664,291 @@ include '../includes/navbar.php';
                     <?php elseif ($IS_LENS_ONLY): ?>
                         Lens Type
                     <?php else: ?>
-                        Select Your Lens Option
+                        How would you like to get your glasses?
                     <?php endif; ?>
                 </div>
 
                 <?php if (!$IS_LENS_ONLY && !$IS_CONTACT_LENS): ?>
-                <div class="lens-grid" id="lensGrid">
-                    <button class="lens-btn selected" data-lens="frame_only" onclick="selectLens(this)">
-                        <span class="ln">Frame Only</span>
-                        <span class="lp">+₱0</span>
-                        <span class="ld">No lenses included</span>
+                <!-- ═══════════════════════════════════════════════════════
+                     ✅ BAGO: PURCHASE TYPE SELECTION (Recommended Flow)
+                     ═══════════════════════════════════════════════════════ -->
+                <div class="purchase-type-grid" id="purchaseTypeGrid">
+                    <button class="purchase-type-btn" data-type="have_prescription" onclick="selectPurchaseType(this)">
+                        <i class="fas fa-file-prescription"></i>
+                        <div class="pt-content">
+                            <span class="pt-title">I already have a prescription</span>
+                            <span class="pt-desc">I know my eye grade.</span>
+                        </div>
                     </button>
-                    <button class="lens-btn" data-lens="single_vision" onclick="selectLens(this)">
-                        <span class="ln">Single Vision</span>
-                        <span class="lp">+₱500</span>
-                        <span class="ld">For near or far sight</span>
+
+                    <button class="purchase-type-btn" data-type="need_exam" onclick="selectPurchaseType(this)">
+                        <i class="fas fa-calendar-check"></i>
+                        <div class="pt-content">
+                            <span class="pt-title">I need an eye exam</span>
+                            <span class="pt-desc">I don't know my eye grade yet. We'll schedule an appointment with our optometrist.</span>
+                        </div>
                     </button>
-                    <button class="lens-btn" data-lens="progressive" onclick="selectLens(this)">
-                        <span class="ln">Progressive</span>
-                        <span class="lp">+₱1,500</span>
-                        <span class="ld">Near, mid & far vision</span>
-                    </button>
-                    <button class="lens-btn" data-lens="blue_cut" onclick="selectLens(this)">
-                        <span class="ln">Blue Cut</span>
-                        <span class="lp">+₱800</span>
-                        <span class="ld">Reduces screen glare</span>
+
+                    <button class="purchase-type-btn" data-type="frame_only" onclick="selectPurchaseType(this)">
+                        <i class="fas fa-eye"></i>
+                        <div class="pt-content">
+                            <span class="pt-title">Frame only</span>
+                            <span class="pt-desc">I only want to purchase the frame.</span>
+                        </div>
                     </button>
                 </div>
-                <div id="lensIndexSection" style="display: none; margin-top: 16px;">
+
+                <!-- ═══════════════════════════════════════════════════════
+                     ✅ PRESCRIPTION SECTION (kung have_prescription)
+                     — MAY 2 OPTIONS: Enter Manually OR Upload
+                     ═══════════════════════════════════════════════════════ -->
+                <div id="rxSection" style="display: none; margin-top: 20px;">
                     <div class="flow-card-title" style="font-size: 14px; margin-bottom: 10px;">
-                        <i class="fas fa-layer-group"></i> Select Lens Thickness
+                        <i class="fas fa-prescription"></i> How do you want to enter your prescription?
+                    </div>
+
+                    <!-- ✅ RX METHOD SELECTION -->
+                    <div class="rx-method-grid" id="rxMethodGrid">
+                        <button class="rx-method-btn" data-method="manual" onclick="selectRxMethod(this)">
+                            <i class="fas fa-keyboard"></i>
+                            <div class="rm-content">
+                                <span class="rm-title">Enter Power Manually</span>
+                                <span class="rm-desc">Input your latest eye prescription</span>
+                            </div>
+                            <i class="fas fa-arrow-right"></i>
+                        </button>
+
+                        <button class="rx-method-btn" data-method="upload" onclick="selectRxMethod(this)">
+                            <i class="fas fa-cloud-upload-alt"></i>
+                            <div class="rm-content">
+                                <span class="rm-title">Upload Prescription</span>
+                                <span class="rm-desc">Just upload your power prescription</span>
+                            </div>
+                            <i class="fas fa-arrow-right"></i>
+                        </button>
+                    </div>
+
+                    <!-- ✅ MANUAL INPUT FORM -->
+                    <div id="rxManualForm" class="rx-form" style="display:none;">
+                        <h4><i class="fas fa-edit" style="color:var(--primary)"></i> Enter Your Prescription</h4>
+                        <div class="rx-eyes">
+                            <div class="rx-eye-box">
+                                <div class="rx-eye-label">Right Eye <span>OD</span></div>
+                                <div class="rx-inputs">
+                                    <div class="rx-input-group">
+                                        <label>SPH</label>
+                                        <input type="text" id="od_sph" placeholder="e.g. -1.50" oninput="autoDetectLensIndex()">
+                                    </div>
+                                    <div class="rx-input-group">
+                                        <label>CYL</label>
+                                        <input type="text" id="od_cyl" placeholder="e.g. -0.50">
+                                    </div>
+                                    <div class="rx-input-group">
+                                        <label>AXIS</label>
+                                        <input type="text" id="od_axis" placeholder="e.g. 180">
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="rx-eye-box">
+                                <div class="rx-eye-label">Left Eye <span>OS</span></div>
+                                <div class="rx-inputs">
+                                    <div class="rx-input-group">
+                                        <label>SPH</label>
+                                        <input type="text" id="os_sph" placeholder="e.g. -1.25" oninput="autoDetectLensIndex()">
+                                    </div>
+                                    <div class="rx-input-group">
+                                        <label>CYL</label>
+                                        <input type="text" id="os_cyl" placeholder="e.g. -0.25">
+                                    </div>
+                                    <div class="rx-input-group">
+                                        <label>AXIS</label>
+                                        <input type="text" id="os_axis" placeholder="e.g. 175">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <p class="rx-note">
+                            <i class="fas fa-shield-alt"></i>
+                            Your prescription will be verified by the optometrist upon visit.
+                        </p>
+                    </div>
+
+                    <!-- ✅ UPLOAD FORM -->
+                    <div id="rxUploadForm" class="rx-form" style="display:none;">
+                        <h4><i class="fas fa-cloud-upload-alt" style="color:var(--primary)"></i> Upload Your Prescription</h4>
+                        <div class="upload-area" onclick="document.getElementById('rxFile').click()">
+                            <i class="fas fa-cloud-upload-alt"></i>
+                            <p>Click to upload or drag & drop</p>
+                            <small>JPG, PNG, or PDF (max 5MB)</small>
+                            <input type="file" id="rxFile" accept="image/*,.pdf" style="display:none" onchange="handleRxFile(this)">
+                        </div>
+                        <div id="rxFilePreview" style="display:none; margin-top:12px; padding:12px; background:var(--bg-secondary); border-radius:10px; align-items:center; gap:10px;">
+                            <i class="fas fa-file-image" style="font-size:24px; color:var(--primary);"></i>
+                            <div style="flex:1;">
+                                <div id="rxFileName" style="font-size:13px; font-weight:600; color:var(--text-primary);"></div>
+                                <div id="rxFileSize" style="font-size:11px; color:var(--text-muted);"></div>
+                            </div>
+                            <button type="button" onclick="clearRxFile()" style="background:none; border:none; color:var(--danger); cursor:pointer; font-size:16px;">
+                                <i class="fas fa-times-circle"></i>
+                            </button>
+                        </div>
+                        <p class="rx-note">
+                            <i class="fas fa-shield-alt"></i>
+                            Your prescription will be verified by the optometrist upon visit.
+                        </p>
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════
+                     ✅ HOW IT WORKS — Para sa need_exam LANG
+                     ═══════════════════════════════════════════════════════ -->
+                <div id="howItWorksSection" style="display:none; margin-top: 20px;">
+                    <div class="how-it-works-card">
+                        <div class="hiw-header">
+                            <i class="fas fa-clipboard-list"></i>
+                            <h3>HOW IT WORKS</h3>
+                        </div>
+
+                        <div class="hiw-step">
+                            <div class="hiw-num">1</div>
+                            <div class="hiw-content">
+                                <strong>Book an appointment</strong>
+                                <p>Pay for the frame only (₱<?php echo number_format($display_price, 2); ?>)</p>
+                            </div>
+                        </div>
+
+                        <div class="hiw-step">
+                            <div class="hiw-num">2</div>
+                            <div class="hiw-content">
+                                <strong>Visit the clinic for your eye exam</strong>
+                                <p>Our optometrist will examine your eyes</p>
+                            </div>
+                        </div>
+
+                        <div class="hiw-step">
+                            <div class="hiw-num">3</div>
+                            <div class="hiw-content">
+                                <strong>Doctor recommends your lens</strong>
+                                <ul>
+                                    <li>Lens Design (Single Vision / Progressive)</li>
+                                    <li>Lens Index (1.56 / 1.60 / 1.67 / 1.74)</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div class="hiw-step">
+                            <div class="hiw-num">4</div>
+                            <div class="hiw-content">
+                                <strong>You choose optional features</strong>
+                                <ul>
+                                    <li>Blue Cut (+₱800)</li>
+                                    <li>Anti-Reflective (+₱500)</li>
+                                    <li>Photochromic (+₱1,200)</li>
+                                    <li>Scratch Resistant (+₱300)</li>
+                                    <li>UV Protection (+₱200)</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <div class="hiw-step">
+                            <div class="hiw-num">5</div>
+                            <div class="hiw-content">
+                                <strong>Pay the remaining balance</strong>
+                                <p>Final price confirmed after exam</p>
+                            </div>
+                        </div>
+
+                        <div class="hiw-note">
+                            <i class="fas fa-lightbulb"></i>
+                            <span><strong>Why?</strong> Because your lens needs depend on your actual eye grade and prescription. The doctor will determine the best option for you.</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════
+                     ✅ LENS DESIGN SECTION (lalabas pag have_prescription o need_exam)
+                     ═══════════════════════════════════════════════════════ -->
+                <div id="lensDesignSection" style="display: none; margin-top: 20px;">
+                    <div class="flow-card-title" style="font-size: 14px; margin-bottom: 10px;">
+                        <i class="fas fa-layer-group"></i> Lens Design
+                    </div>
+                    <div class="lens-grid" id="lensDesignGrid">
+                        <button class="lens-btn" data-lens="single_vision" onclick="selectLensDesign(this)">
+                            <span class="ln">Single Vision</span>
+                            <span class="lp">+₱500</span>
+                            <span class="ld">For near or far vision</span>
+                        </button>
+                        <button class="lens-btn" data-lens="progressive" onclick="selectLensDesign(this)">
+                            <span class="ln">Progressive</span>
+                            <span class="lp">+₱1,500</span>
+                            <span class="ld">For near, intermediate & far vision</span>
+                        </button>
+                    </div>
+                </div>
+
+<div id="lensFeaturesSection" style="display: none; margin-top: 20px;">
+    <div class="flow-card-title" style="font-size: 14px; margin-bottom: 10px;">
+        <i class="fas fa-magic"></i> Lens Features
+    </div>
+    <div class="features-list">
+        <label class="feature-checkbox">
+            <input type="checkbox" name="lens_feature" value="blue_cut" data-price="800" onchange="updateLensFeatures()">
+            <span>Blue Cut <strong>+₱800</strong></span>
+        </label>
+        <label class="feature-checkbox">
+            <input type="checkbox" name="lens_feature" value="ar" data-price="500" onchange="updateLensFeatures()">
+            <span>Anti-Reflective <strong>+₱500</strong></span>
+        </label>
+        <label class="feature-checkbox">
+            <input type="checkbox" name="lens_feature" value="photochromic" data-price="1200" onchange="updateLensFeatures()">
+            <span>Photochromic <strong>+₱1,200</strong></span>
+        </label>
+    </div>
+</div>
+
+                <!-- ═══════════════════════════════════════════════════════
+                     ✅ AUTO-DETECTED LENS INDEX (para sa MANUAL input)
+                     ═══════════════════════════════════════════════════════ -->
+                <div id="autoLensIndexSection" style="display: none; margin-top: 20px;">
+                    <div class="flow-card-title" style="font-size: 14px; margin-bottom: 10px;">
+                        <i class="fas fa-magic"></i> Lens Thickness
+                    </div>
+                    <div class="lens-grid" id="autoLensIndexGrid"></div>
+                </div>
+
+                <!-- ═══════════════════════════════════════════════════════
+                     ✅ MANUAL LENS INDEX (para sa UPLOAD)
+                     ═══════════════════════════════════════════════════════ -->
+                <div id="lensIndexSection" style="display: none; margin-top: 20px;">
+                    <div class="flow-card-title" style="font-size: 14px; margin-bottom: 10px;">
+                        <i class="fas fa-layer-group"></i> Lens Thickness
                     </div>
                     <div class="lens-grid" id="lensIndexGrid"></div>
                 </div>
+
+<div id="lockedLensIndexSection" style="display: none; margin-top: 20px;">
+    <div class="flow-card-title" style="font-size: 14px; margin-bottom: 10px;">
+        <i class="fas fa-lock"></i> Lens Thickness
+    </div>
+    <div class="locked-index-box">
+        <div class="lib-header">
+            <i class="fas fa-lock"></i>
+            <strong>TO BE CONFIRMED AFTER EYE EXAM</strong>
+        </div>
+        <p class="lib-desc">
+            Your optometrist will recommend the appropriate lens index based on your prescription.
+        </p>
+    </div>
+
+    <!-- ✅ Dynamic grid — popunan ng JavaScript -->
+    <div class="lens-grid" id="lockedLensIndexGrid" style="margin-top: 12px; opacity: 0.6; pointer-events: none;"></div>
+
+    <p style="font-size: 11px; color: #92400E; margin-top: 12px; text-align: center; font-style: italic;">
+        <i class="fas fa-info-circle"></i>
+        Final lens index and price will be confirmed after your eye examination.
+    </p>
+</div>
+
                 <?php elseif ($IS_LENS_ONLY): ?>
                 <div class="lens-grid" id="lensGrid">
                     <button class="lens-btn selected" data-lens="single_vision" onclick="selectLens(this)">
@@ -2068,22 +2973,7 @@ include '../includes/navbar.php';
                     </div>
                     <div class="lens-grid" id="lensIndexGrid"></div>
                 </div>
-                <?php else: ?>
-                <div class="lens-grid" id="lensGrid">
-                    <button class="lens-btn selected" data-lens="contact_daily" onclick="selectLens(this)">
-                        <span class="ln">Daily Disposable</span>
-                        <span class="lp">Included</span>
-                        <span class="ld">Fresh pair every day</span>
-                    </button>
-                    <button class="lens-btn" data-lens="contact_monthly" onclick="selectLens(this)">
-                        <span class="ln">Monthly Wear</span>
-                        <span class="lp">Included</span>
-                        <span class="ld">Reusable for 30 days</span>
-                    </button>
-                </div>
-                <?php endif; ?>
-
-                <div id="rxSection" style="display: <?php echo ($category === 'Lenses' || $category === 'Contact Lenses') ? 'block' : 'none'; ?>;">
+                <div id="rxSection" style="display: block; margin-top: 16px;">
                     <div class="flow-card-title" style="margin-top:18px; margin-bottom:10px; font-size:14px;">
                         <i class="fas fa-prescription"></i> Your Prescription
                     </div>
@@ -2151,14 +3041,96 @@ include '../includes/navbar.php';
                         <p>We'll schedule an appointment for you. Our optometrist will check your vision and recommend the right prescription for your lenses.</p>
                     </div>
                 </div>
-
-                <div class="price-summary" id="priceSummary">
-                    <div>
-                        <div class="ps-item">Price: <strong>₱<?php echo number_format($product['price'], 2); ?></strong></div>
-                        <div class="ps-item" id="lensAddText" style="display:none;">Lens: <strong id="lensAddAmt">+₱0</strong></div>
-                    </div>
-                    <div class="ps-total" id="totalDisplay">₱<?php echo number_format($display_price, 2); ?></div>
+                <?php else: ?>
+                <div class="lens-grid" id="lensGrid">
+                    <button class="lens-btn selected" data-lens="contact_daily" onclick="selectLens(this)">
+                        <span class="ln">Daily Disposable</span>
+                        <span class="lp">Included</span>
+                        <span class="ld">Fresh pair every day</span>
+                    </button>
+                    <button class="lens-btn" data-lens="contact_monthly" onclick="selectLens(this)">
+                        <span class="ln">Monthly Wear</span>
+                        <span class="lp">Included</span>
+                        <span class="ld">Reusable for 30 days</span>
+                    </button>
                 </div>
+                <div id="rxSection" style="display: block; margin-top: 16px;">
+                    <div class="flow-card-title" style="margin-top:18px; margin-bottom:10px; font-size:14px;">
+                        <i class="fas fa-prescription"></i> Your Prescription
+                    </div>
+
+                    <div class="rx-toggle">
+                        <label class="rx-option">
+                            <input type="radio" name="rx_know" value="know" onchange="handleRxKnowledge(this)">
+                            <div class="icon"><i class="fas fa-check"></i></div>
+                            <span>I know my prescription</span>
+                        </label>
+                        <label class="rx-option">
+                            <input type="radio" name="rx_know" value="dont_know" onchange="handleRxKnowledge(this)">
+                            <div class="icon"><i class="fas fa-question"></i></div>
+                            <span>I need an eye exam</span>
+                        </label>
+                    </div>
+
+                    <div id="rxFormBox" class="rx-form" style="display:none;">
+                        <h4><i class="fas fa-edit" style="color:var(--primary)"></i> Enter Your Prescription</h4>
+                        <div class="rx-eyes">
+                            <div class="rx-eye-box">
+                                <div class="rx-eye-label">Right Eye <span>OD</span></div>
+                                <div class="rx-inputs">
+                                    <div class="rx-input-group">
+                                        <label>SPH</label>
+                                        <input type="text" id="od_sph" placeholder="e.g. -1.50">
+                                    </div>
+                                    <div class="rx-input-group">
+                                        <label>CYL</label>
+                                        <input type="text" id="od_cyl" placeholder="e.g. -0.50">
+                                    </div>
+                                    <div class="rx-input-group">
+                                        <label>AXIS</label>
+                                        <input type="text" id="od_axis" placeholder="e.g. 180">
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="rx-eye-box">
+                                <div class="rx-eye-label">Left Eye <span>OS</span></div>
+                                <div class="rx-inputs">
+                                    <div class="rx-input-group">
+                                        <label>SPH</label>
+                                        <input type="text" id="os_sph" placeholder="e.g. -1.25">
+                                    </div>
+                                    <div class="rx-input-group">
+                                        <label>CYL</label>
+                                        <input type="text" id="os_cyl" placeholder="e.g. -0.25">
+                                    </div>
+                                    <div class="rx-input-group">
+                                        <label>AXIS</label>
+                                        <input type="text" id="os_axis" placeholder="e.g. 175">
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <p class="rx-note">
+                            <i class="fas fa-shield-alt"></i>
+                            Your prescription will be verified by the optometrist upon visit.
+                        </p>
+                    </div>
+
+                    <div id="rxExamBox" class="eye-exam-box" style="display:none;">
+                        <i class="fas fa-calendar-check"></i>
+                        <strong style="color:var(--primary)">Eye Exam Required</strong>
+                        <p>We'll schedule an appointment for you. Our optometrist will check your vision and recommend the right prescription for your lenses.</p>
+                    </div>
+                </div>
+                <?php endif; ?>
+
+<div class="price-summary" id="priceSummary">
+    <div>
+        <div class="ps-item">Price: <strong>₱<?php echo number_format($product['price'], 2); ?></strong></div>
+        <div class="ps-item" id="lensAddText" style="display:none;">Lens: <strong id="lensAddAmt">+₱0</strong></div>
+    </div>
+    <div class="ps-total" id="totalDisplay">₱<?php echo number_format($display_price, 2); ?></div>
+</div>
 
 <?php if (!empty($spec_fields)): ?>
 <div class="specs-accordion" style="margin-top:20px;">
@@ -2318,7 +3290,7 @@ include '../includes/navbar.php';
                         } elseif ($has_stock_tracking) {
                             echo 'Select a color variant to continue.';
                         } else {
-                            echo 'Select your lens option to continue.';
+                            echo 'Select how you want your glasses to continue.';
                         }
                         ?>
                     </p>
@@ -2569,78 +3541,63 @@ include '../includes/navbar.php';
                 <textarea id="mNotes" class="form-input" rows="2" placeholder="Any special requests..."></textarea>
             </div>
 
-            <div class="modal-price-box" id="modalPriceBox">
-                <div class="mpb-row">
-                    <span class="mpb-label"><?php echo $is_on_sale ? 'Sale Price' : 'Product Price'; ?></span>
-                    <span class="mpb-value" <?php echo $is_on_sale ? 'style="color:#EF4444"' : ''; ?>>
-                        ₱<?php echo number_format($display_price, 2); ?>
-                    </span>
-                </div>
-                <?php if ($is_on_sale): ?>
-                <div class="mpb-row">
-                    <span class="mpb-label" style="text-decoration:line-through; color:var(--text-muted)">Original</span>
-                    <span class="mpb-value" style="text-decoration:line-through; color:var(--text-muted)">₱<?php echo number_format($original_price, 2); ?></span>
-                </div>
-                <?php endif; ?>
-                <div class="mpb-row" id="mpbLensRow" style="display:none;">
-                    <span class="mpb-label">Lens Upgrade</span>
-                    <span class="mpb-value" id="mpbLensVal">+₱0</span>
-                </div>
-                <div class="mpb-row" id="mpbDeliveryRow" style="display:none;">
-                    <span class="mpb-label">Delivery Fee</span>
-                    <span class="mpb-value" id="mpbDeliveryVal" style="color:#F59E0B;">+₱0</span>
-                </div>
-                <div class="mpb-row vat" id="mpbVatRow" style="display:none;">
-                    <span class="mpb-label">VAT (12%)</span>
-                    <span class="mpb-value" id="mpbVatVal">+₱0</span>
-                </div>
-                <div class="mpb-row discount" id="mpbDiscountRow" style="display:none;">
-                    <span class="mpb-label">PWD/Senior Discount (20%)</span>
-                    <span class="mpb-value" id="mpbDiscountVal">-₱0</span>
-                </div>
-                <div class="mpb-divider"></div>
-                <div class="mpb-row total">
-                    <span class="mpb-label">Total</span>
-                    <span class="mpb-value" id="mpbTotal">₱<?php echo number_format($total_amount_calculated, 2); ?></span>
-                </div>
-                <?php if ($payment_type_label == 'downpayment'): ?>
-                <div class="mpb-row dp">
-                    <span class="mpb-label">Downpayment (<?php echo $downpayment_percent; ?>%)</span>
-                    <span class="mpb-value" id="mpbDp">₱<?php echo number_format($downpayment_amount_calculated, 2); ?></span>
-                </div>
-                <div class="mpb-row">
-                    <span class="mpb-label">Balance (upon visit)</span>
-                    <span class="mpb-value" id="mpbBal">₱<?php echo number_format($balance_amount_calculated, 2); ?></span>
-                </div>
-                <?php elseif ($payment_type_label == 'full'): ?>
-                <div class="mpb-row dp">
-                    <span class="mpb-label">Full Payment Due</span>
-                    <span class="mpb-value" id="mpbDp" style="color:var(--danger);">₱<?php echo number_format($downpayment_amount_calculated, 2); ?></span>
-                </div>
-                <?php elseif ($payment_type_label == 'onsite'): ?>
-                <div class="mpb-row dp">
-                    <span class="mpb-label">Pay at Clinic</span>
-                    <span class="mpb-value" id="mpbDp" style="color:var(--warning);">₱<?php echo number_format($total_amount_calculated, 2); ?></span>
-                </div>
-                <?php elseif ($payment_type_label == 'free'): ?>
-                <div class="mpb-row dp">
-                    <span class="mpb-label">FREE</span>
-                    <span class="mpb-value" style="color:var(--success);">₱0.00</span>
-                </div>
-                <?php endif; ?>
+<div class="modal-price-box" id="modalPriceBox">
+    <!-- Product Price -->
+    <div class="mpb-row">
+        <span class="mpb-label"><?php echo $is_on_sale ? 'Sale Price' : 'Product Price'; ?></span>
+        <span class="mpb-value">₱<?php echo number_format($display_price, 2); ?></span>
+    </div>
 
-                <div class="mpb-divider"></div>
-                <div class="mpb-row">
-                    <span class="mpb-label">Booking Flow:</span>
-                    <span class="mpb-value">
-                        <?php if ($clinic_booking_flow == 'pay_first'): ?>
-                            <i class="fas fa-credit-card"></i> Pay First, Then Approve
-                        <?php else: ?>
-                            <i class="fas fa-clock"></i> Approve First, Then Pay
-                        <?php endif; ?>
-                    </span>
-                </div>
-            </div>
+    <!-- Lens Upgrade (dynamic) -->
+    <div class="mpb-row" id="mpbLensRow" style="display:none;">
+        <span class="mpb-label">Lens Upgrade</span>
+        <span class="mpb-value" id="mpbLensVal">+₱0</span>
+    </div>
+
+    <!-- Subtotal (dynamic) -->
+    <div class="mpb-row" id="mpbSubtotalRow" style="display:none;">
+        <span class="mpb-label">Subtotal</span>
+        <span class="mpb-value" id="mpbSubtotalVal">₱0.00</span>
+    </div>
+
+    <!-- VAT-Exclusive Amount (PWD/Senior only) -->
+    <div class="mpb-row" id="mpbVatExclusiveRow" style="display:none; font-size: 12px; opacity: 0.8;">
+        <span class="mpb-label"><em>VAT-Exclusive Amount:</em></span>
+        <span class="mpb-value" id="mpbVatExclusiveVal" style="font-size: 12px;">₱0.00</span>
+    </div>
+
+    <!-- Discount (dynamic) -->
+    <div class="mpb-row discount" id="mpbDiscountRow" style="display:none;">
+        <span class="mpb-label">PWD/Senior Discount</span>
+        <span class="mpb-value" id="mpbDiscountVal">-₱0</span>
+    </div>
+
+    <!-- ✅ VAT Exempt (dynamic) -->
+    <div class="mpb-row" id="mpbVatExemptRow" style="display:none;">
+        <span class="mpb-label">VAT Exempt</span>
+        <span class="mpb-value" id="mpbVatExemptVal" style="color:var(--success);">-₱0.00</span>
+    </div>
+
+    <!-- VAT (dynamic) -->
+    <div class="mpb-row vat" id="mpbVatRow" style="display:none;">
+        <span class="mpb-label">VAT</span>
+        <span class="mpb-value" id="mpbVatVal">₱0</span>
+    </div>
+
+    <!-- Delivery Fee (dynamic) -->
+    <div class="mpb-row" id="mpbDeliveryRow" style="display:none;">
+        <span class="mpb-label">Delivery Fee</span>
+        <span class="mpb-value" id="mpbDeliveryVal" style="color:#F59E0B;">+₱0</span>
+    </div>
+
+    <div class="mpb-divider"></div>
+
+    <!-- Total -->
+    <div class="mpb-row total">
+        <span class="mpb-label">Total</span>
+        <span class="mpb-value" id="mpbTotal">₱0.00</span>
+    </div>
+</div>
 
             <div class="modal-apt-notice" id="modalAptNotice" style="display:none;">
                 <i class="fas fa-calendar-check" style="font-size:20px; display:block; margin-bottom:8px;"></i>
@@ -2795,6 +3752,13 @@ let selectedDeliveryPayment = 'online';
 let selectedLensIndex = null;
 let selectedLensIndexPrice = 0;
 
+// ✅ BAGO: Purchase type tracking (Recommended Flow)
+let selectedPurchaseType = null;  // 'have_prescription' | 'need_exam' | 'frame_only'
+let selectedLensFeatures = [];    // ['blue_cut', 'anti_reflective']
+let selectedRxMethod = null;      // 'manual' | 'upload'
+let uploadedRxFile = null;        // File object
+let autoDetectedIndex = null;     // Auto-detected lens index
+
 const HAS_STOCK_TRACKING = <?php echo $has_stock_tracking ? 'true' : 'false'; ?>;
 const HAS_SIZES          = <?php echo !empty($available_sizes) ? 'true' : 'false'; ?>;
 const IS_FULLY_SOLD_OUT  = <?php echo $is_fully_sold_out ? 'true' : 'false'; ?>;
@@ -2831,6 +3795,618 @@ const LENS_PRICES = {
 };
 
 const LENS_INDEX_ADDONS = <?php echo json_encode($lens_index_addons); ?>;
+
+const IS_PWD_SENIOR = <?php echo $is_pwd_senior_page ? 'true' : 'false'; ?>;
+
+// Tax settings mula sa system_settings table
+const VAT_RATE                   = <?php echo $frontend_vat_rate; ?>;
+const PWD_DISCOUNT_RATE          = <?php echo $frontend_pwd_discount_rate; ?>;
+const PWD_VAT_EXEMPT             = <?php echo $frontend_pwd_vat_exempt ? 'true' : 'false'; ?>;
+const PRICES_ARE_VAT_INCLUSIVE   = <?php echo $frontend_prices_vat_inclusive ? 'true' : 'false'; ?>;
+
+function updatePriceDisplay() {
+    const lp = getLensPrice();
+    const subtotal = BASE_PRICE + lp;
+    const deliveryFee = (currentFulfillment === 'delivery') ? currentDeliveryFee : 0;
+
+    // ═══════════════════════════════════════════════════
+    // STEP 1: Compute discount (kung Senior/PWD)
+    // ═══════════════════════════════════════════════════
+    let discountAmount = 0;
+    let discountedSubtotal = subtotal;
+    let isVatExempt = false;
+    let vatExclusiveAmount = 0;
+    let vatExemptAmount = 0;
+
+    // ✅ PWD/Senior: Discountable amount ay ang FRAME LANG (BASE_PRICE)
+    if (IS_PWD_SENIOR) {
+        const discountableAmount = BASE_PRICE;  // Frame lang
+
+        vatExclusiveAmount = Math.round((discountableAmount / (1 + VAT_RATE)) * 100) / 100;
+        discountAmount     = Math.round(vatExclusiveAmount * PWD_DISCOUNT_RATE * 100) / 100;
+        vatExemptAmount    = Math.round((discountableAmount - vatExclusiveAmount) * 100) / 100;
+
+        discountedSubtotal = Math.round((subtotal - discountAmount - vatExemptAmount) * 100) / 100;
+        isVatExempt = true;
+    }
+
+    // ═══════════════════════════════════════════════════
+    // STEP 2: Compute VAT (regular customer lang)
+    // ═══════════════════════════════════════════════════
+    let vatAmount = 0;
+    let showVatRow = false;
+
+    if (!isVatExempt) {
+        vatAmount = Math.round((subtotal - (subtotal / (1 + VAT_RATE))) * 100) / 100;
+        showVatRow = true;
+    }
+
+    // ═══════════════════════════════════════════════════
+    // STEP 3: Final total
+    // ═══════════════════════════════════════════════════
+    let total;
+    if (isVatExempt) {
+        total = discountedSubtotal;
+    } else {
+        total = subtotal;
+    }
+    total = Math.round((total + deliveryFee) * 100) / 100;
+
+    // ═══════════════════════════════════════════════════
+    // STEP 4: Price summary (sa labas ng modal)
+    // ═══════════════════════════════════════════════════
+    const lensAddText = document.getElementById('lensAddText');
+    const lensAddAmt = document.getElementById('lensAddAmt');
+    const totalDisplay = document.getElementById('totalDisplay');
+
+    if (lensAddText && lensAddAmt) {
+        lensAddText.style.display = lp > 0 ? 'block' : 'none';
+        if (lensAddAmt) lensAddAmt.textContent = '+₱' + lp.toLocaleString();
+    }
+
+    if (totalDisplay) {
+        const regularTotal = subtotal + deliveryFee;
+        totalDisplay.textContent = '₱' + regularTotal.toLocaleString('en-PH', {minimumFractionDigits: 2});
+    }
+
+    // ═══════════════════════════════════════════════════
+    // STEP 5: NEED_EXAM note
+    // ═══════════════════════════════════════════════════
+    if (selectedPurchaseType === 'need_exam') {
+        const modalPriceBox = document.getElementById('modalPriceBox');
+        let examNote = document.getElementById('examPriceNote');
+        if (!examNote && modalPriceBox) {
+            examNote = document.createElement('div');
+            examNote.id = 'examPriceNote';
+            examNote.style.cssText = 'margin-top:12px; padding:12px 14px; background:#EFF6FF; border:2px solid #BFDBFE; border-radius:10px; font-size:12px; color:#1E40AF; line-height:1.6;';
+            examNote.innerHTML = '<i class="fas fa-info-circle" style="margin-right:6px;"></i> <strong>Frame only ang babayaran ngayon.</strong> Ang lens design, index, at features ay idedetermine ng doktor pagkatapos ng eye exam.';
+            modalPriceBox.appendChild(examNote);
+        }
+    } else {
+        const examNote = document.getElementById('examPriceNote');
+        if (examNote) examNote.remove();
+    }
+
+    // ═══════════════════════════════════════════════════
+    // STEP 6: DYNAMIC MODAL ROWS
+    // ═══════════════════════════════════════════════════
+
+    // --- Subtotal row ---
+    const mpbSubtotalRow = document.getElementById('mpbSubtotalRow');
+    const mpbSubtotalVal = document.getElementById('mpbSubtotalVal');
+    if (mpbSubtotalRow) mpbSubtotalRow.style.display = 'flex';
+    if (mpbSubtotalVal) mpbSubtotalVal.textContent = '₱' + subtotal.toLocaleString('en-PH', {minimumFractionDigits: 2});
+
+    // --- Lens row ---
+    const mpbLensRow = document.getElementById('mpbLensRow');
+    const mpbLensVal = document.getElementById('mpbLensVal');
+    if (mpbLensRow) mpbLensRow.style.display = lp > 0 ? 'flex' : 'none';
+    if (mpbLensVal) mpbLensVal.textContent = '+₱' + lp.toLocaleString();
+
+    // --- VAT-Exclusive row ---
+    const mpbVatExclusiveRow = document.getElementById('mpbVatExclusiveRow');
+    const mpbVatExclusiveVal = document.getElementById('mpbVatExclusiveVal');
+    if (mpbVatExclusiveRow && mpbVatExclusiveVal) {
+        if (IS_PWD_SENIOR && vatExclusiveAmount > 0) {
+            mpbVatExclusiveRow.style.display = 'flex';
+            mpbVatExclusiveVal.textContent = '₱' + vatExclusiveAmount.toLocaleString('en-PH', {minimumFractionDigits: 2});
+        } else {
+            mpbVatExclusiveRow.style.display = 'none';
+        }
+    }
+
+    // --- Discount row ---
+    const mpbDiscountRow = document.getElementById('mpbDiscountRow');
+    const mpbDiscountVal = document.getElementById('mpbDiscountVal');
+    if (mpbDiscountRow && mpbDiscountVal) {
+        if (IS_PWD_SENIOR && discountAmount > 0) {
+            mpbDiscountRow.style.display = 'flex';
+            mpbDiscountVal.textContent = '-₱' + discountAmount.toLocaleString('en-PH', {minimumFractionDigits: 2});
+
+            const discountLabel = mpbDiscountRow.querySelector('.mpb-label');
+            if (discountLabel) {
+                const discountPercent = Math.round(PWD_DISCOUNT_RATE * 100);
+                discountLabel.textContent = 'PWD/Senior Discount (' + discountPercent + '%)';
+            }
+        } else {
+            mpbDiscountRow.style.display = 'none';
+        }
+    }
+
+    // --- ✅ VAT Exempt row ---
+    const mpbVatExemptRow = document.getElementById('mpbVatExemptRow');
+    const mpbVatExemptVal = document.getElementById('mpbVatExemptVal');
+    if (mpbVatExemptRow && mpbVatExemptVal) {
+        if (IS_PWD_SENIOR && vatExemptAmount > 0) {
+            mpbVatExemptRow.style.display = 'flex';
+            mpbVatExemptVal.textContent = '-₱' + vatExemptAmount.toLocaleString('en-PH', {minimumFractionDigits: 2});
+        } else {
+            mpbVatExemptRow.style.display = 'none';
+        }
+    }
+
+    // --- VAT row ---
+    const mpbVatRow = document.getElementById('mpbVatRow');
+    const mpbVatVal = document.getElementById('mpbVatVal');
+    if (mpbVatRow && mpbVatVal) {
+        if (showVatRow && vatAmount > 0) {
+            mpbVatRow.style.display = 'flex';
+            mpbVatVal.textContent = '₱' + vatAmount.toLocaleString('en-PH', {minimumFractionDigits: 2});
+
+            const vatLabel = mpbVatRow.querySelector('.mpb-label');
+            if (vatLabel) {
+                const vatPercent = Math.round(VAT_RATE * 100);
+                if (PRICES_ARE_VAT_INCLUSIVE) {
+                    vatLabel.innerHTML = 'VAT (' + vatPercent + '%) <small style="font-size:9px; color:var(--text-muted);">included</small>';
+                } else {
+                    vatLabel.textContent = 'VAT (' + vatPercent + '%)';
+                }
+            }
+        } else {
+            mpbVatRow.style.display = 'none';
+        }
+    }
+
+    // --- Delivery fee row ---
+    const mpbDeliveryRow = document.getElementById('mpbDeliveryRow');
+    const mpbDeliveryVal = document.getElementById('mpbDeliveryVal');
+    if (mpbDeliveryRow) mpbDeliveryRow.style.display = (deliveryFee > 0) ? 'flex' : 'none';
+    if (mpbDeliveryVal) mpbDeliveryVal.textContent = '+₱' + deliveryFee.toFixed(2);
+
+    // --- Total ---
+    const mpbTotal = document.getElementById('mpbTotal');
+    if (mpbTotal) mpbTotal.textContent = '₱' + total.toLocaleString('en-PH', {minimumFractionDigits: 2});
+
+    // --- Payment method options ---
+    document.querySelectorAll('.payment-method-option').forEach(opt => {
+        const span = opt.querySelector('span:last-child');
+        if (span) span.textContent = '₱' + total.toLocaleString('en-PH', {minimumFractionDigits: 2});
+    });
+}
+
+
+function selectPurchaseType(btn) {
+    document.querySelectorAll('.purchase-type-btn').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+    selectedPurchaseType = btn.dataset.type;
+
+    // Hide lahat ng conditional sections
+    const rxSection = document.getElementById('rxSection');
+    const rxExamBox = document.getElementById('rxExamBox');
+    const lensDesignSection = document.getElementById('lensDesignSection');
+    const lensFeaturesSection = document.getElementById('lensFeaturesSection');
+    const lensIndexSection = document.getElementById('lensIndexSection');
+    const autoLensIndexSection = document.getElementById('autoLensIndexSection');
+    const lockedLensIndexSection = document.getElementById('lockedLensIndexSection');
+    const howItWorksSection = document.getElementById('howItWorksSection');
+    const rxMethodGrid = document.getElementById('rxMethodGrid');
+    const rxManualForm = document.getElementById('rxManualForm');
+    const rxUploadForm = document.getElementById('rxUploadForm');
+
+    if (rxSection) rxSection.style.display = 'none';
+    if (rxExamBox) rxExamBox.style.display = 'none';
+    if (lensDesignSection) lensDesignSection.style.display = 'none';
+    if (lensFeaturesSection) lensFeaturesSection.style.display = 'none';
+    if (lensIndexSection) lensIndexSection.style.display = 'none';
+    if (autoLensIndexSection) autoLensIndexSection.style.display = 'none';
+    if (lockedLensIndexSection) lockedLensIndexSection.style.display = 'none';
+    if (howItWorksSection) howItWorksSection.style.display = 'none';
+    if (rxManualForm) rxManualForm.style.display = 'none';
+    if (rxUploadForm) rxUploadForm.style.display = 'none';
+    if (rxMethodGrid) rxMethodGrid.style.display = 'flex';
+
+    // Reset
+    selectedLens = null;
+    selectedLensIndex = null;
+    selectedLensIndexPrice = 0;
+    selectedLensFeatures = [];
+    selectedRxMethod = null;
+    autoDetectedIndex = null;
+    uploadedRxFile = null;
+    document.querySelectorAll('input[name="lens_feature"]').forEach(cb => cb.checked = false);
+    document.querySelectorAll('.rx-method-btn').forEach(b => b.classList.remove('selected'));
+
+    if (selectedPurchaseType === 'have_prescription') {
+        // Show RX method selection (hindi pa ipakita ang lens design)
+        if (rxSection) rxSection.style.display = 'block';
+        // Hintayin muna ang RX method bago ipakita ang iba
+        return;
+
+    } else if (selectedPurchaseType === 'need_exam') {
+        // ═══════════════════════════════════════════════════
+        // ✅ NEED_EXAM: HOW IT WORKS box LANG ang ipakita
+        // ═══════════════════════════════════════════════════
+        const howItWorksSection = document.getElementById('howItWorksSection');
+        if (howItWorksSection) howItWorksSection.style.display = 'block';
+
+        // ❌ HINDI ipapakita ang lens design, features, index
+        // Frame-only price lang ang gagamitin
+        selectedLens = 'frame_only';
+        selectedLensIndex = null;
+        selectedLensIndexPrice = 0;
+        selectedLensFeatures = [];
+
+    } else if (selectedPurchaseType === 'frame_only') {
+        selectedLens = 'frame_only';
+        selectedLensIndex = null;
+        selectedLensIndexPrice = 0;
+        selectedLensFeatures = [];
+    }
+
+    updatePriceDisplay();
+    updateActionButton();
+}
+// ✅ BAGO: Lens Design selection
+function selectLensDesign(btn) {
+    document.querySelectorAll('#lensDesignGrid .lens-btn').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+    selectedLens = btn.dataset.lens;
+
+    // Show features
+    const lensFeaturesSection = document.getElementById('lensFeaturesSection');
+    if (lensFeaturesSection) lensFeaturesSection.style.display = 'block';
+
+    const autoLensIndexSection = document.getElementById('autoLensIndexSection');
+    const lensIndexSection = document.getElementById('lensIndexSection');
+    const lockedLensIndexSection = document.getElementById('lockedLensIndexSection');
+
+    // ═══════════════════════════════════════════════════
+    // ✅ NEED_EXAM: Locked lens index lang
+    // ═══════════════════════════════════════════════════
+    if (selectedPurchaseType === 'need_exam') {
+        if (autoLensIndexSection) autoLensIndexSection.style.display = 'none';
+        if (lensIndexSection) lensIndexSection.style.display = 'none';
+        if (lockedLensIndexSection) {
+            lockedLensIndexSection.style.display = 'block';
+            populateLockedLensIndex(); // ✅ I-update ang locked index base sa bagong lens design
+        }
+    }
+    // ═══════════════════════════════════════════════════
+    // ✅ MANUAL: Auto-detect lens index
+    // ═══════════════════════════════════════════════════
+    else if (selectedRxMethod === 'manual') {
+        if (autoLensIndexSection) autoLensIndexSection.style.display = 'block';
+        if (lensIndexSection) lensIndexSection.style.display = 'none';
+        if (lockedLensIndexSection) lockedLensIndexSection.style.display = 'none';
+        autoDetectLensIndex();
+    }
+    // ═══════════════════════════════════════════════════
+    // ✅ UPLOAD: Manual lens index selection
+    // ═══════════════════════════════════════════════════
+    else if (selectedRxMethod === 'upload') {
+        if (autoLensIndexSection) autoLensIndexSection.style.display = 'none';
+        if (lockedLensIndexSection) lockedLensIndexSection.style.display = 'none';
+        loadLensIndexAddonsForDesign(selectedLens);
+    }
+
+    updatePriceDisplay();
+    updateActionButton();
+}
+
+// ✅ BAGO: Load lens index addons para sa specific design
+function loadLensIndexAddonsForDesign(lensDesign) {
+    const lensIndexSection = document.getElementById('lensIndexSection');
+    const grid = document.getElementById('lensIndexGrid');
+    if (!lensIndexSection || !grid) return;
+
+    const filtered = LENS_INDEX_ADDONS.filter(a => a.lens_type === lensDesign);
+
+    if (filtered.length > 0) {
+        grid.innerHTML = filtered.map(a => `
+            <button type="button" class="lens-btn"
+                    data-index-value="${a.index_value}"
+                    data-price="${a.price}"
+                    onclick="selectLensIndex(this, event)">
+                <span class="ln">${a.index_value} ${a.label}</span>
+                <span class="lp">${a.price > 0 ? '+₱' + a.price.toLocaleString() : 'Included'}</span>
+                <span class="ld">${a.label} lens</span>
+            </button>
+        `).join('');
+
+        const firstBtn = grid.querySelector('.lens-btn');
+        if (firstBtn) {
+            firstBtn.classList.add('selected');
+            selectedLensIndex = firstBtn.dataset.indexValue;
+            selectedLensIndexPrice = parseFloat(firstBtn.dataset.price);
+        }
+
+        lensIndexSection.style.display = 'block';
+    } else {
+        lensIndexSection.style.display = 'none';
+        selectedLensIndex = null;
+        selectedLensIndexPrice = 0;
+    }
+}
+
+// ✅ BAGO: Update lens features (checkboxes)
+function updateLensFeatures() {
+    selectedLensFeatures = [];
+    document.querySelectorAll('input[name="lens_feature"]:checked').forEach(cb => {
+        selectedLensFeatures.push({
+            value: cb.value,
+            price: parseFloat(cb.dataset.price)
+        });
+    });
+    updatePriceDisplay();
+}
+
+// ✅ BAGO: Get total features price
+function getFeaturesPrice() {
+    return selectedLensFeatures.reduce((sum, f) => sum + f.price, 0);
+}
+
+// ═══════════════════════════════════════════════════════
+// ✅ BAGO: RX METHOD SELECTION (Manual vs Upload)
+// ═══════════════════════════════════════════════════════
+function selectRxMethod(btn) {
+    document.querySelectorAll('.rx-method-btn').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+    selectedRxMethod = btn.dataset.method;
+
+    const rxManualForm = document.getElementById('rxManualForm');
+    const rxUploadForm = document.getElementById('rxUploadForm');
+    const lensDesignSection = document.getElementById('lensDesignSection');
+    const lensFeaturesSection = document.getElementById('lensFeaturesSection');
+    const autoLensIndexSection = document.getElementById('autoLensIndexSection');
+    const lensIndexSection = document.getElementById('lensIndexSection');
+
+    // Reset
+    selectedLensIndex = null;
+    selectedLensIndexPrice = 0;
+    autoDetectedIndex = null;
+
+    // ✅ Hide locked lens index section
+    const lockedLensIndexSection = document.getElementById('lockedLensIndexSection');
+    if (lockedLensIndexSection) lockedLensIndexSection.style.display = 'none';
+
+    if (selectedRxMethod === 'manual') {
+        if (rxManualForm) rxManualForm.style.display = 'block';
+        if (rxUploadForm) rxUploadForm.style.display = 'none';
+        if (lensDesignSection) lensDesignSection.style.display = 'block';
+        if (lensFeaturesSection) lensFeaturesSection.style.display = 'block';
+        if (lensIndexSection) lensIndexSection.style.display = 'none';
+        if (autoLensIndexSection) autoLensIndexSection.style.display = 'block';
+        autoSelectFirstDesign();
+        setTimeout(autoDetectLensIndex, 100);
+
+    } else if (selectedRxMethod === 'upload') {
+        if (rxManualForm) rxManualForm.style.display = 'none';
+        if (rxUploadForm) rxUploadForm.style.display = 'block';
+        if (lensDesignSection) lensDesignSection.style.display = 'block';
+        if (lensFeaturesSection) lensFeaturesSection.style.display = 'block';
+        if (autoLensIndexSection) autoLensIndexSection.style.display = 'none';
+        autoSelectFirstDesign();
+    }
+
+    updatePriceDisplay();
+    updateActionButton();
+}
+
+// ✅ Helper: Auto-select first lens design
+function autoSelectFirstDesign() {
+    const firstDesign = document.querySelector('#lensDesignGrid .lens-btn');
+    if (firstDesign) {
+        document.querySelectorAll('#lensDesignGrid .lens-btn').forEach(b => b.classList.remove('selected'));
+        firstDesign.classList.add('selected');
+        selectedLens = firstDesign.dataset.lens;
+
+        if (selectedRxMethod === 'manual') {
+            autoDetectLensIndex();
+        } else {
+            loadLensIndexAddonsForDesign(selectedLens);
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════
+// ✅ BAGO: AUTO-DETECT LENS INDEX BASED ON SPH
+// ═══════════════════════════════════════════════════════
+function autoDetectLensIndex() {
+    if (selectedRxMethod !== 'manual') return;
+
+    const od_sph_raw = document.getElementById('od_sph')?.value || '';
+    const os_sph_raw = document.getElementById('os_sph')?.value || '';
+
+    const od_sph = parseFloat(od_sph_raw);
+    const os_sph = parseFloat(os_sph_raw);
+
+    const od_valid = !isNaN(od_sph);
+    const os_valid = !isNaN(os_sph);
+
+    const grid = document.getElementById('autoLensIndexGrid');
+    const section = document.getElementById('autoLensIndexSection');
+    if (!grid || !section) return;
+
+    if (!od_valid && !os_valid) {
+        section.style.display = 'none';
+        selectedLensIndex = null;
+        selectedLensIndexPrice = 0;
+        autoDetectedIndex = null;
+        updatePriceDisplay();
+        return;
+    }
+
+    const maxSph = Math.max(
+        od_valid ? Math.abs(od_sph) : 0,
+        os_valid ? Math.abs(os_sph) : 0
+    );
+
+    let targetIndex = '1.56';
+    if (maxSph <= 2.00) targetIndex = '1.56';
+    else if (maxSph <= 4.00) targetIndex = '1.60';
+    else if (maxSph <= 6.00) targetIndex = '1.67';
+    else targetIndex = '1.74';
+
+    // ✅ Recommended index — highlight
+    let recommendedValue = targetIndex;
+
+    // Build grid from DB addons
+    const allAddons = LENS_INDEX_ADDONS.filter(a => a.lens_type === selectedLens);
+
+    if (allAddons.length === 0) {
+        section.style.display = 'none';
+        return;
+    }
+
+    grid.innerHTML = allAddons.map(a => {
+        const isRecommended = (a.index_value === recommendedValue);
+        return `
+            <button type="button" class="lens-btn ${isRecommended ? 'selected' : ''}"
+                    data-index-value="${a.index_value}"
+                    data-price="${a.price}"
+                    data-recommended="${isRecommended ? '1' : '0'}"
+                    onclick="selectAutoLensIndex(this, event)">
+                <span class="ln">
+                    ${a.index_value} ${a.label}
+                    ${isRecommended ? '<span class="recommended-badge" id="recBadge-' + a.index_value + '">Recommended</span>' : ''}
+                </span>
+                <span class="lp">${a.price > 0 ? '+₱' + a.price.toLocaleString() : 'Included'}</span>
+                <span class="ld">${a.label} lens</span>
+            </button>
+        `;
+    }).join('');
+
+    // Auto-select recommended
+    const recBtn = grid.querySelector(`.lens-btn[data-index-value="${recommendedValue}"]`);
+    if (recBtn) {
+        selectedLensIndex = recBtn.dataset.indexValue;
+        selectedLensIndexPrice = parseFloat(recBtn.dataset.price);
+        autoDetectedIndex = recBtn.dataset.indexValue;
+    }
+
+    section.style.display = 'block';
+    updatePriceDisplay();
+}
+
+// ═══════════════════════════════════════════════════════
+// ✅ BAGO: POPULATE LOCKED LENS INDEX (para sa NEED_EXAM)
+// ═══════════════════════════════════════════════════════
+function populateLockedLensIndex() {
+    const grid = document.getElementById('lockedLensIndexGrid');
+    if (!grid) return;
+
+    // Kunin ang lahat ng addons para sa selectedLens
+    const allAddons = LENS_INDEX_ADDONS.filter(a => a.lens_type === selectedLens);
+
+    if (allAddons.length === 0) {
+        // Fallback: hardcoded default
+        grid.innerHTML = `
+            <button type="button" class="lens-btn" disabled>
+                <span class="ln">1.56 Standard</span>
+                <span class="lp">Included</span>
+            </button>
+            <button type="button" class="lens-btn" disabled>
+                <span class="ln">1.60 Thin</span>
+                <span class="lp">+₱400</span>
+            </button>
+            <button type="button" class="lens-btn" disabled>
+                <span class="ln">1.67 Extra Thin</span>
+                <span class="lp">+₱900</span>
+            </button>
+            <button type="button" class="lens-btn" disabled>
+                <span class="ln">1.74 Ultra Thin</span>
+                <span class="lp">+₱1,500</span>
+            </button>
+        `;
+        return;
+    }
+
+    grid.innerHTML = allAddons.map(a => `
+        <button type="button" class="lens-btn" disabled>
+            <span class="ln">${a.index_value} ${a.label}</span>
+            <span class="lp">${a.price > 0 ? '+₱' + a.price.toLocaleString() : 'Included'}</span>
+        </button>
+    `).join('');
+}
+// ✅ BAGO: Select from auto-detect grid
+function selectAutoLensIndex(btn, event) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    const grid = document.getElementById('autoLensIndexGrid');
+    if (grid) {
+        grid.querySelectorAll('.lens-btn').forEach(b => b.classList.remove('selected'));
+    }
+    btn.classList.add('selected');
+    selectedLensIndex = btn.dataset.indexValue;
+    selectedLensIndexPrice = parseFloat(btn.dataset.price);
+
+    // ✅ Option A: Remove recommended badge kapag pinalitan
+    const grid2 = document.getElementById('autoLensIndexGrid');
+    if (grid2) {
+        grid2.querySelectorAll('.recommended-badge').forEach(b => {
+            b.classList.add('hidden');
+        });
+    }
+
+    updatePriceDisplay();
+}
+
+// ═══════════════════════════════════════════════════════
+// ✅ BAGO: FILE UPLOAD HANDLER
+// ═══════════════════════════════════════════════════════
+function handleRxFile(input) {
+    const file = input.files[0];
+    if (!file) return;
+
+    if (file.size > 5 * 1024 * 1024) {
+        showToast('File too large. Max 5MB.', 'error');
+        input.value = '';
+        return;
+    }
+
+    const validTypes = ['image/jpeg', 'image/png', 'image/jpg', 'application/pdf'];
+    if (!validTypes.includes(file.type)) {
+        showToast('Invalid file type. Use JPG, PNG, or PDF.', 'error');
+        input.value = '';
+        return;
+    }
+
+    uploadedRxFile = file;
+
+    const preview = document.getElementById('rxFilePreview');
+    const nameEl = document.getElementById('rxFileName');
+    const sizeEl = document.getElementById('rxFileSize');
+
+    if (preview) {
+        preview.style.display = 'flex';
+        if (nameEl) nameEl.textContent = file.name;
+        if (sizeEl) sizeEl.textContent = (file.size / 1024).toFixed(1) + ' KB';
+    }
+
+    showToast('File uploaded.', 'success');
+    updateActionButton();
+}
+
+function clearRxFile() {
+    uploadedRxFile = null;
+    const input = document.getElementById('rxFile');
+    if (input) input.value = '';
+    const preview = document.getElementById('rxFilePreview');
+    if (preview) preview.style.display = 'none';
+    updateActionButton();
+}
 
 function selectFulfillment(type) {
     currentFulfillment = type;
@@ -2987,13 +4563,10 @@ document.addEventListener('DOMContentLoaded', function() {
     const mDate = document.getElementById('mDate');
     if (mDate) mDate.value = tomorrow.toISOString().split('T')[0];
 
+    // ✅ BAGO: Handle LENS_ONLY and CONTACT_LENS (existing logic)
     const rxSection = document.getElementById('rxSection');
     if (IS_LENS_ONLY || IS_CONTACT_LENS) {
         if (rxSection) rxSection.style.display = 'block';
-    } else if (NEEDS_LENS && selectedLens !== 'frame_only' && selectedLens !== '') {
-        if (rxSection) rxSection.style.display = 'block';
-    } else if (selectedLens === 'frame_only') {
-        if (rxSection) rxSection.style.display = 'none';
     }
 
     const dCity = document.getElementById('dCity');
@@ -3001,34 +4574,32 @@ document.addEventListener('DOMContentLoaded', function() {
         updateDeliveryFee();
     }
 
-    if (selectedLens && !['frame_only', 'contact_daily', 'contact_monthly'].includes(selectedLens)) {
-        const lensBtn = document.querySelector(`.lens-btn[data-lens="${selectedLens}"]`);
-        if (lensBtn) {
-            const filtered = LENS_INDEX_ADDONS.filter(a => a.lens_type === selectedLens);
-            if (filtered.length > 0) {
-                const grid = document.getElementById('lensIndexGrid');
-                if (grid) {
-                    grid.innerHTML = filtered.map(a => `
-                        <button type="button" class="lens-btn" 
-                                data-index-value="${a.index_value}"
-                                data-price="${a.price}" 
-                                onclick="selectLensIndex(this, event)">
-                            <span class="ln">${a.index_value} ${a.label}</span>
-                            <span class="lp">${a.price > 0 ? '+₱' + a.price.toLocaleString() : 'Included'}</span>
-                            <span class="ld">${a.label} lens</span>
-                        </button>
-                    `).join('');
-                    
-                    const firstBtn = grid.querySelector('.lens-btn');
-                    if (firstBtn) {
-                        firstBtn.classList.add('selected');
-                        selectedLensIndex = firstBtn.dataset.indexValue;
-                        selectedLensIndexPrice = parseFloat(firstBtn.dataset.price);
-                    }
-                    
-                    const lensIndexSection = document.getElementById('lensIndexSection');
-                    if (lensIndexSection) lensIndexSection.style.display = 'block';
+    // ✅ BAGO: Handle LENS_ONLY default lens index loading
+    if (IS_LENS_ONLY && selectedLens && !['frame_only', 'contact_daily', 'contact_monthly'].includes(selectedLens)) {
+        const filtered = LENS_INDEX_ADDONS.filter(a => a.lens_type === selectedLens);
+        if (filtered.length > 0) {
+            const grid = document.getElementById('lensIndexGrid');
+            if (grid) {
+                grid.innerHTML = filtered.map(a => `
+                    <button type="button" class="lens-btn" 
+                            data-index-value="${a.index_value}"
+                            data-price="${a.price}" 
+                            onclick="selectLensIndex(this, event)">
+                        <span class="ln">${a.index_value} ${a.label}</span>
+                        <span class="lp">${a.price > 0 ? '+₱' + a.price.toLocaleString() : 'Included'}</span>
+                        <span class="ld">${a.label} lens</span>
+                    </button>
+                `).join('');
+                
+                const firstBtn = grid.querySelector('.lens-btn');
+                if (firstBtn) {
+                    firstBtn.classList.add('selected');
+                    selectedLensIndex = firstBtn.dataset.indexValue;
+                    selectedLensIndexPrice = parseFloat(firstBtn.dataset.price);
                 }
+                
+                const lensIndexSection = document.getElementById('lensIndexSection');
+                if (lensIndexSection) lensIndexSection.style.display = 'block';
             }
         }
     }
@@ -3128,6 +4699,7 @@ function selectColor(btn) {
     updateActionButton();
 }
 
+// ✅ EXISTING: selectLens (para sa LENS_ONLY at CONTACT_LENS)
 function selectLens(btn) {
     document.querySelectorAll('.lens-btn').forEach(b => b.classList.remove('selected'));
     btn.classList.add('selected');
@@ -3200,7 +4772,11 @@ function selectLensIndex(btn, event) {
         event.preventDefault();
         event.stopPropagation();
     }
-    document.querySelectorAll('#lensIndexGrid .lens-btn').forEach(b => b.classList.remove('selected'));
+    // ✅ Handle both grids (lensIndexGrid)
+    const grid = document.getElementById('lensIndexGrid');
+    if (grid) {
+        grid.querySelectorAll('.lens-btn').forEach(b => b.classList.remove('selected'));
+    }
     btn.classList.add('selected');
     selectedLensIndex = btn.dataset.indexValue;
     selectedLensIndexPrice = parseFloat(btn.dataset.price);
@@ -3211,14 +4787,15 @@ function selectLensIndex(btn, event) {
 function handleRxKnowledge(radio) {
     rxKnowledge = radio.value;
     document.getElementById('rxFormBox').style.display = (rxKnowledge === 'know') ? 'block' : 'none';
-    document.getElementById('rxExamBox').style.display = (rxKnowledge === 'dont_know') ? 'block' : 'none';
+    document.getElementById('rxExamBox').style.display = (rxKnowledge === 'dont_know') ? 'flex' : 'none';
     updateActionButton();
 }
 
 function getLensPrice() {
     const basePrice = LENS_PRICES[selectedLens] || 0;
     const indexAddon = selectedLensIndexPrice || 0;
-    return basePrice + indexAddon;
+    const featuresPrice = getFeaturesPrice();
+    return basePrice + indexAddon + featuresPrice;
 }
 
 function getSubtotal() {
@@ -3230,94 +4807,18 @@ function getTotalPrice() {
     return getSubtotal() + deliveryFee;
 }
 
-function updatePriceDisplay() {
-    const lp = getLensPrice();
-    const subtotal = BASE_PRICE + lp;
-    const deliveryFee = (currentFulfillment === 'delivery') ? currentDeliveryFee : 0;
-    const total = subtotal + deliveryFee;
-
-    const lensAddText = document.getElementById('lensAddText');
-    const lensAddAmt = document.getElementById('lensAddAmt');
-    const totalDisplay = document.getElementById('totalDisplay');
-
-    if (lensAddText && lensAddAmt) {
-        lensAddText.style.display = lp > 0 ? 'block' : 'none';
-        if (lensAddAmt) lensAddAmt.textContent = '+₱' + lp.toLocaleString();
-    }
-    if (totalDisplay) totalDisplay.textContent = '₱' + total.toLocaleString('en-PH', {minimumFractionDigits: 2});
-
-    const mpbLensRow = document.getElementById('mpbLensRow');
-    const mpbLensVal = document.getElementById('mpbLensVal');
-    const mpbDeliveryRow = document.getElementById('mpbDeliveryRow');
-    const mpbDeliveryVal = document.getElementById('mpbDeliveryVal');
-    const mpbTotal = document.getElementById('mpbTotal');
-    const mpbDp = document.getElementById('mpbDp');
-    const mpbBal = document.getElementById('mpbBal');
-
-    if (mpbLensRow) mpbLensRow.style.display = lp > 0 ? 'flex' : 'none';
-    if (mpbLensVal) mpbLensVal.textContent = '+₱' + lp.toLocaleString();
-
-    if (mpbDeliveryRow) mpbDeliveryRow.style.display = (deliveryFee > 0) ? 'flex' : 'none';
-    if (mpbDeliveryVal) mpbDeliveryVal.textContent = '+₱' + deliveryFee.toFixed(2);
-
-    const subtotalWithDelivery = subtotal + deliveryFee;
-    const vatRate = 0.12;
-    const vatAmount = subtotalWithDelivery * vatRate;
-    const totalWithVat = subtotalWithDelivery + vatAmount;
-
-    const mpbVatRow = document.getElementById('mpbVatRow');
-    const mpbVatVal = document.getElementById('mpbVatVal');
-    if (mpbVatRow) mpbVatRow.style.display = 'flex';
-    if (mpbVatVal) mpbVatVal.textContent = '+₱' + vatAmount.toFixed(2);
-
-    if (mpbTotal) mpbTotal.textContent = '₱' + totalWithVat.toLocaleString('en-PH', {minimumFractionDigits: 2});
-
-    if (PAYMENT_TYPE === 'downpayment') {
-        const dpAmount = totalWithVat * (DOWNPAYMENT_PERCENT / 100);
-        const balAmount = totalWithVat - dpAmount;
-        if (mpbDp) mpbDp.textContent = '₱' + dpAmount.toLocaleString('en-PH', {minimumFractionDigits: 2});
-        if (mpbBal) mpbBal.textContent = '₱' + balAmount.toLocaleString('en-PH', {minimumFractionDigits: 2});
-    } else if (PAYMENT_TYPE === 'full') {
-        if (mpbDp) mpbDp.textContent = '₱' + totalWithVat.toLocaleString('en-PH', {minimumFractionDigits: 2});
-    } else if (PAYMENT_TYPE === 'onsite') {
-        if (mpbDp) mpbDp.textContent = '₱' + totalWithVat.toLocaleString('en-PH', {minimumFractionDigits: 2});
-    }
-
-    document.querySelectorAll('.payment-method-option').forEach(opt => {
-        const span = opt.querySelector('span:last-child');
-        if (span) span.textContent = '₱' + totalWithVat.toLocaleString('en-PH', {minimumFractionDigits: 2});
-    });
-}
 
 function updateActionButton() {
     const btn = document.getElementById('mainActionBtn');
     const helper = document.getElementById('actionHelper');
     if (!btn) return;
 
-    const hasSizeSelector = document.getElementById('sizeBtns') !== null;
-    if (hasSizeSelector && !selectedSize && !IS_FULLY_SOLD_OUT && !IS_LENS_ONLY && !IS_CONTACT_LENS) {
-        btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
-        btn.disabled = true;
-        if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Please select a frame size to continue.';
-        return;
-    }
-
-    if (HAS_STOCK_TRACKING && !IS_FULLY_SOLD_OUT && !selectedColor) {
-        btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
-        btn.disabled = true;
-        if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Please select a color/variant to continue.';
-        return;
-    }
-
-    const isFrameOnly = (selectedLens === 'frame_only');
-
-    if ((IS_LENS_ONLY || IS_CONTACT_LENS) && !rxKnowledge) {
-        btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
-        btn.className = 'btn-main-action';
-        btn.disabled = false;
-        if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Please select whether you know your prescription or need an eye exam.';
-    } else if (isFrameOnly && !IS_LENS_ONLY && !IS_CONTACT_LENS) {
-        btn.innerHTML = '<i class="fas fa-bookmark"></i> Order Now — Frame Only';
+    // ═══════════════════════════════════════════════════════════════
+    // ✅ FIX #1: ACCESSORIES — huwag galawin ang button!
+    // Nasa HTML na ang tamang "Order Now" button.
+    // ═══════════════════════════════════════════════════════════════
+    if (IS_ACCESSORY) {
+        btn.innerHTML = '<i class="fas fa-bookmark"></i> Order Now';
         btn.className = 'btn-main-action';
         btn.disabled = false;
         if (helper) {
@@ -3327,26 +4828,165 @@ function updateActionButton() {
                 helper.innerHTML = '<i class="fas fa-info-circle"></i> Full payment required.';
             } else if (PAYMENT_TYPE === 'onsite') {
                 helper.innerHTML = '<i class="fas fa-info-circle"></i> Pay at the clinic.';
+            } else if (PAYMENT_TYPE === 'free') {
+                helper.innerHTML = '<i class="fas fa-info-circle"></i> This is a free service. No payment required.';
             } else {
-                helper.innerHTML = '<i class="fas fa-info-circle"></i> No payment required.';
+                helper.innerHTML = '<i class="fas fa-info-circle"></i> Click to order this item.';
             }
         }
-    } else if (!rxKnowledge) {
+        return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ✅ FIX #2: SERVICES — "Book Appointment" link na, huwag galawin.
+    // ═══════════════════════════════════════════════════════════════
+    if (IS_SERVICE) {
+        return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // SIZE selector check (para sa Frames)
+    // ═══════════════════════════════════════════════════════════════
+    const hasSizeSelector = document.getElementById('sizeBtns') !== null;
+    if (hasSizeSelector && !selectedSize && !IS_FULLY_SOLD_OUT && !IS_LENS_ONLY && !IS_CONTACT_LENS) {
         btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
         btn.className = 'btn-main-action';
-        btn.disabled = false;
-        if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Choose your prescription option to continue.';
-    } else if (rxKnowledge === 'dont_know') {
-        btn.innerHTML = '<i class="fas fa-calendar-plus"></i> Book Eye Exam';
-        btn.className = 'btn-main-action appointment-style';
-        btn.disabled = false;
-        if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> You\'ll be taken to book an eye exam appointment first.';
-    } else {
+        btn.disabled = true;
+        if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Please select a frame size to continue.';
+        return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // COLOR / VARIANT check
+    // ═══════════════════════════════════════════════════════════════
+    if (HAS_STOCK_TRACKING && !IS_FULLY_SOLD_OUT && !selectedColor) {
+        btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
+        btn.className = 'btn-main-action';
+        btn.disabled = true;
+        if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Please select a color/variant to continue.';
+        return;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ✅ FRAMES / EYEGLASSES / SUNGLASSES — Purchase Type Flow
+    // ═══════════════════════════════════════════════════════════════
+    if (!IS_LENS_ONLY && !IS_CONTACT_LENS && NEEDS_LENS) {
+
+        // Wala pang napiling purchase type
+        if (!selectedPurchaseType) {
+            btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
+            btn.className = 'btn-main-action';
+            btn.disabled = false;
+            if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Please select how you want your glasses.';
+            return;
+        }
+
+        // ─────────────────────────────────────────────
+        // FRAME ONLY
+        // ─────────────────────────────────────────────
+        if (selectedPurchaseType === 'frame_only') {
+            btn.innerHTML = '<i class="fas fa-bookmark"></i> Order Now — Frame Only';
+            btn.className = 'btn-main-action';
+            btn.disabled = false;
+            if (helper) {
+                if (PAYMENT_TYPE === 'downpayment') {
+                    helper.innerHTML = '<i class="fas fa-info-circle"></i> ' + DOWNPAYMENT_PERCENT + '% downpayment required.';
+                } else if (PAYMENT_TYPE === 'full') {
+                    helper.innerHTML = '<i class="fas fa-info-circle"></i> Full payment required.';
+                } else if (PAYMENT_TYPE === 'onsite') {
+                    helper.innerHTML = '<i class="fas fa-info-circle"></i> Pay at the clinic.';
+                } else {
+                    helper.innerHTML = '<i class="fas fa-info-circle"></i> No payment required.';
+                }
+            }
+            return;
+        }
+
+        // ─────────────────────────────────────────────
+        // HAVE PRESCRIPTION
+        // ─────────────────────────────────────────────
+        if (selectedPurchaseType === 'have_prescription') {
+
+            // Wala pang RX method
+            if (!selectedRxMethod) {
+                btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
+                btn.className = 'btn-main-action';
+                btn.disabled = false;
+                if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Choose how you want to enter your prescription.';
+                return;
+            }
+
+            // MANUAL input
+            if (selectedRxMethod === 'manual') {
+                btn.innerHTML = '<i class="fas fa-bookmark"></i> Order with Prescription';
+                btn.className = 'btn-main-action';
+                btn.disabled = false;
+                if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Prescription verified on visit.';
+                return;
+            }
+
+            // UPLOAD
+            if (selectedRxMethod === 'upload') {
+                if (!uploadedRxFile) {
+                    btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
+                    btn.className = 'btn-main-action';
+                    btn.disabled = false;
+                    if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Please upload your prescription file.';
+                    return;
+                }
+                btn.innerHTML = '<i class="fas fa-bookmark"></i> Order with Prescription';
+                btn.className = 'btn-main-action';
+                btn.disabled = false;
+                if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Prescription will be verified by optometrist.';
+                return;
+            }
+        }
+
+        // ─────────────────────────────────────────────
+        // NEED EXAM
+        // ─────────────────────────────────────────────
+        if (selectedPurchaseType === 'need_exam') {
+            btn.innerHTML = '<i class="fas fa-calendar-plus"></i> Book Eye Exam';
+            btn.className = 'btn-main-action appointment-style';
+            btn.disabled = false;
+            if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Frame only ang babayaran ngayon. Ang lens at features ay idedetermine pagkatapos ng exam.';
+            return;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ✅ LENS ONLY at CONTACT LENS — Rx flow
+    // ═══════════════════════════════════════════════════════════════
+    if (IS_LENS_ONLY || IS_CONTACT_LENS) {
+        if (!rxKnowledge) {
+            btn.innerHTML = '<i class="fas fa-arrow-right"></i> Continue';
+            btn.className = 'btn-main-action';
+            btn.disabled = false;
+            if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Please select whether you know your prescription or need an eye exam.';
+            return;
+        }
+        if (rxKnowledge === 'dont_know') {
+            btn.innerHTML = '<i class="fas fa-calendar-plus"></i> Book Eye Exam';
+            btn.className = 'btn-main-action appointment-style';
+            btn.disabled = false;
+            if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> You\'ll be taken to book an eye exam appointment first.';
+            return;
+        }
+        // know
         btn.innerHTML = '<i class="fas fa-bookmark"></i> Order with Prescription';
         btn.className = 'btn-main-action';
         btn.disabled = false;
         if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Prescription verified on visit.';
+        return;
     }
+
+    // ═══════════════════════════════════════════════════════════════
+    // ✅ FALLBACK (hindi dapat umabot dito kung tama ang category)
+    // ═══════════════════════════════════════════════════════════════
+    btn.innerHTML = '<i class="fas fa-bookmark"></i> Order Now';
+    btn.className = 'btn-main-action';
+    btn.disabled = false;
+    if (helper) helper.innerHTML = '<i class="fas fa-info-circle"></i> Click to proceed.';
 }
 
 function handleMainAction() {
@@ -3363,13 +5003,98 @@ function handleMainAction() {
         return;
     }
 
-    const isFrameOnly = (selectedLens === 'frame_only');
     const colorCode = selectedColor ? selectedColor.code : '';
 
     const lensIndexParam = (selectedLensIndex && !['frame_only', 'contact_daily', 'contact_monthly'].includes(selectedLens))
         ? '&lens_index=' + encodeURIComponent(selectedLensIndex)
         : '';
 
+    // ✅ IDAGDAG: Features parameter
+    const featuresParam = (selectedLensFeatures && selectedLensFeatures.length > 0)
+        ? '&features=' + encodeURIComponent(selectedLensFeatures.map(f => f.value).join(','))
+        : '';
+
+    // ✅ BAGO: Handle purchase type for frame products
+    if (!IS_LENS_ONLY && !IS_CONTACT_LENS && NEEDS_LENS) {
+        if (!selectedPurchaseType) {
+            showToast('Please select how you want your glasses.', 'error');
+            document.getElementById('purchaseTypeGrid')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            return;
+        }
+
+        if (selectedPurchaseType === 'frame_only') {
+            openModal('reservation');
+            return;
+        }
+
+        if (selectedPurchaseType === 'need_exam') {
+            // ✅ NEED_EXAM: Frame-only booking — walang lens/index/features
+            window.pendingExamOrder = {
+                lens_type: 'frame_only',
+                lens_features: [],
+                color_code: colorCode,
+                color_name: selectedColor ? selectedColor.name : '',
+                frame_size: selectedSize || ''
+            };
+
+            window.location.href = 'book-specific-product.php?clinic_id=' + CLINIC_ID
+                + '&product_id=' + PRODUCT_ID
+                + '&rx_knowledge=dont_know'
+                + '&lens=frame_only'
+                + '&color=' + encodeURIComponent(colorCode);
+            return;
+        }
+
+if (selectedPurchaseType === 'have_prescription') {
+    if (!selectedRxMethod) {
+        showToast('Please choose how you want to enter your prescription.', 'error');
+        document.getElementById('rxSection')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+    }
+
+    // ✅ IDAGDAG ITO — para ma-set ang rxKnowledge
+    rxKnowledge = 'know';
+
+    if (selectedRxMethod === 'manual') {
+        // ...
+                const od_sph = document.getElementById('od_sph')?.value || '';
+                const os_sph = document.getElementById('os_sph')?.value || '';
+                if (!od_sph && !os_sph) {
+                    showToast('Please enter at least your sphere values.', 'error');
+                    return;
+                }
+
+                window.pendingPrescription = {
+                    od_sph: document.getElementById('od_sph')?.value || '',
+                    od_cyl: document.getElementById('od_cyl')?.value || '',
+                    od_axis: document.getElementById('od_axis')?.value || '',
+                    os_sph: document.getElementById('os_sph')?.value || '',
+                    os_cyl: document.getElementById('os_cyl')?.value || '',
+                    os_axis: document.getElementById('os_axis')?.value || ''
+                };
+
+                openModal('reservation');
+                return;
+            }
+
+            if (selectedRxMethod === 'upload') {
+                if (!uploadedRxFile) {
+                    showToast('Please upload your prescription file.', 'error');
+                    document.getElementById('rxUploadForm')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    return;
+                }
+
+                window.pendingPrescription = {
+                    upload_file: uploadedRxFile
+                };
+
+                openModal('reservation');
+                return;
+            }
+        }
+    }
+
+    // Existing logic for LENS_ONLY and CONTACT_LENS
     if (IS_LENS_ONLY || IS_CONTACT_LENS) {
         if (!rxKnowledge) {
             showToast('Please choose whether you know your prescription.', 'error');
@@ -3378,11 +5103,13 @@ function handleMainAction() {
         }
 
         if (rxKnowledge === 'dont_know') {
+            // ✅ IDAGDAG ANG featuresParam
             window.location.href = 'book-specific-product.php?clinic_id=' + CLINIC_ID
                 + '&product_id=' + PRODUCT_ID
                 + '&rx_knowledge=dont_know'
                 + '&lens=' + encodeURIComponent(selectedLens || '')
                 + lensIndexParam
+                + featuresParam
                 + '&color=' + encodeURIComponent(colorCode);
             return;
         }
@@ -3407,6 +5134,8 @@ function handleMainAction() {
         return;
     }
 
+    const isFrameOnly = (selectedLens === 'frame_only');
+
     if (isFrameOnly) {
         openModal('reservation');
         return;
@@ -3419,11 +5148,13 @@ function handleMainAction() {
     }
 
     if (rxKnowledge === 'dont_know') {
+        // ✅ IDAGDAG ANG featuresParam
         window.location.href = 'book-specific-product.php?clinic_id=' + CLINIC_ID
             + '&product_id=' + PRODUCT_ID
             + '&rx_knowledge=dont_know'
             + '&lens=' + encodeURIComponent(selectedLens || '')
             + lensIndexParam
+            + featuresParam
             + '&color=' + encodeURIComponent(colorCode);
         return;
     }
@@ -3446,7 +5177,6 @@ function handleMainAction() {
 
     openModal('reservation');
 }
-
 function openModal(type) {
     currentModal = type;
     const modal = document.getElementById('scheduleModal');
@@ -3505,6 +5235,11 @@ function submitAction() {
     formData.append('notes', notes);
     formData.append('fulfillment_type', currentFulfillment);
 
+    // ✅ BAGO: Include lens features
+    if (selectedLensFeatures.length > 0) {
+        formData.append('lens_features', JSON.stringify(selectedLensFeatures));
+    }
+
     if (currentFulfillment === 'delivery' && HAS_DELIVERY) {
         const dName = document.getElementById('dName')?.value || '';
         const dPhone = document.getElementById('dPhone')?.value || '';
@@ -3549,13 +5284,20 @@ function submitAction() {
         formData.append('frame_size', selectedSize);
     }
 
-    if (rxKnowledge === 'know' && window.pendingPrescription) {
-        formData.append('od_sph', window.pendingPrescription.od_sph);
-        formData.append('od_cyl', window.pendingPrescription.od_cyl);
-        formData.append('od_axis', window.pendingPrescription.od_axis);
-        formData.append('os_sph', window.pendingPrescription.os_sph);
-        formData.append('os_cyl', window.pendingPrescription.os_cyl);
-        formData.append('os_axis', window.pendingPrescription.os_axis);
+    // ✅ Prescription handling (manual o upload)
+    if (window.pendingPrescription) {
+        if (window.pendingPrescription.upload_file) {
+            formData.append('rx_upload', window.pendingPrescription.upload_file);
+            formData.append('rx_method', 'upload');
+        } else if (window.pendingPrescription.od_sph || window.pendingPrescription.os_sph) {
+            formData.append('od_sph', window.pendingPrescription.od_sph);
+            formData.append('od_cyl', window.pendingPrescription.od_cyl);
+            formData.append('od_axis', window.pendingPrescription.od_axis);
+            formData.append('os_sph', window.pendingPrescription.os_sph);
+            formData.append('os_cyl', window.pendingPrescription.os_cyl);
+            formData.append('os_axis', window.pendingPrescription.os_axis);
+            formData.append('rx_method', 'manual');
+        }
     }
 
     closeModal();
@@ -3954,6 +5696,8 @@ function afSaveAddress() {
             showToast('Network error.', 'error');
         });
 }
+
+
 </script>
 </body>
 </html>

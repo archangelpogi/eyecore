@@ -76,6 +76,18 @@ function sendWelcome($email, $name) {
     }
 }
 
+/**
+ * Server-side password validation.
+ * Must match the front-end rules exactly so UI and server agree.
+ */
+function validatePassword($password) {
+    return strlen($password) >= 8
+        && preg_match('/[A-Z]/', $password)
+        && preg_match('/[a-z]/', $password)
+        && preg_match('/[0-9]/', $password)
+        && preg_match('/[!@#$%^&*(),.?":{}|<>]/', $password);
+}
+
 if (isset($_SESSION['user_id'])) {
     header('Location: ../pages/dashboard.php');
     exit();
@@ -97,7 +109,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['verify_otp'])) {
     $otp = trim($_POST['otp'] ?? '');
     $email = trim($_POST['email'] ?? '');
 
-    // ✅ FIX: Validate that OTP is exactly 6 digits before querying
     if (strlen($otp) !== 6 || !ctype_digit($otp)) {
         $error = 'Please enter the complete 6-digit OTP code.';
         $show_otp = true;
@@ -105,7 +116,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['verify_otp'])) {
         $_SESSION['otp_pending'] = true;
         $_SESSION['temp_email'] = $email;
     } else {
-        // Check OTP in database
         $stmt = mysqli_prepare($conn, "SELECT * FROM users WHERE email = ? AND otp_code = ? AND otp_expires > NOW()");
         mysqli_stmt_bind_param($stmt, "ss", $email, $otp);
         mysqli_stmt_execute($stmt);
@@ -113,24 +123,19 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['verify_otp'])) {
         $user = mysqli_fetch_assoc($result);
         
         if ($user) {
-            // Update user status to Active
             $update = mysqli_prepare($conn, "UPDATE users SET status = 'Active', otp_code = NULL, email_verified_at = NOW() WHERE id = ?");
             mysqli_stmt_bind_param($update, "i", $user['id']);
             
             if (mysqli_stmt_execute($update)) {
-                // Send welcome email
                 sendWelcome($email, $user['fullname']);
                 
-                // Clear OTP session
                 unset($_SESSION['otp_pending']);
                 unset($_SESSION['temp_email']);
                 
-                // ✅ FIX: Set session BEFORE redirect
                 $_SESSION['user_id'] = $user['id'];
                 $_SESSION['user_email'] = $user['email'];
                 $_SESSION['user_name'] = $user['fullname'];
                 
-                // ✅ FIX: Use PHP header redirect instead of JS redirect
                 header('Location: ../pages/dashboard.php');
                 exit();
             }
@@ -148,22 +153,19 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['verify_otp'])) {
 if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['resend_otp'])) {
     $email = $_POST['email'] ?? '';
     
-    // Generate new OTP
     $otp = rand(100000, 999999);
     
     $update = mysqli_prepare($conn, "UPDATE users SET otp_code = ?, otp_expires = DATE_ADD(NOW(), INTERVAL 5 MINUTE) WHERE email = ?");
     mysqli_stmt_bind_param($update, "ss", $otp, $email);
     
     if (mysqli_stmt_execute($update)) {
-        // Get user name
         $stmt_name = mysqli_prepare($conn, "SELECT fullname FROM users WHERE email = ?");
         mysqli_stmt_bind_param($stmt_name, "s", $email);
         mysqli_stmt_execute($stmt_name);
         $res_name = mysqli_stmt_get_result($stmt_name);
         $user = mysqli_fetch_assoc($res_name);
         
-        // Send OTP
-        if (sendOTP($email, $user['fullname'], $otp)) {
+        if ($user && sendOTP($email, $user['fullname'], $otp)) {
             $success = 'New OTP sent to your email.';
         } else {
             $error = 'Failed to send OTP. Please try again.';
@@ -184,7 +186,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
     $password = isset($_POST['password'])         ? $_POST['password']         : '';
     $confirm  = isset($_POST['confirm_password']) ? $_POST['confirm_password'] : '';
     
-    // Split fullname into first and last name
     $name_parts = explode(' ', $fullname, 2);
     $first_name = $name_parts[0];
     $last_name  = isset($name_parts[1]) ? $name_parts[1] : '';
@@ -193,25 +194,21 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
         $error = 'Password fields are required!';
     } else if ($password != $confirm) {
         $error = 'Passwords do not match!';
+    } else if (!validatePassword($password)) {
+        // ✅ NEW: Server-side password rule enforcement
+        $error = 'Password must be at least 8 characters and include uppercase, lowercase, number, and special character.';
     } else {
-        // Check if email already exists
         $check = mysqli_query($conn, "SELECT id FROM users WHERE email='$email'");
         if (mysqli_num_rows($check) > 0) {
             $error = 'Email already registered!';
         } else {
-            // Generate OTP and hash password
             $otp       = rand(100000, 999999);
             $hashed    = password_hash($password, PASSWORD_DEFAULT);
             $user_code = 'USR' . date('Ymd') . str_pad(rand(1, 999), 3, '0', STR_PAD_LEFT);
             
-            // Start transaction
             mysqli_begin_transaction($conn);
             
             try {
-                // ✅ Insert into users table ONLY
-                // Patient record is NOT created here.
-                // It will only be created when the clinic confirms
-                // the appointment and the user visits physically.
                 $sql = "INSERT INTO users 
                             (user_code, fullname, first_name, last_name, email, password, role, otp_code, otp_expires, status) 
                         VALUES 
@@ -229,10 +226,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
                 );
                 
                 if (mysqli_stmt_execute($stmt)) {
-                    // ✅ Commit — users table lang, walang patients insert
                     mysqli_commit($conn);
                     
-                    // Send OTP email
                     if (sendOTP($email, $fullname, $otp)) {
                         $_SESSION['otp_pending'] = true;
                         $_SESSION['temp_email']  = $email;
@@ -241,8 +236,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
                         $temp_email = $email;
                         $success    = 'Registration successful! Please check your email for OTP.';
                     } else {
-                        // OTP send failed — rollback the user insert
-                        // so the user can try registering again
                         mysqli_rollback($conn);
                         $error = 'Failed to send OTP email. Please try again.';
                     }
@@ -265,6 +258,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
     <title><?php echo $show_otp ? 'Verify OTP - Eyecore' : 'Create Account - Eyecore'; ?></title>
+    <link rel="icon" type="image/x-icon" href="assets/images/eyecore_logo.png">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
         * {
@@ -545,20 +539,24 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
 
         .password-strength {
             margin-top: 10px;
+            background: var(--border-color);
+            border-radius: 3px;
+            height: 6px;
+            overflow: hidden;
         }
 
         .strength-bar {
-            height: 6px;
+            height: 100%;
             width: 0;
             border-radius: 3px;
-            transition: all 0.3s;
+            transition: width 0.3s, background-color 0.3s;
             background: var(--border-color);
         }
 
-        .strength-bar.weak { width: 20%; background: var(--weak); }
-        .strength-bar.medium { width: 40%; background: var(--medium); }
-        .strength-bar.strong { width: 60%; background: var(--strong); }
-        .strength-bar.very-strong { width: 80%; background: var(--very-strong); }
+        .strength-bar.weak        { background: var(--weak); }
+        .strength-bar.medium      { background: var(--medium); }
+        .strength-bar.strong      { background: var(--strong); }
+        .strength-bar.very-strong { background: var(--very-strong); }
 
         .password-requirements {
             background: var(--bg-primary);
@@ -778,7 +776,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
                     </div>
                 <?php endif; ?>
                 
-                <form method="POST" id="registerForm">
+                <form method="POST" id="registerForm" novalidate>
                     <div class="form-group">
                         <label for="fullname"><i class="fas fa-user"></i> Full Name</label>
                         <div class="input-wrapper">
@@ -801,7 +799,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
                         <label for="password"><i class="fas fa-lock"></i> Password</label>
                         <div class="input-wrapper">
                             <input type="password" name="password" id="password" placeholder="Create a strong password" required autocomplete="new-password">
-                            <button type="button" class="toggle-password" onclick="togglePassword('password')">
+                            <button type="button" class="toggle-password" onclick="togglePassword('password', this)">
                                 <i class="far fa-eye"></i>
                             </button>
                         </div>
@@ -821,7 +819,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
                         <label for="confirm_password"><i class="fas fa-lock"></i> Confirm Password</label>
                         <div class="input-wrapper">
                             <input type="password" name="confirm_password" id="confirm_password" placeholder="Re-enter password" required autocomplete="new-password">
-                            <button type="button" class="toggle-password" onclick="togglePassword('confirm_password')">
+                            <button type="button" class="toggle-password" onclick="togglePassword('confirm_password', this)">
                                 <i class="far fa-eye"></i>
                             </button>
                             <span class="match-indicator" id="matchIndicator"></span>
@@ -900,9 +898,10 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
     </div>
 
     <script>
-        function togglePassword(inputId) {
+        // ✅ FIX: pass button explicitly (no deprecated global `event`)
+        function togglePassword(inputId, btn) {
             const input = document.getElementById(inputId);
-            const icon = event.currentTarget.querySelector('i');
+            const icon = btn.querySelector('i');
             if (input.type === 'password') {
                 input.type = 'text';
                 icon.classList.replace('fa-eye', 'fa-eye-slash');
@@ -918,6 +917,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
         const submitBtn = document.getElementById('submitBtn');
         const strengthBar = document.getElementById('strengthBar');
         const matchIndicator = document.getElementById('matchIndicator');
+        const fullnameInput = document.getElementById('fullname');
+        const emailInput = document.getElementById('email');
         
         const reqs = {
             length: document.getElementById('reqLength'),
@@ -927,25 +928,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
             special: document.getElementById('reqSpecial')
         };
         
-        function checkPasswordStrength() {
-            const pass = password.value;
-            let strength = 0;
-            
-            if (pass.length >= 8) { strength++; updateRequirement(reqs.length, true); } else { updateRequirement(reqs.length, false); }
-            if (/[A-Z]/.test(pass)) { strength++; updateRequirement(reqs.uppercase, true); } else { updateRequirement(reqs.uppercase, false); }
-            if (/[a-z]/.test(pass)) { strength++; updateRequirement(reqs.lowercase, true); } else { updateRequirement(reqs.lowercase, false); }
-            if (/[0-9]/.test(pass)) { strength++; updateRequirement(reqs.number, true); } else { updateRequirement(reqs.number, false); }
-            if (/[!@#$%^&*(),.?":{}|<>]/.test(pass)) { strength++; updateRequirement(reqs.special, true); } else { updateRequirement(reqs.special, false); }
-            
-            strengthBar.className = 'strength-bar';
-            if (pass.length === 0) { strengthBar.style.width = '0'; }
-            else if (strength <= 2) { strengthBar.classList.add('weak'); }
-            else if (strength <= 3) { strengthBar.classList.add('medium'); }
-            else if (strength <= 4) { strengthBar.classList.add('strong'); }
-            else { strengthBar.classList.add('very-strong'); }
-            
-            return strength >= 5;
-        }
+        const PASSWORD_SPECIAL_REGEX = /[!@#$%^&*(),.?":{}|<>]/;
         
         function updateRequirement(element, isMet) {
             const icon = element.querySelector('i');
@@ -958,36 +941,86 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
             }
         }
         
-        function checkPasswordMatch() {
-            if (confirmPassword.value.length === 0) { matchIndicator.innerHTML = ''; return false; }
-            if (password.value === confirmPassword.value) {
-                matchIndicator.innerHTML = '<i class="fas fa-check-circle" style="color: #00B761;"></i>';
-                return true;
+        function checkPasswordStrength() {
+            const pass = password.value;
+            let strength = 0;
+            
+            const hasLength    = pass.length >= 8;
+            const hasUppercase = /[A-Z]/.test(pass);
+            const hasLowercase = /[a-z]/.test(pass);
+            const hasNumber    = /[0-9]/.test(pass);
+            const hasSpecial   = PASSWORD_SPECIAL_REGEX.test(pass);
+            
+            if (hasLength)    strength++;
+            if (hasUppercase) strength++;
+            if (hasLowercase) strength++;
+            if (hasNumber)    strength++;
+            if (hasSpecial)   strength++;
+            
+            updateRequirement(reqs.length,    hasLength);
+            updateRequirement(reqs.uppercase, hasUppercase);
+            updateRequirement(reqs.lowercase, hasLowercase);
+            updateRequirement(reqs.number,    hasNumber);
+            updateRequirement(reqs.special,   hasSpecial);
+            
+            // ✅ FIX: proportional width + full 100% at max strength
+            strengthBar.className = 'strength-bar';
+            if (pass.length === 0) {
+                strengthBar.style.width = '0%';
             } else {
-                matchIndicator.innerHTML = '<i class="fas fa-times-circle" style="color: #FF4444;"></i>';
+                strengthBar.style.width = (strength / 5 * 100) + '%';
+                if (strength <= 2)      strengthBar.classList.add('weak');
+                else if (strength === 3) strengthBar.classList.add('medium');
+                else if (strength === 4) strengthBar.classList.add('strong');
+                else                     strengthBar.classList.add('very-strong');
+            }
+            
+            return strength === 5;
+        }
+        
+        function checkPasswordMatch() {
+            if (confirmPassword.value.length === 0) {
+                matchIndicator.innerHTML = '';
                 return false;
             }
+            if (password.value === confirmPassword.value && password.value.length > 0) {
+                matchIndicator.innerHTML = '<i class="fas fa-check-circle" style="color: #00B761;"></i>';
+                return true;
+            }
+            matchIndicator.innerHTML = '<i class="fas fa-times-circle" style="color: #FF4444;"></i>';
+            return false;
         }
         
-        function canSubmit() {
-            const isStrong = checkPasswordStrength();
-            const isMatch = checkPasswordMatch();
-            const hasName = document.getElementById('fullname').value.trim().length > 0;
-            const hasEmail = document.getElementById('email').value.trim().length > 0;
-            const isValidEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(document.getElementById('email').value);
-            submitBtn.disabled = !(isStrong && isMatch && hasName && hasEmail && isValidEmail);
+        function isEmailValid(value) {
+            return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
         }
         
-        password.addEventListener('input', () => { checkPasswordStrength(); checkPasswordMatch(); canSubmit(); });
-        confirmPassword.addEventListener('input', () => { checkPasswordMatch(); canSubmit(); });
-        document.getElementById('fullname').addEventListener('input', canSubmit);
-        document.getElementById('email').addEventListener('input', canSubmit);
+        function refreshFormState() {
+            const isStrong   = checkPasswordStrength();
+            const isMatch    = checkPasswordMatch();
+            const hasName    = fullnameInput.value.trim().length > 0;
+            const hasEmail   = emailInput.value.trim().length > 0;
+            const validEmail = isEmailValid(emailInput.value.trim());
+            
+            submitBtn.disabled = !(isStrong && isMatch && hasName && hasEmail && validEmail);
+        }
+        
+        // ✅ FIX: single unified handler — no redundant re-computation
+        password.addEventListener('input', refreshFormState);
+        confirmPassword.addEventListener('input', refreshFormState);
+        fullnameInput.addEventListener('input', refreshFormState);
+        emailInput.addEventListener('input', refreshFormState);
+        
+        // Set initial state (in case of prefilled values after PHP error)
+        refreshFormState();
         <?php endif; ?>
         
         <?php if ($show_otp): ?>
         const otpInputs = document.querySelectorAll('.otp-input');
         const otpHidden = document.getElementById('otp_hidden');
+        const verifyBtn = document.getElementById('verifyBtn');
         let timeLeft = 300;
+        let isAutoSubmitting = false;
         
         function updateOTPHidden() {
             let otp = '';
@@ -1012,23 +1045,21 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
         
         const timerInterval = setInterval(updateTimer, 1000);
         
+        function maybeAutoSubmit() {
+            const otp = updateOTPHidden();
+            if (otp.length === 6 && !isAutoSubmitting) {
+                isAutoSubmitting = true;
+                setTimeout(() => verifyBtn.click(), 150);
+            }
+        }
+        
         otpInputs.forEach((input, index) => {
             input.addEventListener('input', (e) => {
                 e.target.value = e.target.value.replace(/[^0-9]/g, '');
-                
                 if (e.target.value.length === 1 && index < otpInputs.length - 1) {
                     otpInputs[index + 1].focus();
                 }
-                
-                // ✅ FIX: Always update hidden field on every input
-                const otp = updateOTPHidden();
-                
-                // ✅ FIX: Auto-submit only when all 6 digits are filled
-                if (otp.length === 6) {
-                    setTimeout(() => {
-                        document.getElementById('verifyBtn').click();
-                    }, 150);
-                }
+                maybeAutoSubmit();
             });
             
             input.addEventListener('keydown', (e) => {
@@ -1040,22 +1071,13 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && !isset($_POST['verify_otp']) && !iss
             input.addEventListener('paste', (e) => {
                 e.preventDefault();
                 const pastedData = e.clipboardData.getData('text').replace(/[^0-9]/g, '');
-                
                 for (let i = 0; i < Math.min(pastedData.length, otpInputs.length); i++) {
                     otpInputs[i].value = pastedData[i];
                 }
-                
-                const nextEmpty = Array.from(otpInputs).findIndex(input => !input.value);
-                if (nextEmpty !== -1) { otpInputs[nextEmpty].focus(); }
-                else { otpInputs[otpInputs.length - 1].focus(); }
-                
-                // ✅ FIX: Update hidden field after paste
-                const otp = updateOTPHidden();
-                if (otp.length === 6) {
-                    setTimeout(() => {
-                        document.getElementById('verifyBtn').click();
-                    }, 150);
-                }
+                const nextEmpty = Array.from(otpInputs).findIndex(inp => !inp.value);
+                if (nextEmpty !== -1) otpInputs[nextEmpty].focus();
+                else otpInputs[otpInputs.length - 1].focus();
+                maybeAutoSubmit();
             });
         });
         <?php endif; ?>

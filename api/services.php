@@ -67,10 +67,22 @@ if ($method === 'POST') {
             $price       = $body['price'] ?? 0;
             $duration    = !empty($body['duration_minutes']) ? (int)$body['duration_minutes'] : null;
             $status      = $body['status'] ?? 'active';
+            $is_free     = isset($body['is_free']) ? (int)$body['is_free'] : 0;
 
-            if (!$name || !$category || !$price) {
-                echo json_encode(['success' => false, 'message' => 'Name, category, and price are required']);
+            // ✅ Price only required if NOT free
+            if (!$name || !$category || (!$is_free && !$price)) {
+                echo json_encode([
+                    'success' => false,
+                    'message' => $is_free
+                        ? 'Name and category are required'
+                        : 'Name, category, and price are required'
+                ]);
                 exit;
+            }
+
+            // ✅ Force price to 0 if free
+            if ($is_free) {
+                $price = 0;
             }
 
             // Check if status column exists, add if not
@@ -81,10 +93,10 @@ if ($method === 'POST') {
             }
 
             $stmt = $pdo->prepare("
-                INSERT INTO services (clinic_id, category, name, description, price, duration_minutes, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
+                INSERT INTO services (clinic_id, category, name, description, price, duration_minutes, status, is_free, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW())
             ");
-            $stmt->execute([$clinicId, $category, $name, $description, $price, $duration, $status]);
+            $stmt->execute([$clinicId, $category, $name, $description, $price, $duration, $status, $is_free]);
             $id = $pdo->lastInsertId();
 
             echo json_encode(['success' => true, 'id' => $id, 'message' => 'Service added successfully']);
@@ -103,10 +115,22 @@ if ($method === 'POST') {
             $price       = $body['price'] ?? 0;
             $duration    = !empty($body['duration_minutes']) ? (int)$body['duration_minutes'] : null;
             $status      = $body['status'] ?? 'active';
+            $is_free     = isset($body['is_free']) ? (int)$body['is_free'] : 0;
 
-            if (!$id || !$name || !$category || !$price) {
-                echo json_encode(['success' => false, 'message' => 'Missing required fields']);
+            // ✅ Price only required if NOT free
+            if (!$id || !$name || !$category || (!$is_free && !$price)) {
+                echo json_encode([
+                    'success' => false,
+                    'message' => $is_free
+                        ? 'Name and category are required'
+                        : 'Missing required fields'
+                ]);
                 exit;
+            }
+
+            // ✅ Force price to 0 if free
+            if ($is_free) {
+                $price = 0;
             }
 
             // Verify it belongs to this clinic
@@ -126,10 +150,10 @@ if ($method === 'POST') {
 
             $stmt = $pdo->prepare("
                 UPDATE services
-                SET category=?, name=?, description=?, price=?, duration_minutes=?, status=?, updated_at=NOW()
+                SET category=?, name=?, description=?, price=?, duration_minutes=?, status=?, is_free=?, updated_at=NOW()
                 WHERE id=? AND clinic_id=?
             ");
-            $stmt->execute([$category, $name, $description, $price, $duration, $status, $id, $clinicId]);
+            $stmt->execute([$category, $name, $description, $price, $duration, $status, $is_free, $id, $clinicId]);
 
             echo json_encode(['success' => true, 'message' => 'Service updated successfully']);
         } catch(Exception $e) {

@@ -69,7 +69,6 @@ if (isset($_SESSION['success_message'])) {
 $filter = $_GET['filter'] ?? 'all';
 $search = $_GET['search'] ?? '';
 
-// Status mapping for filters
 $status_map = [
     'all' => '',
     'to_pay' => 'Pending Supplier Approval',
@@ -77,53 +76,80 @@ $status_map = [
     'to_receive' => 'Shipped',
     'completed' => 'Delivered',
     'cancelled' => 'Cancelled',
-    'returns' => 'Returns'
+    'returns' => 'Returns',
+    'awaiting' => 'Approved'  // ✅ NEW — Approved PRs awaiting supplier assignment
 ];
 $status_filter = $status_map[$filter] ?? '';
 
-// Build query
-$query = "
-    SELECT po.*, 
-           s.supplier_name,
-           r.status as return_status,
-           r.return_method,
-           r.schedule_details,
-           GROUP_CONCAT(CONCAT(pi.quantity, 'x ', pi.item_name) SEPARATOR ' | ') as item_summary
-    FROM purchase_orders po
-    LEFT JOIN suppliers s ON po.supplier_id = s.id
-    LEFT JOIN pr_items pi ON po.pr_id = pi.pr_id AND pi.supplier_id = po.supplier_id
-    LEFT JOIN returns r ON po.id = r.po_id
-    WHERE po.clinic_id = ?
-";
+// ============================================
+// AWAITING ASSIGNMENT — special case
+// ============================================
+$awaitingPRs = [];
 
-if ($status_filter) {
-    if ($filter == 'returns') {
-        $query .= " AND r.status IN ('Return/Refund', 'For Pickup', 'For Drop-off', 'Return Completed')";
-    } else {
-        $query .= " AND po.status = ?";
+if ($filter === 'awaiting') {
+    // Fetch Approved PRs na walang PO pa
+    $awaitingQuery = "
+        SELECT pr.*, 
+               (SELECT COUNT(*) FROM pr_items WHERE pr_id = pr.id) as item_count
+        FROM purchase_requests pr
+        LEFT JOIN purchase_orders po ON po.pr_id = pr.id
+        WHERE pr.clinic_id = ? 
+          AND pr.status = 'Approved'
+          AND po.id IS NULL
+        ORDER BY pr.priority ASC, pr.created_at DESC
+    ";
+    
+    $awaitingStmt = $pdo->prepare($awaitingQuery);
+    $awaitingStmt->execute([$clinic_id]);
+    $awaitingPRs = $awaitingStmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    $orders = []; // walang POs sa awaiting tab
+    
+} else {
+    // Existing query for POs
+    $query = "
+        SELECT po.*, 
+               s.supplier_name,
+               r.status as return_status,
+               r.return_method,
+               r.schedule_details,
+               GROUP_CONCAT(CONCAT(pi.quantity, 'x ', pi.item_name) SEPARATOR ' | ') as item_summary
+        FROM purchase_orders po
+        LEFT JOIN suppliers s ON po.supplier_id = s.id
+        LEFT JOIN pr_items pi ON po.pr_id = pi.pr_id AND pi.supplier_id = po.supplier_id
+        LEFT JOIN returns r ON po.id = r.po_id
+        WHERE po.clinic_id = ?
+    ";
+    
+    if ($status_filter) {
+        if ($filter == 'returns') {
+            $query .= " AND r.status IN ('Return/Refund', 'For Pickup', 'For Drop-off', 'Return Completed')";
+        } else {
+            $query .= " AND po.status = ?";
+        }
     }
+    
+    if ($search) {
+        $query .= " AND (po.po_number LIKE ? OR s.supplier_name LIKE ? OR pi.item_name LIKE ?)";
+    }
+    
+    $query .= " GROUP BY po.id ORDER BY po.created_at DESC";
+    
+    $params = [$clinic_id];
+    if ($status_filter && $filter != 'returns') {
+        $params[] = $status_filter;
+    }
+    if ($search) {
+        $searchTerm = "%$search%";
+        $params[] = $searchTerm;
+        $params[] = $searchTerm;
+        $params[] = $searchTerm;
+    }
+    
+    $stmt = $pdo->prepare($query);
+    $stmt->execute($params);
+    $orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
-
-if ($search) {
-    $query .= " AND (po.po_number LIKE ? OR s.supplier_name LIKE ? OR pi.item_name LIKE ?)";
-}
-
-$query .= " GROUP BY po.id ORDER BY po.created_at DESC";
-
-$params = [$clinic_id];
-if ($status_filter && $filter != 'returns') {
-    $params[] = $status_filter;
-}
-if ($search) {
-    $searchTerm = "%$search%";
-    $params[] = $searchTerm;
-    $params[] = $searchTerm;
-    $params[] = $searchTerm;
-}
-
-$stmt = $pdo->prepare($query);
-$stmt->execute($params);
-$orders = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Get counts for stats cards
 $counts = [
@@ -133,7 +159,8 @@ $counts = [
     'to_receive' => 0,
     'completed' => 0,
     'cancelled' => 0,
-    'returns' => 0
+    'returns' => 0,
+    'awaiting' => 0
 ];
 
 $countQuery = "
@@ -153,6 +180,18 @@ $countStmt = $pdo->prepare($countQuery);
 $countStmt->execute([$clinic_id]);
 $countData = $countStmt->fetch(PDO::FETCH_ASSOC);
 
+// ✅ Awaiting count — Approved PRs na walang PO
+$awaitingCountStmt = $pdo->prepare("
+    SELECT COUNT(*) 
+    FROM purchase_requests pr
+    LEFT JOIN purchase_orders po ON po.pr_id = pr.id
+    WHERE pr.clinic_id = ? 
+      AND pr.status = 'Approved'
+      AND po.id IS NULL
+");
+$awaitingCountStmt->execute([$clinic_id]);
+$awaitingCount = (int)$awaitingCountStmt->fetchColumn();
+
 $counts = [
     'all' => $countData['total'] ?? 0,
     'to_pay' => $countData['to_pay'] ?? 0,
@@ -160,7 +199,8 @@ $counts = [
     'to_receive' => $countData['to_receive'] ?? 0,
     'completed' => $countData['completed'] ?? 0,
     'cancelled' => $countData['cancelled'] ?? 0,
-    'returns' => $countData['returns'] ?? 0
+    'returns' => $countData['returns'] ?? 0,
+    'awaiting' => $awaitingCount  // ✅ NEW
 ];
 
 // Get total amount of pending orders
@@ -363,9 +403,91 @@ $totalPendingAmount = $pendingStmt->fetchColumn() ?? 0;
                 <span class="badge bg-warning bg-opacity-10 text-warning ms-1"><?php echo $counts['returns']; ?></span>
             </a>
         </li>
+        <li class="nav-item">
+            <a class="nav-link <?php echo $filter == 'awaiting' ? 'active fw-bold' : ''; ?>"
+            style="<?php echo $filter == 'awaiting' ? 'color: #fd7e14; border-bottom: 3px solid #fd7e14;' : 'color: #6c757d;'; ?>"
+            href="main.php?view=purchase_orders&filter=awaiting<?php echo $search ? '&search='.urlencode($search) : ''; ?>">
+                <i class="bi bi-hourglass-split me-1"></i>Awaiting Assignment 
+                <span class="badge bg-warning bg-opacity-10 text-warning ms-1"><?php echo $counts['awaiting']; ?></span>
+            </a>
+        </li>
     </ul>
 
-    <!-- Orders List -->
+<!-- Orders List -->
+<?php if ($filter === 'awaiting'): ?>
+    <!-- ============================================ -->
+    <!-- AWAITING ASSIGNMENT — Show Approved PRs -->
+    <!-- ============================================ -->
+    <?php if (empty($awaitingPRs)): ?>
+        <div class="text-center py-5">
+            <i class="bi bi-check-circle display-1 text-success opacity-50"></i>
+            <h4 class="mt-3 text-secondary">All PRs have suppliers assigned!</h4>
+            <p class="text-secondary">Walang pending na PR na kailangan ng supplier.</p>
+        </div>
+    <?php else: ?>
+        <div class="alert alert-warning d-flex align-items-center mb-4">
+            <i class="bi bi-hourglass-split fs-4 me-3"></i>
+            <div>
+                <strong><?php echo count($awaitingPRs); ?> Approved PR(s) need supplier assignment</strong><br>
+                <small>I-assign ang supplier per item bago mag-create ng PO.</small>
+            </div>
+        </div>
+        
+        <?php foreach ($awaitingPRs as $pr): ?>
+        <div class="card shadow-sm mb-3 border-start border-4" style="border-left-color: #fd7e14 !important;">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
+                <div>
+                    <span class="fw-bold"><?php echo htmlspecialchars($pr['pr_number']); ?></span>
+                    <span class="badge bg-light text-secondary ms-2"><?php echo htmlspecialchars($pr['department']); ?></span>
+                    <span class="badge bg-warning bg-opacity-10 text-warning ms-2">Approved</span>
+                </div>
+                <div class="text-end">
+                    <?php
+                    $prio_badge = match($pr['priority']) {
+                        'Critical' => 'danger',
+                        'High' => 'warning',
+                        'Medium' => 'info',
+                        'Low' => 'secondary',
+                        default => 'secondary'
+                    };
+                    ?>
+                    <span class="badge bg-<?php echo $prio_badge; ?> bg-opacity-10 text-<?php echo $prio_badge; ?> px-3 py-2">
+                        <?php echo $pr['priority']; ?>
+                    </span>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="row align-items-center">
+                    <div class="col-md-7">
+                        <div class="d-flex align-items-center mb-2">
+                            <i class="bi bi-file-text me-2" style="color: #fd7e14;"></i>
+                            <span class="fw-medium"><?php echo htmlspecialchars($pr['purpose']); ?></span>
+                        </div>
+                        <div class="small text-secondary">
+                            <i class="bi bi-box-seam me-1"></i>
+                            <?php echo $pr['item_count']; ?> item(s) • 
+                            Needed by <?php echo date('M d, Y', strtotime($pr['needed_by'])); ?>
+                        </div>
+                    </div>
+                    <div class="col-md-5 text-md-end mt-3 mt-md-0">
+                        <div class="fw-bold fs-5 mb-2" style="color: #fd7e14;">
+                            ₱<?php echo number_format($pr['total_amount'], 2); ?>
+                        </div>
+                        <a href="views/assign_suppliers.php?pr_id=<?php echo $pr['id']; ?>" 
+                           class="btn btn-sm text-white" style="background-color: #fd7e14;">
+                            <i class="bi bi-person-plus me-1"></i>Assign Suppliers
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <?php endforeach; ?>
+    <?php endif; ?>
+
+<?php else: ?>
+    <!-- ============================================ -->
+    <!-- EXISTING PO LIST -->
+    <!-- ============================================ -->
     <?php if (empty($orders)): ?>
         <div class="text-center py-5">
             <i class="bi bi-inbox display-1 text-secondary opacity-50"></i>
@@ -381,10 +503,9 @@ $totalPendingAmount = $pendingStmt->fetchColumn() ?? 0;
         <?php foreach ($orders as $order): 
             $item_summary = $order['item_summary'] ?? '';
             $item_count = substr_count($item_summary, '|') + 1;
-            // Use return_status if exists, otherwise use po.status
             $current_status = !empty($order['return_status']) ? $order['return_status'] : $order['status'];
         ?>
-            <!-- Order Card -->
+            <!-- Order Card (existing) -->
             <div class="card shadow-sm mb-3">
                 <div class="card-header bg-white d-flex justify-content-between align-items-center py-3">
                     <div>
@@ -432,7 +553,6 @@ $totalPendingAmount = $pendingStmt->fetchColumn() ?? 0;
                                 <span class="fw-medium"><?php echo htmlspecialchars($order['supplier_name']); ?></span>
                             </div>
                             
-                            <!-- Item Summary -->
                             <div class="small text-secondary">
                                 <i class="bi bi-box-seam me-1"></i>
                                 <?php 
@@ -452,27 +572,18 @@ $totalPendingAmount = $pendingStmt->fetchColumn() ?? 0;
                             <div class="fw-bold fs-5" style="color: #008080;">
                                 ₱<?php echo number_format($order['total_amount'], 2); ?>
                             </div>
-                            <div class="mt-2">
-                                <?php if ($order['status'] == 'Shipped' && $canEdit): ?>
-                                    <button class="btn btn-sm btn-success me-2" onclick="receiveOrder(<?php echo $order['id']; ?>)">
-                                        <i class="bi bi-check-circle me-1"></i>Receive
-                                    </button>
-                                <?php endif; ?>
-                                <button class="btn btn-sm btn-outline-secondary" onclick="viewOrder(<?php echo $order['id']; ?>)">
-                                    <i class="bi bi-eye me-1"></i>View Details
-                                </button>
-                                <?php if ($order['status'] == 'Pending Supplier Approval' && $canApprove): ?>
-                                    <button class="btn btn-sm btn-outline-warning" onclick="editOrder(<?php echo $order['id']; ?>)">
-                                        <i class="bi bi-pencil me-1"></i>Edit
-                                    </button>
-                                <?php endif; ?>
-                            </div>
+<div class="mt-2">
+    <button class="btn btn-sm btn-outline-secondary" onclick="viewOrder(<?php echo $order['id']; ?>)">
+        <i class="bi bi-eye me-1"></i>View Details
+    </button>
+</div>
                         </div>
                     </div>
                 </div>
             </div>
         <?php endforeach; ?>
     <?php endif; ?>
+<?php endif; ?>
 </div>
 
 <!-- Styles -->
@@ -529,33 +640,6 @@ function viewOrder(orderId) {
     window.location.href = 'views/po_details.php?id=' + orderId;
 }
 
-function receiveOrder(orderId) {
-    if (!permissions.canEdit) {
-        Swal.fire('Access Denied', 'You don\'t have permission to receive orders', 'error');
-        return;
-    }
-    
-    Swal.fire({
-        title: 'Receive Order?',
-        text: 'Confirm that you have received all items in this order.',
-        icon: 'question',
-        showCancelButton: true,
-        confirmButtonText: 'Yes, Receive',
-        confirmButtonColor: '#28a745'
-    }).then((result) => {
-        if (result.isConfirmed) {
-            window.location.href = 'views/receive_order.php?po_id=' + orderId;
-        }
-    });
-}
-
-function editOrder(orderId) {
-    if (!permissions.canApprove) {
-        Swal.fire('Access Denied', 'You don\'t have permission to edit orders', 'error');
-        return;
-    }
-    window.location.href = 'views/edit_po.php?id=' + orderId;
-}
 
 function requestReturn(orderId) {
     if (!permissions.canEdit) {

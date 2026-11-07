@@ -81,6 +81,42 @@ function uploadPhoto($file, $supplier_id) {
     return ['success' => false, 'message' => 'Upload failed'];
 }
 
+/**
+ * Upload 3D model file (.glb, .gltf) for a product
+ * Similar pattern to uploadPhoto() but for 3D assets
+ */
+function upload3DModel($file, $supplier_id) {
+    $target_dir = __DIR__ . "/../uploads/supplier_3d/";
+    if (!file_exists($target_dir)) {
+        mkdir($target_dir, 0777, true);
+    }
+    
+    $ext = strtolower(pathinfo($file["name"], PATHINFO_EXTENSION));
+    $allowed = ['glb', 'gltf'];
+    
+    if (!in_array($ext, $allowed)) {
+        return ['success' => false, 'message' => 'Invalid 3D file type. Only .glb and .gltf allowed.'];
+    }
+    
+    // 3D files can be larger — max 50MB
+    if ($file["size"] > 50 * 1024 * 1024) {
+        return ['success' => false, 'message' => '3D file too large (max 50MB)'];
+    }
+    
+    $new_filename = 'supplier_' . $supplier_id . '_3d_' . uniqid() . '.' . $ext;
+    $target_file = $target_dir . $new_filename;
+    
+    if (move_uploaded_file($file["tmp_name"], $target_file)) {
+        return [
+            'success' => true,
+            'path' => 'uploads/supplier_3d/' . $new_filename,
+            'filename' => $new_filename
+        ];
+    }
+    
+    return ['success' => false, 'message' => '3D file upload failed'];
+}
+
 try {
     switch ($action) {
         
@@ -117,6 +153,7 @@ try {
         $p['selling_price'] = floatval($p['selling_price']);
         $p['wholesale_price'] = $p['wholesale_price'] ? floatval($p['wholesale_price']) : null;
         $p['has_photo'] = (bool)$p['has_photo'];
+        $p['has_3d_model'] = (bool)($p['has_3d_model'] ?? false); // ✅ NEW
         
         // Add a default value for linked_count since we removed it from the query
         $p['linked_count'] = 0;
@@ -162,6 +199,7 @@ case 'get_product':
         $product['selling_price'] = floatval($product['selling_price']);
         $product['wholesale_price'] = $product['wholesale_price'] ? floatval($product['wholesale_price']) : null;
         $product['has_photo'] = (bool)$product['has_photo'];
+        $product['has_3d_model'] = (bool)($product['has_3d_model'] ?? false); // ✅ NEW
         
         // Get linked inventory - DISABLED due to database error
         // $inv_stmt = $pdo->prepare("SELECT id, item_code, name, stock FROM inventory WHERE supplier_product_id = ?");
@@ -206,6 +244,23 @@ case 'get_product':
         }
     }
     
+    // ✅ HANDLE 3D MODEL UPLOAD
+    $has_3d_model = 0;
+    $model_3d_path = null;
+    $model_3d_filename = null;
+    
+    if (!empty($_FILES['model_3d']) && $_FILES['model_3d']['error'] == 0) {
+        $upload3d = upload3DModel($_FILES['model_3d'], $supplier_id);
+        if ($upload3d['success']) {
+            $has_3d_model = 1;
+            $model_3d_path = $upload3d['path'];
+            $model_3d_filename = $upload3d['filename'];
+        } else {
+            // Log error but continue — 3D upload is optional
+            error_log("3D upload failed: " . $upload3d['message']);
+        }
+    }
+    
     // ✅ GET STOCK VALUES
     $stock = isset($_POST['initial_stock']) ? (int)$_POST['initial_stock'] : 0;
     $low_stock_threshold = isset($_POST['low_stock_threshold']) ? (int)$_POST['low_stock_threshold'] : 5;
@@ -223,8 +278,9 @@ case 'get_product':
                 supplier_id, product_code, product_name, category, brand,
                 description, cost_price, selling_price, wholesale_price,
                 unit, min_order_qty, stock, stock_status, low_stock_threshold,
-                lead_time_days, is_active, has_photo, photo_path, photo_filename, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)";
+                lead_time_days, is_active, has_photo, photo_path, photo_filename,
+                has_3d_model, model_3d_path, model_3d_filename, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)";
     
     $stmt = $pdo->prepare($sql);
     $result = $stmt->execute([
@@ -246,6 +302,9 @@ case 'get_product':
         $has_photo,
         $photo_path,
         $photo_filename,
+        $has_3d_model,
+        $model_3d_path,
+        $model_3d_filename,
         $_POST['notes'] ?? $input['notes'] ?? null
     ]);
     
@@ -305,6 +364,46 @@ case 'get_product':
         $photo_path = null;
         $photo_filename = null;
         $photo_updated = true;
+    }
+    
+    // ✅ HANDLE 3D MODEL UPDATE
+    $model_3d_updated = false;
+    $has_3d_model = null;
+    $model_3d_path = null;
+    $model_3d_filename = null;
+    
+    if (!empty($_FILES['model_3d']) && $_FILES['model_3d']['error'] == 0) {
+        $upload3d = upload3DModel($_FILES['model_3d'], $supplier_id);
+        if ($upload3d['success']) {
+            // Delete old 3D file kung meron
+            $get3d = $pdo->prepare("SELECT model_3d_path FROM supplier_products WHERE id = ?");
+            $get3d->execute([$id]);
+            $cur3d = $get3d->fetch();
+            if ($cur3d && $cur3d['model_3d_path']) {
+                $old3dFile = __DIR__ . "/../" . $cur3d['model_3d_path'];
+                if (file_exists($old3dFile)) unlink($old3dFile);
+            }
+            
+            $has_3d_model = 1;
+            $model_3d_path = $upload3d['path'];
+            $model_3d_filename = $upload3d['filename'];
+            $model_3d_updated = true;
+        }
+    }
+    
+    if (isset($_POST['remove_3d_model']) && $_POST['remove_3d_model'] == '1') {
+        // Delete current 3D file
+        $get3d = $pdo->prepare("SELECT model_3d_path FROM supplier_products WHERE id = ?");
+        $get3d->execute([$id]);
+        $cur3d = $get3d->fetch();
+        if ($cur3d && $cur3d['model_3d_path']) {
+            $file3d = __DIR__ . "/../" . $cur3d['model_3d_path'];
+            if (file_exists($file3d)) unlink($file3d);
+        }
+        $has_3d_model = 0;
+        $model_3d_path = null;
+        $model_3d_filename = null;
+        $model_3d_updated = true;
     }
     
     // Build update query
@@ -369,6 +468,16 @@ case 'get_product':
         $params[] = $photo_path;
         $fields[] = "photo_filename = ?";
         $params[] = $photo_filename;
+    }
+    
+    // ✅ ADD 3D model update fields
+    if ($model_3d_updated) {
+        $fields[] = "has_3d_model = ?";
+        $params[] = $has_3d_model;
+        $fields[] = "model_3d_path = ?";
+        $params[] = $model_3d_path;
+        $fields[] = "model_3d_filename = ?";
+        $params[] = $model_3d_filename;
     }
     
     $fields[] = "updated_at = NOW()";

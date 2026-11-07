@@ -594,30 +594,6 @@ include '../includes/navbar.php';
                     <p class="product-desc"><?php echo nl2br(htmlspecialchars($product['description'])); ?></p>
                     <?php endif; ?>
 
-                    <!-- PAYMENT POLICY CARD -->
-                    <div class="payment-policy-card">
-                        <div class="policy-title">
-                            <i class="fas fa-credit-card"></i> Payment Policy: <?php echo $clinic_payment_policy_display; ?>
-                            <?php if ($clinic_booking_flow == 'pay_first'): ?>
-                                <span style="background: var(--primary); color: white; padding: 2px 8px; border-radius: 20px; font-size: 10px; margin-left: 8px;">Pay First</span>
-                            <?php else: ?>
-                                <span style="background: var(--warning); color: white; padding: 2px 8px; border-radius: 20px; font-size: 10px; margin-left: 8px;">Approve First</span>
-                            <?php endif; ?>
-                        </div>
-                        <div class="policy-desc">
-                            <?php if ($payment_type == 'downpayment'): ?>
-                                <i class="fas fa-percent"></i> <?php echo $downpayment_percent; ?>% downpayment (₱<?php echo number_format($downpayment_amount, 2); ?>) required online.
-                                Balance of ₱<?php echo number_format($balance_amount, 2); ?> to be paid at the clinic.
-                            <?php elseif ($payment_type == 'full'): ?>
-                                <i class="fas fa-cash"></i> 100% full payment of ₱<?php echo number_format($downpayment_amount, 2); ?> required online.
-                            <?php elseif ($payment_type == 'onsite'): ?>
-                                <i class="fas fa-store"></i> Pay ₱<?php echo number_format($display_price, 2); ?> directly at the clinic. No online payment required.
-                            <?php elseif ($payment_type == 'free'): ?>
-                                <i class="fas fa-gift"></i> This is a free service. No payment required.
-                            <?php endif; ?>
-                        </div>
-                    </div>
-
                     <!-- COLOR / VARIANT SELECTOR -->
                     <?php if ($has_stock_tracking && !$IS_SERVICE): ?>
                     <div class="color-selector-box">

@@ -146,6 +146,10 @@ switch($action) {
     case 'get_payment_details':
     getPaymentDetails($pdo);
     break;
+    
+    case 'get_supplier_product_3d':
+    getSupplierProduct3D($pdo);
+    break;
         
     default:
         http_response_code(400);
@@ -713,6 +717,44 @@ function getPaymentDetails($pdo) {
         $stmt = $pdo->query("SELECT gcash_name, gcash_number, maya_name, maya_number, bank_name, bank_account_name, bank_account_number FROM system_settings LIMIT 1");
         $data = $stmt->fetch(PDO::FETCH_ASSOC);
         echo json_encode(['success' => true, 'data' => $data]);
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    }
+}
+
+// ============================================
+// GET SUPPLIER PRODUCT 3D MODEL (Public — para sa clinic side)
+// ============================================
+function getSupplierProduct3D($pdo) {
+    try {
+        $product_id = $_GET['id'] ?? 0;
+        
+        if (!$product_id) {
+            throw new Exception('Product ID required');
+        }
+        
+        $stmt = $pdo->prepare("
+            SELECT 
+                sp.id, sp.product_name, sp.brand, sp.category,
+                sp.model_3d_path, sp.model_3d_filename, sp.has_3d_model,
+                s.supplier_name
+            FROM supplier_products sp
+            INNER JOIN suppliers s ON s.id = sp.supplier_id
+            WHERE sp.id = ? 
+              AND sp.has_3d_model = 1 
+              AND sp.is_active = 1 
+              AND s.status = 'Active'
+        ");
+        $stmt->execute([$product_id]);
+        $product = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$product) {
+            echo json_encode(['success' => false, 'message' => 'Product not found or no 3D model available']);
+            return;
+        }
+        
+        echo json_encode(['success' => true, 'data' => $product]);
+        
     } catch (Exception $e) {
         echo json_encode(['success' => false, 'message' => $e->getMessage()]);
     }

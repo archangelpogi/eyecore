@@ -12,6 +12,7 @@ if (!isset($_SESSION['csrf_token'])) {
 <head>
     <meta charset="UTF-8">
     <title>Eyecore - Clinic Registration</title>
+    <link rel="icon" type="image/png" href="../assets/images/eyecore-logo.png">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.min.css">
@@ -410,7 +411,7 @@ if (!isset($_SESSION['csrf_token'])) {
         <div class="brand-logo">
             <i class="bi bi-eye-fill text-white fs-4"></i>
         </div>
-        <h4 class="fw-800 mb-0" style="color:var(--slate);font-weight:800;">Eyecore Clinic Registration</h4>
+        <h4 class="fw-800 mb-0" style="color:var(--slate);font-weight:800;">Eyecore Clinic Registrations</h4>
         <p class="text-muted small mb-0">Complete your registration in 3 simple steps</p>
     </div>
 
@@ -546,15 +547,14 @@ if (!isset($_SESSION['csrf_token'])) {
                     <input type="text" name="hospital_name" class="form-control" placeholder="e.g. St. Luke's Medical Center">
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">Hospital Address</label>
-                    <textarea name="hospital_address" class="form-control" rows="2"></textarea>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">Does this hospital offer eye surgery?</label>
-                    <select name="offers_eye_surgery" class="form-select">
-                        <option value="no">No</option>
-                        <option value="yes">Yes</option>
+                    <label class="form-label">Hospital Type <span class="text-danger">*</span></label>
+                    <select name="hospital_type" id="hospital_type" class="form-select">
+                        <option value="Public">Public Hospital</option>
+                        <option value="Private">Private Hospital</option>
                     </select>
+                    <div class="form-text" style="font-size:.72rem;">
+                        <i class="bi bi-info-circle me-1"></i>Classification ng hospital kung saan nakabase ang clinic.
+                    </div>
                 </div>
             </div>
 
@@ -642,7 +642,6 @@ if (!isset($_SESSION['csrf_token'])) {
                         <option value="Mendez">Mendez</option>
                         <option value="Ternate">Ternate</option>
                     </select>
-                    <!-- All options above are Cavite municipalities/cities only — the dropdown itself enforces the province lock for typed selections. -->
                 </div>
             </div>
 
@@ -661,17 +660,19 @@ if (!isset($_SESSION['csrf_token'])) {
 
             <div class="mb-3">
                 <label class="form-label">Contact Number <span class="text-danger">*</span></label>
-                <input type="tel" name="contact" class="form-control" required
-                       pattern="[0-9\-\+\(\)\s]{10,20}"
-                       placeholder="09XX-XXX-XXXX">
+                <input type="tel" name="contact" id="contact" class="form-control" required placeholder="0907-117-7719">
+                <div class="invalid-feedback" id="phoneError" style="font-size:.8rem; display:none;"></div>
+                <div class="valid-feedback" style="font-size:.8rem;"><i class="bi bi-check-lg"></i> Looks good!</div>
+                <div class="form-text" style="font-size:.72rem;">
+                    <i class="bi bi-info-circle me-1"></i> Format: 09XX-XXX-XXXX
+                </div>
             </div>
 
             <input type="hidden" name="province" id="province_field" value="Cavite">
             <input type="hidden" name="location_confirmed_cavite" id="cavite_confirmed_field" value="0">
 
             <div class="mb-3 form-check">
-                <input type="checkbox" class="form-check-input" id="terms" required
-                       style="border-color:var(--teal);">
+                <input type="checkbox" class="form-check-input" id="terms" required style="border-color:var(--teal);">
                 <label class="form-check-label" for="terms" style="font-size:.85rem;">
                     I agree to the
                     <a href="#" class="terms-link" onclick="showLegal(event,'terms')">Terms & Conditions</a> and
@@ -859,7 +860,10 @@ async function goStep3() {
 
     if (clinicType === 'hospital_based') {
         const hospName = document.querySelector('[name="hospital_name"]').value.trim();
+        const hospType = document.getElementById('hospital_type').value;
+        
         if (!hospName) return toast('error','Missing','Please enter the hospital name.');
+        if (!hospType) return toast('error','Missing','Please select the hospital type (Public/Private).');
     }
 
     // Set OTP email display
@@ -1161,7 +1165,37 @@ function getCurrentLocation() {
     );
 }
 
-// Shared by GPS fix, marker drag, and map click — always re-checks the Cavite boundary
+// Boundary ng LUPA ng Cavite (exact shape para hindi masama ang dagat)
+const caviteLandPolygon = [
+    [14.4950, 120.8700], [14.4950, 120.9200], [14.4800, 120.9500], [14.4500, 120.9600], 
+    [14.4300, 121.0000], [14.3800, 121.0500], [14.3200, 121.0500], [14.2500, 120.9800], 
+    [14.1500, 120.9500], [14.1100, 120.9300], [14.1000, 120.8500], [14.1200, 120.7000], 
+    [14.2000, 120.6000], [14.3000, 120.5800], [14.4000, 120.5800], [14.4500, 120.6200], 
+    [14.4600, 120.7000], [14.4800, 120.8000], [14.4950, 120.8700]
+];
+
+// Function para malaman kung nasa loob ng polygon
+function isPointInPolygon(lat, lng, polygon) {
+    let inside = false;
+    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+        const xi = polygon[i][0], yi = polygon[i][1];
+        const xj = polygon[j][0], yj = polygon[j][1];
+        const intersect = ((yi > lng) !== (yj > lng)) && (lat < (xj - xi) * (lng - yi) / (yj - yi) + xi);
+        if (intersect) inside = !inside;
+    }
+    return inside;
+}
+
+// BURAHIN ANG MGA AUTO-FILLED FIELDS KAPAG DAGAT O LABAS NG CAVITE
+function clearAutoFilledFields() {
+    document.getElementById('street_address').value = '';
+    document.getElementById('barangay').value = '';
+    document.getElementById('zip_code').value = '';
+    document.getElementById('city').selectedIndex = 0; // I-reset sa "-- Select City --"
+    document.getElementById('barangayHint').textContent = '';
+    document.getElementById('cavite_confirmed_field').value = '0'; // Mahalaga 'to!
+}
+
 async function reverseGeocodeAndValidate(lat, lng, fromMapInteraction) {
     const status = document.getElementById('locationStatus');
     const btn = document.getElementById('useLocationBtn');
@@ -1170,6 +1204,40 @@ async function reverseGeocodeAndValidate(lat, lng, fromMapInteraction) {
     document.getElementById('lng_field').value = lng;
     ensureMap(lat, lng);
 
+    status.className = 'location-status';
+    status.innerHTML = '<i class="bi bi-hourglass-split me-1"></i> Checking location...';
+
+    // 1. CHECK KUNG NASA LOOB NG LUPA (Polygon)
+    const isLand = isPointInPolygon(lat, lng, caviteLandPolygon);
+
+    if (!isLand) {
+        // Dahil labas sa polygon, check natin kung malapit pa rin sa Cavite (Bounding Box)
+        // Cavite Bounding Box: Lat 14.00 - 14.60, Lng 120.55 - 121.15
+        const isNearCavite = (lat >= 14.00 && lat <= 14.60 && lng >= 120.55 && lng <= 121.15);
+
+        clearAutoFilledFields(); // ⬅️ BURAHIN ANG MGA DATA
+        
+        status.className = 'location-status error';
+
+        if (isNearCavite) {
+            // Nasa dagat (kasi malapit sa Cavite pero labas sa lupa)
+            status.innerHTML = '<i class="bi bi-water me-1"></i>' +
+                '<strong>This pin is in the ocean / body of water.</strong> ' +
+                'Registration is only open to clinics on land within Cavite. Please move the pin to a land area.';
+        } else {
+            // Nasa labas talaga ng Cavite (halimbawa: Maynila, Bataan)
+            status.innerHTML = '<i class="bi bi-x-circle-fill me-1"></i>' +
+                '<strong>This pin is outside Cavite province.</strong> ' +
+                'Registration is only open to clinics located within Cavite. Please move the pin.';
+        }
+
+        btn.style.background = '';
+        btn.style.color = '';
+        btn.style.borderColor = '';
+        return;
+    }
+
+    // 2. KUNG LUPA NAMAN (Pumasa sa Polygon), kukunin natin address via API
     try {
         const res = await fetch(
             `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&addressdetails=1&zoom=18`,
@@ -1178,59 +1246,48 @@ async function reverseGeocodeAndValidate(lat, lng, fromMapInteraction) {
         const data = await res.json();
 
         if (!data || !data.address) {
+            // Kapag nag-fail ang API pero nasa land naman, clear natin fields as safety
+            clearAutoFilledFields();
             status.className = 'location-status error';
             status.innerHTML = '<i class="bi bi-exclamation-circle me-1"></i>Address lookup failed. Try dropping the pin again.';
-            return;
-        }
-
-        const addr = data.address;
-
-        // ── Cavite province check ──
-        // Nominatim PH results put the province in state / county / state_district
-        // depending on how the area is tagged. Check all of them for "Cavite".
-        const provinceFields = [addr.state, addr.county, addr.state_district].filter(Boolean);
-        const isCavite = provinceFields.some(f => f.toLowerCase().includes('cavite'));
-
-        if (!isCavite) {
-            document.getElementById('cavite_confirmed_field').value = '0';
-            status.className = 'location-status error';
-            status.innerHTML = '<i class="bi bi-x-circle-fill me-1"></i>' +
-                'This pin is outside Cavite province. Registration is only open to clinics located within Cavite — please move the pin or use your current location while inside Cavite.';
             btn.style.background = '';
             btn.style.color = '';
             btn.style.borderColor = '';
             return;
         }
 
-        // ── Inside Cavite: auto-fill street / barangay / city / zip ──
-        const road     = addr.road || addr.pedestrian || '';
+        const addr = data.address;
+        const road     = addr.road || addr.pedestrian || addr.footway || addr.path || '';
         const houseNum = addr.house_number || '';
-        const street    = [houseNum, road].filter(Boolean).join(' ');
-        const barangay  = addr.village || addr.suburb || addr.quarter || addr.neighbourhood || '';
-        const zip       = addr.postcode || '';
+        const street   = [houseNum, road].filter(Boolean).join(' ');
+        const barangay = addr.village || addr.suburb || addr.quarter || addr.neighbourhood || '';
+        const zip      = addr.postcode || '';
 
-        // Always sync street/barangay/zip to the pin — dragging or clicking the map
-        // means the user is actively telling us "this is the spot," so it should win.
         if (street)   document.getElementById('street_address').value = street;
         if (barangay) document.getElementById('barangay').value = barangay;
         if (zip)      document.getElementById('zip_code').value = zip;
-        document.getElementById('barangayHint').textContent = barangay
-            ? `Detected: ${barangay}` : '';
+        document.getElementById('barangayHint').textContent = barangay ? `Detected: ${barangay}` : '';
 
-        const detectedCity =
-            addr.city || addr.town || addr.municipality || addr.county || '';
+        const detectedCity = addr.city || addr.town || addr.municipality || addr.county || '';
         trySelectCity(detectedCity);
 
+        // Success!
         document.getElementById('cavite_confirmed_field').value = '1';
         status.className = 'location-status success';
-        status.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i>Location confirmed within Cavite. Fields auto-filled — feel free to adjust.';
+        status.innerHTML = '<i class="bi bi-check-circle-fill me-1"></i>Location confirmed on land within Cavite. Fields auto-filled — feel free to adjust.';
 
         btn.style.background = 'var(--success)';
         btn.style.color = 'white';
         btn.style.borderColor = 'var(--success)';
+
     } catch (err) {
+        // Fallback kung mag-fail ang API pero nasa lupa naman
+        clearAutoFilledFields(); // ⬅️ BURAHIN DIN DITO
         status.className = 'location-status error';
         status.innerHTML = '<i class="bi bi-exclamation-circle me-1"></i>Address lookup failed. Coordinates saved — try again.';
+        btn.style.background = '';
+        btn.style.color = '';
+        btn.style.borderColor = '';
     }
 }
 
@@ -1378,6 +1435,59 @@ function swLegal(tab) {
     document.getElementById('tTab').style.color = tab === 'terms'   ? 'white' : '#334155';
     document.getElementById('pTab').style.color = tab === 'privacy' ? 'white' : '#334155';
 }
+
+/* ═══════════════════════════════════════════════
+   CONTACT NUMBER — Live formatting & validation
+═══════════════════════════════════════════════ */
+document.addEventListener('DOMContentLoaded', () => {
+    const contactInput = document.getElementById('contact');
+    const phoneError = document.getElementById('phoneError');
+    if (!contactInput) return;
+
+    contactInput.addEventListener('input', function (e) {
+        // 1. Kunin lahat ng numbers lang
+        let raw = e.target.value.replace(/\D/g, ''); 
+        
+        // Limitahan sa 11 digits (standard PH mobile)
+        if (raw.length > 11) raw = raw.slice(0, 11);
+
+        // 2. I-format natin (09XX-XXX-XXXX)
+        let formatted = '';
+        if (raw.length > 0) {
+            formatted = raw.slice(0, 4);
+            if (raw.length > 4) formatted += '-' + raw.slice(4, 7);
+            if (raw.length > 7) formatted += '-' + raw.slice(7, 11);
+        }
+
+        // I-set ang value sa input
+        e.target.value = formatted;
+
+        // 3. Live Validation Logic (Green/Red)
+        e.target.classList.remove('is-valid', 'is-invalid');
+        phoneError.style.display = 'none';
+
+        if (raw.length === 0) {
+            // Walang typing
+            return; 
+        }
+
+        if (!raw.startsWith('09')) {
+            // Mali ang start
+            e.target.classList.add('is-invalid');
+            phoneError.style.display = 'block';
+            phoneError.textContent = 'Must start with 09.';
+        } else if (raw.length > 0 && raw.length < 11) {
+            // Kulang ang digits
+            e.target.classList.add('is-invalid');
+            phoneError.style.display = 'block';
+            phoneError.textContent = `Requires 11 digits. You entered ${raw.length}.`;
+        } else if (raw.length === 11) {
+            // Tama lahat!
+            e.target.classList.add('is-valid');
+            // Automatic na lalabas yung green check icon ng Bootstrap
+        }
+    });
+});
 </script>
 </body>
 </html>

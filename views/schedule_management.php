@@ -263,7 +263,8 @@ tbody tr:hover{background:#fafbfc}
                 <div><div class="m-title" id="mEmpTitle">Assign employee schedule</div></div>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <div class="modal-body">
+            <!-- Scrollable modal body -->
+            <div class="modal-body" style="max-height: 65vh; overflow-y: auto; overflow-x: hidden;">
                 <input type="hidden" id="mEmpSchedId">
                 <input type="hidden" id="mEmpId">
                 <div class="mb-3" id="empSelectWrap">

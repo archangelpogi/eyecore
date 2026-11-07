@@ -13,8 +13,21 @@ $action = $_POST['action'] ?? '';
 
 if ($action === 'add') {
     $id = $_POST['product_id'] ?? 0;
-    $_SESSION['product_cart'][$id] = 1;
-    echo json_encode(['success' => true, 'count' => count($_SESSION['product_cart'])]);
+    $qty = (int)($_POST['quantity'] ?? 1);
+    if ($qty < 1) $qty = 1;
+    
+    // ✅ Kung existing na sa cart, i-add yung quantity
+    if (isset($_SESSION['product_cart'][$id])) {
+        $_SESSION['product_cart'][$id] += $qty;
+    } else {
+        $_SESSION['product_cart'][$id] = $qty;
+    }
+    
+    echo json_encode([
+        'success' => true, 
+        'count' => count($_SESSION['product_cart']),
+        'qty' => $_SESSION['product_cart'][$id]
+    ]);
     
 } elseif ($action === 'update') {
     $id = $_POST['product_id'] ?? 0;

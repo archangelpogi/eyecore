@@ -13,7 +13,9 @@ if ($_SESSION['role'] !== 'SuperAdmin') {
     die('Access denied. SuperAdmin only.');
 }
 
-// Rest of your existing sidebar code...
+// ✅ Include DB connection para available ang $pdo
+require_once __DIR__ . '/../config/db.php';
+
 $current_page = $_GET['page'] ?? 'dashboard';
 $user_role = $_SESSION['role'];
 $user_name = trim(($_SESSION['first_name'] ?? '') . ' ' . ($_SESSION['last_name'] ?? 'Admin'));
@@ -55,7 +57,25 @@ $user_email = $_SESSION['email'] ?? 'admin@eyecore.com';
                     <span>Clinic Management</span>
                 </a>
             </li>
+
+            <!-- Supplier Approvals -->
+            <li class="nav-item">
+                <a class="nav-link <?= ($current_page == 'supplier_approvals') ? 'active' : '' ?>"
+                href="developer.php?page=supplier_approvals">
+                    <i class="bi bi-shop"></i>
+                    <span>Supplier Approvals</span>
+                    <?php
+                    try {
+                        $pendingCount = $pdo->query("SELECT COUNT(*) FROM suppliers WHERE status = 'Pending'")->fetchColumn();
+                        if ($pendingCount > 0): ?>
+                            <span class="badge bg-danger ms-auto"><?= $pendingCount ?></span>
+                        <?php endif;
+                    } catch (Exception $e) {}
+                    ?>
+                </a>
+            </li>
             
+            <!-- Subscription Income -->
              <li class="nav-item">
                 <a class="nav-link <?= ($current_page == 'subscription_income') ? 'active' : '' ?>"
                    href="developer.php?page=subscription_income">
@@ -64,23 +84,19 @@ $user_email = $_SESSION['email'] ?? 'admin@eyecore.com';
                 </a>
             </li>
 
-            <!-- 3D Requests (Developer Only) -->
+            <!-- 3D Requests -->
             <li class="nav-item">
                 <a class="nav-link <?= ($current_page == '3d_requests') ? 'active' : '' ?>"
-                href="developer.php?page=3d_requests">  <!-- TAMA NA ITO -->
+                href="developer.php?page=3d_requests">
                     <i class="bi bi-box-seam"></i>
                     <span>3D Model Requests</span>
                     <?php
-                    // Get pending count
                     try {
-                        require_once __DIR__ . '/../config/db.php';
                         $count = $pdo->query("SELECT COUNT(*) FROM custom_3d_requests WHERE status = 'pending'")->fetchColumn();
                         if ($count > 0): ?>
                         <span class="badge bg-danger ms-auto"><?= $count ?></span>
                     <?php endif; 
-                    } catch (Exception $e) {
-                        // Silent fail
-                    }
+                    } catch (Exception $e) {}
                     ?>
                 </a>
             </li>
@@ -103,6 +119,29 @@ $user_email = $_SESSION['email'] ?? 'admin@eyecore.com';
                 </a>
             </li>
 
+            <!-- ✅ SUPPORT INBOX (BAGONG DAGDAG) -->
+            <li class="nav-item">
+                <a class="nav-link <?= ($current_page == 'support_inbox') ? 'active' : '' ?>"
+                   href="developer.php?page=support_inbox">
+                    <i class="bi bi-headset"></i>
+                    <span>Support Inbox</span>
+                    <?php
+                    try {
+                        // Bilang ng unread threads mula sa users
+                        $unreadSupport = $pdo->query("
+                            SELECT COUNT(DISTINCT thread_id) 
+                            FROM support_messages 
+                            WHERE is_read_by_support = 0 AND sender_role != 'SuperAdmin'
+                        ")->fetchColumn();
+                        
+                        if ($unreadSupport > 0): ?>
+                            <span class="badge bg-danger ms-auto"><?= $unreadSupport ?></span>
+                        <?php endif;
+                    } catch (Exception $e) {}
+                    ?>
+                </a>
+            </li>
+
             <!-- System Settings -->
             <li class="nav-item">
                 <a class="nav-link <?= ($current_page == 'settings') ? 'active' : '' ?>"
@@ -111,8 +150,6 @@ $user_email = $_SESSION['email'] ?? 'admin@eyecore.com';
                     <span>System Settings</span>
                 </a>
             </li>
-
-
 
         </ul>
     </nav>
@@ -142,4 +179,3 @@ $user_email = $_SESSION['email'] ?? 'admin@eyecore.com';
         </div>
     </div>
 </aside>
-

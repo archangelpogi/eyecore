@@ -5,7 +5,7 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 // ✅ Development mode toggle
-$DEV_MODE = true;
+$DEV_MODE = false;  // ← I-set sa false para hindi mag-print ang PHP warnings
 
 // Show errors only in development
 if ($DEV_MODE) {
@@ -319,6 +319,9 @@ class EmployeeBackend {
                 'success' => true,
                 'data' => $this->getCurrentUserPermissions()
             ]);
+        }
+         elseif (isset($_GET['get_status_history'])) {
+            $this->getStatusHistory($_GET['get_status_history']);
         } else {
             $this->getAllUsers();
         }
@@ -438,6 +441,7 @@ class EmployeeBackend {
                 u.role,
                 u.status as user_status,
                 u.created_at,
+                e.id AS emp_id,              -- ✅ BAGO: employees.id
                 e.employee_no,
                 e.position_id,
                 p.position_name,
@@ -632,11 +636,18 @@ class EmployeeBackend {
             error_log("Route: updateEmployeeInfo");
             $this->updateEmployeeInfo($data);
 
-        } elseif (isset($data['toggle_status_id'])) {
-            error_log("Route: toggleUserStatus");
-            $this->toggleUserStatus($data['toggle_status_id']);
+            } elseif (isset($data['change_employee_status'])) {
+                error_log("Route: changeEmployeeStatus");
+                $this->changeEmployeeStatus($data);
 
-        } elseif (isset($data['delete_document'])) {
+            } elseif (isset($data['get_status_history'])) {
+                error_log("Route: getStatusHistory");
+                $this->getStatusHistory($data['employee_id'] ?? 0);
+
+            } elseif (isset($data['toggle_status_id'])) {
+                error_log("Route: toggleUserStatus");
+                $this->toggleUserStatus($data['toggle_status_id']);
+            } elseif (isset($data['delete_document'])) {
             error_log("Route: deleteDocument");
             $this->deleteDocument($data['document_id']);
 
@@ -1142,6 +1153,250 @@ private function createRiderRecord($user_id, $data) {
             $this->sendResponse(400, ['error' => $e->getMessage()]);
         }
     }
+
+    // ═══════════════════════════════════════════════════════════════
+// ✅ CHANGE EMPLOYEE STATUS (with reason + effective date + sync)
+// ═══════════════════════════════════════════════════════════════
+private function changeEmployeeStatus($data) {
+    if (!$this->canEdit('users')) {
+        $this->sendResponse(403, ['error' => 'You do not have permission to change status']);
+    }
+    
+    try {
+        // ✅ Validate required fields
+        $employeeId    = (int)($data['employee_id'] ?? 0);
+        $newStatus     = trim($data['new_status'] ?? '');
+        $effectiveDate = trim($data['effective_date'] ?? '');
+        $reason        = trim($data['reason'] ?? '');
+        
+        if (!$employeeId) {
+            throw new Exception('Employee ID is required');
+        }
+        if (!$newStatus) {
+            throw new Exception('New status is required');
+        }
+        if (!$effectiveDate) {
+            throw new Exception('Effective date is required');
+        }
+        if (!$reason || strlen($reason) < 10) {
+            throw new Exception('Reason is required (minimum 10 characters)');
+        }
+        
+        // ✅ Validate status values
+        $allowedStatuses = ['Active', 'Probationary', 'On-Leave', 'Resigned', 'Terminated', 'Inactive'];
+        if (!in_array($newStatus, $allowedStatuses, true)) {
+            throw new Exception('Invalid status value');
+        }
+        
+        // ✅ FIXED: Accept EITHER employees.id OR users.id
+        // ✅ ALSO: Include u.role for Rider/Optometrist sync
+        $stmt = $this->pdo->prepare("
+            SELECT e.*, 
+                   u.id AS user_id, 
+                   u.first_name, 
+                   u.last_name, 
+                   u.email,
+                   u.role
+            FROM employees e
+            JOIN users u ON e.user_id = u.id
+            WHERE (e.id = ? OR u.id = ?) AND u.clinic_id = ?
+            LIMIT 1
+        ");
+        $stmt->execute([$employeeId, $employeeId, $this->clinic_id]);
+        $employee = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$employee) {
+            throw new Exception('Employee not found');
+        }
+        
+        // ✅ Force employees.id for the UPDATE
+        $employeeId = (int)$employee['id'];
+        
+        $oldStatus = $employee['status'] ?? 'Active';
+        
+        // ✅ Check if status actually changed
+        if ($oldStatus === $newStatus) {
+            throw new Exception('New status is the same as current status');
+        }
+        
+        // ✅ Map to user status
+        $newUserStatus = $this->mapEmployeeStatusToUserStatus($newStatus);
+        
+        $this->pdo->beginTransaction();
+        
+        try {
+            // ✅ 1. Update employee status + metadata
+            $stmt = $this->pdo->prepare("
+                UPDATE employees
+                SET status = ?,
+                    status_changed_at = NOW(),
+                    status_changed_by = ?,
+                    status_effective_date = ?,
+                    status_change_reason = ?,
+                    updated_at = NOW()
+                WHERE id = ?
+            ");
+            $stmt->execute([
+                $newStatus,
+                $this->user_id,
+                $effectiveDate,
+                $reason,
+                $employeeId
+            ]);
+            
+            // ✅ 2. Auto-sync users.status
+            $stmt = $this->pdo->prepare("
+                UPDATE users
+                SET status = ?, updated_at = NOW()
+                WHERE id = ?
+            ");
+            $stmt->execute([$newUserStatus, $employee['user_id']]);
+            
+            // ✅ 3. Sync riders table if role is Rider
+            if ($employee['role'] === 'Rider') {
+                $riderStatus = ($newUserStatus === 'Active') ? 'active' : 'suspended';
+                $isAvailable = ($newUserStatus === 'Active') ? 1 : 0;
+                
+                $stmt = $this->pdo->prepare("
+                    UPDATE riders
+                    SET status = ?, is_available = ?, updated_at = NOW()
+                    WHERE user_id = ?
+                ");
+                $stmt->execute([$riderStatus, $isAvailable, $employee['user_id']]);
+            }
+            
+            // ✅ 4. Sync doctors table if role is Optometrist
+            if ($employee['role'] === 'Optometrist') {
+                $isActive = ($newUserStatus === 'Active') ? 1 : 0;
+                $fullName = trim($employee['first_name'] . ' ' . $employee['last_name']);
+                
+                $stmt = $this->pdo->prepare("
+                    UPDATE doctors
+                    SET is_active = ?
+                    WHERE clinic_id = ? AND name = ?
+                ");
+                $stmt->execute([$isActive, $this->clinic_id, $fullName]);
+            }
+            
+            // ✅ 5. Insert into status history
+            $stmt = $this->pdo->prepare("
+                INSERT INTO employee_status_history
+                    (employee_id, old_status, new_status, effective_date, reason, 
+                     changed_by, changed_at, user_status_synced_to)
+                VALUES (?, ?, ?, ?, ?, ?, NOW(), ?)
+            ");
+            $stmt->execute([
+                $employeeId,
+                $oldStatus,
+                $newStatus,
+                $effectiveDate,
+                $reason,
+                $this->user_id,
+                $newUserStatus
+            ]);
+            
+            // ✅ 6. Audit log
+            $this->logAudit('STATUS_CHANGE', 'employees', $employeeId, [
+                'status' => $oldStatus
+            ], [
+                'status' => $newStatus,
+                'effective_date' => $effectiveDate,
+                'reason' => $reason,
+                'user_status_synced_to' => $newUserStatus,
+                'changed_by' => $this->user_id
+            ]);
+            
+            $this->pdo->commit();
+            
+            $this->sendResponse(200, [
+                'success' => true,
+                'message' => "Status changed from {$oldStatus} to {$newStatus}. User access: {$newUserStatus}.",
+                'data' => [
+                    'employee_id'    => $employeeId,
+                    'old_status'     => $oldStatus,
+                    'new_status'     => $newStatus,
+                    'user_status'    => $newUserStatus,
+                    'effective_date' => $effectiveDate
+                ]
+            ]);
+            
+        } catch (Exception $e) {
+            $this->pdo->rollBack();
+            throw $e;
+        }
+        
+    } catch (Exception $e) {
+        $this->sendResponse(400, ['error' => $e->getMessage()]);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ GET STATUS HISTORY
+// ═══════════════════════════════════════════════════════════════
+private function getStatusHistory($employeeId) {
+    if (!$this->canView('users')) {
+        $this->sendResponse(403, ['error' => 'No permission']);
+    }
+    
+    try {
+        $employeeId = (int)$employeeId;
+        if (!$employeeId) {
+            throw new Exception('Employee ID required');
+        }
+        
+        // ✅ FIXED: Accept EITHER employees.id OR users.id
+        $stmt = $this->pdo->prepare("
+            SELECT e.id
+            FROM employees e
+            JOIN users u ON e.user_id = u.id
+            WHERE (e.id = ? OR u.id = ?) AND u.clinic_id = ?
+            LIMIT 1
+        ");
+        $stmt->execute([$employeeId, $employeeId, $this->clinic_id]);
+        
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$row) {
+            throw new Exception('Employee not found');
+        }
+        
+        // ✅ Use actual employees.id for history query
+        $employeeId = (int)$row['id'];
+        
+        // ✅ Get history
+        $stmt = $this->pdo->prepare("
+            SELECT 
+                h.*,
+                CONCAT(u.first_name, ' ', u.last_name) AS changed_by_name,
+                u.role AS changed_by_role
+            FROM employee_status_history h
+            LEFT JOIN users u ON h.changed_by = u.id
+            WHERE h.employee_id = ?
+            ORDER BY h.changed_at DESC
+        ");
+        $stmt->execute([$employeeId]);
+        $history = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // ✅ Format dates
+        foreach ($history as &$row) {
+            $row['changed_at_formatted'] = !empty($row['changed_at']) 
+                ? date('M d, Y • g:i A', strtotime($row['changed_at'])) 
+                : null;
+            $row['effective_date_formatted'] = !empty($row['effective_date']) 
+                ? date('M d, Y', strtotime($row['effective_date'])) 
+                : null;
+        }
+        unset($row);
+        
+        $this->sendResponse(200, [
+            'success' => true,
+            'history' => $history,
+            'count'   => count($history)
+        ]);
+        
+    } catch (Exception $e) {
+        $this->sendResponse(400, ['error' => $e->getMessage()]);
+    }
+}
     
     // ============= DELETE EMPLOYEE =============
     private function deleteEmployee($employee_id) {
@@ -2029,6 +2284,21 @@ private function generateEmployeeNumber() {
             ['new_salary' => $new_salary, 'reason' => $reason, 'clinic_id' => $employee_clinic_id]
         );
     }
+
+    /**
+ * ✅ Map employee status → user status
+ * Active/Probationary → Active
+ * Lahat ng iba → Inactive
+ */
+private function mapEmployeeStatusToUserStatus($employeeStatus) {
+    $activeStatuses = ['Active', 'Probationary'];
+    
+    if (in_array($employeeStatus, $activeStatuses, true)) {
+        return 'Active';
+    }
+    
+    return 'Inactive';
+}
 
 private function updateRiderInfo($user_id, $data) {
     $updateFields = [];

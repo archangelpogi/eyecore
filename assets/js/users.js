@@ -510,11 +510,21 @@ function renderEmployeesTable() {
             actionButtons += `<button class="btn btn-outline-primary btn-sm" onclick="editEmployee(${emp.id})" title="Edit">
                 <i class="bi bi-pencil"></i></button>`;
  
-        // Toggle status
-        if (canUpdateEmp)
-            actionButtons += `<button class="btn btn-outline-${emp.user_status === 'Active' ? 'danger' : 'success'} btn-sm"
-                onclick="toggleEmployeeStatus(${emp.id})" title="${emp.user_status === 'Active' ? 'Deactivate' : 'Activate'}">
-                <i class="bi bi-${emp.user_status === 'Active' ? 'archive' : 'check-circle'}"></i></button>`;
+            // ✅ PHASE 7: Change Status button (FIXED — uses employees.id)
+            if (canUpdateEmp) {
+                const isActive = (emp.employment_status === 'Active' || emp.employment_status === 'Probationary' || emp.user_status === 'Active');
+                const statusBtnColor = isActive ? 'warning' : 'success';
+                const statusBtnIcon  = isActive ? 'pause-circle' : 'play-circle';
+                const statusBtnTitle = isActive ? 'Change Status' : 'Reactivate';
+                
+                // ✅ Use employees.id (emp_id) para tumama sa API
+                const empId = emp.emp_id || emp.id;  // Fallback to users.id kung wala
+                
+                actionButtons += `<button class="btn btn-outline-${statusBtnColor} btn-sm"
+                    onclick="openStatusChangeModal(${empId}, '${fullName.replace(/'/g,"\\'")}', '${(emp.employment_status || emp.user_status || 'Active').replace(/'/g,"\\'")}', '${(emp.role || '').replace(/'/g,"\\'")}')" 
+                    title="${statusBtnTitle}">
+                    <i class="bi bi-${statusBtnIcon}"></i></button>`;
+            }
  
         // ✅ NEW — Assign Roles button (shield icon, secondary color)
         if (canAssignRoles)
@@ -1586,3 +1596,190 @@ async function assignRolesAfterCreate(newUserId) {
         console.error('Role assign error:', e);
     }
 }
+
+let _statusChangeModalInstance = null;
+
+function openStatusChangeModal(employeeId, employeeName, currentStatus, role) {
+    const $ = id => document.getElementById(id);
+
+    // ✅ Tanging ito lang ang CRITICAL. Kung wala ito, hindi talaga gagana.
+    const criticalIds = [
+        'statusChangeModal',
+        'status_employee_id',
+        'status_old_status',
+        'status_new_value',
+        'status_effective_date',
+        'status_reason',
+        'confirmStatusChangeBtn'
+    ];
+
+    const missing = criticalIds.filter(id => !$(id));
+    if (missing.length > 0) {
+        console.error('❌ Missing critical elements:', missing);
+        Swal.fire({
+            icon: 'error',
+            title: 'Modal Not Loaded',
+            html: `Missing elements:<br><code>${missing.join('<br>')}</code><br><br>Please refresh the page.`,
+            confirmButtonText: 'Reload'
+        }).then(() => location.reload());
+        return;
+    }
+
+    // ✅ Hidden fields
+    $('status_employee_id').value = employeeId;
+    $('status_old_status').value  = currentStatus || 'Active';
+    if ($('status_employee_role')) $('status_employee_role').value = role || '';
+
+    // ✅ Display fields (optional, hindi mag-e-error kung wala)
+    const safeName = employeeName || '';
+    if ($('status_employee_name'))  $('status_employee_name').textContent  = safeName;
+    if ($('status_current_label'))  $('status_current_label').textContent  = currentStatus || 'Active';
+    if ($('status_employee_avatar')) {
+        $('status_employee_avatar').textContent = safeName
+            .split(' ')
+            .map(n => n.charAt(0))
+            .slice(0, 2)
+            .join('')
+            .toUpperCase() || '--';
+    }
+
+    // ✅ Reset form
+    $('status_new_value').value      = '';
+    $('status_effective_date').value = new Date().toISOString().split('T')[0];
+    $('status_reason').value         = '';
+
+    const preview = $('statusPreview');
+    if (preview) preview.style.display = 'none';
+
+    // ✅ Title + button depende kung active o hindi
+    const isCurrentlyActive = (currentStatus === 'Active' || currentStatus === 'Probationary');
+    const titleEl    = $('statusChangeTitle');
+    const confirmBtn = $('confirmStatusChangeBtn');
+
+    if (isCurrentlyActive) {
+        if (titleEl) titleEl.innerHTML = '<i class="bi bi-pause-circle me-2"></i>Change Employee Status';
+        confirmBtn.innerHTML = '<i class="bi bi-check-circle me-1"></i>Confirm Change';
+        confirmBtn.className = 'btn btn-warning';
+    } else {
+        if (titleEl) titleEl.innerHTML = '<i class="bi bi-play-circle me-2"></i>Reactivate Employee';
+        confirmBtn.innerHTML = '<i class="bi bi-check-circle me-1"></i>Confirm Reactivation';
+        confirmBtn.className = 'btn btn-success';
+        $('status_new_value').value = 'Active';
+        updateStatusPreview();
+    }
+
+    // ✅ Lazy init ng modal instance
+    const modalEl = $('statusChangeModal');
+    if (!_statusChangeModalInstance) {
+        _statusChangeModalInstance = new bootstrap.Modal(modalEl);
+    }
+    _statusChangeModalInstance.show();
+}
+
+function updateStatusPreview() {
+    const newStatus = document.getElementById('status_new_value')?.value;
+    const previewEl = document.getElementById('statusPreview');
+    const contentEl = document.getElementById('statusPreviewContent');
+
+    // ✅ Kung wala ang preview box, huwag mag-error, skip lang
+    if (!previewEl || !contentEl) return;
+
+    if (!newStatus) {
+        previewEl.style.display = 'none';
+        return;
+    }
+
+    const willBeActive = ['Active', 'Probationary'].includes(newStatus);
+    const userStatus   = willBeActive ? 'Active' : 'Inactive';
+    const badgeClass   = willBeActive ? 'success' : 'secondary';
+    const icon         = willBeActive ? 'check-circle' : 'x-circle';
+    const message      = willBeActive
+        ? 'Employee will be able to <strong>log in</strong> and access the system.'
+        : 'Employee will <strong>NOT be able to log in</strong>.';
+
+    contentEl.innerHTML = `
+        <div class="d-flex align-items-center gap-2 mb-2">
+            <i class="bi bi-${icon} text-${badgeClass}"></i>
+            <span>User access will be set to:</span>
+            <span class="badge bg-${badgeClass}">${userStatus}</span>
+        </div>
+        <div class="small">${message}</div>
+    `;
+
+    previewEl.style.display = 'block';
+}
+
+async function submitStatusChange() {
+    const $ = id => document.getElementById(id);
+
+    const employeeId    = $('status_employee_id')?.value;
+    const oldStatus     = $('status_old_status')?.value;
+    const newStatus     = $('status_new_value')?.value;
+    const effectiveDate = $('status_effective_date')?.value;
+    const reason        = $('status_reason')?.value?.trim();
+
+    if (!employeeId)    { Swal.fire('Error', 'Employee ID is missing.', 'error'); return; }
+    if (!newStatus)     { Swal.fire('Error', 'Please select a new status.', 'error'); return; }
+    if (newStatus === oldStatus) { Swal.fire('Error', 'New status is the same as the current status.', 'error'); return; }
+    if (!effectiveDate) { Swal.fire('Error', 'Please select an effective date.', 'error'); return; }
+    if (!reason || reason.length < 10) {
+        Swal.fire('Error', 'Reason is required (minimum 10 characters).', 'error');
+        return;
+    }
+
+    const confirmBtn   = $('confirmStatusChangeBtn');
+    const originalHtml = confirmBtn.innerHTML;
+    confirmBtn.disabled = true;
+    confirmBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
+
+    try {
+        const response = await fetch('api/users.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                change_employee_status: true,
+                employee_id:    parseInt(employeeId),
+                new_status:     newStatus,
+                effective_date: effectiveDate,
+                reason:         reason
+            })
+        });
+
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || 'Failed to change status');
+        }
+
+        if (_statusChangeModalInstance) _statusChangeModalInstance.hide();
+
+        await Swal.fire({
+            icon: 'success',
+            title: 'Status Changed!',
+            html: `
+                <p>${data.message || 'Employee status updated successfully.'}</p>
+                ${data.data ? `
+                    <div class="text-start mt-3 small">
+                        <div><strong>Old Status:</strong> ${data.data.old_status}</div>
+                        <div><strong>New Status:</strong> ${data.data.new_status}</div>
+                        <div><strong>User Access:</strong> ${data.data.user_status}</div>
+                        <div><strong>Effective:</strong> ${data.data.effective_date}</div>
+                    </div>` : ''}
+            `,
+            confirmButtonText: 'OK'
+        });
+
+        loadEmployees();
+
+    } catch (err) {
+        console.error('Status change error:', err);
+        Swal.fire('Error!', err.message, 'error');
+    } finally {
+        confirmBtn.disabled = false;
+        confirmBtn.innerHTML = originalHtml;
+    }
+}
+
+// ✅ Siguraduhing global ang mga function para gumana ang inline onclick
+window.submitStatusChange     = submitStatusChange;
+window.updateStatusPreview    = updateStatusPreview;
+window.openStatusChangeModal  = openStatusChangeModal;

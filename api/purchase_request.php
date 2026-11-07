@@ -96,15 +96,33 @@ if ($action === 'create_from_reorder') {
     PurchaseRequestPermission::checkAndExit('create');
     
     try {
-        // Get data from JSON or POST
-        $items = $data['items'] ?? $_POST['items'] ?? [];
+        // ✅ Get data from JSON or POST
+        $raw_items = $data['items'] ?? $_POST['items'] ?? '[]';
         $total_cost = $data['total_cost'] ?? $_POST['total_cost'] ?? 0;
         
-        error_log("Create from reorder - Items: " . print_r($items, true));
+        // ✅ NEW: Decode items if it's a JSON string
+        if (is_string($raw_items)) {
+            $items = json_decode($raw_items, true);
+            if (json_last_error() !== JSON_ERROR_NONE) {
+                echo json_encode(['success' => false, 'message' => 'Invalid items JSON: ' . json_last_error_msg()]);
+                exit;
+            }
+        } else {
+            $items = $raw_items;
+        }
+        
+        // ✅ NEW: Get additional fields
+        $department = $data['department'] ?? $_POST['department'] ?? 'SCM';
+        $priority   = $data['priority']   ?? $_POST['priority']   ?? 'Medium';
+        $needed_by  = $data['needed_by']  ?? $_POST['needed_by']  ?? date('Y-m-d', strtotime('+7 days'));
+        $purpose    = $data['purpose']    ?? $_POST['purpose']    ?? 'Auto-generated from reorder suggestions';
+        $notes      = $data['notes']      ?? $_POST['notes']      ?? 'Created from inventory low stock alert';
+        
+        error_log("Create from reorder - Items count: " . count($items));
         error_log("Create from reorder - Total cost: " . $total_cost);
         
-        if (empty($items)) {
-            echo json_encode(['success' => false, 'message' => 'No items selected']);
+        if (empty($items) || !is_array($items)) {
+            echo json_encode(['success' => false, 'message' => 'No items selected or invalid format']);
             exit;
         }
         
@@ -116,7 +134,7 @@ if ($action === 'create_from_reorder') {
         // Start transaction
         $pdo->beginTransaction();
         
-        // Insert purchase request
+        // ✅ Insert purchase request WITH all fields
         $query = "INSERT INTO purchase_requests 
                   (pr_number, clinic_id, department, priority, needed_by, purpose, notes,
                    status, total_amount, requested_by, created_at, updated_at) 
@@ -126,11 +144,11 @@ if ($action === 'create_from_reorder') {
         $stmt->execute([
             $pr_number,
             $clinic_id,
-            'SCM',
-            'Medium',
-            date('Y-m-d', strtotime('+7 days')),
-            'Auto-generated from reorder suggestions',
-            'Created from inventory low stock alert',
+            $department,
+            $priority,
+            $needed_by,
+            $purpose,
+            $notes,
             'Pending Approval',
             floatval($total_cost),
             $current_user_id
@@ -138,31 +156,37 @@ if ($action === 'create_from_reorder') {
         
         $pr_id = $pdo->lastInsertId();
         
-        // ✅ FIXED: Remove inventory_id from the query
+        // ✅ Insert items WITH supplier info (nullable)
         $itemQuery = "INSERT INTO pr_items 
-                      (pr_id, item_name, description, quantity, unit_price, total_price)
-                      VALUES (?, ?, ?, ?, ?, ?)";
+                      (pr_id, item_name, description, quantity, unit_price, total_price, supplier_id, supplier_name)
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
         
         $itemStmt = $pdo->prepare($itemQuery);
         
         foreach ($items as $item) {
-            $quantity = intval($item['suggested_quantity'] ?? $item['quantity'] ?? 0);
-            $total = floatval($item['estimated_cost'] ?? $item['cost'] ?? 0);
-            $unit_price = $quantity > 0 ? $total / $quantity : 0;
+            $quantity   = intval($item['quantity'] ?? $item['suggested_quantity'] ?? 0);
+            $unit_price = floatval($item['unit_price'] ?? 0);
+            $total      = floatval($item['estimated_cost'] ?? ($quantity * $unit_price));
+            
+            // ✅ supplier_id and supplier_name are nullable
+            $supplier_id   = !empty($item['supplier_id'])   ? intval($item['supplier_id']) : null;
+            $supplier_name = !empty($item['supplier_name']) ? $item['supplier_name']       : null;
             
             $itemStmt->execute([
                 $pr_id,
-                $item['name'] ?? '',
+                $item['name'] ?? $item['item_name'] ?? '',
                 $item['brand'] ?? '',
                 $quantity,
                 $unit_price,
-                $total
+                $total,
+                $supplier_id,
+                $supplier_name
             ]);
         }
         
         $pdo->commit();
         
-        // Create notification for Finance users
+        // ✅ Notify Finance users
         $notif_message = "New purchase request #{$pr_number} requires your approval. Total: ₱" . number_format($total_cost, 2);
         
         $insertNotif = $pdo->prepare("
@@ -188,19 +212,21 @@ if ($action === 'create_from_reorder') {
                 $notif_message,
                 'warning',
                 $pr_number,
-                "main.php?view=purchase_request&id={$pr_id}"
+                "main.php?view=purchase_requests&id={$pr_id}"
             ]);
         }
         
         echo json_encode([
-            'success' => true,
-            'message' => 'Purchase request created successfully',
-            'pr_number' => $pr_number,
-            'pr_id' => $pr_id
+            'success'    => true,
+            'message'    => 'Purchase request created successfully',
+            'pr_number'  => $pr_number,
+            'pr_id'      => $pr_id
         ]);
         
     } catch (Exception $e) {
-        $pdo->rollBack();
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
         error_log("Error creating purchase request: " . $e->getMessage());
         echo json_encode(['success' => false, 'message' => 'Database error: ' . $e->getMessage()]);
     }
@@ -782,11 +808,205 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     exit;
 }
 
+
+// ============================================
+// ASSIGN SUPPLIERS TO PR ITEMS
+// ============================================
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'assign_suppliers') {
+    try {
+        $pr_id = (int)($_POST['pr_id'] ?? 0);
+        $assignments = json_decode($_POST['assignments'] ?? '{}', true);
+        
+        if (!$pr_id || empty($assignments)) {
+            echo json_encode(['success' => false, 'error' => 'PR ID and assignments are required']);
+            exit;
+        }
+        
+        $prQuery = $pdo->prepare("SELECT * FROM purchase_requests WHERE id = ? AND clinic_id = ?");
+        $prQuery->execute([$pr_id, $clinic_id]);
+        $pr = $prQuery->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$pr) {
+            echo json_encode(['success' => false, 'error' => 'PR not found']);
+            exit;
+        }
+        
+        $estimated_total = (float)$pr['total_amount'];
+        $actual_total = 0;
+        
+        $pdo->beginTransaction();
+        
+        // ✅ Get current user name
+        $userQuery = "SELECT CONCAT(first_name, ' ', last_name) as full_name FROM users WHERE id = ?";
+        $userStmt = $pdo->prepare($userQuery);
+        $userStmt->execute([$current_user_id]);
+        $userData = $userStmt->fetch();
+        $changer_name = $userData ? $userData['full_name'] : 'System';
+        
+        foreach ($assignments as $item_id => $assignment) {
+            $itemQuery = $pdo->prepare("SELECT * FROM pr_items WHERE id = ? AND pr_id = ?");
+            $itemQuery->execute([$item_id, $pr_id]);
+            $item = $itemQuery->fetch(PDO::FETCH_ASSOC);
+            
+            if (!$item) continue;
+            
+            // Get actual price
+            $actual_price = null;
+            if (!empty($assignment['supplier_product_id'])) {
+                $priceQuery = $pdo->prepare("SELECT cost_price FROM supplier_products WHERE id = ?");
+                $priceQuery->execute([$assignment['supplier_product_id']]);
+                $actual_price = (float)$priceQuery->fetchColumn();
+            } elseif (!empty($assignment['unit_price'])) {
+                $actual_price = (float)$assignment['unit_price'];
+            }
+            
+            if ($actual_price === null || $actual_price <= 0) {
+                $actual_price = (float)$item['unit_price'];
+            }
+            
+            $total_price = $actual_price * (int)$item['quantity'];
+            $actual_total += $total_price;
+            
+            $pdo->prepare("
+                UPDATE pr_items SET 
+                    supplier_id = ?, 
+                    supplier_product_id = ?,
+                    unit_price = ?,
+                    total_price = ?
+                WHERE id = ? AND pr_id = ?
+            ")->execute([
+                $assignment['supplier_id'],
+                $assignment['supplier_product_id'] ?? null,
+                $actual_price,
+                $total_price,
+                $item_id,
+                $pr_id
+            ]);
+        }
+        
+        $pdo->prepare("UPDATE purchase_requests SET total_amount = ? WHERE id = ?")
+            ->execute([$actual_total, $pr_id]);
+        
+        $percentage_change = $estimated_total > 0 
+            ? (($actual_total - $estimated_total) / $estimated_total) * 100 
+            : 0;
+        
+        $needs_reapproval = ($percentage_change > 10);
+        $price_change_amount = $actual_total - $estimated_total;
+        
+        // ✅ Update expense with price change tracking
+        $expenseQuery = $pdo->prepare("SELECT id, amount, estimated_amount FROM expenses WHERE pr_id = ? AND clinic_id = ?");
+        $expenseQuery->execute([$pr_id, $clinic_id]);
+        $expense = $expenseQuery->fetch(PDO::FETCH_ASSOC);
+        
+        if ($expense) {
+            // ✅ Preserve estimated_amount kung existing na, else i-set sa current amount
+            $stored_estimated = !empty($expense['estimated_amount']) 
+                ? (float)$expense['estimated_amount'] 
+                : (float)$expense['amount'];
+            
+            if ($needs_reapproval) {
+                // ✅ Pending Re-approval — may price change record
+                $pdo->prepare("
+                    UPDATE expenses SET 
+                        amount = ?,
+                        estimated_amount = ?,
+                        price_change_amount = ?,
+                        price_change_percent = ?,
+                        price_change_reason = ?,
+                        price_changed_at = NOW(),
+                        price_changed_by = ?,
+                        status = 'Pending Re-approval',
+                        updated_at = NOW()
+                    WHERE id = ?
+                ")->execute([
+                    $actual_total,
+                    $stored_estimated,
+                    $price_change_amount,
+                    $percentage_change,
+                    "Supplier price adjustment — estimated ₱" . number_format($stored_estimated, 2) 
+                        . " → actual ₱" . number_format($actual_total, 2),
+                    $current_user_id,
+                    $expense['id']
+                ]);
+            } else {
+                // ✅ Auto-approved — update amount, preserve estimated
+                $pdo->prepare("
+                    UPDATE expenses SET 
+                        amount = ?,
+                        estimated_amount = ?,
+                        price_change_amount = ?,
+                        price_change_percent = ?,
+                        price_changed_at = NOW(),
+                        price_changed_by = ?,
+                        updated_at = NOW()
+                    WHERE id = ?
+                ")->execute([
+                    $actual_total,
+                    $stored_estimated,
+                    $price_change_amount,
+                    $percentage_change,
+                    $current_user_id,
+                    $expense['id']
+                ]);
+            }
+        }
+        
+        // ✅ Notify Finance if re-approval needed
+        if ($needs_reapproval) {
+            $getFinance = $pdo->prepare("
+                SELECT id FROM users 
+                WHERE clinic_id = ? AND role = 'Finance' AND status = 'Active'
+            ");
+            $getFinance->execute([$clinic_id]);
+            
+            $insertNotif = $pdo->prepare("
+                INSERT INTO notifications 
+                (user_id, title, message, type, reference_number, link, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, NOW())
+            ");
+            
+            $msg = "PR #{$pr['pr_number']} — Supplier prices exceed estimates by " 
+                 . number_format($percentage_change, 1) . "%. "
+                 . "Estimated: ₱" . number_format($estimated_total, 2) 
+                 . " → Actual: ₱" . number_format($actual_total, 2) 
+                 . ". Re-approval required.";
+            
+            foreach ($getFinance->fetchAll() as $user) {
+                $insertNotif->execute([
+                    $user['id'],
+                    'PR Needs Re-approval',
+                    $msg,
+                    'warning',
+                    $pr['pr_number'],
+                    "expenses.php?tab=pending"
+                ]);
+            }
+        }
+        
+        $pdo->commit();
+        
+        echo json_encode([
+            'success' => true,
+            'message' => $needs_reapproval 
+                ? 'Suppliers assigned. Finance re-approval required.'
+                : 'Suppliers assigned successfully. Prices updated.',
+            'needs_reapproval' => $needs_reapproval,
+            'estimated_total' => $estimated_total,
+            'actual_total' => $actual_total,
+            'percentage_change' => round($percentage_change, 2)
+        ]);
+        
+    } catch (Exception $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+    exit;
+}
 // ============================================
 // CREATE PURCHASE ORDER
 // ============================================
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'create_po') {
-    // ✅ RBAC Check - create PO requires approve permission
     PurchaseRequestPermission::checkAndExit('approve');
     
     try {
@@ -798,7 +1018,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             exit;
         }
         
-        // Get PR details with items and requester info
+        // Payment + VAT + Contact fields
+        $payment_method = $_POST['payment_method'] ?? 'Bank Transfer';
+        $payment_terms = $_POST['payment_terms'] ?? '';
+        $vat_rate = (float)($_POST['vat_rate'] ?? 0.12);
+        $net_total = (float)($_POST['net_total'] ?? 0);
+        $vat_amount = (float)($_POST['vat_amount'] ?? 0);
+        $contact_person = $_POST['contact_person'] ?? '';
+        $contact_phone = $_POST['contact_phone'] ?? '';
+        $contact_email = $_POST['contact_email'] ?? '';
+        
+        $valid_methods = ['COD', 'Bank Transfer', 'Check', 'Net 30'];
+        if (!in_array($payment_method, $valid_methods)) {
+            http_response_code(400);
+            echo json_encode(['error' => 'Invalid payment method']);
+            exit;
+        }
+        
+        // Get PR details
         $prQuery = "SELECT pr.*, 
                            u.id as requester_id,
                            CONCAT(u.first_name, ' ', u.last_name) as requester_name
@@ -815,33 +1052,49 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             exit;
         }
         
-        // Get supplier_id from pr_items
-        $itemQuery = "SELECT supplier_id, supplier_name FROM pr_items WHERE pr_id = ? AND supplier_id IS NOT NULL LIMIT 1";
-        $itemStmt = $pdo->prepare($itemQuery);
-        $itemStmt->execute([$pr_id]);
-        $item = $itemStmt->fetch();
-        $supplier_id = $item['supplier_id'] ?? 0;
-        $supplier_name = $item['supplier_name'] ?? 'Unknown Supplier';
+        // Get supplier
+        $supplier_id = $_POST['supplier_id'] ?? 0;
+        $supplier_name = 'Unknown Supplier';
+        
+        if ($supplier_id) {
+            $supQuery = $pdo->prepare("SELECT supplier_name FROM suppliers WHERE id = ?");
+            $supQuery->execute([$supplier_id]);
+            $supplier_name = $supQuery->fetchColumn() ?: 'Unknown Supplier';
+        } else {
+            $itemQuery = "SELECT supplier_id, supplier_name FROM pr_items WHERE pr_id = ? AND supplier_id IS NOT NULL LIMIT 1";
+            $itemStmt = $pdo->prepare($itemQuery);
+            $itemStmt->execute([$pr_id]);
+            $item = $itemStmt->fetch();
+            $supplier_id = $item['supplier_id'] ?? 0;
+            $supplier_name = $item['supplier_name'] ?? 'Unknown Supplier';
+        }
         
         if (!$supplier_id) {
             http_response_code(400);
-            echo json_encode(['error' => 'No supplier assigned to this PR items']);
+            echo json_encode(['error' => 'No supplier assigned']);
             exit;
         }
         
-        // START TRANSACTION
+        $total_amount = (float)($_POST['total_amount'] ?? $pr['total_amount']);
+        
+        if ($net_total <= 0 || $vat_amount <= 0) {
+            $net_total = $total_amount / (1 + $vat_rate);
+            $vat_amount = $total_amount - $net_total;
+        }
+        
         $pdo->beginTransaction();
         
-        // Generate PO number
         $datePrefix = date('Ymd');
         $randNum = str_pad(mt_rand(1, 9999), 4, '0', STR_PAD_LEFT);
         $po_number = 'PO-' . $datePrefix . '-' . $randNum;
         
-        // Insert into purchase_orders
+        // ✅ INSERT with VAT + Contact
         $query = "INSERT INTO purchase_orders 
                   (po_number, pr_id, supplier_id, order_date, expected_date, terms, shipping_address,
-                   total_amount, status, created_by, clinic_id)
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Pending Supplier Approval', ?, ?)";
+                   contact_person, contact_phone, contact_email,
+                   total_amount, subtotal, vat_rate, vat_amount, final_total,
+                   payment_method, payment_terms, status, created_by, clinic_id)
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending Supplier Approval', ?, ?)";
         
         $stmt = $pdo->prepare($query);
         $stmt->execute([
@@ -852,71 +1105,77 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $_POST['expected_date'] ?? null,
             $_POST['terms'] ?? '',
             $_POST['shipping_address'] ?? '',
-            $pr['total_amount'],
+            $contact_person,
+            $contact_phone,
+            $contact_email,
+            $total_amount,
+            $net_total,
+            $vat_rate,
+            $vat_amount,
+            $total_amount,
+            $payment_method,
+            $payment_terms,
             $current_user_id,
             $clinic_id
         ]);
         
         $po_id = $pdo->lastInsertId();
         
-        // Update PR status to 'Pending Supplier Approval'
         $updatePR = $pdo->prepare("UPDATE purchase_requests SET 
                                     status = 'Pending Supplier Approval', 
                                     po_number = ? 
                                     WHERE id = ?");
         $updatePR->execute([$po_number, $pr_id]);
         
-        // Update linked expense with PO number
         $expenseQuery = "SELECT id FROM expenses WHERE pr_id = ? AND clinic_id = ?";
         $expenseStmt = $pdo->prepare($expenseQuery);
         $expenseStmt->execute([$pr_id, $clinic_id]);
         $expense = $expenseStmt->fetch();
         
         if ($expense) {
-            $updateExpense = $pdo->prepare("UPDATE expenses SET po_number = ?, updated_at = NOW() WHERE id = ?");
-            $updateExpense->execute([$po_number, $expense['id']]);
+            $updateExpense = $pdo->prepare("
+                UPDATE expenses SET 
+                    po_number = ?, 
+                    po_id = ?,
+                    payment_method = ?,
+                    updated_at = NOW() 
+                WHERE id = ?
+            ");
+            $updateExpense->execute([$po_number, $po_id, $payment_method, $expense['id']]);
         }
         
-        // ✅ Create notifications
+        // Notifications
         $insertNotif = $pdo->prepare("
             INSERT INTO notifications 
             (user_id, title, message, type, reference_number, link, created_at)
             VALUES (?, ?, ?, ?, ?, ?, NOW())
         ");
         
-        // 1. Notify the CREATOR
-        $creator_message = "You have successfully created PO #{$po_number} for PR #{$pr['pr_number']}.";
         $insertNotif->execute([
             $current_user_id,
             'PO Created',
-            $creator_message,
+            "PO #{$po_number} created. Payment: {$payment_method}. Total: ₱" . number_format($total_amount, 2),
             'success',
             $po_number,
             "purchase_order.php?view=details&id={$po_id}"
         ]);
         
-        // 2. Notify the REQUESTER
         if ($pr['requester_id'] && $pr['requester_id'] != $current_user_id) {
-            $requester_message = "PO #{$po_number} has been created for your PR #{$pr['pr_number']}. Status: Pending Supplier Approval.";
             $insertNotif->execute([
                 $pr['requester_id'],
                 'PO Created for Your PR',
-                $requester_message,
+                "PO #{$po_number} has been created for your PR #{$pr['pr_number']}.",
                 'info',
                 $po_number,
                 "purchase_request.php?view=details&id={$pr_id}"
             ]);
         }
         
-        // 3. Notify FINANCE roles
-        $finance_message = "PO #{$po_number} has been created for PR #{$pr['pr_number']} (Supplier: {$supplier_name}). Total: ₱" . number_format($pr['total_amount'], 2);
+        $finance_message = "PO #{$po_number} created. Supplier: {$supplier_name}. Total: ₱" . number_format($total_amount, 2) . ". Payment: {$payment_method}.";
         
         $getFinanceUsers = $pdo->prepare("
             SELECT id FROM users 
-            WHERE clinic_id = ? 
-            AND role = 'Finance'
-            AND id != ?
-            AND status = 'Active'
+            WHERE clinic_id = ? AND role = 'Finance' AND id != ? AND status = 'Active'
         ");
         $getFinanceUsers->execute([$clinic_id, $current_user_id]);
         $finance_users = $getFinanceUsers->fetchAll();
@@ -936,9 +1195,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         
         echo json_encode([
             'success' => true,
-            'message' => 'Purchase order created successfully. Notifications sent.',
+            'message' => 'Purchase order created successfully.',
             'po_number' => $po_number,
-            'po_id' => $po_id
+            'po_id' => $po_id,
+            'payment_method' => $payment_method,
+            'net_total' => $net_total,
+            'vat_amount' => $vat_amount,
+            'total_amount' => $total_amount
         ]);
         
     } catch (Exception $e) {
@@ -948,7 +1211,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
     exit;
 }
-
 // ============================================
 // GET APPROVED PR DETAILS (for PO creation)
 // ============================================
@@ -1133,16 +1395,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $poQuery->execute([$pr_id]);
         $po = $poQuery->fetch(PDO::FETCH_ASSOC);
         
-        // 3. Update PO to Delivered
-        if ($po) {
-            $updatePO = $pdo->prepare("UPDATE purchase_orders SET 
-                                        status = 'Delivered', 
-                                        actual_delivery = NOW(),
-                                        delivery_notes = ?,
-                                        updated_at = NOW()
-                                        WHERE id = ?");
-            $updatePO->execute([$delivery_notes, $po['id']]);
-        }
+// 3. Update PO to Delivered + Received
+if ($po) {
+    $updatePO = $pdo->prepare("UPDATE purchase_orders SET 
+                                status = 'Delivered', 
+                                actual_delivery = NOW(),
+                                received_at = NOW(),
+                                delivery_notes = ?,
+                                updated_at = NOW()
+                                WHERE id = ?");
+    $updatePO->execute([$delivery_notes, $po['id']]);
+}
         
         // 4. Save supplier rating
         if ($supplier_rating > 0 && $po) {

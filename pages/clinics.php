@@ -180,6 +180,11 @@ body {
     text-align: center;
     color: #9ca3af;
 }
+#clinicFooter:not(.d-none) { animation: footerPop .25s ease-out; }
+@keyframes footerPop {
+    from { transform: translateY(12px); opacity: 0; }
+    to   { transform: none; opacity: 1; }
+}
 
 @media (max-width: 768px) {
     .doc-review-layout {
@@ -251,14 +256,14 @@ body {
         <div class="card-soft p-3 h-100">
             <div class="d-flex justify-content-between align-items-start">
                 <div>
-                    <small class="text-muted">Suspended</small>
-                    <h3 id="suspendedClinics" class="fw-bold mt-1 mb-2">0</h3>
+                    <small class="text-muted">Reapplying</small>
+                    <h3 id="reapplyingClinics" class="fw-bold mt-1 mb-2">0</h3>
                 </div>
-                <div class="icon-box bg-secondary bg-opacity-10 text-secondary">
-                    <i class="bi bi-pause-circle"></i>
+                <div class="icon-box bg-info bg-opacity-10 text-info">
+                    <i class="bi bi-arrow-repeat"></i>
                 </div>
             </div>
-            <small class="text-muted d-block">Temporarily inactive</small>
+            <small class="text-muted d-block">Resubmitted documents</small>
         </div>
     </div>
 
@@ -278,15 +283,6 @@ body {
     </div>
 </div>
 
-<!-- STATUS TABS -->
-<div class="btn-group mb-3" role="group" id="clinicTabs">
-    <button type="button" class="btn btn-outline-primary active" onclick="setStatusTab('')">All Clinics</button>
-    <button type="button" class="btn btn-outline-warning" onclick="setStatusTab('Pending')">Pending</button>
-    <button type="button" class="btn btn-outline-success" onclick="setStatusTab('Active')">Active</button>
-    <button type="button" class="btn btn-outline-secondary" onclick="setStatusTab('Suspended')">Suspended</button>
-    <button type="button" class="btn btn-outline-danger" onclick="setStatusTab('Rejected')">Rejected</button>
-    <button type="button" class="btn btn-outline-info" onclick="setStatusTab('Reapplying')">Reapplying</button>
-</div>
 
 <!-- SEARCH & FILTERS -->
 <div class="card-soft p-3 mb-4">
@@ -329,28 +325,17 @@ body {
 
 <!-- DATA TABLE -->
 <div class="card-soft overflow-hidden mb-4">
-    <!-- Top controls: show entries -->
-    <div class="d-flex align-items-center justify-content-between px-3 pt-3 pb-2 border-bottom">
-        <div class="d-flex align-items-center gap-2 table-footer-info">
-            Show
-            <select id="pageLengthSelect" class="form-select length-select" onchange="changePageLength(this.value)">
-                <option value="10">10</option>
-                <option value="25">25</option>
-                <option value="50">50</option>
-                <option value="100">100</option>
-            </select>
-            entries
-        </div>
-        <div id="tableProcessing" class="text-muted small d-none">
-            <span class="spinner-border spinner-border-sm me-1"></span> Loading...
-        </div>
+<!-- Top controls: Loading Indicator only -->
+<div class="d-flex align-items-center justify-content-end px-3 pt-3 pb-2 border-bottom" style="min-height: 50px;">
+    <div id="tableProcessing" class="text-muted small d-none">
+        <span class="spinner-border spinner-border-sm me-1"></span> Loading...
     </div>
+</div>
 
     <div class="table-responsive">
         <table id="clinicsTable" class="table table-hover mb-0" style="width:100%">
             <thead>
                 <tr>
-                    <th width="30"><input type="checkbox" id="selectAll" onclick="toggleSelectAll(this)"></th>
                     <th>Clinic Details</th>
                     <th class="d-none d-md-table-cell">Contact</th>
                     <th>Verification Score</th>
@@ -394,6 +379,10 @@ body {
                 <div id="clinicDetails">
                     <!-- Clinic details will be loaded here -->
                 </div>
+            </div>
+            <div class="modal-footer d-none" id="clinicFooter">
+                <div id="clinicFooterMsg" class="me-auto small text-muted"></div>
+                <div id="clinicFooterButtons" class="d-flex gap-2"></div>
             </div>
         </div>
     </div>

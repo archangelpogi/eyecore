@@ -1,6 +1,10 @@
 <?php
 // main.php - Clinic Dashboard with Two-Layer Access Control + Doctor Setup + SUBSCRIPTION CHECK
 
+// ✅ Flag para malaman ng subscription_guard na loaded na tayo via main.php
+// Kapag set ito, ang guard ay mag-skip ng header() calls at gagamit ng JS redirect
+define('MAIN_PHP_LOADED', true);
+
 if (session_status() === PHP_SESSION_NONE) {
     session_name('eyecore_admin');
     session_start();
@@ -17,8 +21,7 @@ if (empty($_SESSION['user_id'])) {
 }
 
 /* =================================
-   ✅ SUBSCRIPTION CHECK - ADDED HERE
-   Kailangan may active subscription para makapasok sa main.php
+   ✅ SUBSCRIPTION CHECK
 ================================= */
 require_once __DIR__ . '/include/SubscriptionHelper.php';
 
@@ -26,16 +29,22 @@ $clinic_id = $_SESSION['clinic_id'] ?? 0;
 $subHelper = new SubscriptionHelper($pdo, $clinic_id);
 
 // Check if clinic has active subscription
+// ✅ FIXED: Redirect to subscription_manage.php (renew/upgrade page), hindi subscription.php (plan selection)
 if (!$subHelper->hasActiveSubscription()) {
-    // No active subscription, redirect to subscription page
-    header('Location: views/subscription.php');
+    header('Location: views/subscription_manage.php');
     exit();
 }
 
-// Optional: Store subscription info in session for quick access
-$_SESSION['subscription_plan'] = $subHelper->getCurrentPlan();
-$_SESSION['subscription_trial_days'] = $subHelper->getTrialDaysLeft();
-$_SESSION['subscription_is_trial'] = $subHelper->isTrial();
+// ✅ FRESH VALUES (hindi cached sa session) — para tama ang days left
+$subscription_plan        = $subHelper->getCurrentPlan();
+$subscription_trial_days  = $subHelper->getTrialDaysLeft();
+$subscription_is_trial    = $subHelper->isTrial();
+$subscription_end_date    = $subHelper->getEndDate();
+
+// Sync sa session (para sa ibang pages)
+$_SESSION['subscription_plan']       = $subscription_plan;
+$_SESSION['subscription_trial_days'] = $subscription_trial_days;
+$_SESSION['subscription_is_trial']   = $subscription_is_trial;
 
 /* =================================
    ROLE CHECK (CLINIC SIDE ONLY)
@@ -52,7 +61,7 @@ $allowed_roles = [
     'SCM'
 ];
 
-// SuperAdmin redirect (separate system)
+// SuperAdmin redirect
 if ($user_role === 'SuperAdmin') {
     header('Location: admin/dashboard.php');
     exit();
@@ -125,14 +134,10 @@ if ($user_role === 'Optometrist' && !isset($_SESSION['doctor_id'])) {
 
 /* =================================
    ✅ RBAC — DYNAMIC PERMISSION CHECK
-   Pinapalitan ang lumang canView() na
-   hardcoded sa auth_functions.php
 ================================= */
 require_once __DIR__ . '/include/RBACHelper.php';
 RBACHelper::init($pdo);
 
-// Load permissions into session kung wala pa
-// (backup — dapat naka-load na siya from login)
 if (!isset($_SESSION['permissions'])) {
     RBACHelper::loadPermissionsToSession(
         (int)$_SESSION['user_id'],
@@ -141,24 +146,52 @@ if (!isset($_SESSION['permissions'])) {
 }
 
 /* =================================
-   DEFAULT VIEW PER ROLE
+   DEFAULT VIEW — FULLY DYNAMIC
 ================================= */
-$roleDefaultView = [
-    'ClinicAdmin' => 'dashboard',
-    'Staff'       => 'dashboard',
-    'Optometrist' => 'doctor_dashboard',
-    'HR'          => 'users',
-    'Finance'     => 'sales',
-    'SCM'         => 'inventory',
-    'CRM'         => 'patients'
-];
+if ($user_role === 'ClinicAdmin') {
+    $defaultView = 'dashboard';
+} else {
+    $possibleDefaultViews = [
+        'doctor_dashboard',
+        'inventory',
+        'purchase_orders',
+        'purchase_requests',
+        'supplier',
+        'sales',
+        'expenses',
+        'users',
+        'patients',
+        'appointments',
+        'crm_dashboard',
+        'products',
+        'reports',
+        'settings',
+        'dashboard'
+    ];
+    
+    $defaultView = null;
+    
+    foreach ($possibleDefaultViews as $possibleView) {
+        $requiredPermission = $possibleView . '_view';
+        if (!RBACHelper::hasPermission($requiredPermission)) {
+            continue;
+        }
+        $viewFileCheck = __DIR__ . "/views/{$possibleView}.php";
+        if (file_exists($viewFileCheck)) {
+            $defaultView = $possibleView;
+            break;
+        }
+    }
+    
+    if ($defaultView === null) {
+        $defaultView = 'dashboard';
+    }
+}
 
-$view = $_GET['view'] ?? $roleDefaultView[$user_role] ?? 'dashboard';
+$view = $_GET['view'] ?? $defaultView;
 
 /* =================================
-   🔐 RBAC GUARD — DYNAMIC NA!
-   ClinicAdmin/SuperAdmin = auto-bypass
-   Lahat ng iba = tsinecheck sa user_roles
+   🔐 RBAC GUARD
 ================================= */
 if (!RBACHelper::hasPermission($view . '_view')) {
     http_response_code(403);
@@ -239,8 +272,9 @@ if (!RBACHelper::hasPermission($view . '_view')) {
     <?php
     exit();
 }
+
 /* =================================
-   LOAD LAYOUT — WALANG BINAGO DITO
+   LOAD LAYOUT
 ================================= */
 require_once 'include/header.php';
 ?>
@@ -253,46 +287,37 @@ require_once 'include/header.php';
 
         <main class="content-area p-4">
             
-            <!-- ✅ ADD SUBSCRIPTION BANNER (Optional) - Shows trial days left -->
-            <?php if ($_SESSION['subscription_is_trial'] && $_SESSION['subscription_trial_days'] <= 7): ?>
-            <div class="alert alert-warning alert-dismissible fade show mb-4" role="alert">
-                <div class="d-flex align-items-center">
-                    <div class="me-3">
-                        <i class="bi bi-hourglass-split fs-1 text-warning"></i>
-                    </div>
-                    <div class="flex-grow-1">
-                        <strong>Trial Ending Soon!</strong> Your <?php echo ucfirst($_SESSION['subscription_plan']); ?> plan trial ends in 
-                        <strong><?php echo $_SESSION['subscription_trial_days']; ?> days</strong>. 
-                        <a href="views/upgrade.php" class="alert-link">Upgrade now</a> to keep your premium features.
-                    </div>
-                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                </div>
-            </div>
-            <?php endif; ?>
-            
             <?php if ($user_role === 'ClinicAdmin' && !$hasDoctor && $showDoctorPrompt && $view !== 'doctor_dashboard'): ?>
-            <div class="alert alert-warning alert-dismissible fade show mb-4" role="alert" id="doctorPrompt">
-                <div class="d-flex align-items-center">
-                    <div class="me-3">
-                        <i class="bi bi-person-badge fs-1 text-warning"></i>
-                    </div>
-                    <div class="flex-grow-1">
-                        <h5 class="alert-heading">Are you also a doctor?</h5>
-                        <p class="mb-2">As a Clinic Owner, you can also perform eye examinations. Set up your doctor profile to access the Doctor Dashboard and see patient queue.</p>
-                        <div class="d-flex gap-2">
-                            <button class="btn btn-warning" onclick="showDoctorSetupModal()">
-                                <i class="bi bi-check-circle me-2"></i>Yes, I'm a doctor - Set up now
-                            </button>
-                            <button class="btn btn-outline-secondary" onclick="dismissDoctorPrompt()">
-                                <i class="bi bi-x me-2"></i>No, thanks
-                            </button>
+            <!-- ✅ DOCTOR PROMPT — Slim inline card (redesigned) -->
+            <div class="mb-4" id="doctorPrompt">
+                <div class="card border-0 shadow-sm" style="border-radius: 16px; border-left: 4px solid #0d9488 !important; background: linear-gradient(90deg, #f0fdfa 0%, #ffffff 30%);">
+                    <div class="card-body p-3">
+                        <div class="d-flex align-items-center gap-3">
+                            <div class="flex-shrink-0" style="width: 48px; height: 48px; border-radius: 12px; background: #ccfbf1; display: flex; align-items: center; justify-content: center;">
+                                <i class="bi bi-person-badge" style="color: #0d9488; font-size: 1.4rem;"></i>
+                            </div>
+                            <div class="flex-grow-1">
+                                <div class="d-flex align-items-center gap-2 mb-1">
+                                    <strong style="color: #0f172a;">Are you also a doctor?</strong>
+                                    <span class="badge" style="background: #ccfbf1; color: #0d9488; font-size: 0.65rem; font-weight: 600;">Optional</span>
+                                </div>
+                                <div class="text-muted small">
+                                    Set up your doctor profile to access the Doctor Dashboard and manage patient queue.
+                                </div>
+                            </div>
+                            <div class="d-flex gap-2 flex-shrink-0">
+                                <button class="btn btn-sm" style="background: #0d9488; color: white; border-radius: 8px; font-weight: 600; padding: 8px 16px;" onclick="showDoctorSetupModal()">
+                                    <i class="bi bi-plus-circle me-1"></i>Set Up
+                                </button>
+                                <button class="btn btn-sm btn-outline-secondary" style="border-radius: 8px; padding: 8px 12px;" onclick="dismissDoctorPrompt()" title="Dismiss">
+                                    <i class="bi bi-x-lg"></i>
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
             <?php endif; ?>
-
-
 
             <?php
             $viewFile = __DIR__ . "/views/{$view}.php";
@@ -306,7 +331,85 @@ require_once 'include/header.php';
     </div>
 </div>
 
-<!-- Doctor Setup Modal — walang binago -->
+<!-- ✅ TRIAL ENDING MODAL — Center popup, once per session -->
+<?php if ($subscription_is_trial && $subscription_trial_days <= 7): ?>
+<?php
+    // Urgency logic
+    $isToday      = ($subscription_trial_days <= 0);
+    $isCritical   = ($subscription_trial_days <= 2);
+    $modalColor   = $isCritical ? '#dc2626' : '#d97706';
+    $modalBgLight = $isCritical ? '#fef2f2' : '#fef3c7';
+    $modalIcon    = $isToday ? 'bi-exclamation-octagon-fill' : ($isCritical ? 'bi-exclamation-triangle-fill' : 'bi-hourglass-split');
+    
+    if ($isToday) {
+        $trialText = 'Your <strong>' . ucfirst($subscription_plan) . '</strong> trial <strong class="text-danger">ends today</strong>.';
+        $subtext   = 'Upgrade now to avoid losing access to your features.';
+    } elseif ($subscription_trial_days === 1) {
+        $trialText = 'Your <strong>' . ucfirst($subscription_plan) . '</strong> trial ends <strong class="text-warning">tomorrow</strong>.';
+        $subtext   = 'You have <strong>1 day</strong> left. Upgrade to keep your premium features.';
+    } else {
+        $trialText = 'Your <strong>' . ucfirst($subscription_plan) . '</strong> trial ends in <strong>' . $subscription_trial_days . ' days</strong>.';
+        $subtext   = 'Upgrade now to keep your premium features without interruption.';
+    }
+?>
+<div class="modal fade" id="trialEndingModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content" style="border-radius: 20px; border: none; overflow: hidden;">
+            
+            <div style="background: linear-gradient(135deg, <?php echo $modalColor; ?>, <?php echo $isCritical ? '#991b1b' : '#b45309'; ?>); padding: 32px 24px 24px; text-align: center; color: white;">
+                <div style="font-size: 3.5rem; line-height: 1; margin-bottom: 12px;">
+                    <i class="bi <?php echo $modalIcon; ?>"></i>
+                </div>
+                <h4 class="mb-1" style="font-weight: 800; color: white;">
+                    <?php echo $isToday ? 'Trial Expires Today!' : ($isCritical ? 'Trial Ending Very Soon' : 'Trial Ending Soon'); ?>
+                </h4>
+                <p class="mb-0" style="opacity: 0.9; font-size: 0.9rem;">
+                    <?php echo $isCritical ? 'Immediate action recommended' : 'Plan ahead to avoid interruption'; ?>
+                </p>
+            </div>
+            
+            <div class="modal-body p-4 text-center">
+                <p class="mb-3" style="font-size: 1.05rem;">
+                    <?php echo $trialText; ?>
+                </p>
+                <p class="text-muted small mb-4">
+                    <?php echo $subtext; ?>
+                </p>
+                
+                <div class="d-inline-flex align-items-center gap-2 px-4 py-3 rounded-3 mb-4"
+                     style="background: <?php echo $modalBgLight; ?>; border: 2px solid <?php echo $modalColor; ?>30;">
+                    <i class="bi bi-calendar-event" style="color: <?php echo $modalColor; ?>; font-size: 1.5rem;"></i>
+                    <div class="text-start">
+                        <div style="font-size: 0.7rem; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px; color: <?php echo $modalColor; ?>;">
+                            <?php echo $isToday ? 'Expires' : 'Days Left'; ?>
+                        </div>
+                        <div style="font-size: 1.6rem; font-weight: 800; color: <?php echo $modalColor; ?>; line-height: 1;">
+                            <?php echo $isToday ? 'Today' : $subscription_trial_days; ?>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="d-grid gap-2">
+                    <!-- ✅ FIXED: Redirect to subscription_manage.php (renew/upgrade page) -->
+                    <a href="views/subscription_manage.php" class="btn btn-lg fw-bold" 
+                       style="background: <?php echo $modalColor; ?>; color: white; border-radius: 12px; padding: 14px;">
+                        <i class="bi bi-rocket-takeoff me-2"></i>Upgrade Now
+                    </a>
+                    <button type="button" class="btn btn-link text-muted btn-sm" onclick="dismissTrialModal()">
+                        Remind me later
+                    </button>
+                </div>
+                
+                <p class="text-muted mb-0 mt-3" style="font-size: 0.75rem;">
+                    <i class="bi bi-shield-check me-1"></i>No hidden fees · Cancel anytime
+                </p>
+            </div>
+        </div>
+    </div>
+</div>
+<?php endif; ?>
+
+<!-- Doctor Setup Modal -->
 <div class="modal fade" id="doctorSetupModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -347,10 +450,31 @@ require_once 'include/header.php';
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 <script>
 let doctorModal = null;
+
 document.addEventListener('DOMContentLoaded', function() {
+    // Doctor modal
     const modalEl = document.getElementById('doctorSetupModal');
     if (modalEl) doctorModal = new bootstrap.Modal(modalEl);
+    
+    // ✅ Trial ending modal — once per session
+    const trialModalEl = document.getElementById('trialEndingModal');
+    if (trialModalEl) {
+        const dismissed = sessionStorage.getItem('trial_modal_dismissed');
+        if (!dismissed) {
+            setTimeout(() => {
+                const tm = new bootstrap.Modal(trialModalEl);
+                tm.show();
+            }, 800);
+        }
+    }
 });
+
+function dismissTrialModal() {
+    sessionStorage.setItem('trial_modal_dismissed', '1');
+    const modalEl = document.getElementById('trialEndingModal');
+    const modal = bootstrap.Modal.getInstance(modalEl);
+    if (modal) modal.hide();
+}
 
 function showDoctorSetupModal() {
     if (doctorModal) doctorModal.show();
@@ -358,7 +482,12 @@ function showDoctorSetupModal() {
 
 function dismissDoctorPrompt() {
     const prompt = document.getElementById('doctorPrompt');
-    if (prompt) prompt.style.display = 'none';
+    if (prompt) {
+        prompt.style.transition = 'opacity 0.3s, transform 0.3s';
+        prompt.style.opacity = '0';
+        prompt.style.transform = 'translateY(-8px)';
+        setTimeout(() => prompt.remove(), 300);
+    }
     fetch('api/dismiss_doctor_prompt.php', { method: 'POST' });
 }
 
@@ -381,11 +510,6 @@ function confirmDoctorSetup() {
     })
     .catch(() => Swal.fire({ icon: 'error', title: 'Error', text: 'Network error. Please try again.' }));
 }
-
-setTimeout(function() {
-    const alert = document.getElementById('doctorPrompt');
-    if (alert) { alert.style.transition = 'opacity 0.5s'; alert.style.opacity = '0'; setTimeout(() => alert.style.display = 'none', 500); }
-}, 10000);
 </script>
 
 <?php require_once 'include/footer.php'; ?>

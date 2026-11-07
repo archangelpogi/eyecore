@@ -18,6 +18,9 @@ $user_role = $_SESSION['role'] ?? '';
 // Initialize subscription helper
 $subHelper = new SubscriptionHelper($pdo, $clinic_id);
 
+// Kunin ang dynamic basic trial days para sa display
+$basicTrialDays = $subHelper->getBasicTrialDays();
+
 // If may active subscription na, redirect to main
 if ($subHelper->hasActiveSubscription()) {
     header('Location: ../main.php');
@@ -287,7 +290,9 @@ $plans = $pdo->query("SELECT * FROM subscription_plans WHERE is_active = 1 ORDER
                         <div class="text-center mb-4">
                             <?php if ($isFree): ?>
                                 <div class="price">FREE</div>
-                                <small class="text-muted">forever</small>
+                                <small class="text-muted">
+                                    for <?php echo $basicTrialDays; ?> day<?php echo $basicTrialDays > 1 ? 's' : ''; ?> trial
+                                </small>
                             <?php else: ?>
                                 <div class="price" id="price-<?php echo $plan['id']; ?>">
                                     ₱<?php echo number_format($plan['price_monthly'], 0); ?>
@@ -332,8 +337,8 @@ $plans = $pdo->query("SELECT * FROM subscription_plans WHERE is_active = 1 ORDER
                         </ul>
                         
                         <?php if ($isFree): ?>
-                            <button class="btn-subscribe" onclick="activateFreePlan(<?php echo $plan['id']; ?>, '<?php echo htmlspecialchars($plan['plan_name']); ?>')">
-                                <i class="bi bi-check-circle me-2"></i>Start Free Plan
+                            <button class="btn-subscribe" onclick="activateFreePlan(<?php echo $plan['id']; ?>, '<?php echo htmlspecialchars($plan['plan_name']); ?>', <?php echo $basicTrialDays; ?>)">
+                                <i class="bi bi-check-circle me-2"></i>Start <?php echo $basicTrialDays; ?>-Day Trial
                             </button>
                         <?php else: ?>
                             <button class="btn-subscribe" onclick="processPayment(<?php echo $plan['id']; ?>, '<?php echo htmlspecialchars($plan['plan_name']); ?>')">
@@ -415,8 +420,8 @@ $plans = $pdo->query("SELECT * FROM subscription_plans WHERE is_active = 1 ORDER
                         <i class="bi bi-question-circle fs-2" style="color: #0d9488;"></i>
                         <h6 class="mt-2">Frequently Asked Questions</h6>
                         <p class="small text-muted mb-0">
-                            <strong>Q:</strong> What happens after I subscribe?<br>
-                            <strong>A:</strong> You get immediate access to all features in your chosen plan.<br><br>
+                            <strong>Q:</strong> How does the Basic plan work?<br>
+                            <strong>A:</strong> The Basic plan is a <strong><?php echo $basicTrialDays; ?>-day free trial</strong>. After it expires, you'll need to subscribe to a paid plan to continue using the system.<br><br>
                             <strong>Q:</strong> Can I change plans later?<br>
                             <strong>A:</strong> Yes, you can upgrade or downgrade anytime from Settings.<br><br>
                             <strong>Q:</strong> Is there a contract?<br>
@@ -598,19 +603,21 @@ $plans = $pdo->query("SELECT * FROM subscription_plans WHERE is_active = 1 ORDER
     });
 }
 
-        function activateFreePlan(planId, planName) {
+        function activateFreePlan(planId, planName, trialDays) {
             Swal.fire({
-                title: 'Activate Free Plan?',
-                html: `You're about to activate the <strong>${planName}</strong> plan.<br><br>This plan is <strong>free forever</strong> with basic features.`,
+                title: 'Start Free Trial?',
+                html: `You're about to start the <strong>${planName}</strong> trial.<br><br>
+                       This trial lasts <strong>${trialDays} day${trialDays > 1 ? 's' : ''}</strong>.<br>
+                       <small class="text-muted">After the trial ends, you'll need to subscribe to continue.</small>`,
                 icon: 'question',
                 showCancelButton: true,
                 confirmButtonColor: '#0d9488',
-                confirmButtonText: 'Yes, Activate',
+                confirmButtonText: 'Start Trial',
                 cancelButtonText: 'Cancel'
             }).then((result) => {
                 if (result.isConfirmed) {
                     Swal.fire({
-                        title: 'Activating Plan...',
+                        title: 'Activating Trial...',
                         allowOutsideClick: false,
                         didOpen: () => {
                             Swal.showLoading();
@@ -633,7 +640,7 @@ $plans = $pdo->query("SELECT * FROM subscription_plans WHERE is_active = 1 ORDER
                         if (data.success) {
                             Swal.fire({
                                 icon: 'success',
-                                title: 'Plan Activated!',
+                                title: 'Trial Activated!',
                                 text: data.message,
                                 confirmButtonColor: '#0d9488',
                                 timer: 2000,

@@ -184,7 +184,7 @@ $category_icons = [
 // Upcoming appointment
 $upcoming_query = mysqli_query($conn, "
     SELECT a.*, c.clinic_name, c.address, c.id as clinic_id,
-           c.clinic_image, c.cover_photo, c.logo,
+           c.clinic_image, c.cover_photo, c.logo, c.payment_policy,
            c.contact as clinic_contact, c.clinic_email, c.hours as clinic_hours,
            sp.product_name, sp.selling_price as product_price, sp.category as product_category,
            d.name as doctor_name, d.specialty as doctor_specialty
@@ -957,8 +957,24 @@ include '../includes/navbar.php';
                         <div class="nc-dist"><i class="fas <?php echo $nc_travel_icon; ?>"></i> <?php echo $nc_travel_text; ?></div>
                     </div>
                     <div class="nc-body">
-                        <div class="nc-name"><?php echo htmlspecialchars($nc['clinic_name']); ?></div>
-                        <div class="nc-city"><i class="fas fa-map-marker-alt" style="color:var(--primary);font-size:9px;"></i> <?php echo htmlspecialchars($nc['city'] ?? 'Cavite'); ?></div>
+                        <div class="nc-name">
+                            <?php echo htmlspecialchars($nc['clinic_name']); ?>
+                        </div>
+                        <div class="nc-city">
+                            <i class="fas fa-map-marker-alt" style="color:var(--primary);font-size:9px;"></i> 
+                            <?php echo htmlspecialchars($nc['city'] ?? 'Cavite'); ?>
+                            
+                            <!-- PUBLIC / PRIVATE / FREE -->
+                            <?php if (($nc['hospital_type'] ?? '') === 'Public'): ?>
+                                <span style="color: #3B82F6; font-weight: 700; margin-left: 4px;">• PUBLIC</span>
+                            <?php elseif (($nc['hospital_type'] ?? '') === 'Private'): ?>
+                                <span style="color: #6B7280; font-weight: 700; margin-left: 4px;">• PRIVATE</span>
+                            <?php endif; ?>
+
+                            <?php if (($nc['payment_policy'] ?? '') === 'no_payment'): ?>
+                                <span style="color: #10B981; font-weight: 700; margin-left: 4px;">• LIBRE</span>
+                            <?php endif; ?>
+                        </div>
                         <div class="nc-foot">
                             <div style="font-size:11px;color:var(--warning);">
                                 <?php for ($s=1;$s<=5;$s++) echo ($s <= round($nc_avg) ? '★' : '☆'); ?>
@@ -1232,6 +1248,27 @@ include '../includes/navbar.php';
                             <?php endif; ?>
                         </span>
                     </div>
+                    <!-- PUBLIC/PRIVATE AT FREE CLINIC BADGES -->
+                    <div style="display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 8px; margin-bottom: 4px;">
+                        <?php if (!empty($clinic['hospital_type'])): ?>
+                            <div style="font-size: 12px; font-weight: 700; display: flex; align-items: center; gap: 4px;">
+                                <?php if ($clinic['hospital_type'] === 'Public'): ?>
+                                    <i class="fas fa-hospital" style="color: #10B981;"></i> 
+                                    <span style="color: #6B7280;">Public</span>
+                                <?php else: ?>
+                                    <i class="fas fa-building" style="color: #6B7280;"></i> 
+                                    <span style="color: #6B7280;">Private</span>
+                                <?php endif; ?>
+                            </div>
+                        <?php endif; ?>
+
+                        <?php if (($clinic['payment_policy'] ?? '') === 'no_payment'): ?>
+                            <div style="font-size: 12px; font-weight: 700; display: flex; align-items: center; gap: 4px;">
+                                <i class="fas fa-hand-holding-heart" style="color: #10B981;"></i> 
+                                <span style="color: #6B7280;"> Free Check-up</span>
+                            </div>
+                        <?php endif; ?>
+                    </div>
                     <div class="clinic-footer">
                         <a href="clinic-details.php?id=<?php echo $clinic['id']; ?>" class="clinic-view-btn"><i class="fas fa-eye"></i> View</a>
                         <a href="book-appointment.php?clinic_id=<?php echo $clinic['id']; ?>" class="clinic-book-btn"><i class="fas fa-calendar-plus"></i> Book</a>
@@ -1349,9 +1386,57 @@ include '../includes/navbar.php';
         if (appt.product_name) {
             prodHtml=`<div class="detail-section"><h4><i class="fas fa-box"></i> Service</h4><div class="detail-card"><div class="detail-row"><div class="detail-icon"><i class="fas fa-glasses"></i></div><div class="detail-content"><div class="detail-label">Product</div><div class="detail-value">${appt.product_name}</div></div><div style="font-weight:800;color:var(--primary);font-size:14px;">₱${parseFloat(appt.product_price||0).toLocaleString()}</div></div></div></div>`;
         }
+        // Check kung Free Clinic base sa Payment Policy at Public/Private
+        let hospitalNotice = '';
+        
+        let isPublic = appt.hospital_type === 'Public';
+        let isPrivate = appt.hospital_type === 'Private';
+        let isFree = appt.payment_policy === 'no_payment';
+
+        if (isPublic || isPrivate || isFree) {
+            let bg = '#DBEAFE';       
+            let border = '#3B82F6';
+            let iconColor = '#1E40AF';
+            let title = '';
+            let desc = '';
+
+            if (isFree) {
+                bg = '#D1FAE5';       
+                border = '#10B981';
+                iconColor = '#065F46';
+                title = (isPublic ? 'Public Hospital • ' : '') + 'Free Check-up';
+                desc = 'This clinic offers free check-ups. Please bring a valid ID and your health records.';
+            } else if (isPublic) {
+                bg = '#F3F4F6';       
+                border = '#9CA3AF';
+                iconColor = '#374151';
+                title = 'Public Hospital';
+                desc = 'This is a public hospital. Please contact the clinic for pricing details.';
+            } else if (isPrivate) {
+                bg = '#F3F4F6';       
+                border = '#9CA3AF';
+                iconColor = '#374151';
+                title = 'Private Hospital';
+                desc = 'Standard consultation fees may apply. Please contact the clinic for pricing details.';
+            }
+
+            let iconClass = isFree ? 'fa-hand-holding-heart' : (isPublic ? 'fa-hospital' : 'fa-building');
+
+            hospitalNotice = `
+                <div style="background: ${bg}; border-left: 4px solid ${border}; padding: 12px; border-radius: 8px; margin-bottom: 16px; display: flex; gap: 10px; align-items: start;">
+                    <i class="fas ${iconClass}" style="color: ${iconColor}; font-size: 18px; margin-top: 2px;"></i>
+                    <div>
+                        <strong style="color: ${iconColor}; font-size: 13px;">${title}</strong>
+                        <p style="font-size: 12px; color: ${iconColor}; margin: 2px 0 0 0;">${desc}</p>
+                    </div>
+                </div>
+            `;
+        }
+
         const modalBody = document.getElementById('modalBody');
         if (modalBody) {
             modalBody.innerHTML=`
+                ${hospitalNotice}
                 <div class="detail-section"><h4><i class="fas fa-clinic-medical"></i> Clinic</h4>
                 <div class="detail-card">
                     <div class="detail-row"><div class="detail-icon"><i class="fas fa-building"></i></div><div class="detail-content"><div class="detail-label">Name</div><div class="detail-value">${appt.clinic_name}</div></div></div>

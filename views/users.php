@@ -648,10 +648,15 @@
 </div>
 
 <div class="modal fade" id="editEmployeeModal" tabindex="-1">
-    <div class="modal-dialog modal-xl modal-dialog-centered"><div class="modal-content">
-        <div class="modal-header"><h5 class="modal-title fw-bold">Edit Employee Information</h5><button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
-        <form id="editEmployeeForm"><div class="modal-body" id="editEmployeeContent"></div>
-    </div></div>
+    <div class="modal-dialog modal-xl modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title fw-bold">Edit Employee Information</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body" id="editEmployeeContent"></div>
+        </div>
+    </div>
 </div>
 
 <div class="modal fade" id="assignRolesModal" tabindex="-1">
@@ -686,11 +691,14 @@
                     Loading roles...
                 </div>
  
-                <div id="assignRolesList" class="d-flex flex-column gap-2" style="display:none!important;"></div>
-                <div id="assignRolesEmpty" class="text-center py-3 text-muted" style="display:none;">
-                    <i class="bi bi-shield-exclamation display-6 d-block mb-2 opacity-50"></i>
-                    No roles yet. 
-                    <a href="main.php?view=roles_management" target="_blank">Create roles here</a>.
+                <!-- Scrollable roles list -->
+                <div style="max-height: 300px; overflow-y: auto; overflow-x: hidden;">
+                    <div id="assignRolesList" class="d-flex flex-column gap-2" style="display:none!important;"></div>
+                    <div id="assignRolesEmpty" class="text-center py-3 text-muted" style="display:none;">
+                        <i class="bi bi-shield-exclamation display-6 d-block mb-2 opacity-50"></i>
+                        No roles yet. 
+                        <a href="main.php?view=roles_management" target="_blank">Create roles here</a>.
+                    </div>
                 </div>
             </div>
             <div class="modal-footer">
@@ -705,7 +713,98 @@
     </div>
 </div>
 
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- ✅ PHASE 7: STATUS CHANGE MODAL                            -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="modal fade" id="statusChangeModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header" style="background:linear-gradient(135deg, #f59e0b, #d97706);color:#fff;border:none;">
+                <h5 class="modal-title fw-bold" id="statusChangeTitle">
+                    <i class="bi bi-pause-circle me-2"></i>Change Employee Status
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <!-- Hidden fields -->
+                <input type="hidden" id="status_employee_id">
+                <input type="hidden" id="status_employee_role">
+                <input type="hidden" id="status_old_status">
+                
+                <!-- Employee info -->
+                <div class="d-flex align-items-center gap-3 p-3 bg-light rounded mb-3">
+                    <div class="rounded-circle bg-warning text-white d-flex align-items-center justify-content-center fw-bold"
+                         style="width:44px;height:44px;font-size:14px" id="status_employee_avatar">--</div>
+                    <div>
+                        <div class="fw-bold" id="status_employee_name">—</div>
+                        <small class="text-muted">
+                            Current: <span id="status_current_label" class="badge bg-secondary">—</span>
+                        </small>
+                    </div>
+                </div>
+
+                <!-- New Status -->
+                <div class="mb-3">
+                    <label class="form-label fw-semibold">
+                        New Status <span class="text-danger">*</span>
+                    </label>
+                    <select class="form-select" id="status_new_value" onchange="updateStatusPreview()">
+                        <option value="">-- Select status --</option>
+                        <option value="Active">✅ Active</option>
+                        <option value="Probationary">⏳ Probationary</option>
+                        <option value="On-Leave">🌴 On-Leave</option>
+                        <option value="Resigned">👋 Resigned</option>
+                        <option value="Terminated">🚫 Terminated</option>
+                        <option value="Inactive">💤 Inactive</option>
+                    </select>
+                </div>
+
+                <!-- Effective Date -->
+                <div class="mb-3">
+                    <label class="form-label fw-semibold">
+                        Effective Date <span class="text-danger">*</span>
+                    </label>
+                    <input type="date" class="form-control" id="status_effective_date">
+                    <div class="form-text">
+                        <i class="bi bi-info-circle me-1"></i>
+                        Kailan applicable ang status change
+                    </div>
+                </div>
+
+                <!-- Reason -->
+                <div class="mb-3">
+                    <label class="form-label fw-semibold">
+                        Reason for Change <span class="text-danger">*</span>
+                    </label>
+                    <textarea class="form-control" id="status_reason" rows="3" 
+                              placeholder="e.g., Employee resigned effective Dec 31, 2026. Completed all handover requirements."
+                              maxlength="500"></textarea>
+                    <div class="form-text">
+                        <i class="bi bi-info-circle me-1"></i>
+                        Minimum 10 characters — required for audit trail
+                    </div>
+                </div>
+
+                <!-- Preview ng user status change -->
+                <div id="statusPreview" class="alert alert-info mb-0" style="display:none;">
+                    <div class="fw-semibold mb-2">
+                        <i class="bi bi-eye me-1"></i>Access Status Preview:
+                    </div>
+                    <div id="statusPreviewContent"></div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    <i class="bi bi-x-circle me-1"></i>Cancel
+                </button>
+                <button type="button" class="btn btn-warning" id="confirmStatusChangeBtn" onclick="submitStatusChange()">
+                    <i class="bi bi-check-circle me-1"></i>Confirm Change
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
-<script src="assets/js/users.js"></script>
+<script src="assets/js/users.js?v=<?php echo time(); ?>"></script>
 </body>
 </html>

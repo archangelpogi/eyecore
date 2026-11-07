@@ -20,11 +20,22 @@ $clinic_id   = $_SESSION['clinic_id'] ?? null;
 $subHelper         = null;
 $subscription_plan = 'none';
 $hasSubscription   = false;
+$grace_status      = $_SESSION['grace_status'] ?? 'ok';
+$days_expired      = $_SESSION['days_expired'] ?? 0;
 
 if ($clinic_id) {
     $subHelper         = new SubscriptionHelper($pdo, $clinic_id);
     $hasSubscription   = $subHelper->hasActiveSubscription();
-    $subscription_plan = $subHelper->getCurrentPlan(); // 'basic', 'professional', 'enterprise'
+    $subscription_plan = $subHelper->getCurrentPlan();
+
+    // Refresh expiry info
+    $expiryInfo   = $subHelper->getExpiryInfo();
+    $grace_status = $expiryInfo['grace_status'];
+    $days_expired = $expiryInfo['days_expired'];
+
+    // Sync session
+    $_SESSION['grace_status'] = $grace_status;
+    $_SESSION['days_expired'] = $days_expired;
 }
 
 $logo_file_path = !empty($clinic_logo) ? $_SERVER['DOCUMENT_ROOT'] . '/eyecore/uploads/' . $clinic_logo : null;
@@ -260,6 +271,51 @@ $js_plan        = json_encode($subscription_plan);
 ?>
 
 <aside id="sidebar" class="sidebar">
+
+    <?php if ($grace_status === 'warning'): ?>
+    <!-- RED BANNER: 0-3 days expired -->
+    <div class="subscription-alert alert-danger-grace">
+        <div class="d-flex align-items-start gap-2">
+            <i class="bi bi-exclamation-triangle-fill alert-icon"></i>
+            <div class="flex-fill">
+                <div class="alert-title">Subscription Expired</div>
+<div class="alert-text">
+    Expired <?= (int)$days_expired ?> day(s) ago.
+    <?= $is_clinic_admin ? 'Please renew now.' : 'Ask your admin to renew.' ?>
+</div>
+                <?php if ($is_clinic_admin): ?>
+                    <a href="views/subscription.php" class="alert-btn alert-btn-danger">
+                        <i class="bi bi-credit-card me-1"></i> Renew Now
+                    </a>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+    <?php elseif ($grace_status === 'grace'): ?>
+    <!-- YELLOW BANNER: 4-7 days expired -->
+    <div class="subscription-alert alert-warning-grace">
+        <div class="d-flex align-items-start gap-2">
+            <i class="bi bi-clock-history alert-icon"></i>
+            <div class="flex-fill">
+                <div class="alert-title">Final Warning</div>
+<div class="alert-text">
+    Expired <?= (int)$days_expired ?> day(s) ago.
+    <?php if ($is_clinic_admin): ?>
+        You still have full access to renew.
+    <?php else: ?>
+        <strong>Account will be blocked soon.</strong> Ask your admin to renew.
+    <?php endif; ?>
+</div>
+                <?php if ($is_clinic_admin): ?>
+                    <a href="views/subscription.php" class="alert-btn alert-btn-warning">
+                        <i class="bi bi-credit-card me-1"></i> Renew Now
+                    </a>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
+
     <div class="sidebar-header">
         <div class="clinic-brand-wrapper">
             <div class="d-flex align-items-center gap-3">
@@ -333,65 +389,117 @@ $js_plan        = json_encode($subscription_plan);
                         </li>
 
                     <?php else: ?>
-                        <?php foreach ($group['items'] as $item): ?>
 <?php 
-// ═══════════════════════════════════════════════════════
-// ACTIVE STATE DETECTION
-// ═══════════════════════════════════════════════════════
-$is_item_active = false;
-
-// Get the view name from menu item
-$item_view = $item['view_name'] ?? $item['page_name'] ?? '';
-
-// Parse the menu item's URL to extract its view parameter
-$item_url_view = '';
-$item_url_path = '';
-if (!empty($item['url'])) {
-    $item_url_parts = parse_url($item['url']);
-    $item_url_path = $item_url_parts['path'] ?? '';
-    if (isset($item_url_parts['query'])) {
-        parse_str($item_url_parts['query'], $item_query_params);
-        $item_url_view = $item_query_params['view'] ?? '';
-    }
-}
-
-// ═══════════════════════════════════════════════════════
-// MATCHING LOGIC
-// ═══════════════════════════════════════════════════════
-
-// Case 1: URL has ?view=xxx → strict match by view ONLY
-if (!empty($v)) {
-    if (!empty($item_url_view) && $item_url_view === $v) {
-        $is_item_active = true;
-    }
-}
-// Case 2: URL has NO ?view → check if current page matches item URL path
-else {
-    // Get filename from item URL
-    $item_url_filename = basename($item_url_path);
-    
-    // Match only if:
-    // - current page equals item URL filename
-    // - AND item URL also has NO view parameter (exact match)
-    if (!empty($item_url_filename) 
-        && $item_url_filename === $current_page 
-        && empty($item_url_view)) {
-        $is_item_active = true;
+// Separate parent items (parent_id = NULL) and child items
+$parentItems = [];
+$childItems = [];
+foreach ($group['items'] as $item) {
+    if (empty($item['parent_id'])) {
+        $parentItems[] = $item;
+    } else {
+        $childItems[$item['parent_id']][] = $item;
     }
 }
 ?>
-                            <li class="nav-item ms-3">
-                                <!-- ITEM LINK: HIGHLIGHT LANG DITO -->
-                                <a class="nav-link item-highlight <?= $is_item_active ? 'active' : '' ?>"
-                                   href="<?= htmlspecialchars($item['url']) ?>">
-                                    <i class="bi <?= $item['icon'] ?>"></i>
-                                    <span><?= htmlspecialchars($item['menu_name']) ?></span>
-                                    <?php if ($is_item_active): ?>
-                                        <span class="ms-auto active-dot"></span>
-                                    <?php endif; ?>
-                                </a>
-                            </li>
-                        <?php endforeach; ?>
+
+<?php foreach ($parentItems as $item): 
+    $hasChildren = !empty($childItems[$item['id']]);
+    $childCount = $hasChildren ? count($childItems[$item['id']]) : 0;
+    
+    // Check if parent or any child is active
+    $is_item_active = false;
+    $item_view = $item['view_name'] ?? $item['page_name'] ?? '';
+    $item_url_view = '';
+    if (!empty($item['url'])) {
+        $item_url_parts = parse_url($item['url']);
+        if (isset($item_url_parts['query'])) {
+            parse_str($item_url_parts['query'], $item_query_params);
+            $item_url_view = $item_query_params['view'] ?? '';
+        }
+    }
+    
+    // Parent active check
+    if (!empty($v) && !empty($item_url_view) && $item_url_view === $v) {
+        $is_item_active = true;
+    }
+    
+    // Child active check
+    $child_active = false;
+    foreach ($childItems[$item['id']] ?? [] as $child) {
+        $child_url_view = '';
+        if (!empty($child['url'])) {
+            $child_url_parts = parse_url($child['url']);
+            if (isset($child_url_parts['query'])) {
+                parse_str($child_url_parts['query'], $child_query_params);
+                $child_url_view = $child_query_params['view'] ?? '';
+            }
+        }
+        if (!empty($v) && !empty($child_url_view) && $child_url_view === $v) {
+            $child_active = true;
+            $is_item_active = true;
+        }
+    }
+?>
+    <li class="nav-item ms-3">
+<?php if ($hasChildren): ?>
+    <!-- Parent item: label clickable + separate chevron button -->
+    <div class="parent-item-wrapper">
+        <a class="nav-link item-highlight parent-toggle <?= $is_item_active ? 'active' : '' ?>"
+           href="<?= htmlspecialchars($item['url']) ?>">
+            <i class="bi <?= $item['icon'] ?>"></i>
+            <span><?= htmlspecialchars($item['menu_name']) ?></span>
+        </a>
+        <!-- Separate chevron button for toggle -->
+        <button type="button"
+                class="submenu-chevron-btn"
+                data-submenu-toggle="submenu-<?= $item['id'] ?>"
+                aria-expanded="<?= $is_item_active ? 'true' : 'false' ?>"
+                aria-label="Toggle submenu">
+            <i class="bi bi-chevron-down submenu-chevron"></i>
+        </button>
+    </div>
+    
+    <!-- Submenu (collapsible — custom JS controlled) -->
+    <div class="nav-submenu <?= $is_item_active ? 'show' : '' ?>" id="submenu-<?= $item['id'] ?>">
+                <ul class="nav flex-column submenu-list">
+                    <?php foreach ($childItems[$item['id']] as $child): 
+                        $child_view = $child['view_name'] ?? $child['page_name'] ?? '';
+                        $child_url_view = '';
+                        if (!empty($child['url'])) {
+                            $child_url_parts = parse_url($child['url']);
+                            if (isset($child_url_parts['query'])) {
+                                parse_str($child_url_parts['query'], $child_query_params);
+                                $child_url_view = $child_query_params['view'] ?? '';
+                            }
+                        }
+                        $is_child_active = (!empty($v) && !empty($child_url_view) && $child_url_view === $v);
+                    ?>
+                        <li class="nav-item">
+                            <a class="nav-link item-highlight submenu-item <?= $is_child_active ? 'active' : '' ?>"
+                               href="<?= htmlspecialchars($child['url']) ?>">
+                                <i class="bi <?= $child['icon'] ?>"></i>
+                                <span><?= htmlspecialchars($child['menu_name']) ?></span>
+                                <?php if ($is_child_active): ?>
+                                    <span class="ms-auto active-dot"></span>
+                                <?php endif; ?>
+                            </a>
+                        </li>
+                    <?php endforeach; ?>
+                </ul>
+            </div>
+        <?php else: ?>
+            <!-- Regular item (no children) -->
+            <a class="nav-link item-highlight <?= $is_item_active ? 'active' : '' ?>"
+               href="<?= htmlspecialchars($item['url']) ?>">
+                <i class="bi <?= $item['icon'] ?>"></i>
+                <span><?= htmlspecialchars($item['menu_name']) ?></span>
+                <?php if ($is_item_active): ?>
+                    <span class="ms-auto active-dot"></span>
+                <?php endif; ?>
+            </a>
+        <?php endif; ?>
+    </li>
+<?php endforeach; ?>
                     <?php endif; ?>
 
                 <?php endforeach; ?>
@@ -715,6 +823,183 @@ else {
     .clinic-name { font-size: 0.85rem; max-width: 120px; }
     .clinic-logo-container { width: 40px; height: 40px; }
 }
+
+/* ══════════════════════════════════════════════════════════
+   SUBSCRIPTION GRACE BANNERS
+   ══════════════════════════════════════════════════════════ */
+.subscription-alert {
+    padding: 12px 14px;
+    margin: 0;
+    border-bottom: 1px solid rgba(0,0,0,0.05);
+}
+.alert-danger-grace {
+    background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+    border-left: 4px solid #dc2626;
+}
+.alert-warning-grace {
+    background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+    border-left: 4px solid #d97706;
+}
+.subscription-alert .alert-icon {
+    font-size: 1.2rem;
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+.alert-danger-grace .alert-icon { color: #dc2626; }
+.alert-warning-grace .alert-icon { color: #d97706; }
+.subscription-alert .alert-title {
+    font-weight: 700;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    line-height: 1.2;
+    margin-bottom: 2px;
+}
+.alert-danger-grace .alert-title { color: #991b1b; }
+.alert-warning-grace .alert-title { color: #92400e; }
+.subscription-alert .alert-text {
+    font-size: 0.75rem;
+    line-height: 1.35;
+    color: #4b5563;
+    margin-bottom: 8px;
+}
+.subscription-alert .alert-btn {
+    display: inline-flex;
+    align-items: center;
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-decoration: none;
+    transition: all 0.2s;
+    color: white;
+}
+.alert-btn-danger { background: #dc2626; }
+.alert-btn-danger:hover {
+    background: #b91c1c;
+    color: white;
+    transform: translateY(-1px);
+}
+.alert-btn-warning { background: #d97706; }
+.alert-btn-warning:hover {
+    background: #b45309;
+    color: white;
+    transform: translateY(-1px);
+}
+
+/* ══════════════════════════════════════════════════════════
+   SUBMENU STYLES (Custom — walang Bootstrap dependency)
+   ══════════════════════════════════════════════════════════ */
+.submenu-chevron {
+    font-size: 0.75rem;
+    transition: transform 0.25s ease;
+    color: #94a3b8;
+}
+
+.parent-toggle:hover .submenu-chevron {
+    color: #0d9488;
+}
+
+.parent-toggle.active .submenu-chevron {
+    color: #0d9488;
+}
+
+/* Chevron rotation base sa aria-expanded state */
+.parent-toggle[aria-expanded="true"] .submenu-chevron {
+    transform: rotate(180deg);
+}
+
+/* Submenu container — custom toggle (hindi Bootstrap collapse) */
+.nav-submenu {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+.nav-submenu.show {
+    max-height: 500px;
+    margin-top: 4px;
+    margin-bottom: 4px;
+}
+
+.submenu-list {
+    padding-left: 0;
+    margin-top: 4px;
+    margin-bottom: 4px;
+    border-left: 2px solid #e2e8f0;
+    margin-left: 20px;
+    padding-left: 8px;
+}
+
+.submenu-item {
+    padding: 8px 12px !important;
+    font-size: 0.82rem !important;
+    color: #64748b !important;
+}
+
+.submenu-item i {
+    font-size: 0.85rem !important;
+    width: 18px !important;
+}
+
+.submenu-item:hover {
+    color: #0d9488 !important;
+    background: linear-gradient(90deg, #f0fdfa 0%, transparent 100%) !important;
+}
+
+.submenu-item.active {
+    color: #0d9488 !important;
+    font-weight: 600 !important;
+    background: linear-gradient(90deg, rgba(13, 148, 136, 0.08) 0%, transparent 100%) !important;
+    border-left: 3px solid #0d9488;
+    margin-left: -11px;
+    padding-left: 20px !important;
+}
+
+/* ✅ Parent item wrapper — for label + separate chevron button */
+.parent-item-wrapper {
+    display: flex;
+    align-items: center;
+    position: relative;
+    margin: 2px 0;
+}
+
+.parent-item-wrapper .parent-toggle {
+    flex: 1;
+    margin: 0;
+}
+
+/* ✅ Separate chevron button (toggle only) */
+.submenu-chevron-btn {
+    background: transparent;
+    border: none;
+    padding: 8px 12px;
+    cursor: pointer;
+    color: #94a3b8;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    transition: all 0.2s ease;
+    margin-right: 4px;
+    flex-shrink: 0;
+}
+
+.submenu-chevron-btn:hover {
+    background: rgba(13, 148, 136, 0.08);
+    color: #0d9488;
+}
+
+.submenu-chevron-btn[aria-expanded="true"] .submenu-chevron {
+    transform: rotate(180deg);
+}
+
+.submenu-chevron-btn .submenu-chevron {
+    transition: transform 0.25s ease;
+    font-size: 0.8rem;
+}
 </style>
 
 <script>
@@ -740,5 +1025,32 @@ document.addEventListener('DOMContentLoaded', function () {
             new bootstrap.Tooltip(el, { placement: 'right' });
         });
     }
+});
+
+// ── Submenu: Pure custom toggle (chevron button only) ──
+document.addEventListener('DOMContentLoaded', function () {
+    document.querySelectorAll('.submenu-chevron-btn[data-submenu-toggle]').forEach(function (toggle) {
+        toggle.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            const targetId = this.getAttribute('data-submenu-toggle');
+            const target = document.getElementById(targetId);
+            if (!target) return;
+            
+            const isExpanded = this.getAttribute('aria-expanded') === 'true';
+            
+            // Toggle state
+            if (isExpanded) {
+                // Collapse
+                target.classList.remove('show');
+                this.setAttribute('aria-expanded', 'false');
+            } else {
+                // Expand
+                target.classList.add('show');
+                this.setAttribute('aria-expanded', 'true');
+            }
+        });
+    });
 });
 </script>

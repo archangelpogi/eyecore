@@ -5,8 +5,9 @@ if (session_status() === PHP_SESSION_NONE) {
 }
 
 require_once __DIR__ . '/../config/db.php';
+require_once __DIR__ . '/../include/subscription_guard.php';
 require_once __DIR__ . '/../include/RBACHelper.php';
-require_once __DIR__ . '/../include/SubscriptionHelper.php';  // ✅ ITO ANG KULANG!
+require_once __DIR__ . '/../include/SubscriptionHelper.php';
 
 // ✅ Initialize RBACHelper
 RBACHelper::init($pdo);
@@ -1669,40 +1670,83 @@ function renderPendingExpenseRow(exp) {
         case 'Pending':
             statusClass = 'status-pending';
             break;
-        case 'Return Requested':      // ✅ BAGO
+        case 'Pending Re-approval':
+            statusClass = 'status-pending';
+            statusText = 'Pending Re-approval ⚠️';
+            break;
+        case 'Approved':
+            statusClass = 'status-pending';
+            break;
+        case 'Waiting For Delivery':
+            statusClass = 'status-pending';
+            statusText = 'Waiting For Delivery 🚚';
+            break;
+        case 'Ready to Pay':
+            statusClass = 'status-warning';
+            break;
+        case 'Return Requested':
             statusClass = 'status-pending';
             statusText = 'Return Requested 🔄';
             break;
-        case 'Return Completed':       // ✅ BAGO
+        case 'Return Completed':
             statusClass = 'status-paid';
             statusText = 'Return Completed ✅';
             break;
         case 'Overdue':
             statusClass = 'status-overdue';
             break;
-        case 'Ready to Pay':
-            statusClass = 'status-warning';
-            break;
         default:
             statusClass = 'status-pending';
     }
     
     const isReadyToPay = exp.status === 'Ready to Pay';
+    const isPendingReapproval = exp.status === 'Pending Re-approval';
     
-    let actionButtons = `<button class="btn btn-outline-primary btn-sm" onclick="viewExpense(${exp.id})" title="View">
-                            <i class="bi bi-eye"></i>
-                         </button>`;
+    // ✅ Price change badge — with FIXED number parsing
+    let priceChangeBadge = '';
+    const estAmt = parseFloat(exp.estimated_amount) || 0;
+    const actualAmt = parseFloat(exp.amount) || 0;
     
-    if (userPermissions.can_approve && isReadyToPay) {
-        actionButtons += `<button class="btn btn-outline-success btn-sm" onclick="openPaymentModal(${exp.id})" title="Process Payment">
-                              <i class="bi bi-cash-stack"></i> Pay
-                          </button>`;
+    if (estAmt > 0 && Math.abs(estAmt - actualAmt) > 0.01) {
+        const diff = actualAmt - estAmt;
+        const pct = parseFloat(exp.price_change_percent) || ((diff / estAmt) * 100);
+        priceChangeBadge = `
+            <span class="badge ${diff > 0 ? 'bg-danger' : 'bg-success'} ms-1" 
+                  title="Estimated: ₱${formatNumber(estAmt)}">
+                <i class="bi bi-arrow-${diff > 0 ? 'up' : 'down'}-right"></i>
+                ${diff > 0 ? '+' : ''}${pct.toFixed(1)}%
+            </span>
+        `;
     }
     
-    if (userPermissions.can_edit && isReadyToPay) {
-        actionButtons += `<button class="btn btn-outline-secondary btn-sm" onclick="uploadReceiptModal(${exp.id})" title="Upload Receipt">
-                              <i class="bi bi-cloud-upload"></i>
-                          </button>`;
+    let actionButtons = `
+        <button class="btn btn-outline-primary btn-sm" onclick="viewExpense(${exp.id})" title="View">
+            <i class="bi bi-eye"></i>
+        </button>
+    `;
+    
+    if (userPermissions.can_approve && isPendingReapproval) {
+        actionButtons += `
+            <button class="btn btn-warning btn-sm" onclick="approvePriceChange(${exp.id})" title="Re-approve Price">
+                <i class="bi bi-check-circle"></i> Re-approve
+            </button>
+        `;
+    }
+    
+    if (userPermissions.can_approve && isReadyToPay) {
+        actionButtons += `
+            <button class="btn btn-success btn-sm" onclick="openPaymentModal(${exp.id})" title="Process Payment">
+                <i class="bi bi-cash-stack"></i> Pay
+            </button>
+        `;
+    }
+    
+    if (userPermissions.can_edit && (isReadyToPay || isPendingReapproval)) {
+        actionButtons += `
+            <button class="btn btn-outline-secondary btn-sm" onclick="uploadReceiptModal(${exp.id})" title="Upload Receipt">
+                <i class="bi bi-cloud-upload"></i>
+            </button>
+        `;
     }
     
     let amountDisplay = `₱${formatNumber(exp.amount)}`;
@@ -1715,7 +1759,10 @@ function renderPendingExpenseRow(exp) {
     
     return `
         <tr>
-            <td><strong>${escapeHtml(exp.expense_code || 'N/A')}</strong></td>
+            <td>
+                <strong>${escapeHtml(exp.expense_code || 'N/A')}</strong>
+                ${priceChangeBadge}
+            </td>
             <td>
                 <div class="fw-bold">${escapeHtml(exp.description)}</div>
                 <small class="text-muted">${escapeHtml(exp.vendor || 'No vendor')}</small>
@@ -1726,13 +1773,149 @@ function renderPendingExpenseRow(exp) {
                     ${escapeHtml(exp.category)}
                 </span>
             </td>
-            <td class="fw-bold ${amountClass}">${amountDisplay}</td>
+            <td class="fw-bold ${amountClass}">
+                ${amountDisplay}
+                ${estAmt > 0 && Math.abs(estAmt - actualAmt) > 0.01 ? `
+                    <br><small class="text-muted text-decoration-line-through">
+                        ₱${formatNumber(estAmt)}
+                    </small>
+                ` : ''}
+            </td>
             <td><small>${formatDate(exp.due_date)}</small></td>
             <td>${escapeHtml(exp.department || 'N/A')}</td>
             <td><span class="badge-status ${statusClass}">${escapeHtml(statusText)}</span></td>
             <td><div class="btn-group btn-group-sm">${actionButtons}</div></td>
         </tr>
     `;
+}
+// ============================================
+// APPROVE PRICE CHANGE
+// ============================================
+function approvePriceChange(expenseId) {
+    // ✅ First, fetch expense details to show in confirmation
+    $.ajax({
+        url: `api/expenses.php?action=get_expense&id=${expenseId}`,
+        method: 'GET',
+        success: function(response) {
+            if (!response.success) {
+                Swal.fire('Error', 'Failed to load expense details', 'error');
+                return;
+            }
+            
+            const expense = response.data;
+            const estAmt = parseFloat(expense.estimated_amount || 0);
+            const actualAmt = parseFloat(expense.amount || 0);
+            const diff = actualAmt - estAmt;
+            const percent = expense.price_change_percent || (estAmt > 0 ? ((diff / estAmt) * 100) : 0);
+            
+            Swal.fire({
+                title: 'Approve Price Change?',
+                html: `
+                    <div class="text-start">
+                        <div class="alert alert-warning mb-3">
+                            <h6 class="fw-bold mb-2">
+                                <i class="bi bi-arrow-left-right me-2"></i>
+                                ${escapeHtml(expense.expense_code)}
+                            </h6>
+                            <table class="table table-sm mb-0">
+                                <tr>
+                                    <td>Estimated:</td>
+                                    <td class="text-end">₱${formatNumber(estAmt)}</td>
+                                </tr>
+                                <tr>
+                                    <td>Actual:</td>
+                                    <td class="text-end fw-bold text-primary">₱${formatNumber(actualAmt)}</td>
+                                </tr>
+                                <tr class="border-top">
+                                    <td>Difference:</td>
+                                    <td class="text-end fw-bold ${diff > 0 ? 'text-danger' : 'text-success'}">
+                                        ${diff > 0 ? '+' : ''}₱${formatNumber(diff)} 
+                                        (${diff > 0 ? '+' : ''}${percent.toFixed(2)}%)
+                                    </td>
+                                </tr>
+                            </table>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label fw-semibold">Approval Notes (Optional)</label>
+                            <textarea id="approvalNotes" class="form-control" rows="3" 
+                                      placeholder="e.g., Price increase is acceptable due to market changes..."></textarea>
+                        </div>
+                        
+                        <div class="alert alert-info small mb-0">
+                            <i class="bi bi-info-circle me-1"></i>
+                            Approving this price change will allow Procurement to proceed with creating the PO.
+                        </div>
+                    </div>
+                `,
+                icon: 'question',
+                showCancelButton: true,
+                confirmButtonText: '<i class="bi bi-check-circle me-1"></i> Yes, Approve',
+                confirmButtonColor: '#f59e0b',
+                cancelButtonText: 'Cancel',
+                preConfirm: () => {
+                    return {
+                        approval_notes: document.getElementById('approvalNotes').value.trim()
+                    };
+                }
+            }).then((result) => {
+                if (!result.isConfirmed) return;
+                
+                Swal.fire({
+                    title: 'Processing...',
+                    html: 'Approving price change...',
+                    allowOutsideClick: false,
+                    didOpen: () => Swal.showLoading()
+                });
+                
+                const formData = new FormData();
+                formData.append('action', 'approve_price_change');
+                formData.append('expense_id', expenseId);
+                formData.append('approval_notes', result.value.approval_notes);
+                
+                fetch('api/expenses.php', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(res => res.json())
+                .then(data => {
+                    Swal.close();
+                    if (data.success) {
+                        Swal.fire({
+                            icon: 'success',
+                            title: 'Approved!',
+                            html: `
+                                <p>Price change has been approved.</p>
+                                <p class="text-muted small">Procurement can now create the PO.</p>
+                            `,
+                            timer: 2000,
+                            showConfirmButton: false
+                        }).then(() => {
+                            // Reload lahat ng relevant tabs
+                            loadExpenses('pending');
+                            loadExpenses('all');
+                            loadStats();
+                            
+                            // Kung may view modal, i-refresh
+                            if ($('#viewExpenseModal').hasClass('show')) {
+                                viewExpense(expenseId);
+                            }
+                        });
+                    } else {
+                        Swal.fire('Error', data.error || 'Failed to approve price change', 'error');
+                    }
+                })
+                .catch(err => {
+                    Swal.close();
+                    console.error('Error:', err);
+                    Swal.fire('Error', 'Network error. Please try again.', 'error');
+                });
+            });
+        },
+        error: function() {
+            Swal.fire('Error', 'Failed to load expense details', 'error');
+        }
+    });
 }
 
 function renderAllExpenseRow(exp) {
@@ -2010,20 +2193,99 @@ function viewExpense(id) {
 
 function renderExpenseDetails(expense) {
     const statusClass = expense.status === 'Paid' ? 'bg-success' : 
-                       expense.status === 'Pending' ? 'bg-warning' : 'bg-danger';
+                       expense.status === 'Pending' ? 'bg-warning' : 
+                       expense.status === 'Pending Re-approval' ? 'bg-warning' :
+                       expense.status === 'Approved' ? 'bg-info' :
+                       'bg-danger';
     
     const approvedByName = expense.approved_by_name || 
                           (expense.activity_log && expense.activity_log.length > 0 ? 
                           expense.activity_log[0].user_name : 'N/A');
     
+    // ═══════════════════════════════════════
+    // ✅ PRICE CHANGE SECTION
+    // ═══════════════════════════════════════
+    let priceChangeHtml = '';
+    const estAmt = parseFloat(expense.estimated_amount || 0);
+    const actualAmt = parseFloat(expense.amount || 0);
+    const hasPriceChange = estAmt > 0 && Math.abs(estAmt - actualAmt) > 0.01;
+    
+    if (hasPriceChange) {
+        const diff = actualAmt - estAmt;
+        const percent = parseFloat(expense.price_change_percent) || ((diff / estAmt) * 100);
+        const isIncrease = diff > 0;
+        const isApproved = !!expense.price_change_approved_by;
+        const isPendingApproval = expense.status === 'Pending Re-approval';
+        
+        const alertClass = isPendingApproval ? 'alert-warning' :
+                          percent > 10 ? 'alert-warning' : 'alert-info';
+        
+        priceChangeHtml = `
+            <div class="alert ${alertClass} mb-3">
+                <h6 class="fw-bold mb-3">
+                    <i class="bi bi-arrow-left-right me-2"></i>
+                    Price Change Detected
+                    ${isPendingApproval ? '<span class="badge bg-warning text-dark ms-2">Pending Re-approval</span>' : ''}
+                    ${isApproved ? '<span class="badge bg-success ms-2">Approved</span>' : ''}
+                </h6>
+                
+                <table class="table table-sm mb-0">
+                    <tr>
+                        <td><strong>Estimated (Original):</strong></td>
+                        <td class="text-end">₱${formatNumber(estAmt)}</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Actual (Current):</strong></td>
+                        <td class="text-end fw-bold text-primary">₱${formatNumber(actualAmt)}</td>
+                    </tr>
+                    <tr class="border-top">
+                        <td><strong>Difference:</strong></td>
+                        <td class="text-end fw-bold ${isIncrease ? 'text-danger' : 'text-success'}">
+                            ${isIncrease ? '+' : ''}₱${formatNumber(diff)} 
+                            (${isIncrease ? '+' : ''}${percent.toFixed(2)}%)
+                        </td>
+                    </tr>
+                </table>
+                
+                ${expense.price_change_reason ? `
+                    <div class="mt-3 p-2 bg-white rounded small">
+                        <strong><i class="bi bi-info-circle me-1"></i>Reason:</strong>
+                        <div class="mt-1" style="white-space: pre-wrap;">${escapeHtml(expense.price_change_reason)}</div>
+                    </div>
+                ` : ''}
+                
+                ${isApproved ? `
+                    <div class="mt-2 small text-success">
+                        <i class="bi bi-check-circle-fill me-1"></i>
+                        Approved by ${escapeHtml(expense.price_change_approved_by_name || 'Finance')}
+                        on ${formatDateTime(expense.price_change_approved_at)}
+                    </div>
+                ` : ''}
+                
+                ${isPendingApproval ? `
+                    <div class="mt-3">
+                        <button class="btn btn-warning btn-sm w-100" 
+                                onclick="approvePriceChange(${expense.id})">
+                            <i class="bi bi-check-circle me-1"></i>
+                            Re-approve Price Change
+                        </button>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+    }
+    
+    // ═══════════════════════════════════════
+    // ATTACHMENTS
+    // ═══════════════════════════════════════
     let attachmentsHtml = '';
     if (expense.attachments && expense.attachments.length > 0) {
-        attachmentsHtml = '<h6 class="mt-4">Attachments</h6><div class="d-flex gap-2">';
+        attachmentsHtml = '<h6 class="mt-4">Attachments</h6><div class="d-flex gap-2 flex-wrap">';
         expense.attachments.forEach(att => {
             attachmentsHtml += `
                 <div class="border rounded p-2">
                     <i class="bi bi-file-earmark-text"></i>
-                    <small>${att.file_name}</small>
+                    <small>${escapeHtml(att.file_name)}</small>
                     <a href="${att.file_path}" target="_blank" class="ms-2">
                         <i class="bi bi-download"></i>
                     </a>
@@ -2033,6 +2295,9 @@ function renderExpenseDetails(expense) {
         attachmentsHtml += '</div>';
     }
     
+    // ═══════════════════════════════════════
+    // ACTIVITY LOG
+    // ═══════════════════════════════════════
     let activityHtml = '';
     if (expense.activity_log && expense.activity_log.length > 0) {
         activityHtml = '<h6 class="mt-4">Activity Log</h6><div class="timeline">';
@@ -2042,40 +2307,55 @@ function renderExpenseDetails(expense) {
                     <div class="timeline-dot"></div>
                     <div class="timeline-line"></div>
                     <small class="text-muted">${formatDateTime(log.created_at)}</small>
-                    <div class="fw-bold">${log.details}</div>
-                    <small>by ${log.user_name}</small>
+                    <div class="fw-bold">${escapeHtml(log.details)}</div>
+                    <small>by ${escapeHtml(log.user_name)}</small>
                 </div>
             `;
         });
         activityHtml += '</div>';
     }
     
+    // ═══════════════════════════════════════
+    // BUILD HTML
+    // ═══════════════════════════════════════
     const html = `
         <div class="row">
             <div class="col-md-8">
-                <h5 class="fw-bold">${expense.expense_code}</h5>
-                <p class="mb-2">${expense.description}</p>
+                <h5 class="fw-bold">${escapeHtml(expense.expense_code)}</h5>
+                <p class="mb-2">${escapeHtml(expense.description)}</p>
+                
+                ${priceChangeHtml}
+                
                 <div class="row mt-4">
                     <div class="col-md-6">
                         <table class="table table-sm">
-                            <tr><td width="120"><strong>Category</strong></td><td><span class="badge-category">${expense.category}</span></td></tr>
-                            <tr><td><strong>Amount</strong></td><td class="fw-bold fs-5">₱${formatNumber(expense.amount)}</td></tr>
-                            <tr><td><strong>Status</strong></td><td><span class="badge ${statusClass}">${expense.status}</span></td></tr>
+                            <tr><td width="120"><strong>Category</strong></td><td><span class="badge-category">${escapeHtml(expense.category)}</span></td></tr>
+                            <tr>
+                                <td><strong>Amount</strong></td>
+                                <td class="fw-bold fs-5">₱${formatNumber(expense.amount)}</td>
+                            </tr>
+                            ${hasPriceChange ? `
+                                <tr>
+                                    <td><strong>Estimated</strong></td>
+                                    <td class="text-muted text-decoration-line-through">₱${formatNumber(expense.estimated_amount)}</td>
+                                </tr>
+                            ` : ''}
+                            <tr><td><strong>Status</strong></td><td><span class="badge ${statusClass}">${escapeHtml(expense.status)}</span></td></tr>
                             <tr><td><strong>Expense Date</strong></td><td>${formatDate(expense.expense_date)}</td></tr>
                             <tr><td><strong>Due Date</strong></td><td>${formatDate(expense.due_date) || 'N/A'}</td></tr>
                         </table>
                     </div>
                     <div class="col-md-6">
                         <table class="table table-sm">
-                            <tr><td width="120"><strong>Vendor</strong></td><td>${expense.vendor || 'N/A'}</td></tr>
-                            <tr><td><strong>Department</strong></td><td>${expense.department || 'N/A'}</td></tr>
-                            <tr><td><strong>Requested By</strong></td><td>${expense.requested_by_name || expense.requested_by || 'N/A'}</td></tr>
-                            <tr><td><strong>Approved By</strong></td><td>${approvedByName}</td></tr>
-                            <tr><td><strong>Payment Method</strong></td><td>${expense.payment_method || 'N/A'}</td></tr>
+                            <tr><td width="120"><strong>Vendor</strong></td><td>${escapeHtml(expense.vendor || 'N/A')}</td></tr>
+                            <tr><td><strong>Department</strong></td><td>${escapeHtml(expense.department || 'N/A')}</td></tr>
+                            <tr><td><strong>Requested By</strong></td><td>${escapeHtml(expense.requested_by_name || expense.requested_by || 'N/A')}</td></tr>
+                            <tr><td><strong>Approved By</strong></td><td>${escapeHtml(approvedByName)}</td></tr>
+                            <tr><td><strong>Payment Method</strong></td><td>${escapeHtml(expense.payment_method || 'N/A')}</td></tr>
                         </table>
                     </div>
                 </div>
-                ${expense.notes ? `<div class="mt-3"><strong>Notes:</strong><p class="text-muted">${expense.notes}</p></div>` : ''}
+                ${expense.notes ? `<div class="mt-3"><strong>Notes:</strong><p class="text-muted">${escapeHtml(expense.notes)}</p></div>` : ''}
                 ${attachmentsHtml}
                 ${activityHtml}
             </div>
@@ -2083,9 +2363,26 @@ function renderExpenseDetails(expense) {
                 <div class="card bg-light">
                     <div class="card-body">
                         <h6 class="card-title">Quick Actions</h6>
-                        ${expense.status === 'Pending' ? `<button class="btn btn-success w-100 mb-2" onclick="approveExpense(${expense.id})"><i class="bi bi-check-circle"></i> Approve & Pay</button>` : ''}
-                        <button class="btn btn-outline-primary w-100 mb-2" onclick="uploadReceiptModal(${expense.id})"><i class="bi bi-cloud-upload"></i> Upload Receipt</button>
-                        <button class="btn btn-outline-secondary w-100" onclick="downloadExpense(${expense.id})"><i class="bi bi-download"></i> Download Details</button>
+                        
+                        ${expense.status === 'Pending Re-approval' && userPermissions.can_approve ? `
+                            <button class="btn btn-warning w-100 mb-2" onclick="approvePriceChange(${expense.id})">
+                                <i class="bi bi-check-circle"></i> Re-approve Price
+                            </button>
+                        ` : ''}
+                        
+                        ${expense.status === 'Pending' && userPermissions.can_approve ? `
+                            <button class="btn btn-success w-100 mb-2" onclick="approveExpense(${expense.id})">
+                                <i class="bi bi-check-circle"></i> Approve & Pay
+                            </button>
+                        ` : ''}
+                        
+                        <button class="btn btn-outline-primary w-100 mb-2" onclick="uploadReceiptModal(${expense.id})">
+                            <i class="bi bi-cloud-upload"></i> Upload Receipt
+                        </button>
+                        
+                        <button class="btn btn-outline-secondary w-100" onclick="downloadExpense(${expense.id})">
+                            <i class="bi bi-download"></i> Download Details
+                        </button>
                     </div>
                 </div>
             </div>
@@ -2094,7 +2391,6 @@ function renderExpenseDetails(expense) {
     
     $('#viewExpenseContent').html(html);
 }
-
 
 
 function editExpense(id) {

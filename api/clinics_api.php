@@ -64,9 +64,9 @@ if ($method === 'GET') {
     }
 } elseif ($method === 'POST') {
     switch ($action) {
-        case 'get_clinics_datatable':  // ADD THIS LINE (DataTables uses POST)
-            getClinicsDatatable($pdo); // ADD THIS LINE
-            break;                      // ADD THIS LINE
+        case 'get_clinics_datatable':
+            getClinicsDatatable($pdo);
+            break;
         case 'create_clinic':
             createClinic($pdo, $data);
             break;
@@ -76,12 +76,19 @@ if ($method === 'GET') {
         case 'send_email':
             sendEmailNotification($pdo, $data);
             break;
-case 'review_document':
-    reviewDocument($pdo, $data);
-    break;
-case 'reset_document_attempts':          
-    resetDocumentAttempts($pdo, $data);  
-    break;                               
+        case 'review_document':
+            reviewDocument($pdo, $data);
+            break;
+        case 'reset_document_attempts':
+            resetDocumentAttempts($pdo, $data);
+            break;
+            
+        // ⬇️ IDAGDAG MO ITO DITO ⬇️
+        case 'update_identity_status':
+            updateIdentityStatus($pdo, $data);
+            break;
+        // ⬆️ HANGGANG DITO ⬆️
+
         default:
             echo json_encode(['success' => false, 'error' => 'Invalid action']);
     }
@@ -97,23 +104,19 @@ function getStats($pdo) {
     try {
         $stats = [];
         
-        // Pending Review
+        // Pending
         $stmt = $pdo->query("SELECT COUNT(*) as count FROM clinics WHERE status = 'Pending'");
         $stats['pending'] = (int)$stmt->fetch()['count'];
         
-        // Active Clinics
+        // Active
         $stmt = $pdo->query("SELECT COUNT(*) as count FROM clinics WHERE status = 'Active'");
         $stats['active'] = (int)$stmt->fetch()['count'];
         
-        // Suspended Clinics
-        $stmt = $pdo->query("SELECT COUNT(*) as count FROM clinics WHERE status = 'Suspended'");
-        $stats['suspended'] = (int)$stmt->fetch()['count'];
+        // SUSPENDED (Pinalitan ng Reapplying)
+        $stmt = $pdo->query("SELECT COUNT(*) as count FROM clinics WHERE status = 'Reapplying'");
+        $stats['reapplying'] = (int)$stmt->fetch()['count'];
         
-        // Rejected Clinics (not in your DB yet, but we can calculate from other data)
-        $stmt = $pdo->query("SELECT COUNT(*) as count FROM clinics WHERE status = 'Rejected'");
-        $stats['rejected'] = (int)$stmt->fetch()['count'];
-        
-        // Total Clinics
+        // Total
         $stmt = $pdo->query("SELECT COUNT(*) as total FROM clinics");
         $stats['total_clinics'] = (int)$stmt->fetch()['total'];
         
@@ -306,7 +309,8 @@ function getClinicsDatatable($pdo) {
                     u.email AS admin_email,
                     (SELECT COUNT(*) FROM users WHERE clinic_id = c.id AND status = 'Active') AS staff_count,
                     (SELECT COUNT(*) FROM patients WHERE clinic_id = c.id AND status = 'Active') AS patient_count,
-                    -- Collect documents using GROUP_CONCAT
+                    
+                    -- Documents Concatenation (Keep this)
                     (SELECT GROUP_CONCAT(
                         CONCAT(
                             d.id, '::', 
@@ -316,29 +320,37 @@ function getClinicsDatatable($pdo) {
                             d.uploaded_at
                         ) SEPARATOR '||'
                     ) FROM clinic_documents d WHERE d.clinic_id = c.id) AS documents_concat,
-                    -- Verification score (100% if all docs approved + required fields complete)
+
+                    -- ✅ ACCURATE VERIFICATION SCORE
                     (
-                        CASE WHEN c.clinic_email IS NOT NULL AND c.clinic_email != '' THEN 15 ELSE 0 END +
-                        CASE WHEN c.contact IS NOT NULL AND c.contact != '' THEN 15 ELSE 0 END +
-                        CASE WHEN c.address IS NOT NULL AND c.address != '' THEN 15 ELSE 0 END +
-                        CASE WHEN LENGTH(c.clinic_name) > 5 THEN 10 ELSE 0 END +
-                        CASE WHEN c.city IS NOT NULL AND c.city != '' THEN 10 ELSE 0 END +
-                        CASE WHEN c.branch IS NOT NULL AND c.branch != '' THEN 5 ELSE 0 END +
-                        CASE WHEN c.approved_by IS NOT NULL THEN 10 ELSE 0 END +
-                        CASE 
-                            WHEN (SELECT COUNT(*) FROM clinic_documents d WHERE d.clinic_id = c.id AND d.status = 'Approved') =
-                                 (SELECT COUNT(*) FROM clinic_documents d WHERE d.clinic_id = c.id) 
-                            THEN 20 ELSE 0
-                        END
+                        SELECT 
+                            CASE 
+                                -- Kung walang docs, 0 score
+                                WHEN COUNT(*) = 0 THEN 0
+                                -- Kung lahat ng docs Approved (at Identity Approved), 100%
+                                WHEN SUM(status = 'Approved') = COUNT(*) AND 
+                                     (SELECT status FROM clinic_identity_verification WHERE clinic_id = c.id LIMIT 1) = 'Approved' 
+                                THEN 100
+                                -- Kung may Rejected, bawas
+                                WHEN SUM(status = 'Rejected') > 0 THEN 50
+                                -- Kung Pending lahat, half score
+                                ELSE ROUND((SUM(status = 'Approved') / COUNT(*)) * 100)
+                            END
+                        FROM clinic_documents WHERE clinic_id = c.id
                     ) AS verification_score,
-                    -- Risk level
+
+                    -- ✅ ACCURATE RISK LEVEL
                     CASE 
-                        WHEN c.clinic_email IS NULL OR c.clinic_email = '' THEN 'high'
-                        WHEN c.contact IS NULL OR c.contact = '' THEN 'high'
-                        WHEN c.address IS NULL OR c.address = '' THEN 'medium'
-                        WHEN (SELECT COUNT(*) FROM clinic_documents WHERE clinic_id = c.id) < 3 THEN 'medium'
+                        -- HIGH: May Rejected na document
+                        WHEN EXISTS (SELECT 1 FROM clinic_documents WHERE clinic_id = c.id AND status = 'Rejected') THEN 'high'
+                        -- HIGH: Walang Identity
+                        WHEN NOT EXISTS (SELECT 1 FROM clinic_identity_verification WHERE clinic_id = c.id AND status = 'Approved') THEN 'high'
+                        -- MEDIUM: May Pending pa
+                        WHEN EXISTS (SELECT 1 FROM clinic_documents WHERE clinic_id = c.id AND status = 'Pending') THEN 'medium'
+                        -- LOW: Lahat Approved at may Identity
                         ELSE 'low'
                     END AS risk_level
+
                 FROM clinics c
                 LEFT JOIN users u ON u.clinic_id = c.id AND u.role = 'ClinicAdmin'
                 $whereClause
@@ -411,23 +423,44 @@ function getClinic($pdo, $id) {
             $docStmt->execute([$id]);
             $documents = $docStmt->fetchAll(PDO::FETCH_ASSOC);
 
-            // ✅ COMPUTE max_attempts_reached PER DOCUMENT
-            // Max attempts = 3
-            // Ang document ay maxed out LANG kapag:
-            //   - submission_attempts >= 3, AT
-            //   - status === 'Rejected'
-            // Kapag 3rd attempt pero PENDING pa → HINDI pa max, pwede pang i-review
+            // ✅ COMPUTE declined_today + awaiting_reupload PER DOCUMENT
+            $today = date('Y-m-d');
             foreach ($documents as &$doc) {
-                $attempts = (int)($doc['submission_attempts'] ?? 0);
-                $status   = $doc['status'] ?? 'Pending';
+                $status     = $doc['status'] ?? 'Pending';
+                $reviewedAt = $doc['reviewed_at'] ?? null;
 
-                $doc['max_attempts_reached'] = (
-                    $attempts >= 3 && $status === 'Rejected'
+                $doc['declined_today'] = (
+                    $status === 'Rejected'
+                    && $reviewedAt
+                    && date('Y-m-d', strtotime($reviewedAt)) === $today
                 ) ? true : false;
+
+                // Flag para sa admin UI — naka-waiting sa clinic na mag-upload
+                $doc['awaiting_reupload'] = ($status === 'Awaiting Re-upload');
+
+                // Legacy field — keep for backward compatibility
+                $doc['max_attempts_reached'] = $doc['declined_today'];
             }
             unset($doc);
 
             $clinic['documents'] = $documents;
+
+            // ✅ KUNIN ANG IDENTITY VERIFICATION DATA
+            $idvStmt = $pdo->prepare("SELECT * FROM clinic_identity_verification WHERE clinic_id = ?");
+            $idvStmt->execute([$id]);
+            $identity = $idvStmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($identity) {
+                // I-set ang absolute URL para lumabas ang images
+                $protocol = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http");
+                $host = $_SERVER['HTTP_HOST'];
+                $baseUrl = $protocol . "://" . $host;
+                
+                $identity['selfie_url'] = $baseUrl . '/' . ltrim($identity['selfie_path'], '/');
+                $identity['id_image_url'] = $baseUrl . '/' . ltrim($identity['id_image_path'], '/');
+            }
+
+            $clinic['identity'] = $identity; // Isama sa JSON response
             
             echo json_encode(['success' => true, 'data' => $clinic]);
         } else {
@@ -510,13 +543,78 @@ function updateClinicStatus($pdo, $data) {
             return;
         }
 
+        // ===== GUARD: bawal i-Active kung hindi lahat Approved =====
+        if ($status === 'Active') {
+            // 1. Check Documents
+            $q = $pdo->prepare("SELECT COUNT(*) AS total, SUM(status = 'Approved') AS approved
+                                FROM clinic_documents WHERE clinic_id = ?");
+            $q->execute([$id]);
+            $r = $q->fetch(PDO::FETCH_ASSOC);
+            
+            // 2. Check Identity Verification
+            $idvQ = $pdo->prepare("SELECT status FROM clinic_identity_verification WHERE clinic_id = ?");
+            $idvQ->execute([$id]);
+            $idvStatus = $idvQ->fetchColumn();
+
+            // Logic: Dapat total > 0, lahat approved, at Identity is Approved
+            if ((int)$r['total'] === 0 || (int)$r['approved'] !== (int)$r['total'] || $idvStatus !== 'Approved') {
+                
+                $errorMsg = 'Cannot activate clinic. ';
+                if ((int)$r['approved'] !== (int)$r['total']) {
+                    $errorMsg .= 'Not all documents are approved. ';
+                }
+                if ($idvStatus !== 'Approved') {
+                    $errorMsg .= 'Identity verification must be Approved. ';
+                }
+                
+                echo json_encode(['success' => false, 'error' => $errorMsg]);
+                return;
+            }
+        }
+
+        // ===== GUARD: Suspended / Rejected =====
+        if (in_array($status, ['Suspended', 'Rejected'])) {
+            $q = $pdo->prepare("SELECT 
+                    COUNT(*) AS total,
+                    SUM(status = 'Rejected') AS declined,
+                    SUM(expires_at IS NOT NULL AND expires_at < CURDATE()) AS expired,
+                    SUM(ocr_flag IS NOT NULL AND ocr_flag <> '' AND ocr_flag NOT LIKE '%blur%') AS violations
+                FROM clinic_documents WHERE clinic_id = ?");
+            $q->execute([$id]);
+            $r = $q->fetch(PDO::FETCH_ASSOC);
+
+            $total = (int)$r['total'];
+            if ($total === 0) {
+                echo json_encode(['success' => false, 'error' => 'No documents to base this action on.']);
+                return;
+            }
+            if ($status === 'Rejected' && (int)$r['declined'] !== $total) {
+                echo json_encode(['success' => false, 'error' => 'Cannot reject: not all documents are declined.']);
+                return;
+            }
+            if ($status === 'Suspended' && (int)$r['expired'] !== $total && (int)$r['violations'] === 0) {
+                echo json_encode(['success' => false, 'error' => 'Cannot suspend: documents are not all expired and no violation found.']);
+                return;
+            }
+        }
+
         // ===== UPDATE CLINIC STATUS =====
-        $stmt = $pdo->prepare("
-            UPDATE clinics 
-            SET status = ?, approved_by = ?, approved_at = NOW(), updated_at = NOW()
-            WHERE id = ?
-        ");
-        $stmt->execute([$status, $userId, $id]);
+        if ($status === 'Active') {
+            // approved_by/approved_at ay para lang sa Active
+            $stmt = $pdo->prepare("
+                UPDATE clinics 
+                SET status = ?, approved_by = ?, approved_at = NOW(), updated_at = NOW()
+                WHERE id = ?
+            ");
+            $stmt->execute([$status, $userId, $id]);
+        } else {
+            $stmt = $pdo->prepare("
+                UPDATE clinics 
+                SET status = ?, updated_at = NOW()
+                WHERE id = ?
+            ");
+            $stmt->execute([$status, $id]);
+        }
 
         // ===== UPDATE CLINIC ADMIN STATUS =====
         if ($status === 'Active') {
@@ -633,13 +731,9 @@ function reviewDocument($pdo, $data) {
         $docType  = $doc['document_type'];
         $clinicId = $doc['clinic_id'];
 
-        define('MAX_ATTEMPTS', 3);
-
-        // ✅ TAMANG LOGIC:
-        // max reached LANG kapag: Rejected AND attempts >= 3
-        $maxReached = (
-            $status === 'Rejected' && $currentAttempts >= MAX_ATTEMPTS
-        ) ? 1 : 0;
+        // Per-day rule: once declined, the clinic must wait until the next calendar day
+        // to re-upload. We no longer permanently block any document.
+        $declinedToday = ($status === 'Rejected') ? 1 : 0;
 
         // ── UPDATE DOCUMENT ──
         $stmt = $pdo->prepare("UPDATE clinic_documents
@@ -653,7 +747,7 @@ function reviewDocument($pdo, $data) {
         $stmt->execute([
             $status,
             $status === 'Rejected' ? $reason : null,
-            $maxReached,
+            $declinedToday,
             $docId
         ]);
 
@@ -671,88 +765,45 @@ function reviewDocument($pdo, $data) {
         $info = $stmt->fetch(PDO::FETCH_ASSOC);
 
         // ============================================================
-        // HANDLE REJECTED
+        // HANDLE DECLINED (Manual Admin Decision)
         // ============================================================
         if ($status === 'Rejected') {
-            if ($maxReached) {
-                // ⚠️ 3RD ATTEMPT REJECTED → SUSPEND CLINIC (hindi Reject!)
-                
-                // 1. I-suspend ang clinic
-                $stmt = $pdo->prepare("
-                    UPDATE clinics 
-                    SET status = 'Suspended', updated_at = NOW() 
-                    WHERE id = ?
-                ");
-                $stmt->execute([$clinicId]);
+            // TINANGGAL ANG AUTO-UPDATE NG CLINIC STATUS DITO.
+            // Ang admin na ang magde-desisyon kung gawing Reapplying via SweetAlert.
 
-                // 2. Notify clinic admin
-                if (!empty($info['admin_user_id'])) {
-                    createNotification(
-                        $pdo,
-                        $info['admin_user_id'],
-                        'Maximum Attempts Reached - Action Required',
-                        "Ang dokumentong <b>{$docType}</b> ay na-reject na ng {$currentAttempts} beses. " .
-                        "Umabot na ito sa maximum na " . MAX_ATTEMPTS . " attempts. " .
-                        "Ang inyong clinic ay pansamantalang na-suspend. " .
-                        "Mangyaring makipag-ugnayan sa <b>support@eyecore.com</b>.",
-                        'error'
-                    );
-                }
-                if (!empty($info['admin_email'])) {
-                    sendDocumentRejectedEmail(
-                        $info['admin_email'],
-                        $info['admin_name'],
-                        $info['clinic_name'],
-                        $docType,
-                        $reason . " — MAXIMUM ATTEMPTS (" . MAX_ATTEMPTS . ") REACHED. Please contact support@eyecore.com."
-                    );
-                }
+            // 1. Notify clinic admin
+            if (!empty($info['admin_user_id'])) {
+                createNotification(
+                    $pdo,
+                    $info['admin_user_id'],
+                    'Document Declined',
+                    "Ang dokumentong <b>{$docType}</b> ay na-decline. " .
+                    "Maaari kang mag-upload ng corrected version <b>bukas</b> " .
+                    "(one submission per document per day).<br><br>" .
+                    "<b>Reason:</b> {$reason}",
+                    'warning'
+                );
+            }
 
-                // 3. Notify ALL SuperAdmins (para may action na kailangan)
-                $superAdmins = $pdo->query("
-                    SELECT id FROM users WHERE role = 'SuperAdmin'
-                ")->fetchAll(PDO::FETCH_ASSOC);
-
-                foreach ($superAdmins as $sa) {
-                    createNotification(
-                        $pdo,
-                        $sa['id'],
-                        '⚠️ Clinic Needs Manual Review',
-                        "Ang clinic <b>{$info['clinic_name']}</b> ay umabot na sa max attempts para sa " .
-                        "<b>{$docType}</b> at na-suspend. Kailangan ng manual review: " .
-                        "Reset attempts o Reject clinic?",
-                        'warning'
-                    );
-                }
-
-            } else {
-                // Normal rejection (1st or 2nd attempt) → Reapplying
-                $stmt = $pdo->prepare("
-                    UPDATE clinics 
-                    SET status = 'Reapplying', updated_at = NOW() 
-                    WHERE id = ?
-                ");
-                $stmt->execute([$clinicId]);
-
-                if (!empty($info['admin_email'])) {
-                    sendDocumentRejectedEmail(
-                        $info['admin_email'],
-                        $info['admin_name'],
-                        $info['clinic_name'],
-                        $docType,
-                        $reason . " (Attempt $currentAttempts of " . MAX_ATTEMPTS . ")"
-                    );
-                }
+            // 2. Email the clinic admin
+            if (!empty($info['admin_email'])) {
+                sendDocumentRejectedEmail(
+                    $info['admin_email'],
+                    $info['admin_name'],
+                    $info['clinic_name'],
+                    $docType,
+                    $reason . " — You may re-upload a corrected copy tomorrow."
+                );
             }
         }
 
         echo json_encode([
-            'success' => true,
-            'message' => $maxReached 
-                ? "Document rejected. Clinic suspended. Maximum attempts reached." 
-                : "Document $status (Attempt $currentAttempts of " . MAX_ATTEMPTS . ")",
-            'attempts' => $currentAttempts,
-            'max_reached' => $maxReached
+            'success'        => true,
+            'message'        => $status === 'Rejected'
+                ? "Document declined. Clinic may re-upload once per day."
+                : "Document approved.",
+            'attempts'       => $currentAttempts,
+            'declined_today' => ($status === 'Rejected') ? true : false
         ]);
 
     } catch (Exception $e) {
@@ -786,12 +837,13 @@ function resetDocumentAttempts($pdo, $data) {
 
         $clinicId = $doc['clinic_id'];
 
-        // ✅ RESET the document — clear ang file para kailangan mag-upload muli
+        // ✅ RE-OPEN the document — clear the file so the clinic must upload a fresh copy.
+        // Status = "Awaiting Re-upload" (NOT "Pending") para malinaw na waiting sa clinic.
         $stmt = $pdo->prepare("
             UPDATE clinic_documents
             SET 
                 submission_attempts = 0,
-                status = 'Pending',
+                status = 'Awaiting Re-upload',
                 max_attempts_reached = 0,
                 rejection_reason = NULL,
                 reviewed_at = NULL,
@@ -832,10 +884,10 @@ function resetDocumentAttempts($pdo, $data) {
             createNotification(
                 $pdo,
                 $admin['admin_user_id'],
-                'Document Reset — Please Re-upload',
+                'Document Re-opened — Please Re-upload',
                 "Ang dokumentong <b>{$doc['document_type']}</b> ay binigyan ng bagong chance ng administrator. " .
-                "Mangyaring mag-upload ng <b>bagong corrected document</b> sa inyong dashboard. " .
-                "Reason: {$reason}",
+                "Maaari ka nang mag-upload ng <b>bagong corrected document</b> ngayon (hindi na kailangang hintayin ang bukas).<br><br>" .
+                "<b>Reason:</b> {$reason}",
                 'info'
             );
 
@@ -979,7 +1031,7 @@ function sendStatusEmail($toEmail, $adminName, $clinicName, $status, $reason = '
                     </div>
                     
                     <div style='text-align: center; margin: 30px 0;'>
-                        <a href='<a href='http://eyecore.capstone001.com/admin/login.php'>' style='background: linear-gradient(135deg, #0d9488, #3b82f6); color: white; padding: 12px 30px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;'>
+                        <a href='http://eyecore.capstone001.com/admin/login.php' style='background: linear-gradient(135deg, #0d9488, #3b82f6); color: white; padding: 12px 30px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block;'>
                             🚀 Login to Dashboard
                         </a>
                     </div>
@@ -1103,15 +1155,15 @@ function sendDocumentRejectedEmail($toEmail, $adminName, $clinicName, $documentT
         $mail->addAddress($toEmail, $adminName);
 
         $mail->isHTML(true);
-        $mail->Subject = "❌ Document Rejected – {$clinicName}";
+        $mail->Subject = "❌ Document Declined – {$clinicName}";
 
         $mail->Body = "
             <div style='font-family: Arial'>
-                <h2 style='color:#ef4444;'>Document Rejected</h2>
+                <h2 style='color:#ef4444;'>Document Declined</h2>
 
                 <p>Hello <b>{$adminName}</b>,</p>
 
-                <p>Your submitted document has been rejected.</p>
+                <p>Your submitted document has been declined.</p>
 
                 <ul>
                     <li><b>Clinic:</b> {$clinicName}</li>
@@ -1187,6 +1239,143 @@ function logActivity($pdo, $clinicId, $action, $module, $details) {
         $stmt->execute([$clinicId, $userId, $action, $module, $details, $ipAddress]);
     } catch (Exception $e) {
         // Silent fail for logging
+    }
+}
+
+function updateIdentityStatus($pdo, $data) {
+    try {
+        $clinicId = $data['clinic_id'] ?? 0;
+        $status = $data['status'] ?? ''; 
+        $reason = $data['reason'] ?? '';
+        $userId = $_SESSION['user_id'] ?? 0;
+
+        if (!$clinicId || !in_array($status, ['Approved', 'Rejected', 'Awaiting Re-upload'])) {
+            echo json_encode(['success' => false, 'error' => 'Invalid data']);
+            return;
+        }
+
+        // Kunin ang clinic info at admin details para sa email
+        $stmtInfo = $pdo->prepare("
+            SELECT c.clinic_name, u.email AS admin_email, u.first_name AS admin_name
+            FROM clinics c
+            LEFT JOIN users u ON c.id = u.clinic_id AND u.role = 'ClinicAdmin'
+            WHERE c.id = ?
+        ");
+        $stmtInfo->execute([$clinicId]);
+        $info = $stmtInfo->fetch(PDO::FETCH_ASSOC);
+
+        // I-update ang identity record
+        $stmt = $pdo->prepare("UPDATE clinic_identity_verification SET 
+            status = ?, 
+            rejection_reason = ?, 
+            reviewed_at = NOW(), 
+            reviewed_by = ? 
+            WHERE clinic_id = ?");
+        
+        $stmt->execute([
+            $status,
+            $status === 'Rejected' ? $reason : null,
+            $userId,
+            $clinicId
+        ]);
+
+        if ($status === 'Approved') {
+            $pdo->prepare("UPDATE clinics SET identity_verified = 1 WHERE id = ?")->execute([$clinicId]);
+        } else {
+            $pdo->prepare("UPDATE clinics SET identity_verified = 0 WHERE id = ?")->execute([$clinicId]);
+        }
+
+        // Kunin ang admin user id para sa in-app notification
+        $stmtUser = $pdo->prepare("SELECT id FROM users WHERE clinic_id = ? AND role = 'ClinicAdmin' LIMIT 1");
+        $stmtUser->execute([$clinicId]);
+        $admin = $stmtUser->fetch(PDO::FETCH_ASSOC);
+
+        if ($admin) {
+            $msg = $status === 'Approved' 
+                ? "Your identity has been successfully verified." 
+                : "Your identity verification was declined. Reason: " . $reason . ". Please resubmit.";
+
+            createNotification($pdo, $admin['id'], "Identity Verification: " . $status, $msg, $status === 'Approved' ? 'success' : 'warning');
+        }
+
+        // ============================================================
+        // MAGPADALA NG EMAIL KAPAG REJECTED
+        // ============================================================
+        if ($status === 'Rejected' && !empty($info['admin_email'])) {
+            sendIdentityRejectedEmail(
+                $info['admin_email'],
+                $info['admin_name'] ?? 'Clinic Admin',
+                $info['clinic_name'],
+                $reason
+            );
+        }
+
+        echo json_encode(['success' => true, 'message' => 'Identity status updated']);
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+    }
+}
+
+function sendIdentityRejectedEmail($toEmail, $adminName, $clinicName, $reason) {
+    try {
+        require '../PHPMailer/PHPMailer.php';
+        require '../PHPMailer/SMTP.php';
+        require '../PHPMailer/Exception.php';
+
+        $mail = new PHPMailer\PHPMailer\PHPMailer(true);
+
+        $mail->isSMTP();
+        $mail->Host = 'smtp.gmail.com';
+        $mail->SMTPAuth = true;
+        $mail->Username = 'angelloricanmendoza27@gmail.com';
+        $mail->Password = 'tkyv vypr pxvm pfse';
+        $mail->SMTPSecure = PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->Port = 587;
+
+        $mail->setFrom('angelloricanmendoza27@gmail.com', 'Eyecore Verification');
+        $mail->addAddress($toEmail, $adminName);
+
+        $mail->isHTML(true);
+        $mail->Subject = "❌ Identity Verification Declined – {$clinicName}";
+
+        $mail->Body = "
+            <div style='font-family: Arial; max-width: 600px; margin: 0 auto;'>
+                <h2 style='color:#ef4444; text-align:center;'>Identity Verification Declined</h2>
+
+                <p>Hello <b>{$adminName}</b>,</p>
+
+                <p>Your submitted identity verification (Live Selfie & ID) has been declined.</p>
+
+                <ul>
+                    <li><b>Clinic:</b> {$clinicName}</li>
+                    <li><b>Document:</b> Identity Verification</li>
+                </ul>
+
+                <div style='background:#fef2f2; padding:15px; border-left:5px solid #ef4444; margin: 20px 0;'>
+                    <b>Reason:</b><br>
+                    {$reason}
+                </div>
+
+                <p>Please log in to your clinic dashboard and re-upload a clear and valid ID with a proper selfie.</p>
+
+                <p style='text-align: center; margin: 30px 0;'>
+                    <a href='http://eyecore.capstone001.com/clinic/documents.php' 
+                       style='background:#3b82f6; color:white; padding:12px 30px; text-decoration:none; border-radius:8px; font-weight:bold; display:inline-block;'>
+                        📄 Go to Dashboard
+                    </a>
+                </p>
+
+                <br>
+                <small style='color:#6b7280;'>This is an automated email from Eyecore System.</small>
+            </div>
+        ";
+
+        $mail->send();
+        return true;
+
+    } catch (Exception $e) {
+        error_log("Identity reject email failed: " . $e->getMessage());
+        return false;
     }
 }
 ?>

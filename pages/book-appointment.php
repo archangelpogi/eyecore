@@ -111,12 +111,23 @@ if ($item_id > 0 && $item_type_param == 'service') {
 }
 
 // Get all services
+// Hanapin mo ito:
 $services_query = mysqli_query($conn, "SELECT s.*, 
                                         GROUP_CONCAT(d.name SEPARATOR ', ') as available_doctors
                                         FROM services s
                                         LEFT JOIN service_doctors sd ON s.id = sd.service_id
                                         LEFT JOIN doctors d ON sd.doctor_id = d.id AND d.is_active = 1
                                         WHERE s.clinic_id = $clinic_id
+                                        GROUP BY s.id
+                                        ORDER BY s.category, s.name");
+
+// PALITAN MO NG GANITO (idinagdag ang status = 'active'):
+$services_query = mysqli_query($conn, "SELECT s.*, 
+                                        GROUP_CONCAT(d.name SEPARATOR ', ') as available_doctors
+                                        FROM services s
+                                        LEFT JOIN service_doctors sd ON s.id = sd.service_id
+                                        LEFT JOIN doctors d ON sd.doctor_id = d.id AND d.is_active = 1
+                                        WHERE s.clinic_id = $clinic_id AND s.status = 'active'
                                         GROUP BY s.id
                                         ORDER BY s.category, s.name");
 
@@ -402,32 +413,22 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
         $service_rows = [];
         if (empty($error_message) && $item_type_db === 'service' && !empty($selected_service_ids)) {
             $ids_str = implode(',', $selected_service_ids);
-            $svc_check = mysqli_query($conn, "SELECT id, name, price, booking_group, max_per_booking FROM services WHERE id IN ($ids_str) AND clinic_id = $clinic_id");
+            $svc_check = mysqli_query($conn, "SELECT id, name, price, is_free, booking_group, max_per_booking FROM services WHERE id IN ($ids_str) AND clinic_id = $clinic_id");
             
-            $groupCounts = [];
-            $hasStandalone = false;
+            $hasRepair = false;
             
             while ($svcRow = mysqli_fetch_assoc($svc_check)) {
                 $service_rows[] = $svcRow;
                 $grp = $svcRow['booking_group'];
-                if ($grp === 'treatment' || $grp === 'repair' || $grp === null || $grp === '') {
-                    $hasStandalone = true;
+                // I-flag kung may Frame Repair
+                if ($grp === 'repair' || strpos(strtolower($svcRow['name']), 'repair') !== false) {
+                    $hasRepair = true;
                 }
-                $groupCounts[$grp] = ($groupCounts[$grp] ?? 0) + 1;
             }
             
-            if ($hasStandalone && count($selected_service_ids) > 1) {
-                $error_message = 'Treatment, repair, or standalone services cannot be combined with other services.';
-            } else {
-                foreach ($groupCounts as $grp => $cnt) {
-                    $max_q = mysqli_query($conn, "SELECT max_per_booking FROM services WHERE booking_group = '$grp' AND clinic_id = $clinic_id LIMIT 1");
-                    $max_row = mysqli_fetch_assoc($max_q);
-                    $maxAllowed = $max_row['max_per_booking'] ?? 1;
-                    if ($cnt > $maxAllowed) {
-                        $error_message = "Only $maxAllowed service(s) from the '$grp' group can be combined per booking.";
-                        break;
-                    }
-                }
+            // Bawal pagsamahin ang Frame Repair sa ibang service
+            if ($hasRepair && count($selected_service_ids) > 1) {
+                $error_message = 'Frame Repair must be booked alone. Please uncheck other services.';
             }
         } elseif (empty($error_message) && $item_type_db === 'service' && !empty($selected_service_ids)) {
             $ids_str = implode(',', $selected_service_ids);
@@ -503,12 +504,69 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 }
             }
 
-            $insert_query = "INSERT INTO appointments 
-                (user_id, patient_id, clinic_id, item_id, item_type, doctor_id, 
-                 appointment_date, appointment_time, notes, contact_number, status, is_new_patient, created_at) 
-                VALUES ($user_id, " . ($existingPatientId ?: 'NULL') . ", $clinic_id, $primary_item_id, '$item_type_db', " .
-                ($doctor_id === 'NULL' ? 'NULL' : $doctor_id) . ", 
-                '$appointment_date', '$appointment_time', '$appointment_notes', '$contact_number', 'pending', $isNewPatient, NOW())";
+// ✅ KUNIN ANG TAMANG PRESYO
+$item_price_for_save = 0;
+if ($item_type_db === 'product' && $selected_product_data) {
+    $item_price_for_save = (float)$selected_product_data['price'];
+} elseif ($item_type_db === 'service' && !empty($service_rows)) {
+    foreach ($service_rows as $svc) {
+        $item_price_for_save += (float)$svc['price'];
+    }
+}
+
+// ✅ I-COMPUTE ANG DISCOUNT AT TOTAL GAMIT ANG HELPER
+$tax_calc = applyTaxAndDiscount($conn, $item_price_for_save, false);  // false = walang PWD/Senior sa booking
+$subtotal_save      = $tax_calc['subtotal'];         // 1500
+$discount_save      = $tax_calc['discount_amount'];  // 0 (walang discount sa booking stage)
+$vat_save           = $tax_calc['vat_amount'];       // 0
+$total_save         = $tax_calc['final_total'];      // 1500
+$vat_rate_save      = $tax_calc['vat_rate'];         // 0.12
+$discount_type_save = 'none';
+$discount_pct_save  = 0;
+
+// ============================================
+// ✅ AUTO-APPROVE KUNG FREE SERVICE/PRODUCT
+// ============================================
+$all_items_free = true;
+
+if ($item_type_db === 'service') {
+    foreach ($service_rows as $svc) {
+        $svc_price = (float)($svc['price'] ?? 0);
+        $svc_is_free = (int)($svc['is_free'] ?? 0);
+        // FREE kung price = 0 OR is_free = 1
+        if ($svc_price > 0 && $svc_is_free !== 1) {
+            $all_items_free = false;
+            break;
+        }
+    }
+} else {
+    $prod_price = (float)($selected_product_data['price'] ?? 0);
+    $prod_is_free = (int)($selected_product_data['is_free'] ?? 0);
+    if ($prod_price > 0 && $prod_is_free !== 1) {
+        $all_items_free = false;
+    }
+}
+
+// ✅ AUTO-CONFIRM kung free
+if ($all_items_free) {
+    $subtotal_save = 0;
+    $discount_save = 0;
+    $vat_save      = 0;
+    $total_save    = 0;
+}
+$auto_approve       = ($all_items_free || (float)$total_save == 0.0);
+$appointment_status = $auto_approve ? 'confirmed' : 'pending';
+
+$insert_query = "INSERT INTO appointments 
+    (user_id, patient_id, clinic_id, item_id, item_type, doctor_id, 
+     appointment_date, appointment_time, notes, contact_number, status, is_new_patient, created_at,
+     subtotal, discount_amount, discount_type, discount_percentage, 
+     vat_percentage, vat_amount, total_amount) 
+    VALUES ($user_id, " . ($existingPatientId ?: 'NULL') . ", $clinic_id, $primary_item_id, '$item_type_db', " .
+    ($doctor_id === 'NULL' ? 'NULL' : $doctor_id) . ", 
+    '$appointment_date', '$appointment_time', '$appointment_notes', '$contact_number', '$appointment_status', $isNewPatient, NOW(),
+    $subtotal_save, $discount_save, '$discount_type_save', $discount_pct_save,
+    " . ($vat_rate_save * 100) . ", $vat_save, $total_save)";
 
             if (mysqli_query($conn, $insert_query)) {
                 $new_appointment_id = mysqli_insert_id($conn);
@@ -528,27 +586,37 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 $item_text = implode(' + ', $item_names);
 
                 if (function_exists('addNotification')) {
-                    addNotification($user_id, 'appointment', 'New Appointment Booked',
-                        "Your {$item_text} at {$clinic['name']}{$doctor_text} on {$formatted_date} at {$formatted_time} is pending confirmation.",
-                        'my-appointments.php'
-                    );
+                    if ($auto_approve) {
+                        addNotification($user_id, 'appointment', 'Appointment Confirmed',
+                            "Your {$item_text} at {$clinic['name']}{$doctor_text} on {$formatted_date} at {$formatted_time} is confirmed. See you!",
+                            'my-appointments.php'
+                        );
+                    } else {
+                        addNotification($user_id, 'appointment', 'New Appointment Booked',
+                            "Your {$item_text} at {$clinic['name']}{$doctor_text} on {$formatted_date} at {$formatted_time} is pending confirmation.",
+                            'my-appointments.php'
+                        );
+                    }
                 }
 
                 $payment_info = calculatePaymentAmounts($conn, $clinic_id, $total_price);
                 $booking_flow = $payment_info['booking_flow'] ?? 'approve_first';
 
-                if ($payment_info['requires_payment']) {
-                    if ($booking_flow === 'pay_first') {
-                        header('Location: payment.php?appointment_id=' . $new_appointment_id);
-                        exit();
-                    } else {
-                        $success_message = 'Appointment booked successfully! Please wait for clinic approval before making payment.';
-                        $_POST = array();
-                    }
+            if ($auto_approve) {
+                $success_message = 'Appointment confirmed! This is a free service — no payment needed.';
+                $_POST = array();
+            } elseif ($payment_info['requires_payment']) {
+                if ($booking_flow === 'pay_first') {
+                    header('Location: payment.php?appointment_id=' . $new_appointment_id);
+                    exit();
                 } else {
-                    $success_message = 'Appointment booked successfully!';
+                    $success_message = 'Appointment booked successfully! Please wait for clinic approval before making payment.';
                     $_POST = array();
                 }
+            } else {
+                $success_message = 'Appointment booked successfully!';
+                $_POST = array();
+            }
             } else {
                 $error_message = 'Error booking appointment: ' . mysqli_error($conn);
             }
@@ -1245,28 +1313,40 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                                         $svc_max = $service['max_per_booking'] ?? 1;
                                         $is_preselected = ($selected_item && $selected_item['id'] == $service['id'] && $selected_item_type == 'service');
                                 ?>
-                                <label class="service-card <?php echo $is_preselected ? 'selected' : ''; ?>" data-service-id="<?php echo $service['id']; ?>">
-                                    <input type="checkbox" name="service_ids[]" value="<?php echo $service['id']; ?>" 
-                                           class="service-checkbox"
-                                           data-group="<?php echo htmlspecialchars($svc_group); ?>" 
-                                           data-max="<?php echo (int)$svc_max; ?>"
-                                           data-price="<?php echo $service['price']; ?>"
-                                           data-name="<?php echo htmlspecialchars($service['name']); ?>"
-                                           <?php echo $is_preselected ? 'checked' : ''; ?>
-                                           onchange="handleServiceSelection(this)">
-                                    <div class="doctor-avatar" style="background: var(--primary-light); color: var(--primary);">
-                                        <i class="fas fa-stethoscope"></i>
-                                    </div>
-                                    <div class="doctor-name"><?php echo $service['name']; ?></div>
-                                    <div class="doctor-specialty"><?php echo $service['category']; ?></div>
-                                    <div class="product-price">₱<?php echo number_format($service['price'], 2); ?></div>
-                                    <span class="doctor-schedule-badge"><i class="fas fa-clock"></i> <?php echo $service['duration_minutes'] ?? '30'; ?> mins</span>
-                                    <?php if ($svc_group): ?>
-                                    <div class="service-group-badge"><?php echo htmlspecialchars($svc_group); ?></div>
-                                    <?php else: ?>
-                                    <div class="service-group-badge" style="background:#f8d7da;color:#721c24;">standalone</div>
-                                    <?php endif; ?>
-                                </label>
+<?php 
+    $is_service_free = (($service['is_free'] ?? 0) == 1 || ($service['price'] ?? 0) == 0);
+?>
+<label class="service-card <?php echo $is_preselected ? 'selected' : ''; ?>" data-service-id="<?php echo $service['id']; ?>" style="position: relative;">
+    <?php if ($is_service_free): ?>
+        <div style="position:absolute; top:6px; left:6px; background: linear-gradient(135deg, #00B761, #00A86B); color: white; padding: 3px 10px; border-radius: 20px; font-size: 10px; font-weight: 700; box-shadow: 0 2px 6px rgba(0,183,97,0.3); z-index: 2;"><i class="fas fa-gift me-1"></i>FREE</div>
+    <?php endif; ?>
+    <input type="checkbox" name="service_ids[]" value="<?php echo $service['id']; ?>" 
+           class="service-checkbox"
+           data-group="<?php echo htmlspecialchars($svc_group); ?>" 
+           data-max="<?php echo (int)$svc_max; ?>"
+           data-price="<?php echo $service['price']; ?>"
+           data-name="<?php echo htmlspecialchars($service['name']); ?>"
+           <?php echo $is_preselected ? 'checked' : ''; ?>
+           onchange="handleServiceSelection(this)">
+    <div class="doctor-avatar" style="background: <?php echo $is_service_free ? '#D1FAE5' : 'var(--primary-light)'; ?>; color: <?php echo $is_service_free ? '#065F46' : 'var(--primary)'; ?>;">
+        <i class="fas fa-<?php echo $is_service_free ? 'gift' : 'stethoscope'; ?>"></i>
+    </div>
+    <div class="doctor-name"><?php echo $service['name']; ?></div>
+    <div class="doctor-specialty"><?php echo $service['category']; ?></div>
+    <?php if ($is_service_free): ?>
+        <div class="product-price" style="color: #065F46; display: flex; align-items: center; gap: 4px; justify-content: center;">
+            <i class="fas fa-gift"></i> FREE
+        </div>
+    <?php else: ?>
+        <div class="product-price">₱<?php echo number_format($service['price'], 2); ?></div>
+    <?php endif; ?>
+    <span class="doctor-schedule-badge"><i class="fas fa-clock"></i> <?php echo $service['duration_minutes'] ?? '30'; ?> mins</span>
+    <?php if ($svc_group): ?>
+    <div class="service-group-badge"><?php echo htmlspecialchars($svc_group); ?></div>
+    <?php else: ?>
+    <div class="service-group-badge" style="background:#f8d7da;color:#721c24;">standalone</div>
+    <?php endif; ?>
+</label>
                                 <?php 
                                     endwhile;
                                 else:
@@ -1590,69 +1670,82 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
                 $flow_icon = ($booking_flow === 'pay_first') ? 'fa-credit-card' : 'fa-clock';
                 ?>
                 
-                <div class="flow-indicator" style="border-left: 4px solid <?php echo $flow_color; ?>;">
-                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-                        <i class="fas <?php echo $flow_icon; ?>" style="color: <?php echo $flow_color; ?>; font-size: 20px;"></i>
-                        <h5 style="margin: 0; font-weight: 600; color: var(--text-primary);"><?php echo $booking_flow === 'pay_first' ? 'Pay First Booking' : 'Approve First Booking'; ?></h5>
-                    </div>
-                    <p style="margin: 0 0 12px 0; font-size: 13px; color: var(--text-secondary); line-height: 1.5;">
-                        <?php if ($booking_flow === 'pay_first'): ?>
-                            <i class="fas fa-check-circle" style="color: var(--primary); font-size: 12px;"></i> You will pay the downpayment <strong>immediately</strong> after booking.<br>
-                            <i class="fas fa-check-circle" style="color: var(--primary); font-size: 12px;"></i> Clinic will review and approve after payment.
-                        <?php else: ?>
-                            <i class="fas fa-check-circle" style="color: var(--warning); font-size: 12px;"></i> Clinic will review your appointment first.<br>
-                            <i class="fas fa-check-circle" style="color: var(--warning); font-size: 12px;"></i> You will pay <strong>after</strong> the clinic approves.
-                        <?php endif; ?>
-                    </p>
-                    
-                    <div style="margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border-color);">
-                        <?php if ($payment_type === 'downpayment'): ?>
-                            <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 8px;">
-                                <span style="color: var(--text-secondary);">Total Amount:</span>
-                                <strong style="color: var(--text-primary);">₱<?php echo number_format($display_payment['total_amount'], 2); ?></strong>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px; background: var(--primary-light); padding: 8px; border-radius: var(--radius-sm);">
-                                <span style="font-weight: 600;">Downpayment Due:</span>
-                                <strong style="color: var(--primary); font-size: 16px;">₱<?php echo number_format($display_payment['downpayment_amount'], 2); ?></strong>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; font-size: 13px;">
-                                <span style="color: var(--text-secondary);">Balance at clinic:</span>
-                                <strong style="color: var(--warning);">₱<?php echo number_format($display_payment['balance_amount'], 2); ?></strong>
-                            </div>
-                        <?php elseif ($payment_type === 'full'): ?>
-                            <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px; background: var(--primary-light); padding: 8px; border-radius: var(--radius-sm);">
-                                <span style="font-weight: 600;">Total Amount Due:</span>
-                                <strong style="color: var(--primary); font-size: 16px;">₱<?php echo number_format($display_payment['total_amount'], 2); ?></strong>
-                            </div>
-                            <p style="font-size: 12px; color: var(--text-muted); margin-top: 5px;"><i class="fas fa-info-circle"></i> Full payment required</p>
-                        <?php elseif ($payment_type === 'onsite'): ?>
-                            <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px; background: var(--bg-secondary); padding: 8px; border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
-                                <span style="font-weight: 600;">Pay at Clinic:</span>
-                                <strong style="color: var(--warning); font-size: 16px;">₱<?php echo number_format($display_payment['total_amount'], 2); ?></strong>
-                            </div>
-                            <p style="font-size: 12px; color: var(--text-muted); margin-top: 5px;"><i class="fas fa-store"></i> No online payment required</p>
-                        <?php elseif ($payment_type === 'free'): ?>
-                            <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px; background: var(--success); color: white; padding: 8px; border-radius: var(--radius-sm);">
-                                <span style="font-weight: 600;">FREE SERVICE</span>
-                                <strong>₱0.00</strong>
-                            </div>
-                            <p style="font-size: 12px; color: var(--text-muted); margin-top: 5px;"><i class="fas fa-check-circle"></i> No payment required</p>
-                        <?php endif; ?>
-                        
-                        <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
-                            <?php if ($display_payment['payment_method_online']): ?>
-                                <span style="background: var(--bg-secondary); padding: 4px 10px; border-radius: 20px; font-size: 11px; border: 1px solid var(--border-color);">
-                                    <i class="fas fa-mobile-alt" style="color: var(--primary);"></i> Online
-                                </span>
-                            <?php endif; ?>
-                            <?php if ($display_payment['payment_method_onsite']): ?>
-                                <span style="background: var(--bg-secondary); padding: 4px 10px; border-radius: 20px; font-size: 11px; border: 1px solid var(--border-color);">
-                                    <i class="fas fa-cash-register" style="color: var(--warning);"></i> On-Site
-                                </span>
-                            <?php endif; ?>
-                        </div>
-                    </div>
+<?php if ($payment_type === 'free'): ?>
+    <!-- ✅ FREE SERVICE — Simplified block, walang "Approve First" -->
+    <div class="flow-indicator" style="border-left: 4px solid var(--success); background: #ECFDF5;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <i class="fas fa-gift" style="color: var(--success); font-size: 22px;"></i>
+            <h5 style="margin: 0; font-weight: 700; color: var(--success); font-size: 16px;">FREE SERVICE</h5>
+        </div>
+        <p style="margin: 0 0 10px 0; font-size: 13px; color: var(--text-secondary); line-height: 1.5;">
+            <i class="fas fa-check-circle" style="color: var(--success); font-size: 12px;"></i> This service is <strong>free of charge</strong>.<br>
+            <i class="fas fa-check-circle" style="color: var(--success); font-size: 12px;"></i> No payment required before or after the appointment.
+        </p>
+        <div style="display: flex; justify-content: space-between; font-size: 16px; background: var(--success); color: white; padding: 10px 14px; border-radius: var(--radius-sm); margin-top: 10px;">
+            <span style="font-weight: 700;"><i class="fas fa-gift me-1"></i> FREE SERVICE</span>
+            <strong>₱0.00</strong>
+        </div>
+    </div>
+<?php else: ?>
+    <!-- ✅ PAID SERVICE — Show normal flow indicator -->
+    <div class="flow-indicator" style="border-left: 4px solid <?php echo $flow_color; ?>;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <i class="fas <?php echo $flow_icon; ?>" style="color: <?php echo $flow_color; ?>; font-size: 20px;"></i>
+            <h5 style="margin: 0; font-weight: 600; color: var(--text-primary);"><?php echo $booking_flow === 'pay_first' ? 'Pay First Booking' : 'Approve First Booking'; ?></h5>
+        </div>
+        <p style="margin: 0 0 12px 0; font-size: 13px; color: var(--text-secondary); line-height: 1.5;">
+            <?php if ($booking_flow === 'pay_first'): ?>
+                <i class="fas fa-check-circle" style="color: var(--primary); font-size: 12px;"></i> You will pay the downpayment <strong>immediately</strong> after booking.<br>
+                <i class="fas fa-check-circle" style="color: var(--primary); font-size: 12px;"></i> Clinic will review and approve after payment.
+            <?php else: ?>
+                <i class="fas fa-check-circle" style="color: var(--warning); font-size: 12px;"></i> Clinic will review your appointment first.<br>
+                <i class="fas fa-check-circle" style="color: var(--warning); font-size: 12px;"></i> You will pay <strong>after</strong> the clinic approves.
+            <?php endif; ?>
+        </p>
+        
+        <div style="margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border-color);">
+            <?php if ($payment_type === 'downpayment'): ?>
+                <div style="display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 8px;">
+                    <span style="color: var(--text-secondary);">Total Amount:</span>
+                    <strong style="color: var(--text-primary);">₱<?php echo number_format($display_payment['total_amount'], 2); ?></strong>
                 </div>
+                <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px; background: var(--primary-light); padding: 8px; border-radius: var(--radius-sm);">
+                    <span style="font-weight: 600;">Downpayment Due:</span>
+                    <strong style="color: var(--primary); font-size: 16px;">₱<?php echo number_format($display_payment['downpayment_amount'], 2); ?></strong>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 13px;">
+                    <span style="color: var(--text-secondary);">Balance at clinic:</span>
+                    <strong style="color: var(--warning);">₱<?php echo number_format($display_payment['balance_amount'], 2); ?></strong>
+                </div>
+            <?php elseif ($payment_type === 'full'): ?>
+                <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px; background: var(--primary-light); padding: 8px; border-radius: var(--radius-sm);">
+                    <span style="font-weight: 600;">Total Amount Due:</span>
+                    <strong style="color: var(--primary); font-size: 16px;">₱<?php echo number_format($display_payment['total_amount'], 2); ?></strong>
+                </div>
+                <p style="font-size: 12px; color: var(--text-muted); margin-top: 5px;"><i class="fas fa-info-circle"></i> Full payment required</p>
+            <?php elseif ($payment_type === 'onsite'): ?>
+                <div style="display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px; background: var(--bg-secondary); padding: 8px; border-radius: var(--radius-sm); border: 1px solid var(--border-color);">
+                    <span style="font-weight: 600;">Pay at Clinic:</span>
+                    <strong style="color: var(--warning); font-size: 16px;">₱<?php echo number_format($display_payment['total_amount'], 2); ?></strong>
+                </div>
+                <p style="font-size: 12px; color: var(--text-muted); margin-top: 5px;"><i class="fas fa-store"></i> No online payment required</p>
+            <?php endif; ?>
+            
+            <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+                <?php if ($display_payment['payment_method_online']): ?>
+                    <span style="background: var(--bg-secondary); padding: 4px 10px; border-radius: 20px; font-size: 11px; border: 1px solid var(--border-color);">
+                        <i class="fas fa-mobile-alt" style="color: var(--primary);"></i> Online
+                    </span>
+                <?php endif; ?>
+                <?php if ($display_payment['payment_method_onsite']): ?>
+                    <span style="background: var(--bg-secondary); padding: 4px 10px; border-radius: 20px; font-size: 11px; border: 1px solid var(--border-color);">
+                        <i class="fas fa-cash-register" style="color: var(--warning);"></i> On-Site
+                    </span>
+                <?php endif; ?>
+            </div>
+        </div>
+    </div>
+<?php endif; ?>
 
                 <div class="summary-card">
                     <h4><i class="fas fa-receipt"></i> Booking Summary</h4>
@@ -1970,12 +2063,27 @@ function buildProductCard(prod) {
         else if (cleanPath.startsWith('http')) imgHtml = `<img src="${cleanPath}" alt="">`;
         else imgHtml = `<img src="/assets/images/products/${cleanPath}" alt="">`;
     }
+
+    // ✅ CHECK KUNG FREE ANG PRODUCT
+    const isFree = (prod.is_free == 1 || prod.is_free === true || prod.is_free === '1');
+    const priceDisplay = isFree
+        ? `<div class="product-price" style="color: #00B761; display: flex; align-items: center; gap: 4px; justify-content: center;">
+               <i class="fas fa-gift"></i> FREE
+           </div>`
+        : `<div class="product-price">₱${Number(prod.price).toFixed(2)}</div>`;
+
+    // ✅ FREE BADGE SA ITAAS NG CARD
+    const freeBadge = isFree
+        ? `<div class="free-badge" style="position:absolute; top:8px; left:8px; background: linear-gradient(135deg, #00B761, #00A86B); color: white; padding: 3px 10px; border-radius: 20px; font-size: 10px; font-weight: 700; box-shadow: 0 2px 6px rgba(0,183,97,0.3); z-index: 2;"><i class="fas fa-gift me-1"></i>FREE</div>`
+        : '';
+
     return `
-        <div class="product-card" data-product-id="${prod.id}" onclick="selectProduct('${prod.category}', ${prod.id}, '${htmlspecialchars(prod.name)}', ${prod.price})">
+        <div class="product-card" data-product-id="${prod.id}" style="position: relative;" onclick="selectProduct('${prod.category}', ${prod.id}, '${htmlspecialchars(prod.name)}', ${prod.price})">
+            ${freeBadge}
             <div class="product-img-thumb">${imgHtml}</div>
             <div class="product-name">${htmlspecialchars(prod.name)}</div>
             <div class="product-category">${htmlspecialchars(prod.category)}</div>
-            <div class="product-price">₱${Number(prod.price).toFixed(2)}</div>
+            ${priceDisplay}
         </div>
     `;
 }
@@ -2400,26 +2508,25 @@ html += buildProductCard(prod);
         const name = checkbox.getAttribute('data-name');
         const price = parseFloat(checkbox.getAttribute('data-price'));
         const card = checkbox.closest('.service-card');
-        const isStandalone = (group === 'treatment' || group === 'repair' || group === '');
+        
+        // Ang tanging bawal lang i-combine ay ang 'repair'
+        const isRepair = (group === 'repair');
 
         if (checkbox.checked) {
-            const hasStandaloneSelected = selectedServices.some(s => (s.group === 'treatment' || s.group === 'repair' || s.group === ''));
-            if (hasStandaloneSelected && selectedServices.length > 0) {
+            const hasRepairSelected = selectedServices.some(s => s.group === 'repair');
+            
+            if (isRepair && selectedServices.length > 0) {
                 checkbox.checked = false;
-                showToast('That service cannot be combined with your current selection. Please book it alone.', 'error');
+                showToast('Frame Repair must be booked alone. Uncheck other services first.', 'error');
                 return;
             }
-            if (isStandalone && selectedServices.length > 0) {
+            
+            if (hasRepairSelected && selectedServices.length > 0) {
                 checkbox.checked = false;
-                showToast('This service must be booked alone. Uncheck other services first.', 'error');
+                showToast('You already selected Frame Repair. It must be booked alone.', 'error');
                 return;
             }
-            const countInGroup = selectedServices.filter(s => s.group === group).length;
-            if (countInGroup >= maxPer) {
-                checkbox.checked = false;
-                showToast(`Only ${maxPer} '${group}' service(s) allowed per booking.`, 'error');
-                return;
-            }
+
             selectedServices.push({ id, name, price, group, max: maxPer });
             card.classList.add('selected');
         } else {
@@ -2436,24 +2543,29 @@ html += buildProductCard(prod);
         checkStep1Complete();
     }
 
-    function refreshServiceLocks() {
-        const hasStandaloneSelected = selectedServices.some(s => (s.group === 'treatment' || s.group === 'repair' || s.group === ''));
+     function refreshServiceLocks() {
+        const hasRepairSelected = selectedServices.some(s => s.group === 'repair');
+        
         document.querySelectorAll('.service-checkbox').forEach(cb => {
             const card = cb.closest('.service-card');
             const group = cb.getAttribute('data-group') || '';
-            const maxPer = parseInt(cb.getAttribute('data-max')) || 1;
-            const isStandalone = (group === 'treatment' || group === 'repair' || group === '');
+            const isRepair = (group === 'repair');
             const alreadySelected = selectedServices.some(s => s.id === cb.value);
-            if (alreadySelected) { card.classList.remove('blocked'); return; }
-            let blocked = false;
-            if (selectedServices.length > 0) {
-                if (hasStandaloneSelected) blocked = true;
-                else if (isStandalone) blocked = true;
-                else {
-                    const countInGroup = selectedServices.filter(s => s.group === group).length;
-                    if (countInGroup >= maxPer) blocked = true;
-                }
+            
+            if (alreadySelected) { 
+                card.classList.remove('blocked'); 
+                cb.disabled = false;
+                return; 
             }
+            
+            let blocked = false;
+            
+            if (hasRepairSelected && selectedServices.length > 0) {
+                blocked = true;
+            } else if (isRepair && selectedServices.length > 0) {
+                blocked = true;
+            }
+            
             cb.disabled = blocked;
             card.classList.toggle('blocked', blocked);
         });
@@ -2849,9 +2961,6 @@ html += buildProductCard(prod);
         document.getElementById('summaryContact').textContent = contact || '—';
     }
 
-    // ============================================
-    // SWITCH MAIN TAB
-    // ============================================
     function switchMainTab(tab) {
         clearErrorMessage();
         
@@ -2867,14 +2976,7 @@ html += buildProductCard(prod);
         else if (tab === 'contact_lenses') renderContactLenses();
         else if (tab === 'services') renderServices();
         
-        if (tab === 'services') {
-            document.getElementById('doctorsGrid').style.display = 'grid';
-            document.getElementById('product-message').style.display = 'none';
-        } else {
-            document.getElementById('doctorsGrid').style.display = 'grid';
-            document.getElementById('product-message').style.display = 'none';
-        }
-        
+        // ✅ TINANGGAL ANG PRODUCT-MESSAGE (dahil wala naman talaga ito sa HTML)
         if (!step3Completed) {
             selectedDate = '';
             selectedTime = '';
@@ -2886,7 +2988,6 @@ html += buildProductCard(prod);
             document.getElementById('timeSlotsContainer').innerHTML = `<div class="text-center" style="padding:20px;color:var(--text-muted);"><i class="fas fa-clock"></i> Select a date to see available time slots</div>`;
         }
     }
-
     // ============================================
     // FORM VALIDATION - ONLY ON SUBMIT
     // ============================================

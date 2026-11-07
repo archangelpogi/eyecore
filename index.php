@@ -23,11 +23,9 @@ $is_logged_in = isset($_SESSION['user_id']);
 // DATABASE QUERIES
 // ============================================
 
-// Total active clinics count
 $clinics_count_q = mysqli_query($conn, "SELECT COUNT(*) as total FROM clinics WHERE status = 'Active'");
 $clinics_count = mysqli_fetch_assoc($clinics_count_q)['total'] ?? 0;
 
-// Overall rating stats from actual reviews
 $rating_q = mysqli_query($conn, "
     SELECT 
         COALESCE(AVG(rating), 0) as avg_rating,
@@ -39,11 +37,9 @@ $rating_data = mysqli_fetch_assoc($rating_q);
 $avg_rating_formatted = number_format($rating_data['avg_rating'], 1);
 $total_reviews = $rating_data['total_reviews'] ?? 0;
 
-// Total products count
 $products_q = mysqli_query($conn, "SELECT COUNT(*) as total FROM products");
 $products_count = mysqli_fetch_assoc($products_q)['total'] ?? 0;
 
-// Cities with clinic counts (active clinics only)
 $cities_q = mysqli_query($conn, "
     SELECT city, COUNT(*) as clinic_count 
     FROM clinics 
@@ -57,18 +53,9 @@ while ($row = mysqli_fetch_assoc($cities_q)) {
 }
 $total_cities = count($cities);
 
-// ===== FEATURED CLINICS - ALGORITHM BASED =====
-// Weighted scoring: 60% rating, 30% review count, 10% recency
 $featured_q = mysqli_query($conn, "
     SELECT 
-        c.id,
-        c.clinic_name,
-        c.city,
-        c.address,
-        c.hours,
-        c.clinic_image,
-        c.logo,
-        c.cover_photo,
+        c.id, c.clinic_name, c.city, c.address, c.hours, c.clinic_image, c.logo, c.cover_photo,
         COALESCE(AVG(r.rating), 0) as avg_rating,
         COUNT(r.id) as review_count,
         MAX(r.created_at) as latest_review,
@@ -86,7 +73,6 @@ $featured_q = mysqli_query($conn, "
     LIMIT 6
 ");
 
-// Count clinics with 3D models
 $has_3d_q = mysqli_query($conn, "
     SELECT COUNT(DISTINCT p.clinic_id) as total 
     FROM product_3d_models pm
@@ -95,17 +81,13 @@ $has_3d_q = mysqli_query($conn, "
 ");
 $clinics_with_3d = mysqli_fetch_assoc($has_3d_q)['total'] ?? 0;
 
-// Hot sale products (for slide 3)
 $sale_q = mysqli_query($conn, "
     SELECT p.name, p.price, p.sale_price, p.image,
            ROUND(((p.price - p.sale_price) / p.price) * 100) as discount_pct,
            c.clinic_name
     FROM products p
     JOIN clinics c ON p.clinic_id = c.id
-    WHERE p.is_on_sale = 1
-      AND p.sale_start <= CURDATE()
-      AND p.sale_end >= CURDATE()
-      AND c.status = 'Active'
+    WHERE p.is_on_sale = 1 AND p.sale_start <= CURDATE() AND p.sale_end >= CURDATE() AND c.status = 'Active'
     ORDER BY discount_pct DESC
     LIMIT 3
 ");
@@ -115,51 +97,34 @@ while ($row = mysqli_fetch_assoc($sale_q)) {
 }
 $sale_total = count($sale_products);
 
-// ===== DYNAMIC CATEGORIES - AUTO DISCOVER FROM DATABASE =====
 $category_counts = [];
 $cat_q = mysqli_query($conn, "
-    SELECT 
-        p.category, 
-        COUNT(*) as product_count
+    SELECT p.category, COUNT(*) as product_count
     FROM products p
     JOIN clinics c ON p.clinic_id = c.id
-    WHERE p.category IS NOT NULL 
-      AND p.category != ''
-      AND c.status = 'Active'
+    WHERE p.category IS NOT NULL AND p.category != '' AND c.status = 'Active'
     GROUP BY p.category
     ORDER BY product_count DESC
 ");
-
 while ($row = mysqli_fetch_assoc($cat_q)) {
     $cat_key = strtolower($row['category']);
     $category_counts[$cat_key] = $row['product_count'];
 }
 
-// Category CSS classes mapping
 $category_classes = [
-    'eyeglasses' => 'c-eyeglasses',
-    'sunglasses' => 'c-sunglasses',
-    'computer glasses' => 'c-computer',
-    'contact lens' => 'c-contact',
-    'reading' => 'c-reading',
-    'kids' => 'c-kids',
-    'prescription' => 'c-prescription',
-    'sports' => 'c-sports'
+    'eyeglasses' => 'c-eyeglasses', 'sunglasses' => 'c-sunglasses',
+    'computer glasses' => 'c-computer', 'contact lens' => 'c-contact',
+    'reading' => 'c-reading', 'kids' => 'c-kids',
+    'prescription' => 'c-prescription', 'sports' => 'c-sports'
 ];
 
-// Helper: get clinic image path
 function getClinicImage($clinic) {
-    if (!empty($clinic['cover_photo'])) {
-        return '/assets/images/clinic-covers/' . $clinic['cover_photo'];
-    } elseif (!empty($clinic['clinic_image'])) {
-        return '/assets/images/clinic-images/' . $clinic['clinic_image'];
-    } elseif (!empty($clinic['logo'])) {
-        return '/assets/images/clinic-logos/' . $clinic['logo'];
-    }
+    if (!empty($clinic['cover_photo'])) return '/assets/images/clinic-covers/' . $clinic['cover_photo'];
+    elseif (!empty($clinic['clinic_image'])) return '/assets/images/clinic-images/' . $clinic['clinic_image'];
+    elseif (!empty($clinic['logo'])) return '/assets/images/clinic-logos/' . $clinic['logo'];
     return null;
 }
 
-// Gradient colors per clinic index
 $clinic_gradients = [
     'linear-gradient(135deg,#d1fae5,#6ee7b7)',
     'linear-gradient(135deg,#dbeafe,#93c5fd)',
@@ -170,7 +135,6 @@ $clinic_gradients = [
 ];
 $clinic_icon_colors = ['#059669','#1d4ed8','#9d174d','#5b21b6','#92400e','#0f766e'];
 
-// Get sample clinics for each city
 function getCitySampleClinics($conn, $city, $limit = 3) {
     $result = [];
     $q = mysqli_query($conn, "
@@ -191,7 +155,8 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=yes">
-    <title>Eyecore — Cavite's Eye Care Platform</title>
+    <title>Eyecore — Cavite's Integrated Optical Clinic Platform</title>
+    <link rel="icon" type="image/x-icon" href="assets/images/eyecore_logo.png">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
@@ -253,402 +218,125 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
         }
 
         /* ===== NAVBAR ===== */
-        .navbar {
-            position: sticky;
-            top: 0;
-            z-index: 200;
-            background: var(--bg2);
-            border-bottom: 1px solid var(--border-light);
-            width: 100%;
-        }
-        
-        .navbar-container {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 0 40px;
-            height: 64px;
-            max-width: 1400px;
-            margin: 0 auto;
-            gap: 16px;
-        }
-        
-        @media (max-width: 768px) {
-            .navbar-container {
-                padding: 0 16px;
-                height: 58px;
-                gap: 8px;
-            }
-        }
-        
-        @media (max-width: 480px) {
-            .navbar-container {
-                padding: 0 12px;
-                height: 54px;
-            }
-        }
+        .navbar { position: sticky; top: 0; z-index: 200; background: var(--bg2); border-bottom: 1px solid var(--border-light); width: 100%; }
+        .navbar-container { display: flex; align-items: center; justify-content: space-between; padding: 0 40px; height: 64px; max-width: 1400px; margin: 0 auto; gap: 16px; }
+        @media (max-width: 768px) { .navbar-container { padding: 0 16px; height: 58px; gap: 8px; } }
+        @media (max-width: 480px) { .navbar-container { padding: 0 12px; height: 54px; } }
 
-        .nav-left {
-            display: flex;
-            align-items: center;
-            gap: 24px;
+        .nav-left { display: flex; align-items: center; gap: 24px; flex-shrink: 0; }
+        @media (max-width: 768px) { .nav-left { gap: 12px; } }
+
+        .logo { display: flex; align-items: center; gap: 8px; font-size: 20px; font-weight: 800; color: var(--green); text-decoration: none; letter-spacing: -0.5px; flex-shrink: 0; }
+        @media (max-width: 480px) { .logo { font-size: 18px; gap: 6px; } }
+        .logo-mark { 
+            width: 32px; 
+            height: 32px; 
+            background: var(--green); 
+            border-radius: 9px; /* Mas rounded para kamukha ng app icon */
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
             flex-shrink: 0;
         }
-        
-        @media (max-width: 768px) {
-            .nav-left {
-                gap: 12px;
-            }
+        .logo-mark svg { 
+            width: 22px; 
+            height: 22px; 
+            display: block;
         }
 
-        .logo {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 20px;
-            font-weight: 800;
-            color: var(--green);
-            text-decoration: none;
-            letter-spacing: -0.5px;
-            flex-shrink: 0;
-        }
-        
-        @media (max-width: 480px) {
-            .logo {
-                font-size: 18px;
-                gap: 6px;
-            }
-        }
-        
-        .logo-mark {
-            width: 30px;
-            height: 30px;
-            background: var(--green);
-            border-radius: 8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        
-        @media (max-width: 480px) {
-            .logo-mark {
-                width: 26px;
-                height: 26px;
-            }
-            .logo-mark svg {
-                width: 14px;
-                height: 14px;
-            }
-        }
-        
-        .logo-mark svg { width: 16px; height: 16px; fill: white; }
-
-        .nav-links {
-            display: flex;
-            gap: 4px;
-        }
-        
-        @media (max-width: 860px) {
-            .nav-links {
-                display: none;
-            }
+        /* Pag mobile, bahagyang liliitan */
+        @media (max-width: 480px) { 
+            .logo-mark { width: 28px; height: 28px; border-radius: 8px; } 
+            .logo-mark svg { width: 18px; height: 18px; } 
         }
 
-        .nav-link {
-            padding: 6px 12px;
-            border-radius: var(--r-full);
-            font-size: 13px;
-            font-weight: 500;
-            color: var(--text2);
-            text-decoration: none;
-            transition: all 0.15s;
-            white-space: nowrap;
-        }
-        
-        .nav-link:hover {
-            color: var(--green);
-            background: var(--green-light);
-        }
-        
-        .nav-link-highlight {
-            color: var(--green);
-            font-weight: 700;
-            background: rgba(0, 183, 97, 0.08);
-        }
+        .nav-links { display: flex; gap: 4px; }
+        @media (max-width: 860px) { .nav-links { display: none; } }
+        .nav-link { padding: 6px 12px; border-radius: var(--r-full); font-size: 13px; font-weight: 500; color: var(--text2); text-decoration: none; transition: all 0.15s; white-space: nowrap; }
+        .nav-link:hover { color: var(--green); background: var(--green-light); }
+        .nav-link-highlight { color: var(--green); font-weight: 700; background: rgba(0, 183, 97, 0.08); }
 
-        .nav-right {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            flex-shrink: 0;
-        }
-        
-        @media (max-width: 480px) {
-            .nav-right {
-                gap: 6px;
-            }
-        }
+        .nav-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+        @media (max-width: 480px) { .nav-right { gap: 6px; } }
 
-        .icon-btn {
-            width: 36px;
-            height: 36px;
-            background: var(--bg);
-            border: 1px solid var(--border);
-            border-radius: var(--r-full);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            color: var(--text2);
-            font-size: 14px;
-            transition: all 0.15s;
-            flex-shrink: 0;
-        }
-        
-        @media (max-width: 480px) {
-            .icon-btn {
-                width: 32px;
-                height: 32px;
-                font-size: 12px;
-            }
-        }
-        
-        .icon-btn:hover {
-            background: var(--green-light);
-            color: var(--green);
-        }
+        .icon-btn { width: 36px; height: 36px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-full); display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--text2); font-size: 14px; transition: all 0.15s; flex-shrink: 0; }
+        @media (max-width: 480px) { .icon-btn { width: 32px; height: 32px; font-size: 12px; } }
+        .icon-btn:hover { background: var(--green-light); color: var(--green); }
 
-        .btn-outline {
-            padding: 6px 16px;
-            border-radius: var(--r-full);
-            border: 1.5px solid var(--green);
-            background: transparent;
-            color: var(--green);
-            font-size: 12px;
-            font-weight: 600;
-            cursor: pointer;
-            text-decoration: none;
-            transition: all 0.15s;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            white-space: nowrap;
-        }
-        
-        @media (max-width: 480px) {
-            .btn-outline {
-                padding: 5px 12px;
-                font-size: 11px;
-            }
-            .btn-outline i {
-                font-size: 10px;
-            }
-        }
-        
-        .btn-outline:hover {
-            background: var(--green);
-            color: white;
-        }
+        .btn-outline { padding: 6px 16px; border-radius: var(--r-full); border: 1.5px solid var(--green); background: transparent; color: var(--green); font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: none; transition: all 0.15s; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+        @media (max-width: 480px) { .btn-outline { padding: 5px 12px; font-size: 11px; } .btn-outline i { font-size: 10px; } }
+        .btn-outline:hover { background: var(--green); color: white; }
 
-        .btn-primary {
-            padding: 6px 16px;
-            border-radius: var(--r-full);
-            background: var(--green);
-            border: none;
-            color: white;
-            font-size: 12px;
-            font-weight: 600;
-            cursor: pointer;
-            text-decoration: none;
-            transition: all 0.15s;
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            box-shadow: var(--shadow-green);
-            white-space: nowrap;
-        }
-        
-        @media (max-width: 480px) {
-            .btn-primary {
-                padding: 5px 12px;
-                font-size: 11px;
-            }
-            .btn-primary i {
-                font-size: 10px;
-            }
-        }
-        
-        .btn-primary:hover {
-            background: var(--green-dark);
-            transform: translateY(-1px);
-        }
+        .btn-primary { padding: 6px 16px; border-radius: var(--r-full); background: var(--green); border: none; color: white; font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: none; transition: all 0.15s; display: inline-flex; align-items: center; gap: 6px; box-shadow: var(--shadow-green); white-space: nowrap; }
+        @media (max-width: 480px) { .btn-primary { padding: 5px 12px; font-size: 11px; } .btn-primary i { font-size: 10px; } }
+        .btn-primary:hover { background: var(--green-dark); transform: translateY(-1px); }
 
-        .mobile-menu-btn {
-            display: none;
-            background: none;
-            border: none;
-            color: var(--text1);
-            font-size: 20px;
-            cursor: pointer;
-            width: 36px;
-            height: 36px;
-            align-items: center;
-            justify-content: center;
-            border-radius: var(--r-full);
-            transition: background 0.15s;
-        }
-        
-        @media (max-width: 860px) {
-            .mobile-menu-btn {
-                display: flex;
-            }
-        }
-        
-        @media (max-width: 480px) {
-            .mobile-menu-btn {
-                width: 32px;
-                height: 32px;
-                font-size: 18px;
-            }
-        }
-        
-        .mobile-menu-btn:hover {
-            background: var(--border-light);
-        }
+        .mobile-menu-btn { display: none; background: none; border: none; color: var(--text1); font-size: 20px; cursor: pointer; width: 36px; height: 36px; align-items: center; justify-content: center; border-radius: var(--r-full); transition: background 0.15s; }
+        @media (max-width: 860px) { .mobile-menu-btn { display: flex; } }
+        @media (max-width: 480px) { .mobile-menu-btn { width: 32px; height: 32px; font-size: 18px; } }
+        .mobile-menu-btn:hover { background: var(--border-light); }
 
         /* ===== HERO SLIDER ===== */
-        .slider-wrapper {
-            position: relative; overflow: hidden; width: 100%;
-            background: #000;
-        }
-        .slides-track {
-            display: flex;
-            transition: transform 0.55s cubic-bezier(0.77,0,0.175,1);
-            will-change: transform;
-        }
-        .slide {
-            min-width: 100%; height: 380px;
-            display: flex; align-items: center;
-            position: relative; overflow: hidden;
-        }
-        @media (max-width: 768px) { .slide { height: 300px; } }
+        .slider-wrapper { position: relative; overflow: hidden; width: 100%; background: #000; }
+        .slides-track { display: flex; transition: transform 0.55s cubic-bezier(0.77,0,0.175,1); will-change: transform; }
+        .slide { min-width: 100%; height: 420px; display: flex; align-items: center; position: relative; overflow: hidden; }
+        @media (max-width: 768px) { .slide { height: 350px; } }
 
         .s1 { background: linear-gradient(115deg, #002d16 0%, #005c2e 45%, #00a85a 100%); }
         .s2 { background: linear-gradient(115deg, #070d1a 0%, #0d2550 50%, #1a4080 100%); }
         .s3 { background: linear-gradient(115deg, #1a0a00 0%, #4a1f00 50%, #7a3800 100%); }
 
-        .slide-inner {
-            max-width: 1200px; margin: 0 auto; width: 100%;
-            padding: 0 60px; display: flex; align-items: center;
-            justify-content: space-between; gap: 40px;
-        }
+        .slide-inner { max-width: 1200px; margin: 0 auto; width: 100%; padding: 0 60px; display: flex; align-items: center; justify-content: space-between; gap: 40px; }
         @media (max-width: 768px) { .slide-inner { padding: 0 24px; } }
 
-        .slide-text { flex: 1; max-width: 480px; }
-        .slide-badge {
-            display: inline-flex; align-items: center; gap: 6px;
-            padding: 4px 12px; border-radius: var(--r-full);
-            font-size: 11px; font-weight: 600; margin-bottom: 14px;
-            letter-spacing: 0.3px;
-        }
-        .sb-green { background: rgba(255,255,255,0.12); color: #7dffc0; }
-        .sb-blue  { background: rgba(255,255,255,0.12); color: #80d8ff; }
-        .sb-amber { background: rgba(255,255,255,0.12); color: #ffd180; }
+        .slide-text { flex: 1; max-width: 520px; }
+        .slide-badge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 14px; border-radius: var(--r-full); font-size: 11px; font-weight: 700; margin-bottom: 16px; letter-spacing: 0.5px; text-transform: uppercase; }
+        .sb-green { background: rgba(0, 255, 150, 0.15); color: #7dffc0; border: 1px solid rgba(125, 255, 192, 0.3); }
+        .sb-blue  { background: rgba(100, 180, 255, 0.15); color: #80d8ff; border: 1px solid rgba(128, 216, 255, 0.3); }
+        .sb-amber { background: rgba(255, 180, 100, 0.15); color: #ffd180; border: 1px solid rgba(255, 209, 128, 0.3); }
 
-        .slide-h1 {
-            font-size: 34px; font-weight: 800; color: white;
-            line-height: 1.18; margin-bottom: 12px; letter-spacing: -0.5px;
-        }
-        @media (max-width: 768px) { .slide-h1 { font-size: 24px; } }
+        .slide-h1 { font-size: 38px; font-weight: 800; color: white; line-height: 1.15; margin-bottom: 14px; letter-spacing: -1px; }
+        @media (max-width: 768px) { .slide-h1 { font-size: 26px; } }
 
-        .slide-sub {
-            font-size: 13px; color: rgba(255,255,255,0.72);
-            line-height: 1.65; margin-bottom: 22px; max-width: 380px;
-        }
+        .slide-sub { font-size: 14px; color: rgba(255,255,255,0.8); line-height: 1.7; margin-bottom: 24px; max-width: 440px; }
         @media (max-width: 768px) { .slide-sub { display: none; } }
 
-        .slide-btns { display: flex; gap: 10px; flex-wrap: wrap; }
-        .sb-white {
-            padding: 10px 22px; border-radius: var(--r-full);
-            background: white; color: #111; font-size: 13px; font-weight: 700;
-            border: none; cursor: pointer; text-decoration: none;
-            display: inline-flex; align-items: center; gap: 7px;
-            transition: all 0.15s;
-        }
+        .slide-btns { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+        .sb-white { padding: 11px 24px; border-radius: var(--r-full); background: white; color: #111; font-size: 13px; font-weight: 700; border: none; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 8px; transition: all 0.15s; }
         .sb-white:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(0,0,0,0.2); }
-        .sb-ghost {
-            padding: 10px 22px; border-radius: var(--r-full);
-            background: transparent; color: white; font-size: 13px; font-weight: 600;
-            border: 1.5px solid rgba(255,255,255,0.45); cursor: pointer;
-            text-decoration: none; display: inline-flex; align-items: center; gap: 7px;
-            transition: all 0.15s;
-        }
+        .sb-ghost { padding: 11px 24px; border-radius: var(--r-full); background: transparent; color: white; font-size: 13px; font-weight: 600; border: 1.5px solid rgba(255,255,255,0.45); cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 8px; transition: all 0.15s; }
         .sb-ghost:hover { background: rgba(255,255,255,0.12); }
 
-        .slide-visual {
-            flex: 0 0 auto; width: 300px; height: 260px;
-            display: flex; align-items: center; justify-content: center; position: relative;
-        }
+        .slide-note { font-size: 11px; color: rgba(255,255,255,0.55); display: flex; flex-direction: column; gap: 4px; margin-top: 12px; }
+        .slide-note span { display: flex; align-items: center; gap: 6px; }
+        .slide-note i { font-size: 10px; }
+
+        .slide-visual { flex: 0 0 auto; width: 320px; height: 280px; display: flex; align-items: center; justify-content: center; position: relative; }
         @media (max-width: 768px) { .slide-visual { display: none; } }
 
-        .hero-float {
-            position: absolute; background: rgba(255,255,255,0.13);
-            backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.2);
-            border-radius: var(--r-lg); padding: 10px 16px; color: white;
-            white-space: nowrap;
-        }
+        .hero-float { position: absolute; background: rgba(255,255,255,0.13); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.2); border-radius: var(--r-lg); padding: 10px 16px; color: white; white-space: nowrap; }
         .hf-num { font-size: 17px; font-weight: 700; line-height: 1; margin-bottom: 2px; }
         .hf-lbl { font-size: 10px; opacity: 0.75; }
         .hf1 { top: 20px; right: 0; }
         .hf2 { bottom: 32px; right: 30px; }
 
-        .s-arrow {
-            position: absolute; top: 50%; transform: translateY(-50%);
-            z-index: 10; width: 38px; height: 38px;
-            background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.25);
-            border-radius: var(--r-full); display: flex; align-items: center;
-            justify-content: center; cursor: pointer; color: white; font-size: 16px;
-            transition: background 0.15s;
-        }
+        .s-arrow { position: absolute; top: 50%; transform: translateY(-50%); z-index: 10; width: 40px; height: 40px; background: rgba(255,255,255,0.14); border: 1px solid rgba(255,255,255,0.25); border-radius: var(--r-full); display: flex; align-items: center; justify-content: center; cursor: pointer; color: white; font-size: 16px; transition: background 0.15s; }
         .s-arrow:hover { background: rgba(255,255,255,0.28); }
         .s-arr-l { left: 16px; }
         .s-arr-r { right: 16px; }
 
-        .s-dots {
-            position: absolute; bottom: 14px; left: 50%;
-            transform: translateX(-50%); display: flex; gap: 7px; z-index: 10;
-        }
-        .s-dot {
-            width: 6px; height: 6px; border-radius: var(--r-full);
-            background: rgba(255,255,255,0.4); cursor: pointer; transition: all 0.2s;
-        }
-        .s-dot.on { background: white; width: 20px; }
+        .s-dots { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; z-index: 10; }
+        .s-dot { width: 6px; height: 6px; border-radius: var(--r-full); background: rgba(255,255,255,0.4); cursor: pointer; transition: all 0.2s; }
+        .s-dot.on { background: white; width: 24px; }
 
         /* ===== TRUST BAR ===== */
-        .trust-bar {
-            background: var(--bg2); border-bottom: 1px solid var(--border-light);
-        }
-        .trust-inner {
-            max-width: 1200px; margin: 0 auto; padding: 0 40px;
-            display: grid; grid-template-columns: repeat(4, 1fr);
-        }
-        @media (max-width: 768px) {
-            .trust-inner { grid-template-columns: repeat(2, 1fr); padding: 0 16px; }
-        }
-        .trust-item {
-            display: flex; align-items: center; gap: 12px;
-            padding: 18px 0; border-right: 1px solid var(--border-light);
-            justify-content: center;
-        }
+        .trust-bar { background: var(--bg2); border-bottom: 1px solid var(--border-light); }
+        .trust-inner { max-width: 1200px; margin: 0 auto; padding: 0 40px; display: grid; grid-template-columns: repeat(4, 1fr); }
+        @media (max-width: 768px) { .trust-inner { grid-template-columns: repeat(2, 1fr); padding: 0 16px; } }
+        .trust-item { display: flex; align-items: center; gap: 12px; padding: 18px 0; border-right: 1px solid var(--border-light); justify-content: center; }
         .trust-item:last-child { border-right: none; }
-        @media (max-width: 768px) {
-            .trust-item:nth-child(2) { border-right: none; }
-        }
-        .ti-ico {
-            width: 36px; height: 36px; background: var(--green-light);
-            border-radius: var(--r-md); display: flex; align-items: center;
-            justify-content: center; flex-shrink: 0;
-        }
+        @media (max-width: 768px) { .trust-item:nth-child(2) { border-right: none; } }
+        .ti-ico { width: 36px; height: 36px; background: var(--green-light); border-radius: var(--r-md); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
         .ti-ico i { color: var(--green); font-size: 15px; }
         .ti-num { font-size: 18px; font-weight: 800; color: var(--text1); line-height: 1; }
         .ti-lbl { font-size: 11px; color: var(--text2); margin-top: 2px; }
@@ -658,30 +346,196 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
         @media (max-width: 768px) { .section { padding: 32px 16px 0; } }
 
         .sec-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 8px; }
-        .sec-title { font-size: 18px; font-weight: 800; letter-spacing: -0.3px; }
-        .sec-link {
-            font-size: 12px; color: var(--green); font-weight: 600;
-            text-decoration: none; display: flex; align-items: center; gap: 4px;
-        }
+        .sec-title { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; }
+        .sec-link { font-size: 12px; color: var(--green); font-weight: 600; text-decoration: none; display: flex; align-items: center; gap: 4px; }
         .sec-link:hover { text-decoration: underline; }
 
-        /* ===== CATEGORY TILES ===== */
-        .cat-grid {
-            display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px;
+        /* ===== MODULES ===== */
+        .modules-grid {
+            display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+            margin-top: 16px;
         }
+        @media (max-width: 1024px) { .modules-grid { grid-template-columns: repeat(2, 1fr); } }
+        @media (max-width: 640px) { .modules-grid { grid-template-columns: 1fr; } }
+        
+        .module-card {
+            background: var(--card); border: 1px solid var(--border-light);
+            border-radius: var(--r-xl); padding: 24px; text-align: center;
+            transition: all 0.25s;
+        }
+        .module-card:hover {
+            transform: translateY(-6px); box-shadow: var(--shadow-md);
+            border-color: var(--green);
+        }
+        .module-icon {
+            width: 56px; height: 56px; border-radius: var(--r-lg);
+            display: flex; align-items: center; justify-content: center;
+            margin: 0 auto 16px; font-size: 24px;
+        }
+        .module-name { font-size: 15px; font-weight: 800; margin-bottom: 12px; color: var(--text1); }
+        .module-features {
+            list-style: none; text-align: left; padding: 0;
+            display: flex; flex-direction: column; gap: 6px;
+        }
+        .module-features li {
+            font-size: 12px; color: var(--text2); display: flex; align-items: flex-start; gap: 6px;
+        }
+        .module-features li i {
+            color: var(--green); font-size: 10px; margin-top: 4px; flex-shrink: 0;
+        }
+
+        /* ===== TUTORIAL SECTION ===== */
+        .tut-tabs {
+            display: flex; gap: 8px; margin-bottom: 24px; flex-wrap: wrap;
+        }
+        .tut-tab {
+            padding: 8px 20px; border-radius: var(--r-full);
+            background: var(--card); border: 1.5px solid var(--border);
+            font-size: 13px; font-weight: 600; cursor: pointer;
+            color: var(--text2); transition: all 0.15s;
+            font-family: var(--font);
+            display: inline-flex; align-items: center; gap: 6px;
+        }
+        .tut-tab:hover { border-color: var(--green); color: var(--green); }
+        .tut-tab.active {
+            background: var(--green); color: white; border-color: var(--green);
+            box-shadow: var(--shadow-green);
+        }
+        .tut-panel {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+        }
+        @media (max-width: 768px) {
+            .tut-panel { grid-template-columns: 1fr; }
+        }
+        .tut-video-wrap {
+            border-radius: var(--r-lg); overflow: hidden;
+            border: 1px solid var(--border-light);
+            background: #000; position: relative;
+            aspect-ratio: 16/9;
+            box-shadow: var(--shadow-md);
+        }
+        .tut-video-wrap video {
+            width: 100%; height: 100%; display: block; object-fit: cover;
+        }
+        .tut-video-placeholder {
+            width: 100%; height: 100%;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            background: linear-gradient(135deg, #1a1a1a 0%, #2a2a2a 100%);
+            color: rgba(255,255,255,0.5); text-align: center; padding: 20px;
+            gap: 12px;
+        }
+        .tut-video-placeholder i { font-size: 42px; opacity: 0.5; }
+        .tut-video-placeholder p { font-size: 12px; line-height: 1.5; }
+        .tut-video-placeholder code {
+            font-size: 10px; background: rgba(255,255,255,0.08);
+            padding: 3px 8px; border-radius: 4px; color: #7dffc0;
+            margin-top: 4px; display: inline-block;
+        }
+        .tut-steps-title {
+            font-size: 16px; font-weight: 800; margin-bottom: 16px;
+            color: var(--text1);
+            display: flex; align-items: center; gap: 8px;
+        }
+        .tut-steps-title i {
+            width: 32px; height: 32px; border-radius: var(--r-md);
+            background: var(--green-light); color: var(--green);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 14px;
+        }
+        .tut-step {
+            display: flex; align-items: flex-start; gap: 12px;
+            padding: 12px 0; border-bottom: 1px solid var(--border-light);
+            font-size: 13px; color: var(--text1); line-height: 1.5;
+        }
+        .tut-step:last-child { border-bottom: none; }
+        .tut-step strong { font-weight: 700; display: block; margin-bottom: 2px; }
+        .tut-step span.tut-desc { font-size: 12px; color: var(--text2); font-weight: 400; }
+        .tut-num {
+            width: 28px; height: 28px; border-radius: 50%;
+            background: var(--green-light); color: var(--green);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 12px; font-weight: 800; flex-shrink: 0;
+            margin-top: 1px;
+        }
+
+        /* ===== DOWNLOAD APP SECTION ===== */
+        .download-section {
+            background: linear-gradient(135deg, #0a1f14 0%, #003d20 50%, #006633 100%);
+            padding: 60px 40px; margin-top: 40px;
+            position: relative; overflow: hidden;
+        }
+        .download-section::before {
+            content: ''; position: absolute; top: -50%; right: -10%;
+            width: 500px; height: 500px; border-radius: 50%;
+            background: radial-gradient(circle, rgba(0, 230, 118, 0.15) 0%, transparent 70%);
+        }
+        @media (max-width: 768px) { .download-section { padding: 40px 16px; } }
+        .download-inner {
+            max-width: 1000px; margin: 0 auto;
+            display: flex; align-items: center; gap: 60px;
+            position: relative; z-index: 2;
+        }
+        @media (max-width: 768px) { .download-inner { flex-direction: column; gap: 32px; text-align: center; } }
+        .download-text { flex: 1; }
+        .download-eyebrow { font-size: 12px; color: #7dffc0; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+        .download-h2 { font-size: 32px; font-weight: 800; color: white; line-height: 1.2; margin-bottom: 14px; letter-spacing: -0.5px; }
+        @media (max-width: 768px) { .download-h2 { font-size: 24px; } }
+        .download-p { font-size: 14px; color: rgba(255,255,255,0.75); line-height: 1.7; margin-bottom: 24px; max-width: 440px; }
+        @media (max-width: 768px) { .download-p { margin-left: auto; margin-right: auto; } }
+        
+        .download-btns { display: flex; gap: 12px; flex-wrap: wrap; }
+        @media (max-width: 768px) { .download-btns { justify-content: center; } }
+        .apk-btn {
+            padding: 14px 28px; border-radius: var(--r-full);
+            background: white; color: #003d20; font-size: 14px; font-weight: 800;
+            cursor: pointer; border: none; text-decoration: none;
+            display: inline-flex; align-items: center; gap: 10px;
+            transition: all 0.15s; box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+        }
+        .apk-btn:hover { transform: translateY(-3px); box-shadow: 0 12px 32px rgba(0,0,0,0.4); }
+        .apk-btn i { font-size: 20px; color: #3DDC84; }
+        
+        .download-visual {
+            flex: 0 0 240px;
+            display: flex; align-items: center; justify-content: center;
+            position: relative;
+        }
+        @media (max-width: 768px) { .download-visual { display: none; } }
+        
+        .phone-mockup {
+            width: 200px; height: 380px;
+            background: linear-gradient(145deg, #1a1a1a, #0a0a0a);
+            border-radius: 32px; border: 8px solid #222;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+            position: relative; overflow: hidden;
+            transform: rotate(-4deg);
+            transition: transform 0.3s;
+        }
+        .phone-mockup:hover { transform: rotate(0deg) translateY(-6px); }
+        .phone-mockup::before {
+            content: ''; position: absolute; top: 0; left: 50%;
+            transform: translateX(-50%); width: 70px; height: 20px;
+            background: #222; border-radius: 0 0 14px 14px; z-index: 2;
+        }
+        .phone-screen {
+            width: 100%; height: 100%; background: linear-gradient(180deg, #00B761 0%, #003d20 100%);
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            padding: 20px; text-align: center; color: white;
+        }
+        .phone-screen i { font-size: 48px; margin-bottom: 14px; color: #7dffc0; }
+        .phone-screen .app-name { font-size: 18px; font-weight: 800; margin-bottom: 4px; letter-spacing: -0.3px; }
+        .phone-screen .app-sub { font-size: 11px; opacity: 0.7; }
+
+        /* ===== CATEGORY TILES ===== */
+        .cat-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
         @media (max-width: 1024px) { .cat-grid { grid-template-columns: repeat(3, 1fr); } }
         @media (max-width: 640px)  { .cat-grid { grid-template-columns: repeat(3, 1fr); gap: 8px; } }
 
-        .cat-tile {
-            border-radius: var(--r-lg); overflow: hidden; cursor: pointer;
-            text-decoration: none; display: block; transition: transform 0.2s;
-        }
+        .cat-tile { border-radius: var(--r-lg); overflow: hidden; cursor: pointer; text-decoration: none; display: block; transition: transform 0.2s; }
         .cat-tile:hover { transform: translateY(-4px); }
 
-        .cat-img {
-            aspect-ratio: 1/1; display: flex; align-items: center;
-            justify-content: center; position: relative;
-        }
+        .cat-img { aspect-ratio: 1/1; display: flex; align-items: center; justify-content: center; position: relative; }
         .c-eyeglasses { background: linear-gradient(150deg,#0d1a2e,#1a3a6e); }
         .c-sunglasses  { background: linear-gradient(150deg,#1a0a00,#5a2500); }
         .c-computer    { background: linear-gradient(150deg,#001820,#004466); }
@@ -692,26 +546,15 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
         .c-sports      { background: linear-gradient(150deg,#1a0a00,#cc4400); }
         .c-default     { background: linear-gradient(150deg,#1a1a2e,#2d2d6e); }
 
-        .cat-label {
-            padding: 8px 10px; background: var(--card);
-            border: 1px solid var(--border-light);
-            border-top: none;
-        }
+        .cat-label { padding: 8px 10px; background: var(--card); border: 1px solid var(--border-light); border-top: none; }
         .cat-name { font-size: 11px; font-weight: 700; color: var(--text1); text-transform: capitalize; }
         .cat-sub  { font-size: 10px; color: var(--text2); margin-top: 1px; }
 
         /* ===== DUAL BANNER ===== */
-        .dual-banner {
-            display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
-        }
+        .dual-banner { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
         @media (max-width: 640px) { .dual-banner { grid-template-columns: 1fr; } }
 
-        .banner-card {
-            border-radius: var(--r-xl); overflow: hidden; height: 148px;
-            position: relative; display: flex; align-items: center;
-            padding: 28px 28px; cursor: pointer; text-decoration: none;
-            transition: transform 0.2s;
-        }
+        .banner-card { border-radius: var(--r-xl); overflow: hidden; height: 148px; position: relative; display: flex; align-items: center; padding: 28px 28px; cursor: pointer; text-decoration: none; transition: transform 0.2s; }
         .banner-card:hover { transform: translateY(-3px); }
         .bn-green  { background: linear-gradient(120deg, #003d20 0%, #006633 55%, #00a854 100%); }
         .bn-dark   { background: linear-gradient(120deg, #060f20 0%, #0d2855 55%, #1a3f80 100%); }
@@ -719,291 +562,71 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
         .bn-text { position: relative; z-index: 2; }
         .bn-eyebrow { font-size: 10px; color: rgba(255,255,255,0.65); font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 6px; }
         .bn-title { font-size: 20px; font-weight: 800; color: white; line-height: 1.2; margin-bottom: 12px; letter-spacing: -0.3px; }
-        .bn-btn {
-            display: inline-flex; align-items: center; gap: 6px;
-            padding: 7px 16px; background: white; border-radius: var(--r-full);
-            font-size: 11px; font-weight: 700; color: #111;
-            border: none; cursor: pointer;
-        }
+        .bn-btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 16px; background: white; border-radius: var(--r-full); font-size: 11px; font-weight: 700; color: #111; border: none; cursor: pointer; }
 
-        .bn-deco {
-            position: absolute; right: 20px; top: 50%;
-            transform: translateY(-50%); opacity: 0.25; font-size: 80px;
-        }
+        .bn-deco { position: absolute; right: 20px; top: 50%; transform: translateY(-50%); opacity: 0.25; font-size: 80px; }
 
         /* ===== FEATURED CLINICS ===== */
-        .clinics-scroll {
-            overflow-x: auto; scrollbar-width: none; margin: 0 -40px;
-            padding: 4px 40px 16px;
-        }
+        .clinics-scroll { overflow-x: auto; scrollbar-width: none; margin: 0 -40px; padding: 4px 40px 16px; }
         .clinics-scroll::-webkit-scrollbar { display: none; }
         @media (max-width: 768px) { .clinics-scroll { margin: 0 -16px; padding: 4px 16px 16px; } }
 
         .clinics-track { display: flex; gap: 14px; }
 
-        .clinic-card {
-            flex-shrink: 0; width: 220px; background: var(--card);
-            border: 1px solid var(--border-light); border-radius: var(--r-xl);
-            overflow: hidden; cursor: pointer; text-decoration: none;
-            transition: all 0.25s; display: block;
-        }
+        .clinic-card { flex-shrink: 0; width: 220px; background: var(--card); border: 1px solid var(--border-light); border-radius: var(--r-xl); overflow: hidden; cursor: pointer; text-decoration: none; transition: all 0.25s; display: block; }
         .clinic-card:hover { transform: translateY(-6px); box-shadow: var(--shadow-md); border-color: var(--green); }
 
-        .cc-img {
-            height: 130px; position: relative;
-            display: flex; align-items: center; justify-content: center;
-        }
-        .cc-img img {
-            width: 100%; height: 100%; object-fit: cover;
-            display: block;
-        }
-        .cc-img-placeholder {
-            width: 100%; height: 100%;
-            display: flex; align-items: center; justify-content: center;
-        }
-        .cc-icon {
-            width: 54px; height: 54px; background: rgba(255,255,255,0.85);
-            border-radius: 16px; display: flex; align-items: center;
-            justify-content: center;
-        }
+        .cc-img { height: 130px; position: relative; display: flex; align-items: center; justify-content: center; }
+        .cc-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+        .cc-img-placeholder { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+        .cc-icon { width: 54px; height: 54px; background: rgba(255,255,255,0.85); border-radius: 16px; display: flex; align-items: center; justify-content: center; }
         .cc-icon i { font-size: 26px; }
-        .cc-grad-overlay {
-            position: absolute; inset: 0;
-            background: linear-gradient(to top, rgba(0,0,0,0.32) 0%, transparent 55%);
-        }
-        .cc-rating {
-            position: absolute; top: 9px; right: 9px;
-            background: rgba(0,0,0,0.6); color: white;
-            font-size: 10px; font-weight: 700; padding: 3px 8px;
-            border-radius: var(--r-full); display: flex; align-items: center; gap: 3px;
-        }
+        .cc-grad-overlay { position: absolute; inset: 0; background: linear-gradient(to top, rgba(0,0,0,0.32) 0%, transparent 55%); }
+        .cc-rating { position: absolute; top: 9px; right: 9px; background: rgba(0,0,0,0.6); color: white; font-size: 10px; font-weight: 700; padding: 3px 8px; border-radius: var(--r-full); display: flex; align-items: center; gap: 3px; }
         .cc-rating i { color: var(--warn); font-size: 9px; }
-        .cc-3d {
-            position: absolute; top: 9px; left: 9px;
-            background: var(--green); color: white;
-            font-size: 9px; font-weight: 700; padding: 3px 9px;
-            border-radius: var(--r-full);
-        }
-        .cc-city {
-            position: absolute; bottom: 9px; left: 9px;
-            color: white; font-size: 10px; font-weight: 600;
-        }
+        .cc-3d { position: absolute; top: 9px; left: 9px; background: var(--green); color: white; font-size: 9px; font-weight: 700; padding: 3px 9px; border-radius: var(--r-full); }
+        .cc-city { position: absolute; bottom: 9px; left: 9px; color: white; font-size: 10px; font-weight: 600; }
 
         .cc-body { padding: 12px 14px 14px; }
-        .cc-name {
-            font-size: 13px; font-weight: 700; margin-bottom: 3px;
-            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-        }
+        .cc-name { font-size: 13px; font-weight: 700; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .cc-loc { font-size: 11px; color: var(--text2); margin-bottom: 8px; display: flex; align-items: center; gap: 4px; }
         .cc-loc i { color: var(--green); font-size: 10px; }
         .cc-foot { display: flex; align-items: center; justify-content: space-between; }
         .cc-stars { color: var(--warn); font-size: 11px; }
         .cc-revs { font-size: 10px; color: var(--text2); margin-left: 3px; }
-        .cc-book {
-            font-size: 11px; font-weight: 700; color: var(--green);
-            background: var(--green-light); padding: 5px 12px;
-            border-radius: var(--r-full);
-        }
+        .cc-book { font-size: 11px; font-weight: 700; color: var(--green); background: var(--green-light); padding: 5px 12px; border-radius: var(--r-full); }
 
-        /* ===== CITIES GRID - ENHANCED UI ===== */
-        .cities-grid-enhanced {
-            display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
-        }
+        /* ===== CITIES GRID ===== */
+        .cities-grid-enhanced { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
         @media (max-width: 1024px) { .cities-grid-enhanced { grid-template-columns: repeat(3, 1fr); } }
         @media (max-width: 768px)  { .cities-grid-enhanced { grid-template-columns: repeat(2, 1fr); } }
         @media (max-width: 480px)  { .cities-grid-enhanced { grid-template-columns: 1fr; } }
 
-        .city-card-enhanced {
-            border-radius: var(--r-lg);
-            overflow: hidden;
-            cursor: pointer;
-            text-decoration: none;
-            display: block;
-            transition: all 0.3s ease;
-            border: 1px solid var(--border-light);
-            background: var(--card);
-        }
+        .city-card-enhanced { border-radius: var(--r-lg); overflow: hidden; cursor: pointer; text-decoration: none; display: block; transition: all 0.3s ease; border: 1px solid var(--border-light); background: var(--card); }
+        .city-card-enhanced:hover { transform: translateY(-6px); box-shadow: var(--shadow-md); border-color: var(--green); }
 
-        .city-card-enhanced:hover {
-            transform: translateY(-6px);
-            box-shadow: var(--shadow-md);
-            border-color: var(--green);
-        }
+        .city-bg { height: 110px; display: flex; flex-direction: column; justify-content: space-between; padding: 14px 16px 12px; position: relative; transition: all 0.3s; }
+        .city-name-over { font-size: 16px; font-weight: 800; color: white; letter-spacing: -0.3px; text-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+        .city-clinic-previews { display: flex; gap: 6px; align-items: center; }
+        .city-clinic-avatar { width: 28px; height: 28px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.8); background-size: cover; background-position: center; background-color: rgba(255,255,255,0.2); display: flex; align-items: center; justify-content: center; font-size: 10px; color: white; flex-shrink: 0; }
+        .city-clinic-avatar i { font-size: 12px; opacity: 0.7; }
+        .city-more { background: rgba(255,255,255,0.25); backdrop-filter: blur(4px); font-weight: 700; font-size: 10px; }
 
-        .city-bg {
-            height: 110px;
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-            padding: 14px 16px 12px;
-            position: relative;
-            transition: all 0.3s;
-        }
+        .city-foot { padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; background: var(--card); }
+        .city-count-lbl { font-size: 12px; color: var(--text2); display: flex; align-items: center; gap: 6px; }
+        .city-count-lbl i { color: var(--green); }
+        .city-arr { font-size: 12px; color: var(--green); font-weight: 700; display: flex; align-items: center; gap: 4px; transition: all 0.2s; }
+        .city-card-enhanced:hover .city-arr { transform: translateX(4px); }
 
-        .city-name-over {
-            font-size: 16px;
-            font-weight: 800;
-            color: white;
-            letter-spacing: -0.3px;
-            text-shadow: 0 2px 8px rgba(0,0,0,0.3);
-        }
-
-        .city-clinic-previews {
-            display: flex;
-            gap: 6px;
-            align-items: center;
-        }
-
-        .city-clinic-avatar {
-            width: 28px;
-            height: 28px;
-            border-radius: 50%;
-            border: 2px solid rgba(255,255,255,0.8);
-            background-size: cover;
-            background-position: center;
-            background-color: rgba(255,255,255,0.2);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 10px;
-            color: white;
-            flex-shrink: 0;
-        }
-
-        .city-clinic-avatar i {
-            font-size: 12px;
-            opacity: 0.7;
-        }
-
-        .city-more {
-            background: rgba(255,255,255,0.25);
-            backdrop-filter: blur(4px);
-            font-weight: 700;
-            font-size: 10px;
-        }
-
-        .city-foot {
-            padding: 10px 16px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            background: var(--card);
-        }
-
-        .city-count-lbl {
-            font-size: 12px;
-            color: var(--text2);
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .city-count-lbl i {
-            color: var(--green);
-        }
-
-        .city-arr {
-            font-size: 12px;
-            color: var(--green);
-            font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-            transition: all 0.2s;
-        }
-
-        .city-card-enhanced:hover .city-arr {
-            transform: translateX(4px);
-        }
-
-        .cb-0{background:linear-gradient(150deg,#003d20,#00874a);}
-        .cb-1{background:linear-gradient(150deg,#0d2550,#1a4d99);}
-        .cb-2{background:linear-gradient(150deg,#3d0052,#800080);}
-        .cb-3{background:linear-gradient(150deg,#2d2d00,#666600);}
-        .cb-4{background:linear-gradient(150deg,#3d1a00,#804000);}
-        .cb-5{background:linear-gradient(150deg,#001a33,#003d66);}
-        .cb-6{background:linear-gradient(150deg,#1a003d,#3d007a);}
-        .cb-7{background:linear-gradient(150deg,#001a0d,#004d26);}
-
-        /* ===== HOW IT WORKS ===== */
-        .how-bg {
-            background: var(--bg2); border-top: 1px solid var(--border-light);
-            border-bottom: 1px solid var(--border-light);
-            padding: 40px 0;
-            margin-top: 40px;
-        }
-        .how-inner { max-width: 1200px; margin: 0 auto; padding: 0 40px; }
-        @media (max-width: 768px) { .how-inner { padding: 0 16px; } }
-        .how-grid {
-            display: grid; grid-template-columns: repeat(3, 1fr); gap: 0;
-            margin-top: 24px;
-        }
-        @media (max-width: 640px) { .how-grid { grid-template-columns: 1fr; } }
-        .how-step {
-            padding: 24px 28px; border-right: 1px solid var(--border-light);
-            text-align: center;
-        }
-        .how-step:last-child { border-right: none; }
-        @media (max-width: 640px) { .how-step { border-right: none; border-bottom: 1px solid var(--border-light); } }
-        @media (max-width: 640px) { .how-step:last-child { border-bottom: none; } }
-
-        .how-num {
-            width: 28px; height: 28px; background: var(--green);
-            border-radius: var(--r-full); color: white; font-size: 12px;
-            font-weight: 800; display: flex; align-items: center; justify-content: center;
-            margin: 0 auto 14px;
-        }
-        .how-ico {
-            width: 52px; height: 52px; background: var(--green-light);
-            border-radius: var(--r-lg); display: flex; align-items: center;
-            justify-content: center; margin: 0 auto 12px;
-        }
-        .how-ico i { color: var(--green); font-size: 22px; }
-        .how-title { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
-        .how-desc  { font-size: 12px; color: var(--text2); line-height: 1.65; }
-
-        /* ===== FEATURES ===== */
-        .features-bg { background: var(--bg); padding: 40px 0; }
-        .features-inner { max-width: 1200px; margin: 0 auto; padding: 0 40px; }
-        @media (max-width: 768px) { .features-inner { padding: 0 16px; } }
-        .feat-grid {
-            display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
-            margin-top: 24px;
-        }
-        @media (max-width: 1024px) { .feat-grid { grid-template-columns: repeat(2, 1fr); } }
-        @media (max-width: 640px)  { .feat-grid { grid-template-columns: 1fr; } }
-        .feat-card {
-            background: var(--card); border: 1px solid var(--border-light);
-            border-radius: var(--r-xl); padding: 22px 20px;
-            display: flex; gap: 14px; align-items: flex-start;
-            transition: all 0.2s;
-        }
-        .feat-card:hover { border-color: var(--green); box-shadow: var(--shadow-green); transform: translateY(-3px); }
-        .fi {
-            width: 40px; height: 40px; border-radius: var(--r-md);
-            flex-shrink: 0; display: flex; align-items: center; justify-content: center;
-        }
-        .fi i { font-size: 18px; }
-        .fi-g  { background: var(--green-light); } .fi-g i  { color: var(--green); }
-        .fi-b  { background: #EFF6FF; }            .fi-b i  { color: #1D4ED8; }
-        .fi-a  { background: #FFFBEB; }            .fi-a i  { color: #B45309; }
-        .fi-r  { background: #FFF1F2; }            .fi-r i  { color: #BE123C; }
-        .fi-t  { background: #F0FDFA; }            .fi-t i  { color: #0F766E; }
-        .fi-p  { background: #F5F3FF; }            .fi-p i  { color: #6D28D9; }
-        .ft  { font-size: 13px; font-weight: 700; margin-bottom: 4px; }
-        .fd  { font-size: 12px; color: var(--text2); line-height: 1.6; }
+        .cb-0{background:linear-gradient(150deg,#003d20,#00874a);} .cb-1{background:linear-gradient(150deg,#0d2550,#1a4d99);}
+        .cb-2{background:linear-gradient(150deg,#3d0052,#800080);} .cb-3{background:linear-gradient(150deg,#2d2d00,#666600);}
+        .cb-4{background:linear-gradient(150deg,#3d1a00,#804000);} .cb-5{background:linear-gradient(150deg,#001a33,#003d66);}
+        .cb-6{background:linear-gradient(150deg,#1a003d,#3d007a);} .cb-7{background:linear-gradient(150deg,#001a0d,#004d26);}
 
         /* ===== 3D VIEWER SECTION ===== */
-        .tryon-section {
-            background: linear-gradient(130deg, #060f1e 0%, #0b2540 45%, #082d1a 100%);
-            padding: 60px 40px;
-            margin-top: 40px;
-        }
+        .tryon-section { background: linear-gradient(130deg, #060f1e 0%, #0b2540 45%, #082d1a 100%); padding: 60px 40px; margin-top: 40px; }
         @media (max-width: 768px) { .tryon-section { padding: 40px 16px; } }
-        .tryon-inner {
-            max-width: 1200px; margin: 0 auto;
-            display: flex; align-items: center; gap: 60px;
-        }
+        .tryon-inner { max-width: 1200px; margin: 0 auto; display: flex; align-items: center; gap: 60px; }
         @media (max-width: 768px) { .tryon-inner { flex-direction: column; gap: 32px; } }
         .tryon-left { flex: 1; }
         .tryon-tag { font-size: 11px; color: #7dffc0; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 10px; }
@@ -1014,146 +637,59 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
         .tf-item { display: flex; align-items: center; gap: 10px; }
         .tf-dot { width: 7px; height: 7px; background: var(--green); border-radius: 50%; flex-shrink: 0; }
         .tf-text { font-size: 12px; color: rgba(255,255,255,0.8); }
-        .tryon-btn {
-            display: inline-flex; align-items: center; gap: 8px;
-            padding: 12px 28px; background: white; color: #060f1e;
-            border-radius: var(--r-full); font-size: 13px; font-weight: 800;
-            cursor: pointer; border: none; text-decoration: none;
-            transition: all 0.15s;
-        }
+        .tryon-btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 28px; background: white; color: #060f1e; border-radius: var(--r-full); font-size: 13px; font-weight: 800; cursor: pointer; border: none; text-decoration: none; transition: all 0.15s; }
         .tryon-btn:hover { transform: translateY(-2px); box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
 
         .tryon-right { flex: 0 0 320px; }
         @media (max-width: 768px) { .tryon-right { flex: auto; width: 100%; } }
 
-        .tryon-viewer-card {
-            background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12);
-            border-radius: var(--r-xl); overflow: hidden;
-        }
-        .tv-header {
-            background: rgba(255,255,255,0.05); padding: 14px 18px;
-            border-bottom: 1px solid rgba(255,255,255,0.08);
-            display: flex; align-items: center; gap: 8px;
-        }
+        .tryon-viewer-card { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: var(--r-xl); overflow: hidden; }
+        .tv-header { background: rgba(255,255,255,0.05); padding: 14px 18px; border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; align-items: center; gap: 8px; }
         .tv-dot { width: 8px; height: 8px; border-radius: 50%; }
         .tv-title { font-size: 11px; color: rgba(255,255,255,0.6); margin-left: 4px; font-weight: 600; }
         .tv-body { padding: 28px 20px; text-align: center; }
-        .tv-frame-display {
-            background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1);
-            border-radius: var(--r-lg); padding: 28px 20px; margin-bottom: 16px;
-            position: relative;
-        }
-        .tv-rotate-hint {
-            position: absolute; bottom: 8px; right: 10px;
-            font-size: 9px; color: rgba(255,255,255,0.35);
-            display: flex; align-items: center; gap: 3px;
-        }
+        .tv-frame-display { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1); border-radius: var(--r-lg); padding: 28px 20px; margin-bottom: 16px; position: relative; }
+        .tv-rotate-hint { position: absolute; bottom: 8px; right: 10px; font-size: 9px; color: rgba(255,255,255,0.35); display: flex; align-items: center; gap: 3px; }
         .tv-product-name { font-size: 12px; color: rgba(255,255,255,0.8); font-weight: 600; margin-bottom: 4px; }
         .tv-product-sub  { font-size: 10px; color: rgba(255,255,255,0.45); margin-bottom: 14px; }
         .tv-colors { display: flex; gap: 7px; justify-content: center; }
-        .tv-color {
-            width: 16px; height: 16px; border-radius: 50%;
-            border: 2px solid transparent; cursor: pointer; transition: border 0.15s;
-        }
+        .tv-color { width: 16px; height: 16px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; transition: border 0.15s; }
         .tv-color.active { border-color: rgba(255,255,255,0.7); }
-
-        /* ===== CTA SECTION ===== */
-        .cta-section {
-            padding: 60px 40px; text-align: center;
-        }
-        @media (max-width: 768px) { .cta-section { padding: 48px 16px; } }
-        .cta-inner { max-width: 560px; margin: 0 auto; }
-        .cta-h2 { font-size: 28px; font-weight: 800; letter-spacing: -0.5px; margin-bottom: 10px; }
-        .cta-h2 span { color: var(--green); }
-        .cta-sub { font-size: 13px; color: var(--text2); line-height: 1.7; margin-bottom: 28px; }
-        .cta-btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 20px; }
-        .cta-btn-main {
-            padding: 13px 32px; background: var(--green); color: white;
-            border-radius: var(--r-full); font-size: 14px; font-weight: 700;
-            border: none; cursor: pointer; text-decoration: none;
-            box-shadow: var(--shadow-green); transition: all 0.15s;
-            display: inline-flex; align-items: center; gap: 8px;
-        }
-        .cta-btn-main:hover { background: var(--green-dark); transform: translateY(-2px); }
-        .cta-btn-sec {
-            padding: 13px 32px; background: transparent; color: var(--green);
-            border-radius: var(--r-full); font-size: 14px; font-weight: 700;
-            border: 1.5px solid var(--green); cursor: pointer; text-decoration: none;
-            transition: all 0.15s; display: inline-flex; align-items: center; gap: 8px;
-        }
-        .cta-btn-sec:hover { background: var(--green); color: white; }
-        .cta-trust {
-            display: flex; align-items: center; justify-content: center;
-            gap: 20px; flex-wrap: wrap;
-        }
-        .ct-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text2); }
-        .ct-item i { color: var(--green); font-size: 11px; }
 
         /* ===== FOOTER ===== */
         .footer { background: var(--bg2); border-top: 1px solid var(--border-light); padding: 48px 40px 24px; }
         @media (max-width: 768px) { .footer { padding: 40px 16px 20px; } }
-        .footer-grid {
-            max-width: 1200px; margin: 0 auto 36px;
-            display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 32px;
-        }
+        .footer-grid { max-width: 1200px; margin: 0 auto 36px; display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 32px; }
         @media (max-width: 1024px) { .footer-grid { grid-template-columns: 1fr 1fr; } }
         @media (max-width: 640px)  { .footer-grid { grid-template-columns: 1fr; } }
 
         .footer-logo { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-        .fl-mark { width: 26px; height: 26px; background: var(--green); border-radius: 7px; display: flex; align-items: center; justify-content: center; }
+        .fl-mark { width: 28px; height: 28px; background: var(--green); border-radius: 8px; display: flex; align-items: center; justify-content: center; }
         .fl-mark svg { width: 14px; height: 14px; fill: white; }
-        .fl-name { font-size: 17px; font-weight: 800; color: var(--green); letter-spacing: -0.4px; }
-        .footer-p { font-size: 12px; color: var(--text2); line-height: 1.7; margin-bottom: 18px; }
+        .fl-name { font-size: 18px; font-weight: 800; color: var(--green); letter-spacing: -0.4px; }
+        .footer-p { font-size: 13px; color: var(--text2); line-height: 1.7; margin-bottom: 18px; }
         .soc-row { display: flex; gap: 8px; }
-        .soc-btn {
-            width: 32px; height: 32px; background: var(--bg);
-            border: 1px solid var(--border); border-radius: var(--r-full);
-            display: flex; align-items: center; justify-content: center;
-            color: var(--text2); font-size: 13px; text-decoration: none;
-            transition: all 0.15s;
-        }
+        .soc-btn { width: 34px; height: 34px; background: var(--bg); border: 1px solid var(--border); border-radius: var(--r-full); display: flex; align-items: center; justify-content: center; color: var(--text2); font-size: 13px; text-decoration: none; transition: all 0.15s; }
         .soc-btn:hover { background: var(--green); color: white; border-color: var(--green); }
-        .fh4 { font-size: 12px; font-weight: 800; color: var(--text1); margin-bottom: 14px; letter-spacing: 0.3px; text-transform: uppercase; }
+        .fh4 { font-size: 12px; font-weight: 800; color: var(--text1); margin-bottom: 14px; letter-spacing: 0.5px; text-transform: uppercase; }
         .flinks { list-style: none; display: flex; flex-direction: column; gap: 9px; }
         .flinks li a { font-size: 13px; color: var(--text2); text-decoration: none; transition: color 0.15s; }
         .flinks li a:hover { color: var(--green); }
-        .footer-bottom {
-            max-width: 1200px; margin: 0 auto; border-top: 1px solid var(--border-light);
-            padding-top: 18px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;
-        }
+        .footer-bottom { max-width: 1200px; margin: 0 auto; border-top: 1px solid var(--border-light); padding-top: 18px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+        
         .fb-copy { font-size: 12px; color: var(--text3); }
+        .fb-researchers { font-size: 12px; color: var(--text2); font-weight: 500; margin-top: 4px; }
         .fb-right { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text2); }
         .fb-right i { color: var(--green); font-size: 11px; }
 
         /* ===== MOBILE MENU ===== */
-        .mob-overlay {
-            display: none; position: fixed; inset: 0;
-            background: rgba(0,0,0,0.5); backdrop-filter: blur(2px);
-            z-index: 998;
-        }
-        .mob-menu {
-            position: fixed; top: 0; right: -300px; width: 280px; height: 100vh;
-            background: var(--bg2); z-index: 999; overflow-y: auto;
-            transition: right 0.3s ease; box-shadow: var(--shadow-lg);
-        }
+        .mob-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(2px); z-index: 998; }
+        .mob-menu { position: fixed; top: 0; right: -300px; width: 280px; height: 100vh; background: var(--bg2); z-index: 999; overflow-y: auto; transition: right 0.3s ease; box-shadow: var(--shadow-lg); }
         .mob-menu.open { right: 0; }
-        .mob-top {
-            display: flex; align-items: center; justify-content: space-between;
-            padding: 20px; border-bottom: 1px solid var(--border-light);
-        }
+        .mob-top { display: flex; align-items: center; justify-content: space-between; padding: 20px; border-bottom: 1px solid var(--border-light); }
         .mob-links { padding: 16px; display: flex; flex-direction: column; gap: 4px; }
-        .mob-link {
-            padding: 12px 14px; border-radius: var(--r-md);
-            font-size: 14px; font-weight: 500; color: var(--text1);
-            text-decoration: none; transition: all 0.15s;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-        .mob-link i {
-            width: 20px;
-            color: var(--green);
-        }
+        .mob-link { padding: 12px 14px; border-radius: var(--r-md); font-size: 14px; font-weight: 500; color: var(--text1); text-decoration: none; transition: all 0.15s; display: flex; align-items: center; gap: 12px; }
+        .mob-link i { width: 20px; color: var(--green); }
         .mob-link:hover { background: var(--green-light); color: var(--green); }
         .mob-divider { height: 1px; background: var(--border-light); margin: 10px 16px; }
         .mob-btns { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
@@ -1165,49 +701,45 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
 <body>
 
     <!-- ===== NAVBAR ===== -->
-    <nav class="navbar">
-        <div class="navbar-container">
-            <div class="nav-left">
-                <a href="index.php" class="logo">
-                    <div class="logo-mark">
-                        <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5z"/></svg>
-                    </div>
-                    eyecore
-                </a>
-                <div class="nav-links">
-                    <a href="#features" class="nav-link">Features</a>
-                    <a href="#cities" class="nav-link">Cities</a>
-                    <a href="#clinics" class="nav-link">Clinics</a>
-                    <a href="#contact" class="nav-link">Contact</a>
-                    <a href="auth/register.php" class="nav-link nav-link-highlight">Partner With Us</a>
-                    <a href="suppliers/supplier_login.php?register=1" class="nav-link">Supplier</a>
+<nav class="navbar">
+    <div class="navbar-container">
+        <div class="nav-left">
+            <a href="index.php" class="logo">
+                <div class="logo-mark">
+                    <!-- Bagong Eye Icon (Tugma sa picture) -->
+                    <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                        <ellipse cx="12" cy="12" rx="9" ry="5.5" fill="white"/>
+                        <circle cx="12" cy="12" r="3.5" fill="#00B761"/>
+                        <circle cx="12" cy="12" r="1.5" fill="white"/>
+                    </svg>
                 </div>
-            </div>
-            <div class="nav-right">
-                <button class="icon-btn" onclick="toggleTheme()" id="themeToggle">
-                    <i class="fas fa-moon"></i>
-                </button>
-                <?php if ($is_logged_in): ?>
-                    <a href="pages/dashboard.php" class="btn-primary">
-                        <i class="fas fa-user"></i> Login
-                    </a>
-                    <a href="auth/logout.php" class="btn-outline">
-                        <i class="fas fa-sign-out-alt"></i> Logout
-                    </a>
-                <?php else: ?>
-                    <a href="auth/user_login.php" class="btn-outline">
-                        <i class="fas fa-sign-in-alt"></i> Login
-                    </a>
-                    <a href="auth/user_register.php" class="btn-primary">
-                        <i class="fas fa-user-plus"></i> Sign Up
-                    </a>
-                <?php endif; ?>
-                <button class="mobile-menu-btn" onclick="openMobMenu()">
-                    <i class="fas fa-bars"></i>
-                </button>
+                eyecore
+            </a>
+            <div class="nav-links">
+                <a href="#modules" class="nav-link">Modules</a>
+                <a href="#tutorial" class="nav-link">Tutorial</a>
+                <a href="#download" class="nav-link">Download App</a>
+                <a href="#clinics" class="nav-link">Clinics</a>
+                <a href="#contact" class="nav-link">Contact</a>
+                <a href="admin/login.php" class="nav-link nav-link-highlight">Partner With Us</a>
+                <a href="suppliers/supplier_login.php?register=1" class="nav-link">Supplier</a>
             </div>
         </div>
-    </nav>
+        <div class="nav-right">
+            <button class="icon-btn" onclick="toggleTheme()" id="themeToggle">
+                <i class="fas fa-moon"></i>
+            </button>
+            <?php if ($is_logged_in): ?>
+                <a href="pages/dashboard.php" class="btn-primary"><i class="fas fa-user"></i> Login</a>
+                <a href="auth/logout.php" class="btn-outline"><i class="fas fa-sign-out-alt"></i> Logout</a>
+            <?php else: ?>
+                <a href="auth/user_login.php" class="btn-outline"><i class="fas fa-sign-in-alt"></i> Login</a>
+                <a href="auth/user_register.php" class="btn-primary"><i class="fas fa-user-plus"></i> Sign Up</a>
+            <?php endif; ?>
+            <button class="mobile-menu-btn" onclick="openMobMenu()"><i class="fas fa-bars"></i></button>
+        </div>
+    </div>
+</nav>
 
     <!-- ===== HERO SLIDER ===== -->
     <div class="slider-wrapper" id="sliderWrap">
@@ -1219,30 +751,34 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
                     <div class="slide-text">
                         <div class="slide-badge sb-green">
                             <i class="fas fa-circle" style="font-size:6px;"></i>
-                            Cavite's #1 Eye Care Platform
+                            Cavite's #1 Integrated Optical Platform
                         </div>
-                        <div class="slide-h1">Your Vision,<br>Our Mission.</div>
-                        <div class="slide-sub">Find the best optical clinics in Cavite, book appointments instantly, and explore eyewear — all in one place.</div>
+                        <div class="slide-h1">One Platform.<br>Every Clinic Need.</div>
+                        <div class="slide-sub">From patient bookings to supply chain management — Eyecore empowers optical clinics with an integrated system, complete with 3D frame viewer and mobile app.</div>
                         <div class="slide-btns">
-                            <a href="auth/user_register.php" class="sb-white">
-                                <i class="fas fa-arrow-right"></i> Get Started Free
+                            <a href="admin/login.php" class="sb-white">
+                                <i class="fas fa-desktop"></i> Clinic Web Portal
                             </a>
-                            <a href="pages/dashboard.php" class="sb-ghost">
-                                Explore Clinics
+                            <a href="#download" class="sb-ghost">
+                                <i class="fab fa-android"></i> Mobile App (APK)
                             </a>
+                        </div>
+                        <div class="slide-note">
+                            <span><i class="fas fa-check-circle"></i> Seamless integration across Web & Mobile</span>
+                            <span><i class="fas fa-check-circle"></i> Complete ERP for Optical Clinics</span>
                         </div>
                     </div>
                     <div class="slide-visual">
-                        <svg width="280" height="240" viewBox="0 0 280 240" fill="none">
-                            <ellipse cx="88" cy="126" rx="68" ry="55" fill="none" stroke="rgba(255,255,255,0.88)" stroke-width="8"/>
-                            <ellipse cx="192" cy="126" rx="68" ry="55" fill="none" stroke="rgba(255,255,255,0.88)" stroke-width="8"/>
-                            <ellipse cx="88" cy="126" rx="42" ry="34" fill="rgba(0,220,130,0.18)"/>
-                            <ellipse cx="192" cy="126" rx="42" ry="34" fill="rgba(0,220,130,0.18)"/>
-                            <path d="M156 126 Q140 116 124 126" fill="none" stroke="rgba(255,255,255,0.88)" stroke-width="7" stroke-linecap="round"/>
-                            <line x1="20" y1="112" x2="0" y2="104" stroke="rgba(255,255,255,0.88)" stroke-width="7" stroke-linecap="round"/>
-                            <line x1="260" y1="112" x2="280" y2="104" stroke="rgba(255,255,255,0.88)" stroke-width="7" stroke-linecap="round"/>
-                            <circle cx="73" cy="112" r="11" fill="rgba(255,255,255,0.18)"/>
-                            <circle cx="177" cy="112" r="11" fill="rgba(255,255,255,0.18)"/>
+                        <svg width="300" height="260" viewBox="0 0 300 260" fill="none">
+                            <ellipse cx="94" cy="136" rx="72" ry="58" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="8"/>
+                            <ellipse cx="206" cy="136" rx="72" ry="58" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="8"/>
+                            <ellipse cx="94" cy="136" rx="44" ry="36" fill="rgba(0,220,130,0.2)"/>
+                            <ellipse cx="206" cy="136" rx="44" ry="36" fill="rgba(0,220,130,0.2)"/>
+                            <path d="M166 136 Q150 126 134 136" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="7" stroke-linecap="round"/>
+                            <line x1="22" y1="122" x2="0" y2="112" stroke="rgba(255,255,255,0.9)" stroke-width="7" stroke-linecap="round"/>
+                            <line x1="278" y1="122" x2="300" y2="112" stroke="rgba(255,255,255,0.9)" stroke-width="7" stroke-linecap="round"/>
+                            <circle cx="78" cy="122" r="11" fill="rgba(255,255,255,0.2)"/>
+                            <circle cx="190" cy="122" r="11" fill="rgba(255,255,255,0.2)"/>
                         </svg>
                         <div class="hero-float hf1">
                             <div class="hf-num"><?php echo $clinics_count; ?>+</div>
@@ -1376,7 +912,7 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
         </div>
     </div>
 
-    <!-- ===== CATEGORIES - DYNAMIC ===== -->
+    <!-- ===== CATEGORIES ===== -->
     <div class="section section-gap">
         <div class="sec-head">
             <div class="sec-title">Shop by Category</div>
@@ -1560,31 +1096,311 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
             <?php endforeach; ?>
         </div>
     </div>
-
-    <!-- ===== HOW IT WORKS ===== -->
-    <div class="how-bg">
-        <div class="how-inner">
-            <div class="sec-head">
-                <div class="sec-title">How it works</div>
+    
+    <!-- ===== POWERFUL MODULES ===== -->
+    <div class="section section-gap" id="modules" style="padding-top: 60px;">
+        <div class="sec-head">
+            <div class="sec-title">Powerful Clinic Management Modules</div>
+        </div>
+        <p style="font-size:14px;color:var(--text2);margin-bottom:20px;max-width:720px;">
+            Everything your optical clinic needs to operate smoothly — from patient care and finance to inventory and payroll. All in one platform.
+        </p>
+        <div class="modules-grid">
+            <div class="module-card">
+                <div class="module-icon" style="background:#EFF6FF;color:#1D4ED8;"><i class="fas fa-cog"></i></div>
+                <div class="module-name">Administration</div>
+                <ul class="module-features">
+                    <li><i class="fas fa-check-circle"></i> Dashboard & Analytics</li>
+                    <li><i class="fas fa-check-circle"></i> Reports & Activity Logs</li>
+                    <li><i class="fas fa-check-circle"></i> System Settings & Permissions</li>
+                </ul>
             </div>
-            <div class="how-grid">
-                <div class="how-step">
-                    <div class="how-num">1</div>
-                    <div class="how-ico"><i class="fas fa-search"></i></div>
-                    <div class="how-title">Find a clinic near you</div>
-                    <div class="how-desc">Search optical clinics in your city in Cavite. Filter by location, rating, or services offered.</div>
+            <div class="module-card">
+                <div class="module-icon" style="background:#F0FDFA;color:#0F766E;"><i class="fas fa-eye"></i></div>
+                <div class="module-name">Optical</div>
+                <ul class="module-features">
+                    <li><i class="fas fa-check-circle"></i> Patient Consultation</li>
+                    <li><i class="fas fa-check-circle"></i> Decision Support System</li>
+                    <li><i class="fas fa-check-circle"></i> 3D Frame Viewer</li>
+                </ul>
+            </div>
+            <div class="module-card">
+                <div class="module-icon" style="background:#FFF1F2;color:#BE123C;"><i class="fas fa-headset"></i></div>
+                <div class="module-name">Customer Care</div>
+                <ul class="module-features">
+                    <li><i class="fas fa-check-circle"></i> Support Center & Messages</li>
+                    <li><i class="fas fa-check-circle"></i> Appointments & Patient Records</li>
+                    <li><i class="fas fa-check-circle"></i> PWD/Senior Verification</li>
+                    <li><i class="fas fa-check-circle"></i> Order Management & Reviews</li>
+                </ul>
+            </div>
+            <div class="module-card">
+                <div class="module-icon" style="background:#FFFBEB;color:#B45309;"><i class="fas fa-coins"></i></div>
+                <div class="module-name">Finance & Payments</div>
+                <ul class="module-features">
+                    <li><i class="fas fa-check-circle"></i> Sales & Billing</li>
+                    <li><i class="fas fa-check-circle"></i> Payment Configuration</li>
+                    <li><i class="fas fa-check-circle"></i> Expenses Tracking</li>
+                </ul>
+            </div>
+            <div class="module-card">
+                <div class="module-icon" style="background:#F5F3FF;color:#6D28D9;"><i class="fas fa-boxes"></i></div>
+                <div class="module-name">Supply Chain</div>
+                <ul class="module-features">
+                    <li><i class="fas fa-check-circle"></i> Inventory & Products Catalog</li>
+                    <li><i class="fas fa-check-circle"></i> Purchase Requests & Orders</li>
+                    <li><i class="fas fa-check-circle"></i> Supplier Management</li>
+                </ul>
+            </div>
+            <div class="module-card">
+                <div class="module-icon" style="background:#E3FCE9;color:#007A40;"><i class="fas fa-users"></i></div>
+                <div class="module-name">Human Resources</div>
+                <ul class="module-features">
+                    <li><i class="fas fa-check-circle"></i> Employee Records & Roles</li>
+                    <li><i class="fas fa-check-circle"></i> Attendance & Schedules</li>
+                    <li><i class="fas fa-check-circle"></i> Payroll & Payslips</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== TUTORIAL / HOW TO USE SECTION ===== -->
+    <div class="section section-gap" id="tutorial" style="padding-top: 60px;">
+        <div class="sec-head">
+            <div class="sec-title">How to Use Eyecore</div>
+        </div>
+        <p style="font-size:14px;color:var(--text2);margin-bottom:24px;max-width:720px;">
+            Watch a quick video guide or follow the step-by-step instructions below. Choose your role to get started.
+        </p>
+
+        <div class="tut-tabs">
+            <button class="tut-tab active" onclick="switchTut('patient', this)">
+                <i class="fas fa-user"></i> For Patients
+            </button>
+            <button class="tut-tab" onclick="switchTut('clinic', this)">
+                <i class="fas fa-clinic-medical"></i> For Clinics
+            </button>
+            <button class="tut-tab" onclick="switchTut('supplier', this)">
+                <i class="fas fa-boxes"></i> For Suppliers
+            </button>
+        </div>
+
+        <!-- PATIENT PANEL -->
+        <div class="tut-panel" id="tut-patient">
+            <div class="tut-video-wrap">
+                <?php
+                $patient_video = 'assets/videos/patient-tutorial.mp4';
+                if (file_exists($patient_video)):
+                ?>
+                    <video controls preload="metadata" poster="assets/images/patient-thumb.jpg">
+                        <source src="<?php echo $patient_video; ?>" type="video/mp4">
+                        Your browser does not support video.
+                    </video>
+                <?php else: ?>
+                    <div class="tut-video-placeholder">
+                        <i class="fas fa-video"></i>
+                        <p><strong>Video Tutorial: For Patients</strong></p>
+                        <p>Upload the video to:<br><code>assets/videos/patient-tutorial.mp4</code></p>
+                    </div>
+                <?php endif; ?>
+            </div>
+            <div>
+                <div class="tut-steps-title">
+                    <i class="fas fa-list-ol"></i>
+                    Steps for Patients
                 </div>
-                <div class="how-step">
-                    <div class="how-num">2</div>
-                    <div class="how-ico"><i class="fas fa-calendar-plus"></i></div>
-                    <div class="how-title">Book an appointment</div>
-                    <div class="how-desc">Choose your preferred doctor, date, and time. Confirmed in seconds — no phone calls needed.</div>
+                <div class="tut-step">
+                    <span class="tut-num">1</span>
+                    <div>
+                        <strong>Create a free account</strong>
+                        <span class="tut-desc">Go to the Sign Up page and register using your email.</span>
+                    </div>
                 </div>
-                <div class="how-step">
-                    <div class="how-num">3</div>
-                    <div class="how-ico"><i class="fas fa-check-circle"></i></div>
-                    <div class="how-title">Get your eye care done</div>
-                    <div class="how-desc">Visit the clinic and explore eyewear with our 3D frame viewer before buying.</div>
+                <div class="tut-step">
+                    <span class="tut-num">2</span>
+                    <div>
+                        <strong>Log in to your account</strong>
+                        <span class="tut-desc">Use your email and password to sign in.</span>
+                    </div>
+                </div>
+                <div class="tut-step">
+                    <span class="tut-num">3</span>
+                    <div>
+                        <strong>Browse clinics by city or category</strong>
+                        <span class="tut-desc">Search for optical clinics in Cavite.</span>
+                    </div>
+                </div>
+                <div class="tut-step">
+                    <span class="tut-num">4</span>
+                    <div>
+                        <strong>View 3D frames</strong>
+                        <span class="tut-desc">Rotate and zoom eyeglass frames before visiting.</span>
+                    </div>
+                </div>
+                <div class="tut-step">
+                    <span class="tut-num">5</span>
+                    <div>
+                        <strong>Book an appointment</strong>
+                        <span class="tut-desc">Choose your preferred date, time, and doctor.</span>
+                    </div>
+                </div>
+                <div class="tut-step">
+                    <span class="tut-num">6</span>
+                    <div>
+                        <strong>Leave a review</strong>
+                        <span class="tut-desc">Rate the clinic after your visit to help other patients.</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- CLINIC PANEL -->
+        <div class="tut-panel" id="tut-clinic" style="display:none;">
+            <div class="tut-video-wrap">
+                <?php
+                $clinic_video = 'assets/videos/clinic-tutorial.mp4';
+                if (file_exists($clinic_video)):
+                ?>
+                    <video controls preload="metadata" poster="assets/images/clinic-thumb.jpg">
+                        <source src="<?php echo $clinic_video; ?>" type="video/mp4">
+                        Your browser does not support video.
+                    </video>
+                <?php else: ?>
+                    <div class="tut-video-placeholder">
+                        <i class="fas fa-video"></i>
+                        <p><strong>Video Tutorial: For Clinics</strong></p>
+                        <p>Upload the video to:<br><code>assets/videos/clinic-tutorial.mp4</code></p>
+                    </div>
+                <?php endif; ?>
+            </div>
+            <div>
+                <div class="tut-steps-title">
+                    <i class="fas fa-list-ol"></i>
+                    Steps for Clinics
+                </div>
+                <div class="tut-step">
+                    <span class="tut-num">1</span>
+                    <div>
+                        <strong>Log in to the admin portal</strong>
+                        <span class="tut-desc">Go to Admin Login and sign in.</span>
+                    </div>
+                </div>
+                <div class="tut-step">
+                    <span class="tut-num">2</span>
+                    <div>
+                        <strong>Add products to your catalog</strong>
+                        <span class="tut-desc">Upload the eyewear products you sell.</span>
+                    </div>
+                </div>
+                <div class="tut-step">
+                    <span class="tut-num">3</span>
+                    <div>
+                        <strong>Upload 3D models</strong>
+                        <span class="tut-desc">Upload 3D frame files for the 3D viewer.</span>
+                    </div>
+                </div>
+                <div class="tut-step">
+                    <span class="tut-num">4</span>
+                    <div>
+                        <strong>Manage patient appointments</strong>
+                        <span class="tut-desc">Approve, reschedule, or cancel bookings.</span>
+                    </div>
+                </div>
+                <div class="tut-step">
+                    <span class="tut-num">5</span>
+                    <div>
+                        <strong>Track sales & inventory</strong>
+                        <span class="tut-desc">Monitor sales, stock, and reports on your dashboard.</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SUPPLIER PANEL -->
+        <div class="tut-panel" id="tut-supplier" style="display:none;">
+            <div class="tut-video-wrap">
+                <?php
+                $supplier_video = 'assets/videos/supplier-tutorial.mp4';
+                if (file_exists($supplier_video)):
+                ?>
+                    <video controls preload="metadata" poster="assets/images/supplier-thumb.jpg">
+                        <source src="<?php echo $supplier_video; ?>" type="video/mp4">
+                        Your browser does not support video.
+                    </video>
+                <?php else: ?>
+                    <div class="tut-video-placeholder">
+                        <i class="fas fa-video"></i>
+                        <p><strong>Video Tutorial: For Suppliers</strong></p>
+                        <p>Upload the video to:<br><code>assets/videos/supplier-tutorial.mp4</code></p>
+                    </div>
+                <?php endif; ?>
+            </div>
+            <div>
+                <div class="tut-steps-title">
+                    <i class="fas fa-list-ol"></i>
+                    Steps for Suppliers
+                </div>
+                <div class="tut-step">
+                    <span class="tut-num">1</span>
+                    <div>
+                        <strong>Register as a supplier</strong>
+                        <span class="tut-desc">Go to Supplier Login and click "Register".</span>
+                    </div>
+                </div>
+                <div class="tut-step">
+                    <span class="tut-num">2</span>
+                    <div>
+                        <strong>List your products</strong>
+                        <span class="tut-desc">Add the supplies and frames you provide.</span>
+                    </div>
+                </div>
+                <div class="tut-step">
+                    <span class="tut-num">3</span>
+                    <div>
+                        <strong>Receive purchase requests</strong>
+                        <span class="tut-desc">View requests coming from clinics.</span>
+                    </div>
+                </div>
+                <div class="tut-step">
+                    <span class="tut-num">4</span>
+                    <div>
+                        <strong>Fulfill and track orders</strong>
+                        <span class="tut-desc">Accept, pack, and ship orders to clinics.</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ===== DOWNLOAD APP ===== -->
+    <div class="download-section" id="download">
+        <div class="download-inner">
+            <div class="download-text">
+                <div class="download-eyebrow">
+                    <i class="fab fa-android"></i> Mobile App for Android
+                </div>
+                <div class="download-h2">Eyecore in your<br>pocket — anytime.</div>
+                <div class="download-p">Book appointments, view 3D frames, and manage your clinic on the go. The Eyecore mobile app gives you full access to your favorite clinics and the complete management platform — right from your Android phone.</div>
+                
+                <div class="download-btns">
+                    <a href="https://median.co/share/zpxbjne#apk" target="_blank" class="apk-btn">
+                        <i class="fab fa-android"></i> Download APK
+                    </a>
+                    <a href="https://median.co/share/zpxbjne#apk" target="_blank" class="sb-ghost" style="border-color:rgba(255,255,255,0.5);color:white;">
+                        <i class="fas fa-info-circle"></i> Learn More
+                    </a>
+                </div>
+                <p style="font-size:11px;color:rgba(255,255,255,0.5);margin-top:16px;display:flex;align-items:center;gap:6px;">
+                    <i class="fas fa-shield-alt"></i> Safe & verified APK. Only for Android devices.
+                </p>
+            </div>
+            <div class="download-visual">
+                <div class="phone-mockup">
+                    <div class="phone-screen">
+                        <i class="fas fa-eye"></i>
+                        <div class="app-name">eyecore</div>
+                        <div class="app-sub">Integrated Optical Platform</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -1638,84 +1454,10 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
                             <div class="tv-color" style="background:#8B4513;"></div>
                             <div class="tv-color" style="background:#2c5f8a;"></div>
                             <div class="tv-color" style="background:#7a2a2a;"></div>
-                            <div class="tv-color" style="background:#silver;background:#C0C0C0;"></div>
+                            <div class="tv-color" style="background:#C0C0C0;"></div>
                         </div>
                     </div>
                 </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- ===== FEATURES ===== -->
-    <div class="features-bg" id="features">
-        <div class="features-inner">
-            <div class="sec-head">
-                <div class="sec-title">Why choose Eyecore?</div>
-            </div>
-            <div class="feat-grid">
-                <div class="feat-card">
-                    <div class="fi fi-g"><i class="fas fa-calendar-check"></i></div>
-                    <div>
-                        <div class="ft">Easy Booking</div>
-                        <div class="fd">Schedule with top clinics in a few taps. No phone calls needed — everything online.</div>
-                    </div>
-                </div>
-                <div class="feat-card">
-                    <div class="fi fi-b"><i class="fas fa-cube"></i></div>
-                    <div>
-                        <div class="ft">3D Frame Viewer</div>
-                        <div class="fd">Inspect eyeglass frames in full 360° 3D rotation before you book or buy.</div>
-                    </div>
-                </div>
-                <div class="feat-card">
-                    <div class="fi fi-a"><i class="fas fa-star"></i></div>
-                    <div>
-                        <div class="ft">Real Patient Reviews</div>
-                        <div class="fd">Honest ratings from verified patients. Know what to expect before you visit.</div>
-                    </div>
-                </div>
-                <div class="feat-card">
-                    <div class="fi fi-r"><i class="fas fa-heart"></i></div>
-                    <div>
-                        <div class="ft">Save Favorites</div>
-                        <div class="fd">Bookmark preferred clinics and products for quick access anytime.</div>
-                    </div>
-                </div>
-                <div class="feat-card">
-                    <div class="fi fi-t"><i class="fas fa-tags"></i></div>
-                    <div>
-                        <div class="ft">Hot Deals</div>
-                        <div class="fd">Discover exclusive discounts on eyewear and eye care services from partner clinics.</div>
-                    </div>
-                </div>
-                <div class="feat-card">
-                    <div class="fi fi-p"><i class="fas fa-map-marked-alt"></i></div>
-                    <div>
-                        <div class="ft">Explore Map</div>
-                        <div class="fd">Find clinics near you using our interactive map. Filter by city across all of Cavite.</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- ===== CTA SECTION ===== -->
-    <div class="cta-section">
-        <div class="cta-inner">
-            <div class="cta-h2">Ready to find your perfect<br><span>eye care clinic?</span></div>
-            <div class="cta-sub">Join thousands of Caviteños who already found their eye care home on Eyecore. Free to use, always.</div>
-            <div class="cta-btns">
-                <a href="auth/user_register.php" class="cta-btn-main">
-                    <i class="fas fa-user-plus"></i> Create Free Account
-                </a>
-                <a href="pages/dashboard.php" class="cta-btn-sec">
-                    Browse Clinics
-                </a>
-            </div>
-            <div class="cta-trust">
-                <div class="ct-item"><i class="fas fa-check-circle"></i> No credit card required</div>
-                <div class="ct-item"><i class="fas fa-check-circle"></i> Free for all users</div>
-                <div class="ct-item"><i class="fas fa-check-circle"></i> Book in minutes</div>
             </div>
         </div>
     </div>
@@ -1730,7 +1472,7 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
                     </div>
                     <span class="fl-name">eyecore</span>
                 </div>
-                <div class="footer-p">Your trusted companion for all your eye care needs in Cavite. Find clinics, book appointments, and discover the perfect eyewear.</div>
+                <div class="footer-p">Your trusted companion for all your eye care needs in Cavite. Integrated platform for clinics, suppliers, and patients — from booking to supply chain.</div>
                 <div class="soc-row">
                     <a href="#" class="soc-btn"><i class="fab fa-facebook-f"></i></a>
                     <a href="#" class="soc-btn"><i class="fab fa-twitter"></i></a>
@@ -1738,12 +1480,13 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
                 </div>
             </div>
             <div>
-                <div class="fh4">Quick Links</div>
+                <div class="fh4">Platform</div>
                 <ul class="flinks">
-                    <li><a href="#features">Features</a></li>
-                    <li><a href="#cities">Cities</a></li>
-                    <li><a href="#clinics">Clinics</a></li>
-                    <li><a href="#contact">Contact</a></li>
+                    <li><a href="#tutorial">Tutorial</a></li>
+                    <li><a href="#modules">Modules</a></li>
+                    <li><a href="#download">Mobile App</a></li>
+                    <li><a href="admin/login.php">Clinic Login</a></li>
+                    <li><a href="suppliers/supplier_login.php">Supplier Login</a></li>
                 </ul>
             </div>
             <div>
@@ -1763,7 +1506,10 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
             </div>
         </div>
         <div class="footer-bottom">
-            <div class="fb-copy">© <?php echo date('Y'); ?> Eyecore. All rights reserved. Your Cavite eye care companion.</div>
+            <div>
+                <div class="fb-copy">© <?php echo date('Y'); ?> Eyecore. All rights reserved.</div>
+                <div class="fb-researchers">Developed by Researchers: Mendoza, Rivera, Villanueva, Pacatang</div>
+            </div>
             <div class="fb-right"><i class="fas fa-map-marker-alt"></i> Cavite, Philippines</div>
         </div>
     </footer>
@@ -1781,11 +1527,12 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
             <button onclick="closeMobMenu()" style="background:none;border:none;color:var(--text2);font-size:20px;cursor:pointer;"><i class="fas fa-times"></i></button>
         </div>
         <div class="mob-links">
-            <a href="#features" class="mob-link" onclick="closeMobMenu()"><i class="fas fa-star"></i> Features</a>
+            <a href="#tutorial" class="mob-link" onclick="closeMobMenu()"><i class="fas fa-play-circle"></i> Tutorial</a>
+            <a href="#modules" class="mob-link" onclick="closeMobMenu()"><i class="fas fa-th-large"></i> Modules</a>
+            <a href="#download" class="mob-link" onclick="closeMobMenu()"><i class="fab fa-android"></i> Download App</a>
             <a href="#cities"   class="mob-link" onclick="closeMobMenu()"><i class="fas fa-map-marker-alt"></i> Cities</a>
             <a href="#clinics"  class="mob-link" onclick="closeMobMenu()"><i class="fas fa-clinic-medical"></i> Clinics</a>
             <a href="#contact"  class="mob-link" onclick="closeMobMenu()"><i class="fas fa-envelope"></i> Contact</a>
-            <a href="pages/explore-3d.php" class="mob-link" onclick="closeMobMenu()"><i class="fas fa-cube"></i> 3D Frames</a>
         </div>
         <div class="mob-divider"></div>
         <div class="mob-btns">
@@ -1824,6 +1571,15 @@ function getCitySampleClinics($conn, $city, $limit = 3) {
         startAuto();
     });
     startAuto();
+
+    // ===== TUTORIAL TAB SWITCHER =====
+    function switchTut(role, btn) {
+        document.querySelectorAll('.tut-panel').forEach(p => p.style.display = 'none');
+        document.querySelectorAll('.tut-tab').forEach(t => t.classList.remove('active'));
+        document.getElementById('tut-' + role).style.display = 'grid';
+        btn.classList.add('active');
+        document.querySelectorAll('.tut-video-wrap video').forEach(v => v.pause());
+    }
 
     // ===== THEME TOGGLE =====
     function toggleTheme() {

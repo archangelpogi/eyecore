@@ -224,18 +224,126 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
         .view-btn.active{background:var(--primary);color:white;}
         .view-btn:hover:not(.active){background:var(--bg-primary);color:var(--primary);}
 
-        .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:28px;}
-        .stat-card{background:var(--bg-secondary);border-radius:var(--radius-lg);padding:14px 16px;border:1px solid var(--border-light);transition:all 0.2s;cursor:pointer;text-align:center;}
-        .stat-card:hover{transform:translateY(-2px);box-shadow:var(--shadow-md);border-color:var(--primary);}
-        .stat-card.active{border-color:var(--primary);background:var(--primary-light);}
-        .stat-value{font-size:24px;font-weight:800;color:var(--primary);line-height:1;}
-        .stat-label{font-size:11px;color:var(--text-muted);margin-top:5px;display:flex;align-items:center;justify-content:center;gap:4px;}
+        /* ═══ ORDERS-STYLE TOOLBAR (Tabs + Search) ═══ */
+        .orders-toolbar {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
 
-        .search-bar{margin-bottom:24px;}
-        .search-container{position:relative;max-width:400px;}
-        .search-container i{position:absolute;left:16px;top:50%;transform:translateY(-50%);color:var(--text-muted);font-size:14px;}
-        .search-container input{width:100%;padding:12px 16px 12px 44px;background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:var(--radius-full);font-size:14px;color:var(--text-primary);font-family:inherit;transition:all 0.2s;}
-        .search-container input:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-light);}
+        .filter-tabs {
+            display: flex;
+            flex-wrap: nowrap;
+            gap: 8px;
+            overflow-x: auto;
+            overflow-y: hidden;
+            scrollbar-width: none;
+            -webkit-overflow-scrolling: touch;
+            padding-bottom: 2px;
+            width: 100%;
+            max-width: 100%;
+        }
+        .filter-tabs::-webkit-scrollbar { display: none; }
+
+        .filter-tab {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 9px 16px;
+            border-radius: var(--radius-full);
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+            font-family: inherit;
+            flex-shrink: 0;
+            text-decoration: none;
+        }
+        .filter-tab:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+        .filter-tab.active {
+            background: var(--primary-gradient);
+            color: white;
+            border-color: transparent;
+            box-shadow: 0 4px 12px rgba(0,183,97,0.25);
+        }
+        .filter-tab .tab-count {
+            background: rgba(0,0,0,0.08);
+            color: inherit;
+            padding: 1px 7px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 700;
+            line-height: 1.4;
+        }
+        .filter-tab.active .tab-count {
+            background: rgba(255,255,255,0.25);
+        }
+        .theme-dark .filter-tab .tab-count {
+            background: rgba(255,255,255,0.08);
+        }
+
+        .orders-search {
+            position: relative;
+            flex: 1;
+            min-width: 220px;
+            max-width: 380px;
+            margin-left: auto;
+        }
+        .orders-search i.fa-search {
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-muted);
+            font-size: 13px;
+            pointer-events: none;
+        }
+        .orders-search input {
+            width: 100%;
+            padding: 10px 38px 10px 38px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-full);
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 13px;
+            font-family: inherit;
+            font-weight: 500;
+            transition: all 0.2s;
+            outline: none;
+        }
+        .orders-search input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(0,183,97,0.12);
+        }
+        .orders-search input::placeholder {
+            color: var(--text-muted);
+            font-weight: 400;
+        }
+
+        @media (max-width: 640px) {
+            .orders-toolbar {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 10px;
+            }
+            .orders-search {
+                max-width: 100%;
+                margin-left: 0;
+            }
+            .filter-tabs {
+                mask-image: linear-gradient(to right, black 85%, transparent 100%);
+                -webkit-mask-image: linear-gradient(to right, black 85%, transparent 100%);
+            }
+        }
 
         .results-info{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;flex-wrap:wrap;gap:10px;}
         .results-count{background:var(--bg-secondary);padding:6px 14px;border-radius:var(--radius-full);font-size:13px;border:1px solid var(--border-light);color:var(--text-secondary);}
@@ -516,23 +624,22 @@ while ($ap = mysqli_fetch_assoc($appointments_query)) {
             </div>
         </div>
 
-        <!-- Stats -->
-        <div class="stats-grid">
-            <div class="stat-card <?php echo $status_filter==='all'?'active':''; ?>" onclick="filterByStatus('all')">
-                <div class="stat-value"><?php echo $total_all_appointments; ?></div>
-                <div class="stat-label"><i class="fas fa-calendar-alt"></i> All</div>
+        <!-- ═══ TOOLBAR (Filter Tabs + Search) ═══ -->
+        <div class="orders-toolbar">
+            <div class="filter-tabs" id="appointmentFilterTabs">
+                <a href="#" class="filter-tab <?php echo $status_filter==='all'?'active':''; ?>" onclick="filterByStatus('all');return false;">
+                    <i class="fas fa-list"></i> All
+                    <span class="tab-count"><?php echo $total_all_appointments; ?></span>
+                </a>
+                <?php foreach(['pending'=>['fa-clock','Pending'],'confirmed'=>['fa-check-circle','Confirmed'],'paid'=>['fa-credit-card','Paid'],'completed'=>['fa-check-double','Completed'],'cancelled'=>['fa-times-circle','Cancelled'],'missed'=>['fa-calendar-times','Missed']] as $s=>[$ico,$lbl]): ?>
+                <a href="#" class="filter-tab <?php echo $status_filter===$s?'active':''; ?>" onclick="filterByStatus('<?php echo $s; ?>');return false;">
+                    <i class="fas <?php echo $ico; ?>"></i> <?php echo $lbl; ?>
+                    <span class="tab-count"><?php echo $total_counts[$s]; ?></span>
+                </a>
+                <?php endforeach; ?>
             </div>
-            <?php foreach(['pending'=>['fa-clock','Pending'],'confirmed'=>['fa-check-circle','Confirmed'],'paid'=>['fa-credit-card','Paid'],'completed'=>['fa-check-double','Completed'],'cancelled'=>['fa-times-circle','Cancelled'],'missed'=>['fa-calendar-times','Missed']] as $s=>[$ico,$lbl]): ?>
-            <div class="stat-card <?php echo $status_filter===$s?'active':''; ?>" onclick="filterByStatus('<?php echo $s; ?>')">
-                <div class="stat-value"><?php echo $total_counts[$s]; ?></div>
-                <div class="stat-label"><i class="fas <?php echo $ico; ?>"></i> <?php echo $lbl; ?></div>
-            </div>
-            <?php endforeach; ?>
-        </div>
 
-        <!-- Search -->
-        <div class="search-bar">
-            <div class="search-container">
+            <div class="orders-search">
                 <i class="fas fa-search"></i>
                 <input type="text" id="searchInput" placeholder="Search clinic, service, ref no..." value="<?php echo htmlspecialchars($search_query); ?>">
             </div>

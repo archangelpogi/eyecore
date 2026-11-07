@@ -21,11 +21,28 @@ $user_email = $_SESSION['email'] ?? '';
 
 $subHelper = new SubscriptionHelper($pdo, $clinic_id);
 
-// If NO active subscription, redirect to subscription page
-if (!$subHelper->hasActiveSubscription()) {
+// ✅ NEW: Detect current state without premature redirect
+$hasActiveSubscription = $subHelper->hasActiveSubscription();
+$expiryInfo = $subHelper->getExpiryInfo();
+
+// ✅ Redirect only if BRAND NEW (never subscribed at all)
+$hasAnyHistory = false;
+try {
+    $histStmt = $pdo->prepare("SELECT COUNT(*) FROM clinic_subscriptions WHERE clinic_id = ?");
+    $histStmt->execute([$clinic_id]);
+    $hasAnyHistory = ((int)$histStmt->fetchColumn() > 0);
+} catch (PDOException $e) {
+    error_log("History check error: " . $e->getMessage());
+}
+
+if (!$hasActiveSubscription && !$hasAnyHistory) {
+    // Brand new clinic — go to plan selection
     header('Location: subscription.php');
     exit;
 }
+
+// ✅ Detect expired state
+$isExpired = !$hasActiveSubscription && $hasAnyHistory;
 
 // Get current subscription details
 $currentPlan = $subHelper->getCurrentPlan();
@@ -41,10 +58,10 @@ $maxUsers = $subHelper->getMaxUsers() ?? 5;
 // Get payment history
 $paymentHistory = $subHelper->getPaymentHistory(10);
 
-// Get all plans for upgrade options
+// Get all plans for upgrade/renew options
 $plans = $pdo->query("SELECT * FROM subscription_plans WHERE is_active = 1 ORDER BY price_monthly ASC")->fetchAll();
 
-// Handle upgrade request (AJAX)
+// Handle AJAX requests
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WITH']) && $_SERVER['HTTP_X_REQUESTED_WITH'] === 'XMLHttpRequest') {
     header('Content-Type: application/json');
     
@@ -59,9 +76,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     }
     
     if ($action === 'renew_subscription') {
-        // Renew current plan
         $currentPlanId = $subHelper->getCurrentPlanId();
         $result = $subHelper->createCheckoutSession($currentPlanId, $subscription_type, false);
+        echo json_encode($result);
+        exit;
+    }
+    
+    // ✅ NEW: Resubscribe (for expired users subscribing to any plan)
+    if ($action === 'resubscribe') {
+        $result = $subHelper->createCheckoutSession($plan_id, $subscription_type, false);
         echo json_encode($result);
         exit;
     }
@@ -70,13 +93,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_SERVER['HTTP_X_REQUESTED_WI
     exit;
 }
 
-// Helper function to get days remaining
+// Helper function
 function getDaysRemaining($endDate) {
     if (!$endDate) return 0;
     $end = new DateTime($endDate);
     $now = new DateTime();
+    if ($end <= $now) return 0;
     $diff = $now->diff($end);
-    return (int)$diff->days;
+    return (int)ceil($diff->days + ($diff->h / 24));
 }
 
 $daysRemaining = getDaysRemaining($endDate);
@@ -88,7 +112,7 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Manage Subscription - Eyecore</title>
+    <title><?php echo $isExpired ? 'Renew Subscription' : 'Manage Subscription'; ?> - Eyecore</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
@@ -105,9 +129,7 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
             font-weight: 500;
         }
         
-        .back-link:hover {
-            color: #0f766e;
-        }
+        .back-link:hover { color: #0f766e; }
         
         .subscription-card {
             background: white;
@@ -121,6 +143,10 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
             background: linear-gradient(135deg, #0d9488, #0f766e);
             padding: 30px;
             color: white;
+        }
+        
+        .subscription-header.expired {
+            background: linear-gradient(135deg, #dc2626, #991b1b);
         }
         
         .plan-badge {
@@ -149,6 +175,15 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
             font-weight: 600;
         }
         
+        .expired-badge {
+            background: rgba(255,255,255,0.25);
+            color: white;
+            border-radius: 50px;
+            padding: 4px 12px;
+            font-size: 0.7rem;
+            font-weight: 600;
+        }
+        
         .info-row {
             display: flex;
             justify-content: space-between;
@@ -171,6 +206,7 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
             transition: all 0.2s;
             border: 1px solid #e2e8f0;
             border-radius: 16px;
+            background: white;
         }
         
         .upgrade-card:hover {
@@ -182,6 +218,26 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
         .upgrade-card.popular {
             border: 2px solid #0d9488;
             position: relative;
+        }
+        
+        .upgrade-card.current-plan {
+            border: 2px solid #f59e0b;
+            background: linear-gradient(135deg, #fffbeb, #fef3c7);
+            position: relative;
+        }
+        
+        .current-plan-badge {
+            position: absolute;
+            top: -10px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #f59e0b;
+            color: white;
+            padding: 4px 16px;
+            border-radius: 20px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            white-space: nowrap;
         }
         
         .period-btn {
@@ -225,8 +281,22 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
             transition: all 0.2s;
         }
         
-        .btn-renew:hover {
-            background: #d97706;
+        .btn-renew:hover { background: #d97706; }
+        
+        .btn-resubscribe {
+            background: #dc2626;
+            color: white;
+            border-radius: 10px;
+            padding: 10px;
+            font-weight: 600;
+            width: 100%;
+            border: none;
+            transition: all 0.2s;
+        }
+        
+        .btn-resubscribe:hover {
+            background: #b91c1c;
+            transform: scale(1.02);
         }
         
         .payment-history-table {
@@ -250,30 +320,77 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
             font-size: 0.7rem;
             font-weight: 600;
         }
+        
+        .expired-banner {
+            background: linear-gradient(135deg, #fef2f2, #fee2e2);
+            border: 2px solid #fca5a5;
+            border-radius: 16px;
+            padding: 24px;
+            text-align: center;
+            margin-bottom: 24px;
+        }
+        
+        .expired-banner .icon {
+            font-size: 3rem;
+            color: #dc2626;
+            display: block;
+            margin-bottom: 12px;
+        }
+        
+        .expired-banner h3 {
+            color: #991b1b;
+            font-weight: 800;
+            margin-bottom: 8px;
+        }
+        
+        .expired-banner p {
+            color: #7f1d1d;
+            margin-bottom: 0;
+        }
     </style>
 </head>
 <body>
     <div class="container py-4">
         <!-- Header -->
         <div class="d-flex justify-content-between align-items-center mb-4">
-            <a href="../main.php" class="back-link">
-                <i class="bi bi-arrow-left me-2"></i>Back to Dashboard
+            <a href="<?php echo $isExpired ? '../admin/logout.php' : '../main.php'; ?>" class="back-link">
+                <i class="bi bi-arrow-left me-2"></i>
+                <?php echo $isExpired ? 'Logout' : 'Back to Dashboard'; ?>
             </a>
-            <a href="../admin/logout.php" class="text-muted small">
-                <i class="bi bi-box-arrow-right me-1"></i>Logout
-            </a>
+            <?php if (!$isExpired): ?>
+                <a href="../admin/logout.php" class="text-muted small">
+                    <i class="bi bi-box-arrow-right me-1"></i>Logout
+                </a>
+            <?php endif; ?>
         </div>
         
+        <!-- ✅ EXPIRED BANNER (shows only when expired) -->
+        <?php if ($isExpired): ?>
+        <div class="expired-banner">
+            <i class="bi bi-exclamation-octagon-fill icon"></i>
+            <h3>Your Subscription Has Expired</h3>
+            <p>
+                Your <strong><?php echo htmlspecialchars($currentPlanName); ?></strong> plan expired 
+                <strong><?php echo $expiryInfo['days_expired']; ?> day<?php echo $expiryInfo['days_expired'] != 1 ? 's' : ''; ?> ago</strong>.
+                Choose a plan below to restore access. <strong>Your data is safe and secure.</strong>
+            </p>
+        </div>
+        <?php endif; ?>
+        
         <div class="row g-4">
-            <!-- Left Column - Current Subscription -->
+            <!-- Left Column - Current Subscription Info -->
             <div class="col-lg-5">
                 <div class="subscription-card">
-                    <div class="subscription-header">
+                    <div class="subscription-header <?php echo $isExpired ? 'expired' : ''; ?>">
                         <div class="d-flex justify-content-between align-items-center mb-3">
                             <span class="plan-badge">
-                                <i class="bi bi-gem me-1"></i><?php echo ucfirst($currentPlan); ?> Plan
+                                <i class="bi bi-gem me-1"></i><?php echo ucfirst($currentPlan ?: 'No'); ?> Plan
                             </span>
-                            <?php if ($isTrial): ?>
+                            <?php if ($isExpired): ?>
+                                <span class="expired-badge">
+                                    <i class="bi bi-x-circle me-1"></i>Expired
+                                </span>
+                            <?php elseif ($isTrial): ?>
                                 <span class="trial-badge">
                                     <i class="bi bi-gift me-1"></i>Trial: <?php echo $trialDaysLeft; ?> days left
                                 </span>
@@ -288,38 +405,53 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
                     </div>
                     
                     <div class="p-4">
+                        <?php if ($startDate): ?>
                         <div class="info-row">
                             <span class="info-label"><i class="bi bi-calendar-check me-2"></i>Start Date</span>
                             <span class="info-value"><?php echo date('F d, Y', strtotime($startDate)); ?></span>
                         </div>
+                        <?php endif; ?>
+                        
+                        <?php if ($endDate): ?>
                         <div class="info-row">
                             <span class="info-label"><i class="bi bi-calendar-x me-2"></i>End Date</span>
                             <span class="info-value">
                                 <?php echo date('F d, Y', strtotime($endDate)); ?>
-                                <?php if ($isExpiringSoon && !$isTrial): ?>
+                                <?php if ($isExpiringSoon && !$isTrial && !$isExpired): ?>
                                     <span class="expiring-badge ms-2">
                                         <i class="bi bi-exclamation-triangle me-1"></i>Expiring soon!
                                     </span>
                                 <?php endif; ?>
                             </span>
                         </div>
+                        <?php endif; ?>
+                        
                         <div class="info-row">
                             <span class="info-label"><i class="bi bi-hourglass-split me-2"></i>Days Remaining</span>
                             <span class="info-value">
-                                <?php echo $daysRemaining; ?> days
-                                <?php if ($daysRemaining <= 0): ?>
-                                    <span class="expiring-badge ms-2">Expired</span>
+                                <?php if ($isExpired): ?>
+                                    <span class="text-danger">Expired</span>
+                                <?php else: ?>
+                                    <?php echo $daysRemaining; ?> days
                                 <?php endif; ?>
                             </span>
                         </div>
+                        
+                        <?php if (!$isExpired): ?>
                         <div class="info-row">
                             <span class="info-label"><i class="bi bi-people me-2"></i>Users</span>
                             <span class="info-value">
                                 <?php echo $remainingUsers; ?> / <?php echo $maxUsers; ?> slots available
                             </span>
                         </div>
+                        <?php endif; ?>
                         
-                        <?php if ($isTrial): ?>
+                        <?php if ($isExpired): ?>
+                            <div class="alert alert-danger mt-3 mb-0">
+                                <i class="bi bi-info-circle me-2"></i>
+                                <strong>Need to renew?</strong> Choose a plan on the right to restore your access.
+                            </div>
+                        <?php elseif ($isTrial): ?>
                             <div class="alert alert-warning mt-3 mb-0">
                                 <i class="bi bi-gift me-2"></i>
                                 Your trial ends in <strong><?php echo $trialDaysLeft; ?> days</strong>. 
@@ -336,6 +468,7 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
                 </div>
                 
                 <!-- Payment History -->
+                <?php if (!$isExpired && !empty($paymentHistory)): ?>
                 <div class="subscription-card mt-4">
                     <div class="card-header bg-white border-0 pt-4 px-4">
                         <h5 class="mb-0">
@@ -344,74 +477,88 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
                         </h5>
                     </div>
                     <div class="card-body p-0">
-                        <?php if (empty($paymentHistory)): ?>
-                            <div class="text-center py-4 text-muted">
-                                <i class="bi bi-receipt fs-1"></i>
-                                <p class="mb-0 mt-2">No payment history yet.</p>
-                            </div>
-                        <?php else: ?>
-                            <div class="table-responsive">
-                                <table class="table table-sm payment-history-table mb-0">
-                                    <thead class="bg-light">
-                                        <tr>
-                                            <th class="ps-4">Date</th>
-                                            <th>Type</th>
-                                            <th>Amount</th>
-                                            <th class="pe-4">Status</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        <?php foreach ($paymentHistory as $payment): ?>
-                                        <tr>
-                                            <td class="ps-4"><?php echo date('M d, Y', strtotime($payment['transaction_date'])); ?></td>
-                                            <td>
-                                                <span class="badge bg-light text-dark">
-                                                    <?php echo ucfirst($payment['transaction_type']); ?>
-                                                </span>
-                                            </td>
-                                            <td>₱<?php echo number_format($payment['amount'], 2); ?></td>
-                                            <td class="pe-4">
-                                                <span class="badge bg-success"><?php echo ucfirst($payment['status']); ?></span>
-                                            </td>
-                                        </tr>
-                                        <?php endforeach; ?>
-                                    </tbody>
-                                </table>
-                            </div>
-                        <?php endif; ?>
+                        <div class="table-responsive">
+                            <table class="table table-sm payment-history-table mb-0">
+                                <thead class="bg-light">
+                                    <tr>
+                                        <th class="ps-4">Date</th>
+                                        <th>Type</th>
+                                        <th>Amount</th>
+                                        <th class="pe-4">Status</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <?php foreach ($paymentHistory as $payment): ?>
+                                    <tr>
+                                        <td class="ps-4"><?php echo date('M d, Y', strtotime($payment['transaction_date'])); ?></td>
+                                        <td>
+                                            <span class="badge bg-light text-dark">
+                                                <?php echo ucfirst($payment['transaction_type']); ?>
+                                            </span>
+                                        </td>
+                                        <td>₱<?php echo number_format($payment['amount'], 2); ?></td>
+                                        <td class="pe-4">
+                                            <span class="badge bg-success"><?php echo ucfirst($payment['status']); ?></span>
+                                        </td>
+                                    </tr>
+                                    <?php endforeach; ?>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
+                <?php endif; ?>
             </div>
             
-            <!-- Right Column - Upgrade Options -->
+            <!-- Right Column - Renew / Upgrade Options -->
             <div class="col-lg-7">
                 <div class="subscription-card">
                     <div class="card-header bg-white border-0 pt-4 px-4">
                         <h5 class="mb-0">
-                            <i class="bi bi-arrow-up-circle me-2" style="color: #0d9488;"></i>
-                            Upgrade Your Plan
+                            <i class="bi bi-<?php echo $isExpired ? 'arrow-clockwise' : 'arrow-up-circle'; ?> me-2" style="color: #0d9488;"></i>
+                            <?php echo $isExpired ? 'Choose a Plan to Continue' : 'Upgrade Your Plan'; ?>
                         </h5>
-                        <p class="text-muted small mt-2 mb-0">Get more features by upgrading to a higher plan</p>
+                        <p class="text-muted small mt-2 mb-0">
+                            <?php echo $isExpired 
+                                ? 'Your subscription has expired. Select a plan below to restore access.' 
+                                : 'Get more features by upgrading to a higher plan'; ?>
+                        </p>
                     </div>
                     <div class="card-body p-4">
                         <div class="row g-3">
                             <?php 
-                            $upgradePlans = array_filter($plans, function($plan) use ($currentPlan) {
+                            // ✅ EXPIRED: Show ALL plans (including current)
+                            // ✅ ACTIVE: Only show HIGHER plans (upgrade options)
+                            $displayPlans = array_filter($plans, function($plan) use ($currentPlan, $isExpired) {
+                                if ($isExpired) return true;  // Show all
                                 $order = ['basic' => 1, 'professional' => 2, 'enterprise' => 3];
-                                return $order[$plan['plan_code']] > $order[$currentPlan];
+                                return ($order[$plan['plan_code']] ?? 0) > ($order[$currentPlan] ?? 0);
                             });
                             
-                            foreach ($upgradePlans as $plan):
+                            foreach ($displayPlans as $plan):
                                 $features = json_decode($plan['features'], true);
                                 $isPopular = ($plan['plan_code'] === 'professional');
+                                $isCurrentPlan = ($plan['plan_code'] === $currentPlan);
+                                $isFreePlan = ($plan['price_monthly'] == 0);
+                                
+                                // ✅ For expired users: skip showing "Basic" as renew option (trial is one-time)
+                                if ($isExpired && $isFreePlan) {
+                                    // Option: either skip or show as "Free trial used"
+                                    continue;
+                                }
                             ?>
                             <div class="col-md-6">
-                                <div class="upgrade-card p-3 <?php echo $isPopular ? 'popular' : ''; ?>">
-                                    <?php if ($isPopular): ?>
+                                <div class="upgrade-card p-3 <?php echo $isPopular ? 'popular' : ''; ?> <?php echo $isCurrentPlan ? 'current-plan' : ''; ?>">
+                                    <?php if ($isCurrentPlan && !$isExpired): ?>
+                                        <div class="current-plan-badge">
+                                            <i class="bi bi-check-circle me-1"></i>Current Plan
+                                        </div>
+                                    <?php elseif ($isPopular): ?>
                                         <div class="text-end mb-2">
                                             <span class="trial-badge">Most Popular</span>
                                         </div>
                                     <?php endif; ?>
+                                    
                                     <h5 class="mb-1"><?php echo htmlspecialchars($plan['plan_name']); ?></h5>
                                     <p class="text-muted small">₱<?php echo number_format($plan['price_monthly'], 0); ?>/month</p>
                                     
@@ -440,14 +587,24 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
                                         <?php endforeach; ?>
                                     </ul>
                                     
-                                    <button class="btn-upgrade" onclick="upgradePlan(<?php echo $plan['id']; ?>, '<?php echo htmlspecialchars($plan['plan_name']); ?>')">
-                                        <i class="bi bi-arrow-up-circle me-2"></i>Upgrade to <?php echo $plan['plan_name']; ?>
-                                    </button>
+                                    <?php if ($isExpired): ?>
+                                        <button class="btn-resubscribe" onclick="resubscribePlan(<?php echo $plan['id']; ?>, '<?php echo htmlspecialchars($plan['plan_name']); ?>')">
+                                            <i class="bi bi-arrow-clockwise me-2"></i>Subscribe to <?php echo $plan['plan_name']; ?>
+                                        </button>
+                                    <?php elseif ($isCurrentPlan): ?>
+                                        <button class="btn-renew" onclick="showRenewModal()" style="width: 100%;">
+                                            <i class="bi bi-arrow-repeat me-2"></i>Renew Plan
+                                        </button>
+                                    <?php else: ?>
+                                        <button class="btn-upgrade" onclick="upgradePlan(<?php echo $plan['id']; ?>, '<?php echo htmlspecialchars($plan['plan_name']); ?>')">
+                                            <i class="bi bi-arrow-up-circle me-2"></i>Upgrade to <?php echo $plan['plan_name']; ?>
+                                        </button>
+                                    <?php endif; ?>
                                 </div>
                             </div>
                             <?php endforeach; ?>
                             
-                            <?php if (empty($upgradePlans)): ?>
+                            <?php if (empty($displayPlans)): ?>
                                 <div class="col-12 text-center py-4">
                                     <i class="bi bi-trophy fs-1 text-warning"></i>
                                     <p class="mt-2 mb-0">You're already on the highest plan!</p>
@@ -521,7 +678,6 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
             selectedPlanId = planId;
             selectedPlanName = planName;
             
-            // Get selected period from the upgrade card
             const selector = document.querySelector(`.period-selector[data-plan-id="${planId}"]`);
             if (selector) {
                 const activeBtn = selector.querySelector('.period-btn.active');
@@ -549,14 +705,44 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
             });
         }
         
+        // ✅ NEW: Resubscribe for expired users
+        function resubscribePlan(planId, planName) {
+            selectedPlanId = planId;
+            selectedPlanName = planName;
+            
+            const selector = document.querySelector(`.period-selector[data-plan-id="${planId}"]`);
+            if (selector) {
+                const activeBtn = selector.querySelector('.period-btn.active');
+                if (activeBtn) {
+                    selectedPeriod = activeBtn.dataset.period;
+                    selectedPrice = parseInt(activeBtn.dataset.price);
+                }
+            }
+            
+            Swal.fire({
+                title: 'Subscribe Now?',
+                html: `You're about to subscribe to <strong>${planName}</strong> plan.<br><br>
+                       Period: <strong>${selectedPeriod}</strong><br>
+                       Price: <strong>₱${selectedPrice.toLocaleString()}</strong><br><br>
+                       <span class="text-info">Your subscription will start immediately after payment.</span>`,
+                icon: 'question',
+                showCancelButton: true,
+                confirmButtonColor: '#dc2626',
+                confirmButtonText: 'Proceed to Payment',
+                cancelButtonText: 'Cancel'
+            }).then((result) => {
+                if (result.isConfirmed) {
+                    processResubscribe();
+                }
+            });
+        }
+        
         function processUpgrade() {
             Swal.fire({
                 title: 'Processing Upgrade',
                 text: 'Creating checkout session...',
                 allowOutsideClick: false,
-                didOpen: () => {
-                    Swal.showLoading();
-                }
+                didOpen: () => { Swal.showLoading(); }
             });
             
             fetch(window.location.href, {
@@ -595,11 +781,55 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
             });
         }
         
+        // ✅ NEW: Process resubscribe for expired users
+        function processResubscribe() {
+            Swal.fire({
+                title: 'Processing Subscription',
+                text: 'Creating checkout session...',
+                allowOutsideClick: false,
+                didOpen: () => { Swal.showLoading(); }
+            });
+            
+            fetch(window.location.href, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'X-Requested-With': 'XMLHttpRequest'
+                },
+                body: new URLSearchParams({
+                    action: 'resubscribe',
+                    plan_id: selectedPlanId,
+                    subscription_type: selectedPeriod
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success && data.checkout_url) {
+                    Swal.close();
+                    window.location.href = data.checkout_url;
+                } else {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Subscription Failed',
+                        text: data.error || 'Something went wrong',
+                        confirmButtonColor: '#0d9488'
+                    });
+                }
+            })
+            .catch(error => {
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Network Error',
+                    text: 'Please try again',
+                    confirmButtonColor: '#0d9488'
+                });
+            });
+        }
+        
         let renewPeriod = 'monthly';
         let renewPrice = 0;
         
         function showRenewModal() {
-            // Reset renew period selector
             const selector = document.getElementById('renewPeriodSelector');
             if (selector) {
                 const btns = selector.querySelectorAll('.period-btn');
@@ -617,7 +847,6 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
             modal.show();
         }
         
-        // Renew period selector
         document.querySelectorAll('#renewPeriodSelector .period-btn').forEach(btn => {
             btn.addEventListener('click', function() {
                 document.querySelectorAll('#renewPeriodSelector .period-btn').forEach(b => b.classList.remove('active'));
@@ -636,9 +865,7 @@ $isExpiringSoon = $daysRemaining <= 7 && $daysRemaining > 0;
                 title: 'Processing Renewal',
                 text: 'Creating checkout session...',
                 allowOutsideClick: false,
-                didOpen: () => {
-                    Swal.showLoading();
-                }
+                didOpen: () => { Swal.showLoading(); }
             });
             
             fetch(window.location.href, {

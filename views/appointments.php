@@ -80,8 +80,6 @@ $stmtRefunds = $pdo->prepare("
 ");
 $stmtRefunds->execute([$clinicId]);
 $refundList = $stmtRefunds->fetchAll(PDO::FETCH_ASSOC);
-
-// ── ALL APPOINTMENTS (Unified query for the table) ─────────────
 $stmtAll = $pdo->prepare("
     SELECT a.*,
            a.id as appointment_id,
@@ -103,17 +101,35 @@ $stmtAll = $pdo->prepare("
            ) AS patient_name,
            u.email AS user_email,
            u.contact AS user_contact,
-           COALESCE(pr.name, srv.name, a.service_type, '—') AS item_display_name,
-           pr.name AS product_name,
-           pr.price AS product_price,
-           srv.name AS service_name,
-           srv.price AS service_price,
+COALESCE(pr.name, srv.name, a.service_type, '—') AS item_display_name,
+pr.name AS product_name,
+pr.price AS product_price,
+srv.name AS service_name,
+srv.price AS service_price,
+-- ✅ BAGO: Kunin LAHAT ng services
+(SELECT GROUP_CONCAT(s2.name SEPARATOR ' + ') 
+ FROM appointment_services aps2 
+ JOIN services s2 ON s2.id = aps2.service_id 
+ WHERE aps2.appointment_id = a.id) AS all_service_names,
+(SELECT COUNT(*) 
+ FROM appointment_services aps3 
+ WHERE aps3.appointment_id = a.id) AS service_count,
+(SELECT SUM(aps4.price) 
+ FROM appointment_services aps4 
+ WHERE aps4.appointment_id = a.id) AS services_total_price,
            d.name  AS doctor_name,
            d.specialty AS doctor_specialty,
-           pay.payment_status AS pay_status,
-           pay.payment_method,
-           pay.reference_number,
-           pay.payment_date,
+           -- ✅ SUBQUERY: Latest payment only (fix duplicate)
+           (SELECT payment_status FROM payments WHERE appointment_id = a.id ORDER BY created_at DESC LIMIT 1) AS pay_status,
+           (SELECT payment_method FROM payments WHERE appointment_id = a.id ORDER BY created_at DESC LIMIT 1) AS payment_method,
+           (SELECT reference_number FROM payments WHERE appointment_id = a.id ORDER BY created_at DESC LIMIT 1) AS reference_number,
+           (SELECT payment_date FROM payments WHERE appointment_id = a.id ORDER BY created_at DESC LIMIT 1) AS payment_date,
+           -- ✅ ADD: Doctor's recommendation
+           cn.rec_lens_design,
+           cn.rec_lens_index,
+           cn.rec_lens_features,
+           cn.rec_lens_notes,
+           cn.diagnosis,
            a.status as appointment_status,
            a.arrived_at,
            a.consultation_started_at,
@@ -124,7 +140,7 @@ $stmtAll = $pdo->prepare("
     LEFT JOIN products pr  ON a.product_id = pr.id
     LEFT JOIN services srv ON a.item_id = srv.id AND a.item_type = 'service'
     LEFT JOIN doctors  d   ON a.doctor_id  = d.id
-    LEFT JOIN payments pay ON a.id         = pay.appointment_id
+    LEFT JOIN clinical_notes cn ON a.id = cn.appointment_id
     WHERE a.clinic_id = ?
     ORDER BY a.appointment_date DESC, a.appointment_time DESC
 ");
@@ -318,7 +334,7 @@ function getPaymentStatusBadge($appt) {
     if ($status === 'paid' || $status === 'completed' || $payStatus === 'paid') {
         return '<span class="badge bg-success">Paid</span>';
     } elseif ($status === 'confirmed' || $status === 'waiting_payment') {
-        return '<span class="badge bg-warning text-dark">Awaiting Payment</span>';
+        return '<span class="badge bg-warning text-dark"></span>';
     } elseif ($status === 'no-show' && $amountPaid > 0) {
         return '<span class="badge bg-secondary">Forfeited</span>';
     } elseif ($status === 'refunded') {
@@ -979,7 +995,7 @@ function getActionButtons($a) {
                  data-status="<?= htmlspecialchars($status) ?>"
                  data-payment="<?= htmlspecialchars($a['pay_status'] ?? '') ?>"
                  data-date="<?= htmlspecialchars($a['appointment_date'] ?? '') ?>"
-                 data-search="<?= htmlspecialchars(strtolower(($a['patient_name'] ?? '').' '.($a['user_email'] ?? '').' '.($a['product_name'] ?? '').' '.($a['service_name'] ?? ''))) ?>">
+                 data-search="<?= htmlspecialchars(strtolower(($a['patient_name'] ?? '').' '.($a['user_email'] ?? '').' '.($a['product_name'] ?? '').' '.($a['service_name'] ?? '').' '.($a['all_service_names'] ?? ''))) ?>">
 
                 <div class="ec-order-header">
                     <div>
@@ -1012,16 +1028,19 @@ function getActionButtons($a) {
                             <?php endif; ?>
                         </div>
                         <div class="ec-order-product-name">
-                            <?php if(!empty($a['product_name'])): ?>
-                                <?= htmlspecialchars($a['product_name']) ?>
-                            <?php elseif(!empty($a['service_name'])): ?>
-                                <?= htmlspecialchars($a['service_name']) ?>
-                            <?php elseif(!empty($a['service_type'])): ?>
-                                <?= htmlspecialchars($a['service_type']) ?>
-                            <?php else: ?>
-                                <em class="text-muted">No item specified</em>
-                            <?php endif; ?>
-                        </div>
+                        <?php if(!empty($a['product_name'])): ?>
+                            <?= htmlspecialchars($a['product_name']) ?>
+                        <?php elseif(!empty($a['all_service_names'])): ?>
+                            <!-- ✅ IPAKITA LAHAT NG SERVICES -->
+                            <?= htmlspecialchars($a['all_service_names']) ?>
+                        <?php elseif(!empty($a['service_name'])): ?>
+                            <?= htmlspecialchars($a['service_name']) ?>
+                        <?php elseif(!empty($a['service_type'])): ?>
+                            <?= htmlspecialchars($a['service_type']) ?>
+                        <?php else: ?>
+                            <em class="text-muted">No item specified</em>
+                        <?php endif; ?>
+                    </div>
                         <div class="ec-order-product-meta">
                             <?php if(!empty($a['doctor_name'])): ?>
                                 <i class="bi bi-person-badge me-1"></i><?= htmlspecialchars($a['doctor_name']) ?>
@@ -1056,10 +1075,10 @@ function getActionButtons($a) {
                     </div>
                 </div>
 
-                <div class="ec-order-actions">
-                    <a href="appointment-details.php?id=<?= $apptId ?>" class="btn btn-outline-secondary btn-sm">
-                        <i class="bi bi-eye me-1"></i>View Details
-                    </a>
+<div class="ec-order-actions">
+    <button class="btn btn-outline-secondary btn-sm" onclick="viewAppointmentDetails(<?= $apptId ?>)">
+        <i class="bi bi-eye me-1"></i>View Details
+    </button>
 
                     <?php if($status === 'pending'): ?>
                         <?php if(canApproveAppointments()): ?>
@@ -1105,11 +1124,11 @@ function getActionButtons($a) {
                             <i class="bi bi-three-dots-vertical"></i>
                         </button>
                         <ul class="dropdown-menu dropdown-menu-end ec-dropdown-menu">
-                            <li>
-                                <a class="dropdown-item" href="appointment-details.php?id=<?= $apptId ?>">
-                                    <i class="bi bi-eye me-2"></i>View Details
-                                </a>
-                            </li>
+<li>
+    <a class="dropdown-item" href="#" onclick="viewAppointmentDetails(<?= $apptId ?>);return false;">
+        <i class="bi bi-eye me-2"></i>View Details
+    </a>
+</li>
                             <?php if($status === 'pending' && canApproveAppointments()): ?>
                                 <li>
                                     <a class="dropdown-item" href="#" onclick="approveAppointment(<?= $apptId ?>, <?= $userId ?>, <?= $patientId ?>);return false;">
@@ -1582,6 +1601,33 @@ function getActionButtons($a) {
             </div>
         </div>
     </div>
+        <!-- ═══ APPOINTMENT DETAILS MODAL ═══ -->
+    <div class="modal fade" id="appointmentDetailsModal" tabindex="-1">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header" style="background: linear-gradient(135deg, #0d6e6e, #095050); color: white;">
+                    <h5 class="modal-title">
+                        <i class="bi bi-calendar-check me-2"></i>
+                        Appointment <span id="modalApptId"></span>
+                    </h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="appointmentDetailsBody">
+                    <div class="text-center py-5">
+                        <div class="spinner-border text-primary" role="status"></div>
+                        <p class="mt-3 mb-0 text-muted">Loading details...</p>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn ec-btn-primary" onclick="window.print()">
+                        <i class="bi bi-printer me-1"></i>Print
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
 </div>
 
 <!-- ═══ SCRIPTS - ALL PRESERVED ═══ -->
@@ -2788,6 +2834,357 @@ function getStatusBadge(status) {
         'refunded': '<span class="badge bg-dark">Refunded</span>'
     };
     return badges[status] || '<span class="badge bg-secondary">' + status + '</span>';
+}
+
+// ============================================
+// APPOINTMENT DETAILS MODAL
+// ============================================
+function viewAppointmentDetails(apptId) {
+    const modalEl = document.getElementById('appointmentDetailsModal');
+    const modal = new bootstrap.Modal(modalEl);
+    
+    document.getElementById('appointmentDetailsBody').innerHTML = `
+        <div class="text-center py-5">
+            <div class="spinner-border text-primary" role="status"></div>
+            <p class="mt-3 mb-0 text-muted">Loading details...</p>
+        </div>
+    `;
+    document.getElementById('modalApptId').textContent = '#' + String(apptId).padStart(6, '0');
+    
+    modal.show();
+    
+    fetch(`api/appointments.php?action=get_appointment_details&id=${apptId}`)
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) {
+                document.getElementById('appointmentDetailsBody').innerHTML = `
+                    <div class="alert alert-danger">
+                        <i class="bi bi-exclamation-triangle me-2"></i>
+                        ${data.message || 'Failed to load appointment details'}
+                    </div>
+                `;
+                return;
+            }
+            renderAppointmentDetails(data.data);
+        })
+        .catch(err => {
+            console.error('Error:', err);
+            document.getElementById('appointmentDetailsBody').innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="bi bi-exclamation-triangle me-2"></i>
+                    Network error. Please try again.
+                </div>
+            `;
+        });
+}
+
+function renderAppointmentDetails(a) {
+    const statusClass = {
+        'pending': 'warning', 'confirmed': 'info', 'paid': 'primary',
+        'completed': 'success', 'cancelled': 'danger', 'no-show': 'secondary',
+        'refunded': 'dark', 'arrived': 'success', 'waiting_payment': 'warning',
+        'missed': 'secondary'
+    }[a.status] || 'secondary';
+    
+    const statusLabel = {
+        'pending': 'Pending', 'confirmed': 'Confirmed', 'paid': 'Paid',
+        'completed': 'Completed', 'cancelled': 'Cancelled', 'no-show': 'No-Show',
+        'refunded': 'Refunded', 'arrived': 'Arrived', 'waiting_payment': 'Waiting Payment',
+        'missed': 'Missed'
+    }[a.status] || a.status;
+    
+    // ✅ Parse items para sa breakdown
+    let itemsList = [];
+    try {
+        const breakdownRaw = a.breakdown_items || a.items;
+        itemsList = typeof breakdownRaw === 'string' ? JSON.parse(breakdownRaw) : (breakdownRaw || []);
+    } catch(e) {
+        itemsList = [];
+    }
+    
+    // ✅ Parse doctor's recommended features
+    let recFeatures = [];
+    if (a.rec_lens_features) {
+        try {
+            recFeatures = typeof a.rec_lens_features === 'string' 
+                ? JSON.parse(a.rec_lens_features) 
+                : a.rec_lens_features;
+            if (!Array.isArray(recFeatures)) recFeatures = [];
+        } catch(e) {
+            recFeatures = String(a.rec_lens_features).split(',').map(s => s.trim()).filter(Boolean);
+        }
+    }
+    
+    // ============================================
+    // ✅ BUILD ITEMS HTML — Services + Items
+    // ============================================
+    let itemsHtml = '';
+    let computedSubtotal = 0;
+    
+    // ✅ UNAHIN ANG SERVICES MULA SA appointment_services (API)
+    if (a.services && Array.isArray(a.services) && a.services.length > 0) {
+        a.services.forEach(svc => {
+            const price = parseFloat(svc.price || 0);
+            computedSubtotal += price;
+            
+            itemsHtml += `
+                <div class="ec-detail-row">
+                    <span class="label">
+                        <i class="bi bi-stethoscope me-1" style="color: var(--ec-primary);"></i>
+                        ${escapeHtml(svc.name || 'Service')}
+                        ${svc.duration_minutes ? `<small class="text-muted">(${svc.duration_minutes} mins)</small>` : ''}
+                    </span>
+                    <span class="value">₱${price.toFixed(2)}</span>
+                </div>
+            `;
+        });
+    }
+    
+    // ✅ Tapos ang items (frame, lens, features)
+    if (itemsList.length > 0) {
+        itemsList.forEach(item => {
+            const price = parseFloat(item.price || 0);
+            const qty = parseInt(item.quantity || 1);
+            const total = price * qty;
+            computedSubtotal += total;
+            
+            const sourceBadge = item.source === 'doctor_recommendation' 
+                ? ' <span style="font-size:10px; color:#d97706; font-weight:600;">💡</span>' 
+                : '';
+            
+            itemsHtml += `
+                <div class="ec-detail-row">
+                    <span class="label">${escapeHtml(item.name || 'Item')}${sourceBadge}</span>
+                    <span class="value">₱${total.toFixed(2)}</span>
+                </div>
+            `;
+        });
+    }
+    
+    // ✅ Use computed subtotal (kasama ang services + items)
+    const displaySubtotal = computedSubtotal > 0 ? computedSubtotal : parseFloat(a.subtotal || 0);
+    
+    // ✅ Compute discount base sa displaySubtotal
+    const discountPct = parseFloat(a.discount_percentage || 0);
+    const displayDiscount = (discountPct > 0) ? (displaySubtotal * discountPct / 100) : parseFloat(a.discount_amount || 0);
+    
+    // ✅ Compute total (Subtotal - Discount + VAT)
+    const vatAmt = parseFloat(a.vat_amount || 0);
+    const displayTotal = displaySubtotal - displayDiscount + vatAmt;
+    
+    // ✅ Check kung may doctor's recommendation
+    const hasRecommendation = a.rec_lens_design || a.rec_lens_index || recFeatures.length > 0;
+    
+    // ============================================
+    // ✅ BUILD FINAL HTML
+    // ============================================
+    const html = `
+        <div class="row g-3">
+            
+            <!-- ═══ STATUS HEADER ═══ -->
+            <div class="col-12">
+                <div class="d-flex justify-content-between align-items-center p-3 rounded" 
+                     style="background: var(--ec-bg-soft); border: 1px solid var(--ec-border);">
+                    <div>
+                        <span class="badge bg-${statusClass} me-2">${statusLabel}</span>
+                        <span class="text-muted small">
+                            <i class="bi bi-clock me-1"></i>
+                            ${a.appointment_date} • ${a.appointment_time}
+                        </span>
+                    </div>
+                    <div class="text-end">
+                        <div class="fw-bold" style="font-size:1.2rem;">₱${parseFloat(a.total_amount || 0).toFixed(2)}</div>
+                        <small class="text-muted">${a.payment_type === 'downpayment' ? 'Downpayment' : 'Full Payment'}</small>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- ═══ PATIENT INFORMATION ═══ -->
+            <div class="col-md-6">
+                <div class="ec-detail-section">
+                    <div class="ec-detail-section-title">
+                        <i class="bi bi-person"></i>Patient Information
+                    </div>
+                    <div class="ec-detail-row">
+                        <span class="label">Name</span>
+                        <span class="value">${escapeHtml(a.patient_name || '—')}</span>
+                    </div>
+                    <div class="ec-detail-row">
+                        <span class="label">Email</span>
+                        <span class="value">${escapeHtml(a.user_email || '—')}</span>
+                    </div>
+                    <div class="ec-detail-row">
+                        <span class="label">Contact</span>
+                        <span class="value">${escapeHtml(a.user_contact || '—')}</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- ═══ APPOINTMENT DETAILS ═══ -->
+            <div class="col-md-6">
+                <div class="ec-detail-section">
+                    <div class="ec-detail-section-title">
+                        <i class="bi bi-calendar-event"></i>Appointment Details
+                    </div>
+                    <div class="ec-detail-row">
+                        <span class="label">Date</span>
+                        <span class="value">${a.appointment_date}</span>
+                    </div>
+                    <div class="ec-detail-row">
+                        <span class="label">Time</span>
+                        <span class="value">${a.appointment_time}</span>
+                    </div>
+                    <div class="ec-detail-row">
+                        <span class="label">Doctor</span>
+                        <span class="value">${escapeHtml(a.doctor_name || 'Not assigned')}</span>
+                    </div>
+                    <div class="ec-detail-row">
+                        <span class="label">Specialty</span>
+                        <span class="value">${escapeHtml(a.doctor_specialty || '—')}</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- ═══ FRAME (kung may product) ═══ -->
+            ${a.product_name ? `
+            <div class="col-12">
+                <div class="ec-detail-section">
+                    <div class="ec-detail-section-title">
+                        <i class="bi bi-eyeglasses"></i>Frame
+                    </div>
+                    <div class="ec-detail-row">
+                        <span class="label">${escapeHtml(a.product_name)}</span>
+                        <span class="value">₱${parseFloat(a.product_price || 0).toFixed(2)}</span>
+                    </div>
+                    ${a.color_name ? `
+                    <div class="ec-detail-row">
+                        <span class="label">Color</span>
+                        <span class="value">${escapeHtml(a.color_name)}</span>
+                    </div>
+                    ` : ''}
+                </div>
+            </div>
+            ` : ''}
+            
+            <!-- ═══ DOCTOR'S RECOMMENDATION ═══ -->
+            ${hasRecommendation ? `
+            <div class="col-12">
+                <div class="ec-detail-section" style="background: #fef3c7; padding: 14px; border-radius: 10px; border-left: 4px solid #d97706;">
+                    <div class="ec-detail-section-title" style="color: #92400e; margin-bottom: 10px;">
+                        <i class="bi bi-lightbulb-fill"></i>Doctor's Recommendation
+                    </div>
+                    
+                    ${a.rec_lens_design ? `
+                    <div class="ec-detail-row">
+                        <span class="label" style="color: #78350f;">Lens Design</span>
+                        <span class="value" style="color: #92400e; font-weight: 600;">${escapeHtml(a.rec_lens_design)}</span>
+                    </div>
+                    ` : ''}
+                    
+                    ${a.rec_lens_index ? `
+                    <div class="ec-detail-row">
+                        <span class="label" style="color: #78350f;">Lens Index</span>
+                        <span class="value" style="color: #92400e; font-weight: 600;">${escapeHtml(a.rec_lens_index)}</span>
+                    </div>
+                    ` : ''}
+                    
+                    ${recFeatures.length > 0 ? `
+                    <div style="margin-top: 8px;">
+                        <span class="label" style="color: #78350f; font-size: 12px;">Features:</span>
+                        <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px;">
+                            ${recFeatures.map(f => 
+                                `<span class="badge bg-warning text-dark" style="font-size: 11px; font-weight: 600;">✓ ${escapeHtml(f)}</span>`
+                            ).join('')}
+                        </div>
+                    </div>
+                    ` : ''}
+                    
+                    ${a.rec_lens_notes ? `
+                    <div style="margin-top: 10px; padding: 8px 10px; background: rgba(255,255,255,0.7); border-radius: 6px; font-size: 12px; font-style: italic; color: #78350f;">
+                        <i class="bi bi-chat-left-quote me-1"></i>${escapeHtml(a.rec_lens_notes)}
+                    </div>
+                    ` : ''}
+                </div>
+            </div>
+            ` : ''}
+            
+            <!-- ═══ PAYMENT BREAKDOWN ═══ -->
+            <div class="col-12">
+                <div class="ec-detail-section">
+                    <div class="ec-detail-section-title">
+                        <i class="bi bi-receipt"></i>Payment Breakdown
+                    </div>
+                    
+                    ${itemsHtml}
+                    
+                    <div class="ec-detail-row fw-bold ${itemsHtml ? 'border-top pt-2 mt-2' : ''}">
+                        <span class="label">Subtotal</span>
+                        <span class="value">₱${(displaySubtotal).toFixed(2)}</span>
+                    </div>
+                    
+                    ${displayDiscount > 0 ? `
+                        <div class="ec-detail-row text-danger">
+                            <span class="label">${(a.discount_type || '').toUpperCase()} Discount (${discountPct}%)</span>
+                            <span class="value">-₱${displayDiscount.toFixed(2)}</span>
+                        </div>
+                    ` : ''}
+                    
+                    ${parseFloat(a.vat_amount || 0) > 0 ? `
+                        <div class="ec-detail-row text-warning">
+                            <span class="label">VAT (${parseFloat(a.vat_percentage || 0)}%)</span>
+                            <span class="value">+₱${parseFloat(a.vat_amount).toFixed(2)}</span>
+                        </div>
+                    ` : `
+                        <div class="ec-detail-row text-success">
+                            <span class="label">VAT</span>
+                            <span class="value">Exempt</span>
+                        </div>
+                    `}
+                    
+                    <div class="ec-detail-row fw-bold border-top pt-2 mt-2">
+                        <span class="label" style="font-size: 1.05rem;">Total Amount</span>
+                        <span class="value" style="color: var(--ec-primary); font-size: 1.15rem;">₱${displayTotal.toFixed(2)}</span>
+                    </div>
+                    
+                    <div class="ec-detail-row text-success">
+                        <span class="label">Amount Paid</span>
+                        <span class="value">₱${parseFloat(a.amount_paid || 0).toFixed(2)}</span>
+                    </div>
+                    
+                    ${parseFloat(a.balance_amount || 0) > 0 ? `
+                        <div class="ec-detail-row text-danger">
+                            <span class="label">Balance</span>
+                            <span class="value">₱${parseFloat(a.balance_amount).toFixed(2)}</span>
+                        </div>
+                    ` : ''}
+                    
+                    ${a.reference_number ? `
+                        <div class="ec-detail-row">
+                            <span class="label">Reference #</span>
+                            <span class="value"><code style="font-size: 11px; padding: 2px 6px; background: var(--ec-bg-soft); border-radius: 4px;">${escapeHtml(a.reference_number)}</code></span>
+                        </div>
+                    ` : ''}
+                </div>
+            </div>
+            
+            <!-- ═══ NOTES ═══ -->
+            ${a.notes ? `
+                <div class="col-12">
+                    <div class="ec-detail-section">
+                        <div class="ec-detail-section-title">
+                            <i class="bi bi-chat-text"></i>Notes
+                        </div>
+                        <div class="p-3 rounded" style="background: var(--ec-bg-soft); border-left: 3px solid var(--ec-primary); font-size: 13px; line-height: 1.6;">
+                            ${escapeHtml(a.notes)}
+                        </div>
+                    </div>
+                </div>
+            ` : ''}
+            
+        </div>
+    `;
+    
+    document.getElementById('appointmentDetailsBody').innerHTML = html;
 }
 </script>
 </body>

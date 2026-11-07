@@ -114,6 +114,7 @@ function getProductsViewOnly($pdo, $clinicId) {
         $stmt = $pdo->prepare("
             SELECT p.id, p.name, p.description, p.price, p.category,
                    p.image, p.images_json, p.approval_status,
+                   p.is_free, p.subsidy_source, p.subsidy_amount,
                    p.warranty_period, p.warranty_premium_price,
                    i.brand, i.stock
             FROM products p
@@ -148,6 +149,7 @@ function getProducts($pdo, $clinicId) {
                 p.images_json, p.colors_json,
                 p.is_on_sale, p.sale_price, p.sale_start, p.sale_end, p.sale_label,
                 p.approval_status,
+                p.is_free, p.subsidy_source, p.subsidy_amount,
                 p.warranty_period, p.warranty_coverage, p.warranty_terms, p.warranty_premium_price,
                 p3d.model_file, p3d.model_type,
                 p3d.colors_json AS model_colors_json,
@@ -391,6 +393,10 @@ function postProduct($pdo, $clinicId, $userId) {
         $colors_json       = $_POST['colors_json']       ?? null;
         $extra_fields_json = $_POST['extra_fields_json'] ?? null;
 
+        // ✅ Subsidy / Free product fields
+        $is_free        = isset($_POST['is_free']) ? (int)$_POST['is_free'] : 0;
+        $subsidy_source = ($is_free && !empty($_POST['subsidy_source'])) ? trim($_POST['subsidy_source']) : null;
+        $subsidy_amount = ($is_free && isset($_POST['subsidy_amount'])) ? (float)$_POST['subsidy_amount'] : 0;
         // 3D model options
         $model_option         = $_POST['model_option']         ?? 'none';
         $use_default_model    = $_POST['use_default_model']    ?? '0';
@@ -398,6 +404,12 @@ function postProduct($pdo, $clinicId, $userId) {
         $use_completed_model  = $_POST['use_completed_model']  ?? '0';
         $completed_model_file = $_POST['completed_model_file'] ?? null;
         $completed_model_id   = $_POST['completed_model_id']   ?? null;
+        
+        // ✅ NEW: Purchased frame options
+        $use_purchased_frame     = $_POST['use_purchased_frame']     ?? '0';
+        $purchased_frame_id      = $_POST['purchased_frame_id']      ?? null;
+        $purchased_frame_file    = $_POST['purchased_frame_file']    ?? null;
+        $purchased_frame_name    = $_POST['purchased_frame_name']    ?? null;
 
         if (!$inventory_id) throw new Exception('No item selected');
 
@@ -582,8 +594,9 @@ $insert = $pdo->prepare("
         is_on_sale, sale_price, sale_start, sale_end, sale_label,
         extra_fields_json,
         warranty_period, warranty_coverage, warranty_terms, warranty_premium_price,
+        is_free, subsidy_source, subsidy_amount,
         approval_status, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', NOW())
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', NOW())
 ");
 
 // Kunin ang warranty data mula sa POST
@@ -599,7 +612,8 @@ $insert->execute([
     $item['selling_price'], $item['category'],
     $is_on_sale, $sale_price, $sale_start, $sale_end, $sale_label,
     $extra_fields_json,
-    $warranty_period, $warranty_coverage, $warranty_terms, $warranty_premium_price
+    $warranty_period, $warranty_coverage, $warranty_terms, $warranty_premium_price,
+    $is_free, $subsidy_source, $subsidy_amount
 ]);
         $product_id = $pdo->lastInsertId();
 
@@ -703,6 +717,33 @@ $insert->execute([
         }
 
         // ===== HANDLE 3D MODEL =====
+        
+        // ✅ NEW: Handle purchased frame from supplier
+        if ($use_purchased_frame == '1' && $purchased_frame_file) {
+            $colors_json_3d = null;
+            if (!empty($colors)) {
+                $colors_json_3d = json_encode($colors);
+            }
+            
+            try {
+                $insert_model = $pdo->prepare("
+                    INSERT INTO product_3d_models 
+                    (inventory_id, product_id, model_file, model_type, colors_json, has_3d)
+                    VALUES (?, ?, ?, ?, ?, 1)
+                ");
+                $insert_model->execute([
+                    $inventory_id,
+                    $product_id,
+                    $purchased_frame_file,
+                    $item['category'] == 'Frames' ? 'frame' : 'contact_lens',
+                    $colors_json_3d
+                ]);
+            } catch (Exception $e) {
+                error_log("Purchased frame 3D insert error: " . $e->getMessage());
+            }
+        }
+        
+        // Default model handler (existing)
         if ($use_default_model == '1') {
             $default_model_id = $_POST['default_model_id'] ?? null;
             if ($default_model_id) {
@@ -794,41 +835,104 @@ $insert->execute([
 function editProduct($pdo, $clinicId, $data) {
     try {
         if (empty($data)) { http_response_code(400); echo json_encode(['success'=>false,'message'=>'Invalid request data']); return; }
+
         $id          = (int)($data['id'] ?? 0);
         $name        = trim($data['name'] ?? '');
         $description = trim($data['description'] ?? '');
         $price       = (float)str_replace(',', '', $data['price'] ?? 0);
         $category    = trim($data['category'] ?? '');
-        
+
         // Warranty data
-        $warranty_period = $data['warranty_period'] ?? null;
-        $warranty_coverage = isset($data['warranty_coverage']) ? json_encode($data['warranty_coverage']) : null;
-        $warranty_terms = $data['warranty_terms'] ?? null;
+        $warranty_period        = $data['warranty_period'] ?? null;
+        $warranty_coverage      = isset($data['warranty_coverage']) ? json_encode($data['warranty_coverage']) : null;
+        $warranty_terms         = $data['warranty_terms'] ?? null;
         $warranty_premium_price = $data['warranty_premium_price'] ?? 0;
-        
-        if (!$id)           { echo json_encode(['success'=>false,'message'=>'Product ID required']); return; }
-        if (empty($name))   { echo json_encode(['success'=>false,'message'=>'Product name required']); return; }
-        if ($price <= 0)    { echo json_encode(['success'=>false,'message'=>'Valid price required']); return; }
-        if (empty($category)){ echo json_encode(['success'=>false,'message'=>'Category required']); return; }
 
-        $check = $pdo->prepare("SELECT id FROM products WHERE id = ? AND clinic_id = ?");
+        // ✅ Sale data
+        $is_on_sale = isset($data['is_on_sale']) ? (int)$data['is_on_sale'] : 0;
+        $sale_price = ($is_on_sale && isset($data['sale_price'])) ? (float)$data['sale_price'] : null;
+        $sale_label = ($is_on_sale && !empty($data['sale_label'])) ? trim($data['sale_label']) : null;
+
+        // ✅ Subsidy data
+        $is_free        = isset($data['is_free']) ? (int)$data['is_free'] : 0;
+        $subsidy_source = ($is_free && !empty($data['subsidy_source'])) ? trim($data['subsidy_source']) : null;
+        $subsidy_amount = ($is_free && isset($data['subsidy_amount'])) ? (float)$data['subsidy_amount'] : 0;
+
+        // ── Validation ─────────────────────────────────────────────
+        if (!$id)             { echo json_encode(['success'=>false,'message'=>'Product ID required']); return; }
+        if (empty($name))     { echo json_encode(['success'=>false,'message'=>'Product name required']); return; }
+        if ($price <= 0)      { echo json_encode(['success'=>false,'message'=>'Valid price required']); return; }
+        if (empty($category)) { echo json_encode(['success'=>false,'message'=>'Category required']); return; }
+        if ($is_on_sale && (!$sale_price || $sale_price <= 0)) {
+            echo json_encode(['success'=>false,'message'=>'Valid sale price required']); return;
+        }
+        if ($is_on_sale && $sale_price >= $price) {
+            echo json_encode(['success'=>false,'message'=>'Sale price must be less than original price']); return;
+        }
+
+        // ── Verify ownership + get inventory_id ────────────────────
+        $check = $pdo->prepare("SELECT id, inventory_id FROM products WHERE id = ? AND clinic_id = ?");
         $check->execute([$id, $clinicId]);
-        if (!$check->fetch()) { http_response_code(404); echo json_encode(['success'=>false,'message'=>'Product not found']); return; }
+        $existing = $check->fetch(PDO::FETCH_ASSOC);
+        if (!$existing) {
+            http_response_code(404);
+            echo json_encode(['success'=>false,'message'=>'Product not found']);
+            return;
+        }
 
+        $pdo->beginTransaction();
+
+        // ── ① Update products table ────────────────────────────────
         $pdo->prepare("
             UPDATE products SET 
-                name=?, description=?, price=?, category=?, 
-                warranty_period=?, warranty_coverage=?, warranty_terms=?, warranty_premium_price=?,
+                name=?,
+                description=?,
+                price=?,
+                category=?,
+                warranty_period=?,
+                warranty_coverage=?,
+                warranty_terms=?,
+                warranty_premium_price=?,
+                is_on_sale=?,
+                sale_price=?,
+                sale_label=?,
+                is_free=?,
+                subsidy_source=?,
+                subsidy_amount=?,
                 updated_at=NOW() 
             WHERE id=? AND clinic_id=?
         ")->execute([
             $name, $description, $price, $category,
             $warranty_period, $warranty_coverage, $warranty_terms, $warranty_premium_price,
+            $is_on_sale, $sale_price, $sale_label,
+            $is_free, $subsidy_source, $subsidy_amount,
             $id, $clinicId
         ]);
 
-        echo json_encode(['success'=>true,'message'=>'Product updated successfully','data'=>compact('id','name','description','price','category')]);
+        // ── ② ✅ SYNC PRICE TO INVENTORY ──────────────────────────
+        if (!empty($existing['inventory_id'])) {
+            try {
+                $pdo->prepare("
+                    UPDATE inventory 
+                    SET selling_price = ?, updated_at = NOW()
+                    WHERE id = ? AND clinic_id = ?
+                ")->execute([$price, $existing['inventory_id'], $clinicId]);
+            } catch (Exception $e) {
+                error_log("Inventory price sync warning: " . $e->getMessage());
+                // Huwag i-rollback — okay lang kahit hindi mag-sync
+            }
+        }
+
+        $pdo->commit();
+
+        echo json_encode([
+            'success' => true,
+            'message' => 'Product updated successfully' . (!empty($existing['inventory_id']) ? ' (inventory price synced)' : ''),
+            'data'    => compact('id', 'name', 'description', 'price', 'category')
+        ]);
+
     } catch (Exception $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
         error_log("editProduct error: " . $e->getMessage());
         http_response_code(500);
         echo json_encode(['success'=>false,'message'=>'Error updating product: ' . $e->getMessage()]);
@@ -894,6 +998,7 @@ function getProduct3D($pdo) {
         $product_id = $_GET['id'] ?? 0;
         $stmt = $pdo->prepare("
             SELECT p.*, i.selling_price AS price,
+                   p.is_free, p.subsidy_source, p.subsidy_amount,
                    p.warranty_period, p.warranty_premium_price,
                    p3d.model_file, p3d.model_type, p3d.colors_json, p3d.has_3d
             FROM products p

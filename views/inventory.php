@@ -237,17 +237,37 @@ try {
                                 </div>
                                 <div class="col-md-8 mb-3">
                                     <label class="form-label fw-bold">Item Name <span class="text-danger">*</span></label>
-                                    <input type="text" class="form-control" name="name" placeholder="Enter item name" required>
+                                    <div class="editable-select-wrapper">
+                                        <input type="text" class="form-control editable-select-input" name="name" id="addName" 
+                                               placeholder="Enter or select item name" required autocomplete="off" 
+                                               onfocus="showDropdown(this)" oninput="filterDropdown(this)">
+                                        <span class="editable-select-arrow" onclick="toggleDropdown(this)">▼</span>
+                                        <div class="editable-select-dropdown" id="nameDropdown_add"></div>
+                                    </div>
                                 </div>
                             </div>
                             <div class="row">
                                 <div class="col-md-6 mb-3">
                                     <label class="form-label fw-bold">Brand</label>
-                                    <input type="text" class="form-control" name="brand" placeholder="e.g., Ray-Ban, Oakley">
+                                    <div class="editable-select-wrapper">
+                                        <input type="text" class="form-control editable-select-input" name="brand" id="addBrand" 
+                                               placeholder="Select or type a new brand..." autocomplete="off" 
+                                               onfocus="showDropdown(this)" oninput="filterDropdown(this)">
+                                        <span class="editable-select-arrow" onclick="toggleDropdown(this)">▼</span>
+                                        <div class="editable-select-dropdown" id="brandDropdown_add"></div>
+                                    </div>
+                                    <small class="text-muted"><i class="bi bi-info-circle me-1"></i>You can type a new brand if it's not in the list.</small>
                                 </div>
                                 <div class="col-md-6 mb-3">
                                     <label class="form-label fw-bold">Type/Model</label>
-                                    <input type="text" class="form-control" name="type" placeholder="e.g., Aviator, Progressive">
+                                    <div class="editable-select-wrapper">
+                                        <input type="text" class="form-control editable-select-input" name="type" id="addType" 
+                                               placeholder="Select or type a new type/model..." autocomplete="off" 
+                                               onfocus="showDropdown(this)" oninput="filterDropdown(this)">
+                                        <span class="editable-select-arrow" onclick="toggleDropdown(this)">▼</span>
+                                        <div class="editable-select-dropdown" id="typeDropdown_add"></div>
+                                    </div>
+                                    <small class="text-muted"><i class="bi bi-info-circle me-1"></i>You can type a new type/model if it's not in the list.</small>
                                 </div>
                             </div>
                         </div>
@@ -371,7 +391,7 @@ try {
                 <div class="modal-body" style="max-height:calc(90vh - 130px);overflow-y:auto;">
                     <input type="hidden" name="id" id="editItemId">
 
-                    <!-- Basic Info -->
+<!-- Basic Info -->
                     <div class="card mb-3">
                         <div class="card-header bg-light"><h6 class="mb-0 fw-bold"><i class="fas fa-info-circle me-2"></i>Basic Information</h6></div>
                         <div class="card-body">
@@ -386,18 +406,38 @@ try {
                                     </select>
                                 </div>
                                 <div class="col-md-8 mb-3">
-                                    <label class="form-label fw-bold">Item Name</label>
-                                    <input type="text" class="form-control" id="editName" name="name" required>
+                                    <label class="form-label fw-bold">Item Name <span class="text-danger">*</span></label>
+                                    <div class="editable-select-wrapper">
+                                        <input type="text" class="form-control editable-select-input" name="name" id="editName" 
+                                               placeholder="Enter or select item name" required autocomplete="off" 
+                                               onfocus="showDropdown(this)" oninput="filterDropdown(this)">
+                                        <span class="editable-select-arrow" onclick="toggleDropdown(this)">▼</span>
+                                        <div class="editable-select-dropdown" id="nameDropdown_edit"></div>
+                                    </div>
                                 </div>
                             </div>
                             <div class="row">
                                 <div class="col-md-6 mb-3">
                                     <label class="form-label fw-bold">Brand</label>
-                                    <input type="text" class="form-control" id="editBrand" name="brand">
+                                    <div class="editable-select-wrapper">
+                                        <input type="text" class="form-control editable-select-input" id="editBrand" name="brand" 
+                                               placeholder="Select or type a new brand..." autocomplete="off" 
+                                               onfocus="showDropdown(this)" oninput="filterDropdown(this)">
+                                        <span class="editable-select-arrow" onclick="toggleDropdown(this)">▼</span>
+                                        <div class="editable-select-dropdown" id="brandDropdown_edit"></div>
+                                    </div>
+                                    <small class="text-muted"><i class="bi bi-info-circle me-1"></i>You can type a new brand if it's not in the list.</small>
                                 </div>
                                 <div class="col-md-6 mb-3">
                                     <label class="form-label fw-bold">Type/Model</label>
-                                    <input type="text" class="form-control" id="editType" name="type">
+                                    <div class="editable-select-wrapper">
+                                        <input type="text" class="form-control editable-select-input" id="editType" name="type" 
+                                               placeholder="Select or type a new type/model..." autocomplete="off" 
+                                               onfocus="showDropdown(this)" oninput="filterDropdown(this)">
+                                        <span class="editable-select-arrow" onclick="toggleDropdown(this)">▼</span>
+                                        <div class="editable-select-dropdown" id="typeDropdown_edit"></div>
+                                    </div>
+                                    <small class="text-muted"><i class="bi bi-info-circle me-1"></i>You can type a new type/model if it's not in the list.</small>
                                 </div>
                             </div>
                         </div>
@@ -511,6 +551,142 @@ try {
 
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 <script>
+// ============================================
+// ITEM NAME AUTOCOMPLETE (Fetch Existing Names)
+// ============================================
+let existingItemNames = [];
+
+function loadItemNameSuggestions() {
+    // Kukunin natin lahat ng unique item names mula sa database
+    fetch('api/inventory.php?action=get_items&limit=500&page=1')
+        .then(r => r.json())
+        .then(data => {
+            if (data.success && data.data) {
+                // Gumawa ng Set para walang duplicate, tapos i-array ulit
+                const names = data.data.map(item => item.name).filter(n => n);
+                existingItemNames = [...new Set(names)].sort();
+            }
+        })
+        .catch(err => console.warn('Could not load item names:', err));
+}
+
+// Tawagin natin pagka-load ng page
+document.addEventListener('DOMContentLoaded', loadItemNameSuggestions);
+
+// I-update yung showDropdown function para isama ang 'name'
+// ============================================
+// CUSTOM EDITABLE COMBOBOX LOGIC
+// ============================================
+const HARDCODED_BRANDS = [
+    "Ray-Ban", "Oakley", "Gucci", "Prada", "Versace", "Dior", "Chanel", 
+    "Tom Ford", "Armani Exchange", "Emporio Armani", "Dolce & Gabbana", 
+    "Burberry", "Coach", "Michael Kors", "Police", "Carrera", "Vogue", 
+    "Ferragamo", "Bvlgari", "Tiffany & Co.", "Oliver Peoples", "Persol", 
+    "Maui Jim", "Costa Del Mar", "Revo", "Under Armour", "Nike", "Adidas", 
+    "Zeiss", "Essilor", "Hoya", "Rodenstock", "Acuvue", "Dailies", "Alcon", 
+    "CooperVision", "Bausch & Lomb", "Generic", "Local Brand", "No Brand"
+];
+
+const HARDCODED_TYPES = [
+    "Aviator", "Wayfarer", "Round", "Rectangle", "Square", "Cat-Eye", "Oval", 
+    "Geometric", "Rimless", "Semi-Rimless", "Browline", "Clubmaster", 
+    "Navigator", "Butterfly", "Wrap", "Sport", "Pilot", 
+    "Single Vision", "Bifocal", "Progressive", "Reading", "Computer", 
+    "Photochromic", "Polarized", "Blue Light", "Anti-Fatigue",
+    "Daily", "Monthly", "Bi-Weekly", "Quarterly", "Yearly", "Toric", "Multifocal", "Colored",
+    "Case", "Cleaning Kit", "Strap", "Lens Cloth", "Repair Kit", "Solution", "Nose Pad", "Screw Set"
+];
+
+function populateDropdown(dropdownId, items) {
+    const dropdown = document.getElementById(dropdownId);
+    if (!dropdown) return;
+    dropdown.innerHTML = items.map(item => 
+        `<div class="editable-select-item" onclick="selectItem(this, '${item.replace(/'/g, "\\'")}')">${item}</div>`
+    ).join('');
+}
+
+function showDropdown(input) {
+    document.querySelectorAll('.editable-select-dropdown').forEach(el => el.classList.remove('show'));
+    
+    const wrapper = input.closest('.editable-select-wrapper');
+    const dropdown = wrapper.querySelector('.editable-select-dropdown');
+    
+    if (input.name === 'brand') {
+        populateDropdown(dropdown.id, HARDCODED_BRANDS);
+    } else if (input.name === 'type') {
+        populateDropdown(dropdown.id, HARDCODED_TYPES);
+    } else if (input.name === 'name') {
+        // ✅ Ito yung idinagdag para sa Item Name
+        const nameSuggestions = existingItemNames.length > 0 
+            ? existingItemNames 
+            : ["Ray-Ban Aviator", "Oakley Holbrook", "Gucci GG001"]; 
+        populateDropdown(dropdown.id, nameSuggestions);
+    }
+    
+    dropdown.classList.add('show');
+    filterDropdown(input); // to reset filter if there's already text
+}
+
+function filterDropdown(input) {
+    const wrapper = input.closest('.editable-select-wrapper');
+    const dropdown = wrapper.querySelector('.editable-select-dropdown');
+    const searchVal = input.value.toLowerCase();
+    
+    if (!dropdown.classList.contains('show')) {
+        dropdown.classList.add('show');
+    }
+
+    const items = dropdown.querySelectorAll('.editable-select-item');
+    let hasMatch = false;
+    
+    items.forEach(item => {
+        if (item.textContent.toLowerCase().includes(searchVal)) {
+            item.style.display = 'block';
+            hasMatch = true;
+        } else {
+            item.style.display = 'none';
+        }
+    });
+
+    let emptyMsg = dropdown.querySelector('.editable-select-empty');
+    if (!hasMatch && items.length > 0) {
+        if (!emptyMsg) {
+            emptyMsg = document.createElement('div');
+            emptyMsg.className = 'editable-select-empty';
+            emptyMsg.textContent = 'No matches found. Save to create new.';
+            dropdown.appendChild(emptyMsg);
+        }
+    } else if (emptyMsg) {
+        emptyMsg.remove();
+    }
+}
+
+function selectItem(el, value) {
+    const wrapper = el.closest('.editable-select-wrapper');
+    const input = wrapper.querySelector('.editable-select-input');
+    const dropdown = wrapper.querySelector('.editable-select-dropdown');
+    
+    input.value = value;
+    dropdown.classList.remove('show');
+}
+
+function toggleDropdown(arrow) {
+    const wrapper = arrow.closest('.editable-select-wrapper');
+    const input = wrapper.querySelector('.editable-select-input');
+    const dropdown = wrapper.querySelector('.editable-select-dropdown');
+    
+    if (dropdown.classList.contains('show')) {
+        dropdown.classList.remove('show');
+    } else {
+        showDropdown(input);
+    }
+}
+
+document.addEventListener('click', function(e) {
+    if (!e.target.closest('.editable-select-wrapper')) {
+        document.querySelectorAll('.editable-select-dropdown').forEach(el => el.classList.remove('show'));
+    }
+});
 // ============================================================
 // PERMISSIONS
 // ============================================================
@@ -1808,8 +1984,8 @@ function showReorderSuggestions() {
                 suggested_quantity: item.suggested_pr, estimated_cost: item.estimated_cost,
                 supplier_id: item.supplier_id, supplier: item.supplier
             }));
-            const encodedData = encodeURIComponent(JSON.stringify(items));
-            window.location.href = `views/select_products.php?action=reorder&items=${encodedData}&total_cost=${data.total_estimated_cost}`;
+const encodedData = encodeURIComponent(JSON.stringify(items));
+window.location.href = `views/pr_form.php?action=reorder&items=${encodedData}&total_cost=${data.total_estimated_cost}`;
         } else {
             Swal.fire({ icon:'info', title:'No Reorder Needed', text:'No items need reordering at this time.', timer:2000, showConfirmButton:false });
         }
@@ -1831,6 +2007,8 @@ function showError(msg) { Swal.fire({ icon:'error', title:'Error', text:msg }); 
     <?php endforeach; ?>
 </datalist>
 
+
+
 <style>
 .stat-card { position:relative; overflow:hidden; cursor:pointer; transition:transform 0.2s; }
 .stat-card:hover { transform:translateY(-2px); box-shadow:0 4px 8px rgba(0,0,0,.1); }
@@ -1843,4 +2021,59 @@ function showError(msg) { Swal.fire({ icon:'error', title:'Error', text:msg }); 
 .color-preview { width:40px; height:40px; border-radius:8px; border:2px solid #fff; box-shadow:0 1px 3px rgba(0,0,0,.1); flex-shrink:0; }
 .btn-delete-color { background:#fff; border:1px solid #dc3545; color:#dc3545; padding:4px 12px; border-radius:6px; font-size:12px; cursor:pointer; transition:all 0.2s; }
 .btn-delete-color:hover { background:#dc3545; color:#fff; }
+/* =========================================
+   EDITABLE SELECT (Combobox) CSS
+   ========================================= */
+.editable-select-wrapper {
+    position: relative;
+}
+.editable-select-input {
+    padding-right: 30px; /* Space for the arrow */
+    cursor: text;
+}
+.editable-select-arrow {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    cursor: pointer;
+    color: #6c757d;
+    font-size: 10px;
+    user-select: none;
+    pointer-events: auto; /* Make it clickable */
+}
+.editable-select-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: 100%;
+    background: #fff;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    z-index: 1000;
+    max-height: 200px;
+    overflow-y: auto;
+    display: none;
+    margin-top: 2px;
+}
+.editable-select-dropdown.show {
+    display: block;
+}
+.editable-select-item {
+    padding: 8px 12px;
+    cursor: pointer;
+    font-size: 14px;
+}
+.editable-select-item:hover, 
+.editable-select-item.active {
+    background-color: #f8f9fa;
+    color: #0d6efd;
+}
+.editable-select-empty {
+    padding: 8px 12px;
+    color: #6c757d;
+    font-size: 13px;
+    font-style: italic;
+}
 </style>

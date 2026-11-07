@@ -36,6 +36,24 @@ if (!empty($cart)) {
 }
 
 $grand_total = array_sum(array_column($suppliers, 'total'));
+
+// ✅ BUILD PAYLOAD AND SAVE TO SESSION
+$cartItemsPayload = [];
+foreach ($suppliers as $supplier_id => $supplier) {
+    foreach ($supplier['products'] as $p) {
+        $cartItemsPayload[] = [
+            'id'                 => $p['id'],
+            'name'               => $p['product_name'],
+            'item_id'            => '',
+            'supplier_id'        => $supplier_id ?: 0,
+            'supplier'           => $supplier['name'] ?? '',
+            'suggested_quantity' => $p['cart_qty'],
+            'estimated_cost'     => $p['subtotal'],
+            'current_stock'      => $p['stock'] ?? 0,
+        ];
+    }
+}
+$_SESSION['pending_pr_items'] = $cartItemsPayload;
 ?>
 <!DOCTYPE html>
 <html>
@@ -43,24 +61,82 @@ $grand_total = array_sum(array_column($suppliers, 'total'));
     <title>Shopping Cart</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.8.1/font/bootstrap-icons.css">
-        <!-- Add SweetAlert -->
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    
+    <style>
+    .page-navbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 24px;
+        background: transparent;
+        border-bottom: none;
+        position: sticky;
+        top: 0;
+        z-index: 1000;
+    }
+    .nav-back {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: #4b5563;
+        text-decoration: none;
+        font-weight: 500;
+        font-size: 0.9rem;
+        padding: 8px 12px;
+        border-radius: 8px;
+        transition: all 0.15s ease;
+        flex-shrink: 0;
+    }
+    .nav-back:hover {
+        background: #f3f4f6;
+        color: #008080;
+    }
+    .nav-back i { font-size: 1rem; }
+    .nav-title {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: #111827;
+        font-weight: 600;
+        font-size: 0.95rem;
+        padding: 6px 16px;
+        flex: 1;
+        justify-content: center;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .nav-title i { font-size: 1rem; color: #008080; flex-shrink: 0; }
+    .nav-title span { overflow: hidden; text-overflow: ellipsis; }
+    @media (max-width: 768px) {
+        .page-navbar { padding: 10px 14px; gap: 8px; }
+        .nav-back { padding: 6px 10px; font-size: 0.85rem; }
+        .nav-back span { display: none; }
+        .nav-back i { font-size: 1.1rem; }
+        .nav-title { font-size: 0.85rem; padding: 6px 10px; }
+        .nav-title span { max-width: 140px; }
+    }
+    </style>
 </head>
 <body class="bg-light">
-    <!-- Header with Teal theme -->
-    <nav class="navbar navbar-dark mb-4" style="background-color: #008080;">
-        <div class="container">
-            <span class="navbar-brand mb-0 h1">
-                <i class="bi bi-cart3 me-2"></i>Purchasing Cart
-            </span>
-            <a href="select_products.php" class="btn btn-light">
-                <i class="bi bi-arrow-left me-2"></i>Continue Shopping
-            </a>
-        </div>
-    </nav>
+<div class="page-navbar">
+    <a class="nav-back" href="select_products.php">
+        <i class="bi bi-arrow-left"></i>
+        <span>Continue Shopping</span>
+    </a>
 
-    <div class="container">
-        <?php if (empty($suppliers)): ?>
+    <div class="nav-title">
+        <i class="bi bi-cart3"></i>
+        <span>Purchasing Cart</span>
+    </div>
+
+    <div style="width: 140px;"></div>
+</div>
+
+<div class="container px-3 px-md-4 py-4">
+    <?php if (empty($suppliers)): ?>
             <!-- Empty Cart State -->
             <div class="text-center py-5">
                 <i class="bi bi-cart-x display-1 text-secondary opacity-50"></i>
@@ -171,7 +247,8 @@ $grand_total = array_sum(array_column($suppliers, 'total'));
                                 <h5 class="mb-0">Total</h5>
                                 <h4 class="mb-0" style="color: #008080;">₱<?php echo number_format($grand_total, 2); ?></h4>
                             </div>
-                            <a href="pr_form.php" class="btn btn-lg w-100" style="background-color: #008080; color: white;">
+                            <!-- ✅ FIXED BUTTON: Absolute path at direct to action=cart -->
+                            <a href="/views/pr_form.php?action=cart" class="btn btn-lg w-100" style="background-color: #008080; color: white;">
                                 <i class="bi bi-check-circle me-2"></i>Proceed to PR Form
                             </a>
                         </div>
@@ -201,7 +278,7 @@ function updateQuantity(productId, action, currentQty, minQty) {
         newQty = currentQty - 1;
     }
     
-    fetch('../api/cart.php', {
+    fetch('/api/cart.php', { // Absolute path
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
         body: 'action=update&product_id=' + productId + '&update_action=' + action
@@ -215,7 +292,6 @@ function updateQuantity(productId, action, currentQty, minQty) {
 }
     
 function removeFromCart(productId) {
-    // Get product name and quantity for the message
     const row = event.target.closest('tr');
     const productName = row.querySelector('.fw-medium').textContent;
     const quantity = row.querySelector('input[readonly]').value;
@@ -240,7 +316,7 @@ function removeFromCart(productId) {
         reverseButtons: true
     }).then((result) => {
         if (result.isConfirmed) {
-            fetch('../api/cart.php', {
+            fetch('/api/cart.php', { // Absolute path
                 method: 'POST',
                 headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                 body: 'action=remove&product_id=' + productId

@@ -19,14 +19,13 @@ $documents = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
 $requiredDocs = ['Business Permit','DTI','SEC','BIR','Optometrist License','Barangay Clearance','Health Clearance','Insurance','Other Documents'];
 
-// ── MAX ATTEMPTS CONFIG ──────────────────────────────
-$MAX_ATTEMPTS = 3;
+$today = date('Y-m-d');
 
 $allApproved = true;
 $showUploadForm = false;
 $docsToShow = [];
 $docsToUpload = [];
-$maxAttemptsDocs = [];   // ← NEW: track docs that permanently hit max attempts
+$waitTomorrowDocs = [];
 
 foreach ($requiredDocs as $doc) {
     $docRow = array_filter($documents, fn($d) => $d['document_type'] === $doc);
@@ -34,35 +33,35 @@ foreach ($requiredDocs as $doc) {
     $canUpload = false;
     $status = $docRow['status'] ?? 'Not Uploaded';
 
-    // ── GET ATTEMPT DATA ──────────────────────────────
-    $attempts = $docRow['submission_attempts'] ?? 0;
-    $maxReached = $docRow['max_attempts_reached'] ?? false;
+    $attempts     = $docRow['submission_attempts'] ?? 0;
+    $reviewedAt   = $docRow['reviewed_at'] ?? null;
+    $declinedToday = false;
+
+    if ($status === 'Rejected' && $reviewedAt) {
+        $declinedToday = (date('Y-m-d', strtotime($reviewedAt)) === $today);
+    }
 
     if (!$docRow) {
-        // New document — always can upload
-        $canUpload = true;
-        $showUploadForm = true;
-        $docsToUpload[] = $doc;
+        $canUpload = true; $showUploadForm = true; $docsToUpload[] = $doc;
     }
-    elseif ($docRow['status'] === 'Rejected' && !$maxReached && $attempts < $MAX_ATTEMPTS) {
-        // Rejected but still has attempts left
-        $canUpload = true;
-        $showUploadForm = true;
-        $docsToUpload[] = $doc;
+    elseif ($status === 'Awaiting Re-upload') {
+        $canUpload = true; $showUploadForm = true; $docsToUpload[] = $doc;
     }
-    elseif ($docRow['status'] === 'Rejected' && ($maxReached || $attempts >= $MAX_ATTEMPTS)) {
-        // Rejected and max attempts reached — DO NOT include in upload list
-        $canUpload = false;
-        $maxAttemptsDocs[] = $doc;   // ← NEW: flag for "contact support" state
+    elseif ($status === 'Rejected' && !$declinedToday) {
+        $canUpload = true; $showUploadForm = true; $docsToUpload[] = $doc;
+    }
+    elseif ($status === 'Rejected' && $declinedToday) {
+        $canUpload = false; $waitTomorrowDocs[] = $doc;
     }
 
     if ($docRow && $docRow['status'] !== 'Approved') $allApproved = false;
     $docsToShow[$doc] = [
-        'row' => $docRow,
-        'can_upload' => $canUpload,
-        'status' => $status,
-        'attempts' => $attempts,
-        'max_reached' => $maxReached
+        'row'               => $docRow,
+        'can_upload'        => $canUpload,
+        'status'            => $status,
+        'attempts'          => $attempts,
+        'declined_today'    => $declinedToday,
+        'awaiting_reupload' => ($status === 'Awaiting Re-upload')
     ];
 }
 
@@ -72,6 +71,37 @@ foreach ($docsToShow as $doc => $data) {
     elseif ($data['status'] === 'Pending') $stats['pending']++;
     else $stats['missing']++;
 }
+$pct = round(($stats['uploaded'] / count($requiredDocs)) * 100);
+
+// ── IDENTITY VERIFICATION STATE ──
+$idStmt = $pdo->prepare("SELECT * FROM clinic_identity_verification WHERE clinic_id = ?");
+$idStmt->execute([$clinicId]);
+$identity = $idStmt->fetch(PDO::FETCH_ASSOC);
+
+$idStatus   = $identity['status'] ?? 'Not Submitted';
+$idVerified = $idStatus === 'Approved';
+
+$idDeclinedToday = false;
+if ($idStatus === 'Rejected' && !empty($identity['reviewed_at'])) {
+    $idDeclinedToday = (date('Y-m-d', strtotime($identity['reviewed_at'])) === $today);
+}
+
+$idTypeOptions = [
+    'Philippine Passport', "Driver's License", 'UMID', 'PhilHealth ID', 'SSS ID',
+    'PRC ID', 'Postal ID', "Voter's ID", 'National ID (PhilSys)', 'Barangay ID',
+];
+
+$docDesc = [
+    'Business Permit' => 'Upload your current mayor’s / business permit.',
+    'DTI' => 'Upload your DTI business name registration.',
+    'SEC' => 'Upload your SEC registration certificate.',
+    'BIR' => 'Upload your BIR certificate of registration.',
+    'Optometrist License' => 'Upload the optometrist’s PRC license.',
+    'Barangay Clearance' => 'Upload your current barangay clearance.',
+    'Health Clearance' => 'Upload your health clearance certificate.',
+    'Insurance' => 'Upload your clinic insurance document.',
+    'Other Documents' => 'Upload any additional supporting document.',
+];
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -80,454 +110,123 @@ foreach ($docsToShow as $doc => $data) {
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Clinic Approval — Eyecore</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Playfair+Display:wght@600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css">
 <style>
-:root {
-    --teal:        #0d9488;
-    --teal-d:      #0f766e;
-    --teal-l:      #ccfbf1;
-    --teal-mid:    #5eead4;
-    --ink:         #0d1b2a;
-    --slate:       #64748b;
-    --muted:       #94a3b8;
-    --surface:     #f1f5f9;
-    --white:       #ffffff;
-    --border:      #e2e8f0;
-    --danger:      #ef4444;
-    --danger-l:    #fee2e2;
-    --warning:     #f59e0b;
-    --warning-l:   #fef3c7;
-    --success:     #10b981;
-    --success-l:   #d1fae5;
-    --r:           12px;
-    --r-lg:        20px;
-    --shadow:      0 4px 20px rgba(13,27,42,.07);
-    --shadow-lg:   0 8px 40px rgba(13,27,42,.11);
-}
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: 'Outfit', sans-serif; background: var(--surface); color: var(--ink); font-size: 14px; min-height: 100vh; }
-
-/* NAV */
-.nav {
-    background: var(--white); border-bottom: 1px solid var(--border);
-    height: 58px; padding: 0 28px;
-    display: flex; align-items: center; justify-content: space-between;
-    position: sticky; top: 0; z-index: 200;
-}
-.nav-brand { font-family: 'Playfair Display', serif; font-size: 19px; color: var(--teal-d); display: flex; align-items: center; gap: 9px; }
-.nav-brand-dot { width: 30px; height: 30px; background: var(--teal); border-radius: 8px; display: grid; place-items: center; color: white; font-size: 13px; }
-.nav-r { display: flex; align-items: center; gap: 10px; }
-.clinic-tag { background: var(--teal-l); color: var(--teal-d); border-radius: 99px; padding: 4px 13px; font-size: 12.5px; font-weight: 500; }
-.btn-out { background: none; border: 1px solid var(--border); color: var(--slate); padding: 5px 13px; border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 13px; text-decoration: none; display: flex; align-items: center; gap: 6px; transition: .15s; }
-.btn-out:hover { border-color: var(--danger); color: var(--danger); }
-
-/* LAYOUT */
-.page { display: grid; grid-template-columns: 260px 1fr; min-height: calc(100vh - 58px); }
-
-/* SIDEBAR */
-.sb {
-    background: var(--white); border-right: 1px solid var(--border);
-    padding: 24px 16px; display: flex; flex-direction: column; gap: 4px;
-    position: sticky; top: 58px; height: calc(100vh - 58px); overflow-y: auto;
-}
-.sb-ring-card {
-    background: linear-gradient(145deg, var(--teal-d), var(--teal));
-    border-radius: var(--r-lg); padding: 18px; margin-bottom: 18px;
-    display: flex; gap: 14px; align-items: center; color: white;
-}
-.ring svg { transform: rotate(-90deg); }
-.ring-bg { fill: none; stroke: rgba(255,255,255,.2); stroke-width: 5; }
-.ring-fill { fill: none; stroke: white; stroke-width: 5; stroke-linecap: round; stroke-dasharray: 100; transition: stroke-dashoffset .7s ease; }
-.ring-info strong { font-size: 24px; font-family: 'Playfair Display', serif; display: block; }
-.ring-info span { font-size: 11px; opacity: .8; }
-.sb-lbl { font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); padding: 0 6px 8px; }
-.sbi {
-    display: flex; align-items: center; gap: 9px; padding: 8px 9px;
-    border-radius: 10px; cursor: pointer; transition: .15s;
-    border: 1.5px solid transparent;
-}
-.sbi:hover { background: var(--surface); }
-.sbi.active { background: var(--teal-l); border-color: var(--teal-mid); }
-.sbi-icon { width: 30px; height: 30px; border-radius: 7px; display: grid; place-items: center; font-size: 12px; flex-shrink: 0; }
-.sbi.todo  .sbi-icon { background: #fef3c7; color: var(--warning); }
-.sbi.rej   .sbi-icon { background: var(--danger-l); color: var(--danger); }
-.sbi.maxed .sbi-icon { background: #450a0a; color: #fecaca; }
-.sbi.pend  .sbi-icon { background: var(--warning-l); color: var(--warning); }
-.sbi.ok    .sbi-icon { background: var(--success-l); color: var(--success); }
-.sbi-name { font-size: 12.5px; font-weight: 500; flex: 1; line-height: 1.3; }
-.sbadge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 99px; }
-.sbadge-ok  { background: var(--success-l); color: #065f46; }
-.sbadge-w   { background: var(--warning-l); color: #92400e; }
-.sbadge-err { background: var(--danger-l); color: #991b1b; }
-.sbadge-maxed { background: var(--danger); color: #ffffff; }
-.sbadge-n   { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
-
-/* MAIN */
-.main { padding: 28px 36px; }
-
-/* OVERVIEW TABLE */
-.card { background: var(--white); border-radius: var(--r-lg); box-shadow: var(--shadow); overflow: hidden; margin-bottom: 28px; }
-.card-head { padding: 16px 22px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
-.card-head h2 { font-size: 14.5px; font-weight: 600; }
-.stats-row { display: flex; gap: 7px; }
-.st { display: flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; padding: 3px 9px; border-radius: 99px; }
-.st-g { background: var(--success-l); color: #065f46; }
-.st-y { background: var(--warning-l); color: #92400e; }
-.st-r { background: var(--danger-l); color: #991b1b; }
-table { width: 100%; border-collapse: collapse; }
-th { font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); padding: 9px 16px; background: var(--surface); text-align: left; }
-td { padding: 11px 16px; font-size: 13px; border-bottom: 1px solid var(--border); }
-tr:last-child td { border-bottom: none; }
-tr:hover td { background: #fafbfc; }
-.pill { display: inline-block; font-size: 10.5px; font-weight: 700; padding: 3px 9px; border-radius: 99px; }
-.p-ok  { background: var(--success-l); color: #065f46; }
-.p-w   { background: var(--warning-l); color: #92400e; }
-.p-err { background: var(--danger-l); color: #991b1b; }
-.p-maxed { background: var(--danger); color: #ffffff; }
-.p-n   { background: var(--surface); color: var(--muted); border: 1px solid var(--border); }
-.btn-view { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 500; color: var(--teal-d); border: 1px solid var(--teal-mid); background: var(--teal-l); padding: 3px 9px; border-radius: 6px; text-decoration: none; transition: .15s; cursor: pointer; font-family: inherit; }
-.btn-view:hover { background: var(--teal-mid); }
-
-/* WIZARD */
-.wizard { background: var(--white); border-radius: var(--r-lg); box-shadow: var(--shadow); overflow: hidden; }
-
-/* step strip */
-.steps-strip {
-    background: var(--surface); border-bottom: 1px solid var(--border);
-    padding: 14px 22px; display: flex; align-items: center; gap: 0;
-    overflow-x: auto; scrollbar-width: none;
-}
-.steps-strip::-webkit-scrollbar { display: none; }
-.ws { display: flex; align-items: center; gap: 7px; padding: 5px 9px; border-radius: 9px; cursor: pointer; transition: .15s; white-space: nowrap; flex-shrink: 0; }
-.ws:hover { background: var(--border); }
-.ws.active { background: var(--teal-l); }
-.ws-n { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 11px; font-weight: 700; background: var(--border); color: var(--slate); transition: .2s; }
-.ws.active .ws-n { background: var(--teal); color: white; }
-.ws.done .ws-n { background: var(--success); color: white; }
-.ws-label { font-size: 12px; font-weight: 500; color: var(--slate); }
-.ws.active .ws-label { color: var(--teal-d); }
-.ws-sep { color: var(--border); padding: 0 2px; font-size: 16px; flex-shrink: 0; }
-
-/* panel */
-.wbody { padding: 30px 32px; }
-.panel { display: none; animation: up .22s ease; }
-.panel.active { display: block; }
-@keyframes up { from { opacity:0; transform:translateY(7px); } to { opacity:1; transform:translateY(0); } }
-
-.ph { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 26px; }
-.ph-title { font-family: 'Playfair Display', serif; font-size: 25px; color: var(--ink); }
-.ph-sub { color: var(--muted); font-size: 13px; margin-top: 3px; }
-.ph-ctr { font-size: 11.5px; font-weight: 600; color: var(--muted); background: var(--surface); border: 1px solid var(--border); padding: 5px 13px; border-radius: 99px; white-space: nowrap; margin-top: 3px; }
-
-.rej-alert {
-    background: #fff5f5; border: 1px solid #fecaca; border-radius: var(--r);
-    padding: 12px 15px; margin-bottom: 22px; display: flex; gap: 10px;
-    font-size: 13px; color: #991b1b; align-items: flex-start;
-}
-.rej-alert .attempt-tag {
-    display: inline-block; margin-top: 6px; font-size: 11px; font-weight: 700;
-    background: #fecaca; color: #7f1d1d; padding: 2px 8px; border-radius: 99px;
-}
-
-/* ── UPLOAD BOX ── */
-.upload-box {
-    border: 2px dashed var(--border);
-    border-radius: var(--r-lg); padding: 36px 24px;
-    text-align: center; cursor: pointer; transition: .2s;
-    position: relative; background: var(--surface);
-    margin-bottom: 22px;
-}
-.upload-box:hover, .upload-box.drag { border-color: var(--teal); background: var(--teal-l); }
-.upload-box input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
-.ub-icon { font-size: 36px; color: var(--teal-mid); margin-bottom: 10px; }
-.ub-title { font-size: 15px; font-weight: 600; color: var(--ink); margin-bottom: 4px; }
-.ub-sub { font-size: 12.5px; color: var(--muted); }
-.ub-hint { font-size: 11px; color: var(--muted); margin-top: 6px; }
-
-/* AI reading state */
-.ai-state {
-    display: none; flex-direction: column; align-items: center; gap: 10px;
-    padding: 28px 24px; background: linear-gradient(135deg, var(--teal-l), #e0f2fe);
-    border-radius: var(--r-lg); margin-bottom: 22px; border: 1px solid var(--teal-mid);
-}
-.ai-state.visible { display: flex; }
-.ai-spinner {
-    width: 44px; height: 44px; border-radius: 50%;
-    border: 3px solid var(--teal-l); border-top-color: var(--teal);
-    animation: spin .7s linear infinite;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-.ai-state-title { font-weight: 600; color: var(--teal-d); font-size: 14px; }
-.ai-state-sub { font-size: 12px; color: var(--slate); }
-
-/* file preview strip */
-.file-preview {
-    display: none; align-items: center; gap: 10px;
-    background: var(--teal-l); border: 1px solid var(--teal-mid);
-    border-radius: var(--r); padding: 10px 14px; margin-bottom: 14px;
-}
-.file-preview.visible { display: flex; }
-.fp-icon { font-size: 20px; color: var(--teal); }
-.fp-name { font-size: 13px; font-weight: 600; color: var(--teal-d); flex: 1; }
-.fp-change { font-size: 11.5px; color: var(--teal-d); cursor: pointer; text-decoration: underline; opacity: .7; }
-.fp-change:hover { opacity: 1; }
-
-/* ── DOCUMENT PREVIEW ── */
-.doc-preview-wrap {
-    display: none;
-    border-radius: var(--r-lg);
-    overflow: hidden;
-    margin-bottom: 22px;
-    border: 1.5px solid var(--border);
-    background: #1e293b;
-    position: relative;
-}
-.doc-preview-wrap.visible { display: block; }
-.doc-preview-img {
-    width: 100%;
-    max-height: 400px;
-    object-fit: contain;
-    display: block;
-    background: #0f172a;
-}
-.doc-preview-pdf {
-    width: 100%;
-    height: 400px;
-    border: none;
-    display: block;
-}
-.doc-preview-bar {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 9px 14px;
-    background: var(--white);
-    border-top: 1px solid var(--border);
-    font-size: 12px;
-    color: var(--slate);
-}
-.doc-preview-bar strong {
-    color: var(--ink);
-    flex: 1;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 60%;
-}
-.doc-preview-size {
-    font-size: 11px;
-    color: var(--muted);
-    white-space: nowrap;
-}
-.doc-preview-open {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 11.5px;
-    font-weight: 600;
-    color: var(--teal-d);
-    text-decoration: none;
-    background: var(--teal-l);
-    border: 1px solid var(--teal-mid);
-    padding: 3px 10px;
-    border-radius: 6px;
-    transition: .15s;
-    white-space: nowrap;
-}
-.doc-preview-open:hover { background: var(--teal-mid); }
-
-/* filled fields */
-.fields-row {
-    display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px;
-    margin-bottom: 6px;
-}
-.fg { display: flex; flex-direction: column; gap: 5px; }
-.fl { font-size: 11.5px; font-weight: 700; color: var(--ink); letter-spacing: .02em; display: flex; align-items: center; gap: 5px; }
-.fl .ai-tag { font-size: 10px; font-weight: 700; background: linear-gradient(90deg,var(--teal),#3b82f6); color: white; border-radius: 4px; padding: 1px 5px; letter-spacing: .04em; }
-.fl .req { color: var(--danger); }
-.fi {
-    padding: 10px 12px; border: 1.5px solid var(--border); border-radius: var(--r);
-    font-family: inherit; font-size: 13px; color: var(--ink); background: var(--white);
-    outline: none; transition: .15s;
-}
-.fi:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgba(13,148,136,.1); }
-.fi.ai-filled { border-color: var(--teal-mid); background: var(--teal-l); color: var(--teal-d); font-weight: 500; }
-.fi-hint { font-size: 10.5px; color: var(--muted); margin-top: 2px; }
-
-/* terms */
-.terms-wrap {
-    background: var(--surface); border: 1.5px solid var(--border);
-    border-radius: var(--r); padding: 15px; display: flex; gap: 11px;
-    align-items: flex-start; margin-bottom: 16px;
-}
-.terms-wrap input[type="checkbox"] { margin-top: 2px; accent-color: var(--teal); cursor: pointer; flex-shrink: 0; width: 15px; height: 15px; }
-.terms-wrap label { font-size: 12.5px; color: var(--slate); line-height: 1.6; cursor: pointer; }
-.warn-bar {
-    background: #fffbeb; border: 1px solid #fde68a;
-    border-radius: var(--r); padding: 10px 14px;
-    display: flex; gap: 8px; font-size: 12px; color: #92400e;
-}
-
-/* nav footer */
-.wnav {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 18px 32px; border-top: 1px solid var(--border);
-    background: var(--surface);
-}
-.btn { display: inline-flex; align-items: center; gap: 7px; padding: 9px 20px; border-radius: var(--r); font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer; border: none; transition: .2s; }
-.btn-back { background: var(--white); color: var(--slate); border: 1.5px solid var(--border); }
-.btn-back:hover { border-color: var(--slate); color: var(--ink); }
-.btn-fwd { background: var(--teal); color: white; }
-.btn-fwd:hover { background: var(--teal-d); }
-.btn-send { background: linear-gradient(135deg, var(--teal-d), var(--teal)); color: white; box-shadow: 0 4px 14px rgba(13,148,136,.28); }
-.btn-send:hover { box-shadow: 0 6px 22px rgba(13,148,136,.38); transform: translateY(-1px); }
-.btn-send:disabled { opacity: .5; cursor: not-allowed; transform: none; }
-.step-ctr { font-size: 12px; color: var(--muted); }
-
-/* states */
-.state { padding: 70px 32px; text-align: center; }
-.state-ico { width: 76px; height: 76px; border-radius: 50%; display: grid; place-items: center; margin: 0 auto 22px; font-size: 30px; }
-.state-ico.warn { background: var(--warning-l); color: var(--warning); }
-.state-ico.ok { background: var(--success-l); color: var(--success); }
-.state-ico.err { background: var(--danger-l); color: var(--danger); }
-.state-title { font-family: 'Playfair Display', serif; font-size: 27px; margin-bottom: 10px; }
-.state-body { color: var(--muted); font-size: 13.5px; max-width: 440px; margin: 0 auto 22px; line-height: 1.7; }
-.state-badge { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 500; padding: 9px 18px; border-radius: 99px; }
-.sb-info { background: #e0f2fe; color: #075985; }
-.sb-ok   { background: var(--success-l); color: #065f46; }
-.sb-err  { background: var(--danger-l); color: #991b1b; }
-.maxed-doc-list {
-    display: inline-flex; flex-wrap: wrap; gap: 6px; justify-content: center;
-    margin: 10px 0 18px;
-}
-.maxed-doc-chip {
-    background: var(--danger-l); color: #991b1b; font-weight: 700; font-size: 12px;
-    padding: 5px 12px; border-radius: 99px; border: 1px solid #fecaca;
-}
-.support-email {
-    display: inline-flex; align-items: center; gap: 7px; font-size: 13.5px; font-weight: 600;
-    color: var(--teal-d); background: var(--teal-l); border: 1px solid var(--teal-mid);
-    padding: 8px 16px; border-radius: 99px; text-decoration: none; margin-top: 4px;
-}
-.support-email:hover { background: var(--teal-mid); }
-
-/* ── DOCUMENT VIEW MODAL ── */
-.doc-modal-overlay {
-    display: none;
-    position: fixed; inset: 0; z-index: 1000;
-    background: rgba(13,27,42,.62);
-    backdrop-filter: blur(2px);
-    align-items: center; justify-content: center;
-    padding: 24px;
-}
-.doc-modal-overlay.visible { display: flex; animation: fadeIn .15s ease; }
-@keyframes fadeIn { from{opacity:0;} to{opacity:1;} }
-.doc-modal {
-    background: var(--white);
-    border-radius: var(--r-lg);
-    box-shadow: var(--shadow-lg);
-    width: 100%; max-width: 780px;
-    max-height: 88vh;
-    display: flex; flex-direction: column;
-    overflow: hidden;
-    animation: modalUp .2s ease;
-}
-@keyframes modalUp { from{opacity:0; transform:translateY(14px) scale(.98);} to{opacity:1; transform:translateY(0) scale(1);} }
-.doc-modal-header {
-    display: flex; align-items: center; gap: 10px;
-    padding: 14px 18px; border-bottom: 1px solid var(--border);
-    flex-shrink: 0;
-}
-.doc-modal-header i.fa-file-lines { color: var(--teal); }
-.doc-modal-header strong { flex: 1; font-size: 14.5px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.doc-modal-close {
-    background: var(--surface); border: 1px solid var(--border); color: var(--slate);
-    width: 30px; height: 30px; border-radius: 8px; cursor: pointer;
-    display: grid; place-items: center; font-size: 15px; flex-shrink: 0; transition: .15s;
-}
-.doc-modal-close:hover { background: var(--danger-l); color: var(--danger); border-color: var(--danger); }
-.doc-modal-body {
-    flex: 1; overflow: auto; background: #1e293b;
-    display: flex; align-items: center; justify-content: center;
-    min-height: 300px;
-}
-.doc-modal-img { width: 100%; max-height: 74vh; object-fit: contain; display: block; }
-.doc-modal-pdf { width: 100%; height: 74vh; border: none; display: block; }
-.doc-modal-footer {
-    padding: 10px 18px; border-top: 1px solid var(--border);
-    display: flex; justify-content: flex-end; flex-shrink: 0;
-}
-
-@media (max-width: 860px) {
-    .page { grid-template-columns: 1fr; }
-    .sb   { display: none; }
-    .main { padding: 16px; }
-    .fields-row { grid-template-columns: 1fr; }
-    .wbody { padding: 20px; }
-    .wnav  { padding: 14px 20px; }
-    .doc-modal { max-width: 100%; max-height: 92vh; }
-}
+:root{--teal:#0d9488;--teal-d:#0f766e;--teal-l:#e6f7f5;--bg:#f6f8fa;--card:#fff;--ink:#0f172a;--sub:#64748b;--mut:#94a3b8;--bd:#e5e9ef;--ok:#047857;--ok-l:#d1fae5;--wa:#92400e;--wa-l:#fef3c7;--er:#b91c1c;--er-l:#fee2e2;--or:#c2410c;--or-l:#ffedd5;--ne:#475569;--ne-l:#eef1f5;--r:12px;--sh:0 1px 2px rgba(15,23,42,.04),0 4px 16px rgba(15,23,42,.05)}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 'Outfit',system-ui,sans-serif;min-height:100vh}
+.nav{background:var(--card);border-bottom:1px solid var(--bd);height:56px;padding:0 24px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px}
+.logo{width:28px;height:28px;border-radius:8px;background:var(--teal);color:#fff;display:grid;place-items:center;font-size:13px}
+.nr{display:flex;align-items:center;gap:12px;color:var(--sub);font-size:13px}.nr b{color:var(--ink);font-weight:500}
+.btn{display:inline-flex;align-items:center;gap:7px;font:inherit;font-weight:600;font-size:13px;border-radius:10px;padding:9px 16px;cursor:pointer;border:1px solid var(--bd);background:var(--card);color:var(--ink);text-decoration:none;transition:.15s}
+.btn:hover{border-color:var(--teal)}
+.btn-fwd,.btn-send{background:var(--teal);border-color:var(--teal);color:#fff}.btn-fwd:hover,.btn-send:hover{background:var(--teal-d)}
+.btn-sm{padding:5px 11px;font-size:12px}
+.wrap{max-width:980px;margin:0 auto;padding:28px 20px 56px;display:flex;flex-direction:column;gap:20px}
+h1{font-size:22px;font-weight:700}.lead{color:var(--sub);margin-top:2px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:var(--r);box-shadow:var(--sh)}
+.ch{padding:18px 22px 0;display:flex;justify-content:space-between;align-items:flex-start;gap:12px}
+.ch h2{font-size:15px;font-weight:600}.ch p{color:var(--sub);font-size:12.5px;margin-top:1px}
+.cb{padding:18px 22px 22px}
+.bar{height:10px;border-radius:99px;background:var(--ne-l);overflow:hidden}.bar i{display:block;height:100%;background:var(--teal);border-radius:99px;transition:width .6s}
+.pg-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}.pg-top strong{font-size:26px;font-weight:700}.pg-top span{color:var(--sub)}
+.legend{display:flex;gap:18px;margin-top:12px;color:var(--sub);font-size:12.5px;flex-wrap:wrap}.legend b{color:var(--ink)}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
+.badge{display:inline-block;font-size:11.5px;font-weight:600;padding:3px 10px;border-radius:99px;white-space:nowrap}
+.b-ok{background:var(--ok-l);color:var(--ok)}.b-wa{background:var(--wa-l);color:var(--wa)}.b-er{background:var(--er-l);color:var(--er)}.b-or{background:var(--or-l);color:var(--or)}.b-ne{background:var(--ne-l);color:var(--ne)}
+.alert{display:flex;gap:10px;padding:11px 14px;border-radius:10px;font-size:13px;align-items:flex-start}
+.a-er{background:var(--er-l);color:var(--er)}.a-or{background:var(--or-l);color:var(--or)}.a-wa{background:var(--wa-l);color:var(--wa)}.a-in{background:var(--teal-l);color:var(--teal-d)}.a-ok{background:var(--ok-l);color:var(--ok)}
+.alert i{margin-top:3px}
+.steps{display:flex;align-items:center;gap:8px;margin:18px 0 22px}
+.st{display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--mut);font-weight:500}
+.st .n{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:700;background:var(--ne-l);color:var(--sub)}
+.st.active{color:var(--ink);font-weight:600}.st.active .n{background:var(--teal);color:#fff}
+.st.done{color:var(--sub)}.st.done .n{background:var(--ok-l);color:var(--ok)}
+.ln{flex:1;height:1px;background:var(--bd);max-width:70px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.fl{display:block;font-size:12px;font-weight:600;margin-bottom:6px}
+.req{color:var(--er)}.ai-tag{font-size:10px;font-weight:700;background:var(--teal-l);color:var(--teal-d);padding:1px 6px;border-radius:4px;margin-left:4px}
+.fi{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--bd);border-radius:10px;background:var(--card);color:var(--ink)}
+.fi:focus{outline:2px solid var(--teal);outline-offset:-1px}.fi.ai-filled{background:var(--teal-l);border-color:var(--teal)}
+.fi-hint{font-size:11.5px;color:var(--mut);margin-top:5px}
+.ph{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:6px}
+.ph-title{font-size:18px;font-weight:700}.ph-sub{color:var(--sub);font-size:13px}
+.ph-ctr{font-size:11.5px;font-weight:600;color:var(--sub);background:var(--ne-l);padding:3px 10px;border-radius:99px;white-space:nowrap}
+.panel{display:none}.panel.active{display:block}
+.idv-capture-box{border:1px solid var(--bd);border-radius:var(--r);padding:16px;display:grid;grid-template-columns:240px 1fr;gap:20px;align-items:center}
+.idv-preview{aspect-ratio:4/3;border-radius:10px;background:var(--ne-l);overflow:hidden;display:grid;place-items:center;color:var(--mut)}
+.idv-preview video,.idv-preview img{width:100%;height:100%;object-fit:cover}
+.idv-empty{display:flex;flex-direction:column;align-items:center;gap:6px;font-size:12.5px}.idv-empty i{font-size:26px;opacity:.5}
+.idv-capture-actions{display:flex;gap:8px;flex-wrap:wrap}
+.idv-btn{display:inline-flex;align-items:center;gap:6px;font:inherit;font-weight:600;font-size:12.5px;padding:8px 14px;border-radius:10px;cursor:pointer;border:1px solid var(--bd);background:var(--card);color:var(--ink)}
+.idv-btn:hover{border-color:var(--teal)}
+.idv-btn-cam,.idv-btn-shot{background:var(--teal);border-color:var(--teal);color:#fff}
+.idv-btn-retake{background:var(--er-l);border-color:transparent;color:var(--er)}
+.foot,.wnav{display:flex;justify-content:space-between;align-items:center;margin-top:22px;padding-top:16px;border-top:1px solid var(--bd)}
+.step-ctr{color:var(--sub);font-size:12.5px}
+.tw{overflow-x:auto;margin-top:14px}
+table{width:100%;border-collapse:collapse;min-width:680px}
+th{text-align:left;font-size:11.5px;font-weight:600;color:var(--mut);padding:10px 22px;border-bottom:1px solid var(--bd);text-transform:uppercase;letter-spacing:.04em}
+td{padding:13px 22px;border-bottom:1px solid var(--bd);font-size:13px;color:var(--sub)}
+tr:last-child td{border-bottom:0}td.dn{color:var(--ink);font-weight:600}tbody tr:hover td{background:var(--bg)}
+tr.go{cursor:pointer}
+.upload-box{position:relative;border:1.5px dashed var(--bd);border-radius:var(--r);padding:34px 20px;text-align:center;background:var(--bg);transition:.15s;margin-top:16px}
+.upload-box:hover,.upload-box.drag{border-color:var(--teal);background:var(--teal-l)}
+.upload-box input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
+.ub-icon{width:40px;height:40px;border-radius:50%;background:var(--teal-l);color:var(--teal);display:grid;place-items:center;margin:0 auto 6px;font-size:16px}
+.ub-title{font-size:14.5px;font-weight:600}.ub-sub,.ub-hint{color:var(--mut);font-size:12.5px}
+.ai-state{display:none;flex-direction:column;align-items:center;gap:8px;padding:26px;margin-top:16px;border:1px solid var(--bd);border-radius:var(--r);background:var(--teal-l)}
+.ai-state.visible{display:flex}
+.ai-spinner{width:34px;height:34px;border-radius:50%;border:3px solid var(--bd);border-top-color:var(--teal);animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.ai-state-title{font-weight:600;color:var(--teal-d)}.ai-state-sub{font-size:12px;color:var(--sub)}
+.file-preview{display:none;align-items:center;gap:12px;border:1px solid var(--bd);border-radius:10px;padding:10px 14px;margin-top:16px}
+.file-preview.visible{display:flex}.fp-icon{color:var(--teal);font-size:18px}.fp-name{flex:1;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fp-change{font-size:12px;color:var(--teal-d);cursor:pointer;text-decoration:underline}
+.doc-preview-wrap{display:none;margin-top:8px}.doc-preview-wrap.visible{display:block}
+.doc-preview-bar{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--sub)}
+.doc-preview-bar strong{flex:1;color:var(--ink);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.doc-preview-open{font-size:12px;font-weight:600;color:var(--teal-d);text-decoration:none}
+.fields-row{margin-top:18px}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px}
+.tab{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;font-weight:500;padding:6px 12px;border-radius:99px;border:1px solid var(--bd);background:var(--card);color:var(--sub);cursor:pointer}
+.tab.active{background:var(--teal);border-color:var(--teal);color:#fff}
+.tab.done:not(.active)::after{content:"✓";color:var(--ok)}
+.terms-wrap{display:flex;gap:10px;font-size:12.5px;color:var(--sub);margin-top:18px;padding:14px;background:var(--bg);border-radius:10px}
+.terms-wrap input{accent-color:var(--teal);margin-top:3px}.terms-wrap label{cursor:pointer}
+.hint-bar{font-size:12px;color:var(--mut);margin-top:10px}
+.stack{display:flex;flex-direction:column;gap:10px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}.chip{background:var(--er-l);color:var(--er);font-weight:600;font-size:12px;padding:3px 10px;border-radius:99px}
+.support-email{color:var(--teal-d);font-weight:600;text-decoration:none}
+.result-card{display:none;margin-top:18px;padding:16px;border-radius:10px;background:var(--ok-l);color:var(--ok)}
+.result-card.visible{display:block}
+.result-header{font-weight:700;margin-bottom:10px}
+.result-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:10px}
+.result-ocr{background:var(--card);border-radius:8px;padding:10px;font:12px/1.5 monospace;color:var(--sub);max-height:100px;overflow:auto}
+.text-success{color:var(--ok)}.text-warning{color:var(--wa)}
+.doc-modal-overlay{display:none;position:fixed;inset:0;z-index:1000;background:rgba(15,23,42,.6);align-items:center;justify-content:center;padding:24px}
+.doc-modal-overlay.visible{display:flex}
+.doc-modal{background:var(--card);border-radius:var(--r);width:100%;max-width:780px;max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
+.doc-modal-header,.doc-modal-footer{display:flex;align-items:center;gap:10px;padding:12px 18px}
+.doc-modal-header{border-bottom:1px solid var(--bd)}.doc-modal-header strong{flex:1}
+.doc-modal-footer{border-top:1px solid var(--bd);justify-content:flex-end}
+.doc-modal-close{background:var(--ne-l);border:0;width:30px;height:30px;border-radius:8px;cursor:pointer;color:var(--sub)}
+.doc-modal-body{flex:1;overflow:auto;background:#1e293b;display:flex;align-items:center;justify-content:center;min-height:300px}
+.doc-modal-img{width:100%;max-height:74vh;object-fit:contain}.doc-modal-pdf{width:100%;height:74vh;border:0}
+@media(max-width:720px){.grid2,.grid3,.idv-capture-box,.result-stats{grid-template-columns:1fr}.steps .lbl{display:none}.nav{padding:0 14px}.nr b{display:none}}
 </style>
 </head>
 <body>
 
 <nav class="nav">
-    <div class="nav-brand">
-        <div class="nav-brand-dot"><i class="fas fa-eye"></i></div>
-        Eyecore
-    </div>
-    <div class="nav-r">
-        <div class="clinic-tag"><i class="fas fa-hospital-user" style="margin-right:5px;"></i><?= htmlspecialchars($user['clinic_name']) ?></div>
-        <a href="../admin/logout.php" class="btn-out"><i class="fas fa-sign-out-alt"></i> Logout</a>
-    </div>
+    <div class="brand"><div class="logo"><i class="fas fa-eye"></i></div>Eyecore</div>
+    <div class="nr"><b><?= htmlspecialchars($user['clinic_name']) ?></b><a href="../admin/logout.php" class="btn btn-sm"><i class="fas fa-sign-out-alt"></i> Logout</a></div>
 </nav>
 
-<div class="page">
-
-<!-- SIDEBAR -->
-<aside class="sb">
-    <?php
-    $pct = round(($stats['uploaded'] / count($requiredDocs)) * 100);
-    $r   = 16; $circ = 2 * M_PI * $r;
-    $off = $circ * (1 - $pct / 100);
-    $iconMap = ['Business Permit'=>'fa-building','DTI'=>'fa-briefcase','SEC'=>'fa-landmark','BIR'=>'fa-receipt','Optometrist License'=>'fa-user-md','Barangay Clearance'=>'fa-id-card','Health Clearance'=>'fa-heart-pulse','Insurance'=>'fa-shield-halved','Other Documents'=>'fa-folder-open'];
-    ?>
-    <div class="sb-ring-card">
-        <div class="ring">
-            <svg width="54" height="54" viewBox="0 0 36 36">
-                <circle class="ring-bg" cx="18" cy="18" r="<?= $r ?>"/>
-                <circle class="ring-fill" cx="18" cy="18" r="<?= $r ?>" style="stroke-dashoffset:<?= $off ?>"/>
-            </svg>
-        </div>
-        <div class="ring-info">
-            <strong><?= $pct ?>%</strong>
-            <span>Documents approved</span>
-        </div>
-    </div>
-
-    <div class="sb-lbl">Document Status</div>
-    <?php foreach ($docsToShow as $doc => $data):
-        $s = $data['status'];
-        $isMaxed = ($s === 'Rejected' && ($data['max_reached'] || $data['attempts'] >= $MAX_ATTEMPTS));
-        $cls = 'todo'; $bc = 'sbadge-n'; $bt = 'Upload'; $ic = 'fa-arrow-up-from-bracket';
-        if ($s==='Approved'){$cls='ok';$bc='sbadge-ok';$bt='✓ Done';$ic='fa-circle-check';}
-        elseif($s==='Pending'){$cls='pend';$bc='sbadge-w';$bt='Review';$ic='fa-clock';}
-        elseif($isMaxed){$cls='maxed';$bc='sbadge-maxed';$bt='⚠ Max Reached';$ic='fa-headset';}
-        elseif($s==='Rejected'){$cls='rej';$bc='sbadge-err';$bt='Rejected';$ic='fa-triangle-exclamation';}
-        $slug = preg_replace('/[^a-z0-9]/','_',strtolower($doc));
-    ?>
-    <div class="sbi <?= $cls ?>" data-slug="<?= $slug ?>" onclick="jumpTo('<?= $slug ?>')">
-        <div class="sbi-icon"><i class="fas <?= $isMaxed ? 'fa-headset' : ($iconMap[$doc]??'fa-file') ?>"></i></div>
-        <span class="sbi-name"><?= $doc ?></span>
-        <span class="sbadge <?= $bc ?>"><?= $bt ?></span>
-    </div>
-    <?php endforeach; ?>
-</aside>
-
-<!-- MAIN -->
-<main class="main">
+<main class="wrap">
 
 <?php if (isset($_SESSION['swal'])): ?>
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
@@ -538,265 +237,318 @@ document.addEventListener('DOMContentLoaded',()=>{
 </script>
 <?php unset($_SESSION['swal']); endif; ?>
 
-<!-- OVERVIEW TABLE -->
-<div class="card">
-    <div class="card-head">
-        <h2><i class="fas fa-file-contract" style="color:var(--teal);margin-right:7px;"></i>Document Overview</h2>
-        <div class="stats-row">
-            <div class="st st-g"><i class="fas fa-circle-check"></i> <?= $stats['uploaded'] ?> Approved</div>
-            <div class="st st-y"><i class="fas fa-clock"></i> <?= $stats['pending'] ?> Pending</div>
-            <div class="st st-r"><i class="fas fa-circle-xmark"></i> <?= $stats['missing'] ?> Missing</div>
-        </div>
+<div><h1>Clinic Registration</h1><p class="lead">Complete identity verification and submit your required documents to activate your clinic.</p></div>
+
+<!-- 1. REGISTRATION PROGRESS -->
+<section class="card"><div class="cb">
+    <div class="pg-top"><div><strong><?= $pct ?>%</strong> <span>of documents approved</span></div><span><?= $stats['uploaded'] ?> of <?= count($requiredDocs) ?> documents</span></div>
+    <div class="bar"><i style="width:<?= $pct ?>%"></i></div>
+    <div class="legend">
+        <span><i class="dot" style="background:var(--ok)"></i><b><?= $stats['uploaded'] ?></b> Approved</span>
+        <span><i class="dot" style="background:#f59e0b"></i><b><?= $stats['pending'] ?></b> Pending review</span>
+        <span><i class="dot" style="background:#ef4444"></i><b><?= $stats['missing'] ?></b> Missing or declined</span>
     </div>
-    <div style="overflow-x:auto;">
+</div></section>
+
+<!-- 2. IDENTITY VERIFICATION -->
+<section class="card idv-card">
+    <div class="ch">
+        <div><h2>Identity &amp; Face Verification</h2><p>Required before your clinic can be approved.</p></div>
+        <?php if ($idVerified): ?><span class="badge b-ok">Verified</span>
+        <?php elseif ($idDeclinedToday): ?><span class="badge b-er">Rejected</span>
+        <?php elseif ($idStatus === 'Pending'): ?><span class="badge b-wa">Under review</span>
+        <?php elseif ($idStatus === 'Rejected'): ?><span class="badge b-er">Rejected</span>
+        <?php else: ?><span class="badge b-wa">Required</span><?php endif; ?>
+    </div>
+    <div class="cb">
+
+    <?php if ($idVerified): ?>
+        <div class="alert a-ok" style="margin-top:14px"><i class="fas fa-shield-halved"></i>
+            <div><b>Identity verified.</b> <?= htmlspecialchars($identity['id_type']) ?> — verified on <?= date('M j, Y', strtotime($identity['reviewed_at'])) ?></div></div>
+
+    <?php elseif ($idDeclinedToday): ?>
+        <div class="alert a-er" style="margin-top:14px"><i class="fas fa-hourglass-half"></i>
+            <div><b>Please try again tomorrow.</b> Your identity verification was declined today (<?= date('M j, Y', strtotime($identity['reviewed_at'])) ?>). You can re-upload your ID and selfie once per calendar day.</div></div>
+
+    <?php elseif ($idStatus === 'Pending'): ?>
+        <div class="alert a-wa" style="margin-top:14px"><i class="fas fa-hourglass-half"></i>
+            <div><b>Submitted — under review.</b> Your <em><?= htmlspecialchars($identity['id_type']) ?></em> and selfie are with the admin team. You’ll be notified once verified.</div></div>
+
+    <?php else: ?>
+        <?php if ($idStatus === 'Rejected'): ?>
+        <div class="alert a-er" style="margin-top:14px"><i class="fas fa-circle-exclamation"></i>
+            <div><b>Rejected:</b> <?= htmlspecialchars($identity['rejection_reason'] ?: 'Please resubmit clearer photos.') ?></div></div>
+        <?php endif; ?>
+
+        <form id="identityForm" enctype="multipart/form-data">
+            <div class="steps">
+                <div class="st active" id="idv-tab-1" onclick="idvGoTo(0)"><span class="n">1</span><span class="lbl">ID Details</span></div><span class="ln"></span>
+                <div class="st" id="idv-tab-2" onclick="idvGoTo(1)"><span class="n">2</span><span class="lbl">ID Photo</span></div><span class="ln"></span>
+                <div class="st" id="idv-tab-3" onclick="idvGoTo(2)"><span class="n">3</span><span class="lbl">Selfie</span></div>
+            </div>
+
+            <div class="panel active" id="idv-panel-1">
+                <div class="grid2">
+                    <div>
+                        <label class="fl">ID Type <span class="req">*</span></label>
+                        <select id="idTypeSelect" name="id_type" class="fi" required>
+                            <option value="">— Select an ID type —</option>
+                            <?php foreach ($idTypeOptions as $opt): ?>
+                                <option value="<?= htmlspecialchars($opt) ?>" <?= ($identity['id_type'] ?? '') === $opt ? 'selected' : '' ?>><?= htmlspecialchars($opt) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="fl">ID Number <span class="req">*</span></label>
+                        <input type="text" id="idNumber" name="id_number" class="fi" placeholder="Select ID type first" maxlength="20" value="<?= htmlspecialchars($identity['id_number'] ?? '') ?>" required>
+                    </div>
+                </div>
+            </div>
+
+            <div class="panel" id="idv-panel-2">
+                <div class="ph"><div><div class="ph-title">Upload ID Photo</div><div class="ph-sub" id="idTypeHint">Select an ID type first</div></div></div>
+                <div class="idv-capture-box" style="margin-top:14px">
+                    <div class="idv-preview" id="idPreviewBox">
+                        <div class="idv-empty" id="idEmptyState"><i class="fas fa-id-badge"></i><span>No ID photo yet</span></div>
+                        <img id="idShot" alt="ID preview" style="display:none;">
+                        <canvas id="idCanvas" style="display:none;"></canvas>
+                        <video id="idVideo" autoplay playsinline muted style="display:none;"></video>
+                    </div>
+                    <div class="idv-capture-actions">
+                        <button type="button" class="idv-btn idv-btn-cam" id="btnStartIdCam" onclick="startIdCam()"><i class="fas fa-video"></i> Use Camera</button>
+                        <button type="button" class="idv-btn idv-btn-shot" id="btnSnapId" onclick="captureId()" style="display:none;"><i class="fas fa-camera"></i> Capture ID</button>
+                        <button type="button" class="idv-btn" onclick="document.getElementById('idFile').click()"><i class="fas fa-upload"></i> Upload Photo</button>
+                        <button type="button" class="idv-btn idv-btn-retake" id="btnRetakeId" onclick="retakeId()" style="display:none;"><i class="fas fa-rotate-left"></i> Retake</button>
+                    </div>
+                    <input type="file" id="idFile" name="id_image" accept="image/*" style="display:none;" onchange="handleIdUpload(this)">
+                </div>
+            </div>
+
+            <div class="panel" id="idv-panel-3">
+                <div class="ph"><div><div class="ph-title">Take a Selfie</div><div class="ph-sub">Look straight at the camera in a well-lit area.</div></div></div>
+                <div class="idv-capture-box" style="margin-top:14px">
+                    <div class="idv-preview" id="selfiePreviewBox">
+                        <video id="selfieVideo" autoplay playsinline muted></video>
+                        <img id="selfieShot" alt="Selfie preview" style="display:none;">
+                        <canvas id="selfieCanvas" style="display:none;"></canvas>
+                    </div>
+                    <div class="idv-capture-actions">
+                        <button type="button" class="idv-btn idv-btn-cam" id="btnStartCam" onclick="startSelfieCam()"><i class="fas fa-video"></i> Start Camera</button>
+                        <button type="button" class="idv-btn idv-btn-shot" id="btnTakeShot" onclick="captureSelfie()" style="display:none;"><i class="fas fa-camera"></i> Take Photo</button>
+                        <button type="button" class="idv-btn idv-btn-retake" id="btnRetakeSelfie" onclick="retakeSelfie()" style="display:none;"><i class="fas fa-rotate-left"></i> Retake</button>
+                    </div>
+                    <input type="file" id="selfieFile" name="selfie" accept="image/*" capture="user" style="display:none;">
+                </div>
+            </div>
+
+            <div class="wnav">
+                <button type="button" class="btn" id="idvBtnBack" onclick="idvPrevStep()" style="visibility:hidden;"><i class="fas fa-arrow-left"></i> Previous</button>
+                <span class="step-ctr" id="idvStepCtr">Step 1 of 3</span>
+                <button type="button" class="btn btn-fwd btn-send" id="idvBtnNext" onclick="idvNextStep()">Next <i class="fas fa-arrow-right"></i></button>
+            </div>
+        </form>
+
+        <div class="result-card" id="idvResultCard">
+            <div class="result-header"><i class="fas fa-circle-check"></i> Submitted for review</div>
+            <div class="result-stats">
+                <div>Face match: <span id="resFaceMatch" style="font-weight:600">—</span></div>
+                <div>Name: <span id="resNameMatch" style="font-weight:600">—</span></div>
+                <div>ID number: <span id="resIdMatch" style="font-weight:600">—</span></div>
+            </div>
+            <div class="result-ocr" id="resOcrText"></div>
+        </div>
+    <?php endif; ?>
+    </div>
+</section>
+
+<!-- 3. DOCUMENT OVERVIEW -->
+<section class="card">
+    <div class="ch"><div><h2>Required Documents</h2><p>Reference list of every document and its current status.</p></div></div>
+    <div class="tw">
         <table>
             <thead><tr><th>Document</th><th>Status</th><th>Owner</th><th>Released</th><th>Expires</th><th>Remarks</th><th>File</th></tr></thead>
             <tbody>
-            <?php foreach ($docsToShow as $doc => $data):
-                $row = $data['row']; $s = $data['status'];
-                $isMaxed = ($s === 'Rejected' && ($data['max_reached'] || $data['attempts'] >= $MAX_ATTEMPTS));
-                $pc = 'p-n';
-                if($s==='Approved')$pc='p-ok';
-                elseif($isMaxed)$pc='p-maxed';
-                elseif($s==='Pending')$pc='p-w';
-                elseif($s==='Rejected')$pc='p-err';
-            ?>
-            <tr>
-                <td style="font-weight:600;"><?= $doc ?></td>
-                <td><span class="pill <?= $pc ?>"><?= $isMaxed ? 'Max Reached' : $s ?></span></td>
-                <td style="color:var(--slate);"><?= $row['owner_name']??'—' ?></td>
-                <td style="color:var(--slate);"><?= $row['released_at']??'—' ?></td>
-                <td style="color:var(--slate);"><?= $row['expires_at']??'—' ?></td>
-                <td>
-                    <?php if($isMaxed): ?>
-                    <span style="color:var(--danger);font-size:12px;font-weight:700;">
-                        <i class="fas fa-headset"></i> Max attempts reached — contact support
-                    </span>
-                    <?php elseif($row && $row['status']==='Rejected' && $row['rejection_reason']): ?>
-                    <span style="color:var(--danger);font-size:12px;"><i class="fas fa-exclamation-triangle"></i> <?= htmlspecialchars(substr($row['rejection_reason'],0,35)) ?>…</span>
-                    <?php else: ?><span style="color:var(--muted);">—</span><?php endif; ?>
-                </td>
-                <td>
-                    <?php if($row && $row['file_path']): ?>
-                    <button type="button" class="btn-view" onclick="openDocModal('../<?= htmlspecialchars($row['file_path']) ?>','<?= htmlspecialchars($doc, ENT_QUOTES) ?>')"><i class="fas fa-eye"></i> View</button>
-                    <?php else: ?><span style="color:var(--muted);font-size:12px;">No file</span><?php endif; ?>
-                </td>
-            </tr>
-            <?php endforeach; ?>
+<?php foreach ($docsToShow as $doc => $data):
+    $row = $data['row']; $s = $data['status'];
+    $declinedToday = $data['declined_today'] ?? false;
+    $pc = 'b-ne'; $label = $s;
+    if ($s === 'Approved') $pc = 'b-ok';
+    elseif ($s === 'Pending') $pc = 'b-wa';
+    elseif ($s === 'Awaiting Re-upload') $pc = 'b-or';
+    elseif ($s === 'Rejected') { $pc = 'b-er'; }
+    $slugRow = preg_replace('/[^a-z0-9]/','_',strtolower($doc));
+?>
+<tr <?= $data['can_upload'] ? 'class="go" onclick="jumpTo(\''.$slugRow.'\')"' : '' ?>>
+    <td class="dn"><?= $doc ?></td>
+    <td><span class="badge <?= $pc ?>"><?= htmlspecialchars($label) ?></span></td>
+    <td><?= $row['owner_name']??'—' ?></td>
+    <td><?= $row['released_at']??'—' ?></td>
+    <td><?= $row['expires_at']??'—' ?></td>
+    <td>
+        <?php if($s==='Awaiting Re-upload'): ?>
+            <span style="color:var(--or);font-weight:600;">Waiting for your re-upload</span>
+        <?php elseif($row && $row['status']==='Rejected' && $declinedToday): ?>
+            <span style="color:var(--er);">Re-upload available tomorrow</span>
+        <?php elseif($row && $row['status']==='Rejected' && $row['rejection_reason']): ?>
+            <span style="color:var(--er);"><?= htmlspecialchars(substr($row['rejection_reason'],0,35)) ?>…</span>
+        <?php elseif($row && $row['status']==='Rejected'): ?>
+            <span style="color:var(--er);">Declined</span>
+        <?php else: ?>—<?php endif; ?>
+    </td>
+    <td>
+        <?php if($row && $row['file_path']): ?>
+        <button type="button" class="btn btn-sm" onclick="event.stopPropagation();openDocModal('../<?= htmlspecialchars($row['file_path']) ?>','<?= htmlspecialchars($doc, ENT_QUOTES) ?>')"><i class="fas fa-eye"></i> View</button>
+        <?php else: ?><span style="color:var(--mut);font-size:12px;">No file</span><?php endif; ?>
+    </td>
+</tr>
+<?php endforeach; ?>
             </tbody>
         </table>
     </div>
-</div>
+</section>
 
-<!-- WIZARD / STATE -->
+<!-- 4. DOCUMENT SUBMISSION / 5. STATUS -->
 <?php if ($showUploadForm): ?>
-<div class="wizard">
+<section class="card">
+    <div class="ch"><div><h2>Submit Documents</h2><p><?= count($docsToUpload) ?> document(s) need your attention. Our AI reads each file and fills in the details.</p></div></div>
+    <div class="cb">
 
-    <!-- Steps strip -->
-    <div class="steps-strip" id="stepsStrip">
-        <?php foreach ($docsToUpload as $i => $doc):
-            $slug = preg_replace('/[^a-z0-9]/','_',strtolower($doc));
-        ?>
-        <?php if($i>0): ?><span class="ws-sep">›</span><?php endif; ?>
-        <div class="ws <?= $i===0?'active':'' ?>" id="wstab-<?= $slug ?>" data-idx="<?= $i ?>" onclick="goTo(<?= $i ?>)">
-            <div class="ws-n"><?= $i+1 ?></div>
-            <span class="ws-label"><?= $doc ?></span>
-        </div>
+    <?php if (!empty($waitTomorrowDocs)): ?>
+        <div class="alert a-er" style="margin:6px 0 18px"><i class="fas fa-hourglass-half"></i>
+            <div><b><?= implode(', ', $waitTomorrowDocs) ?></b> <?= count($waitTomorrowDocs) > 1 ? 'were' : 'was' ?> declined today. You can re-upload <?= count($waitTomorrowDocs) > 1 ? 'them' : 'it' ?> <b>tomorrow</b> — one submission per document per day.</div></div>
+    <?php endif; ?>
+
+    <div class="tabs" id="stepsStrip">
+        <?php foreach ($docsToUpload as $i => $doc): $slug = preg_replace('/[^a-z0-9]/','_',strtolower($doc)); ?>
+        <button type="button" class="tab ws <?= $i===0?'active':'' ?>" id="wstab-<?= $slug ?>" data-idx="<?= $i ?>" onclick="goTo(<?= $i ?>)"><?= $doc ?></button>
         <?php endforeach; ?>
     </div>
 
-    <?php if (!empty($maxAttemptsDocs)): ?>
-    <div style="padding:14px 22px 0;">
-        <div class="rej-alert" style="align-items:center;">
-            <i class="fas fa-headset" style="flex-shrink:0;color:var(--danger);"></i>
-            <div>
-                <strong>Note:</strong> <?= implode(', ', $maxAttemptsDocs) ?>
-                <?= count($maxAttemptsDocs) > 1 ? 'have' : 'has' ?> reached the maximum of <?= $MAX_ATTEMPTS ?> attempts
-                and can no longer be re-uploaded here. Please contact <strong>support@eyecore.com</strong> for those document(s).
-            </div>
-        </div>
-    </div>
-    <?php endif; ?>
-
     <form id="docForm" action="/api/upload_documents.php" method="POST" enctype="multipart/form-data" onsubmit="return false;">
         <input type="hidden" name="clinic_id" value="<?= $clinicId ?>">
+        <input type="hidden" name="ocr_warning" id="ocr_warning_hidden" value="">
 
-        <div class="wbody">
         <?php foreach ($docsToUpload as $i => $doc):
             $row  = $docsToShow[$doc]['row'];
             $attempts = $docsToShow[$doc]['attempts'];
             $slug = preg_replace('/[^a-z0-9]/','_',strtolower($doc));
         ?>
         <div class="panel <?= $i===0?'active':'' ?>" id="panel-<?= $slug ?>" data-idx="<?= $i ?>">
-
             <div class="ph">
                 <div>
                     <div class="ph-title"><?= $doc ?></div>
-                    <div class="ph-sub"><?= ($row && $row['status']==='Rejected') ? 'Re-upload this rejected document' : 'Upload your document — AI will fill the details for you' ?></div>
+                    <div class="ph-sub"><?= ($row && $row['status']==='Rejected') ? 'Re-upload this rejected document.' : ($docDesc[$doc] ?? 'Upload your document.') ?></div>
                 </div>
-                <div class="ph-ctr"><?= $i+1 ?> of <?= count($docsToUpload) ?></div>
+                <div class="ph-ctr">Document <?= $i+1 ?> of <?= count($docsToUpload) ?></div>
             </div>
 
-            <?php if ($row && $row['status']==='Rejected'): ?>
-            <div class="rej-alert">
-                <i class="fas fa-circle-exclamation" style="flex-shrink:0;margin-top:2px;color:var(--danger);"></i>
-                <div>
-                    <strong>Rejected:</strong> <?= htmlspecialchars($row['rejection_reason']??'Please re-upload a valid document.') ?>
-                    <br>
-                    <span class="attempt-tag">Attempt <?= $attempts ?> of <?= $MAX_ATTEMPTS ?> used — <?= max(0, $MAX_ATTEMPTS - $attempts) ?> remaining</span>
-                </div>
-            </div>
+            <?php if ($row && $row['status']==='Awaiting Re-upload'): ?>
+            <div class="alert a-or" style="margin-top:14px"><i class="fas fa-arrow-up-from-bracket"></i>
+                <div><b>Re-upload requested.</b> The administrator re-opened this document. Upload a corrected copy to continue the review.</div></div>
+            <?php elseif ($row && $row['status']==='Rejected'): ?>
+            <div class="alert a-er" style="margin-top:14px"><i class="fas fa-circle-exclamation"></i>
+                <div><b>Declined:</b> <?= htmlspecialchars($row['rejection_reason']??'Please re-upload a valid document.') ?>
+                <br><small>Submission #<?= $attempts ?> declined — you may re-upload one corrected copy per day.</small></div></div>
             <?php endif; ?>
 
-            <!-- Upload box -->
             <div class="upload-box" id="ub-<?= $slug ?>">
-                <input type="file" name="docs[<?= $doc ?>]" id="file-<?= $slug ?>"
-                       accept=".jpg,.jpeg,.png,.pdf" required
-                       onchange="handleFile('<?= $slug ?>','<?= addslashes($doc) ?>',this)">
+                <input type="file" name="docs[<?= $doc ?>]" id="file-<?= $slug ?>" accept=".jpg,.jpeg,.png,.pdf" required onchange="handleFile('<?= $slug ?>','<?= addslashes($doc) ?>',this)">
                 <div class="ub-icon"><i class="fas fa-cloud-arrow-up"></i></div>
-                <div class="ub-title">Upload Document</div>
-                <div class="ub-sub">Click to browse or drag & drop your file</div>
+                <div class="ub-title">Upload document</div>
+                <div class="ub-sub">Click to browse or drag &amp; drop your file</div>
                 <div class="ub-hint">JPG, PNG, PDF · Max 5MB</div>
             </div>
 
-            <!-- AI reading animation -->
             <div class="ai-state" id="ai-<?= $slug ?>">
                 <div class="ai-spinner"></div>
                 <div class="ai-state-title">AI is reading your document…</div>
                 <div class="ai-state-sub">Extracting owner name, release date, and expiry date</div>
             </div>
 
-            <!-- File preview strip -->
             <div class="file-preview" id="fp-<?= $slug ?>">
                 <i class="fas fa-file-lines fp-icon"></i>
                 <span class="fp-name" id="fp-name-<?= $slug ?>"></span>
                 <span class="fp-change" onclick="resetFile('<?= $slug ?>')">Change file</span>
             </div>
 
-            <!-- ── DOCUMENT PREVIEW ── -->
             <div class="doc-preview-wrap" id="prev-<?= $slug ?>">
                 <div class="doc-preview-bar">
-                    <i class="fas fa-eye" style="color:var(--teal);flex-shrink:0;"></i>
                     <strong id="prev-name-<?= $slug ?>"></strong>
-                    <span class="doc-preview-size" id="prev-size-<?= $slug ?>"></span>
-                    <a href="#" class="doc-preview-open" onclick="event.preventDefault(); openDocModalFromSlug('<?= $slug ?>');">
-                        <i class="fas fa-expand"></i> Full view
-                    </a>
+                    <span id="prev-size-<?= $slug ?>"></span>
+                    <a href="#" class="doc-preview-open" onclick="event.preventDefault(); openDocModalFromSlug('<?= $slug ?>');"><i class="fas fa-expand"></i> Full view</a>
                 </div>
             </div>
-            <!-- ── END DOCUMENT PREVIEW ── -->
 
-            <!-- Auto-filled fields -->
-            <div class="fields-row" id="fields-<?= $slug ?>" style="display:none;">
-                <div class="fg">
-                    <label class="fl">
-                        Owner Name <span class="ai-tag">AI</span> <span class="req">*</span>
-                    </label>
-                    <input type="text" name="owner_name[<?= $doc ?>]" id="own-<?= $slug ?>"
-                           class="fi" placeholder="e.g. Juan dela Cruz"
-                           value="<?= htmlspecialchars($row['owner_name']??'') ?>" required>
+            <div class="fields-row grid3" id="fields-<?= $slug ?>" style="display:none;">
+                <div>
+                    <label class="fl">Owner Name <span class="ai-tag">AI</span> <span class="req">*</span></label>
+                    <input type="text" name="owner_name[<?= $doc ?>]" id="own-<?= $slug ?>" class="fi" placeholder="e.g. Juan dela Cruz" value="<?= htmlspecialchars($row['owner_name']??'') ?>" required>
                     <div class="fi-hint">Verify or edit if incorrect</div>
                 </div>
-                <div class="fg">
-                    <label class="fl">
-                        Release Date <span class="ai-tag">AI</span> <span class="req">*</span>
-                    </label>
-                    <input type="date" name="released_at[<?= $doc ?>]" id="rel-<?= $slug ?>"
-                           class="fi" value="<?= $row['released_at']??'' ?>" required>
+                <div>
+                    <label class="fl">Release Date <span class="ai-tag">AI</span> <span class="req">*</span></label>
+                    <input type="date" name="released_at[<?= $doc ?>]" id="rel-<?= $slug ?>" class="fi" value="<?= $row['released_at']??'' ?>" required>
                     <div class="fi-hint">Verify or edit if incorrect</div>
                 </div>
-                <div class="fg">
-                    <label class="fl">
-                        Expiry Date <span class="ai-tag">AI</span> <span class="req">*</span>
-                    </label>
-                    <input type="date" name="expires_at[<?= $doc ?>]" id="exp-<?= $slug ?>"
-                           class="fi" value="<?= $row['expires_at']??'' ?>" required>
+                <div>
+                    <label class="fl">Expiry Date <span class="ai-tag">AI</span> <span class="req">*</span></label>
+                    <input type="date" name="expires_at[<?= $doc ?>]" id="exp-<?= $slug ?>" class="fi" value="<?= $row['expires_at']??'' ?>" required>
                     <div class="fi-hint">Verify or edit if incorrect</div>
                 </div>
             </div>
         </div>
         <?php endforeach; ?>
 
-        <!-- Terms (last step only) -->
-        <div id="termsWrap" style="display:none; margin-top:4px;">
+        <div id="termsWrap" style="display:none;">
             <div class="terms-wrap">
                 <input type="checkbox" id="terms">
-                <label for="terms">
-                    I certify that all uploaded documents are <strong>valid and not expired</strong>.
-                    I understand that submitting false or expired documents may result in clinic suspension or termination of services.
-                </label>
+                <label for="terms">I certify that all uploaded documents are <strong>valid and not expired</strong>. I understand that submitting false or expired documents may result in clinic suspension or termination of services.</label>
             </div>
-            <div class="warn-bar">
-                <i class="fas fa-triangle-exclamation" style="flex-shrink:0;margin-top:1px;"></i>
-                Documents with <strong style="margin:0 3px;">Approved</strong> or
-                <strong style="margin:0 3px;">Pending</strong> status cannot be re-uploaded unless <strong style="margin:0 3px;">Rejected</strong>.
-                Each document allows a maximum of <strong style="margin:0 3px;"><?= $MAX_ATTEMPTS ?></strong> submission attempts.
-            </div>
+            <div class="hint-bar">Approved or pending documents can’t be re-uploaded unless declined. A declined document may be re-uploaded once per calendar day.</div>
         </div>
-        </div><!-- /wbody -->
 
         <div class="wnav">
-            <button type="button" class="btn btn-back" id="btnBack" onclick="prevStep()">
-                <i class="fas fa-arrow-left"></i> Back
-            </button>
+            <button type="button" class="btn" id="btnBack" onclick="prevStep()"><i class="fas fa-arrow-left"></i> Back</button>
             <span class="step-ctr" id="stepCtr">Step 1 of <?= count($docsToUpload) ?></span>
-            <button type="button" class="btn btn-fwd btn-send" id="btnNext" onclick="nextStep()">
-                Next <i class="fas fa-arrow-right"></i>
-            </button>
+            <button type="button" class="btn btn-fwd btn-send" id="btnNext" onclick="nextStep()">Next <i class="fas fa-arrow-right"></i></button>
         </div>
     </form>
-</div>
-
-<?php elseif (!empty($maxAttemptsDocs)): ?>
-<!-- ── NEW STATE: ALL REMAINING DOCS ARE PERMANENTLY BLOCKED ── -->
-<div class="wizard">
-    <div class="state">
-        <div class="state-ico err"><i class="fas fa-headset"></i></div>
-        <div class="state-title">Contact Support Required</div>
-        <div class="state-body">
-            The following document(s) have reached the maximum of <?= $MAX_ATTEMPTS ?> submission attempts
-            and can no longer be re-uploaded through this portal.
-        </div>
-        <div class="maxed-doc-list">
-            <?php foreach ($maxAttemptsDocs as $md): ?>
-                <span class="maxed-doc-chip"><i class="fas fa-file-circle-xmark"></i> <?= htmlspecialchars($md) ?></span>
-            <?php endforeach; ?>
-        </div>
-        <br>
-        <a href="mailto:support@eyecore.com" class="support-email">
-            <i class="fas fa-envelope"></i> support@eyecore.com
-        </a>
     </div>
-</div>
+</section>
+
+<?php elseif (!empty($waitTomorrowDocs)): ?>
+<section class="card">
+    <div class="ch"><div><h2>Review Status</h2></div></div>
+    <div class="cb">
+        <div class="alert a-er"><i class="fas fa-hourglass-half"></i>
+            <div><b>Please try again tomorrow.</b> The following document(s) were declined today. Each document can only be re-uploaded once per calendar day.
+            <div class="chips"><?php foreach ($waitTomorrowDocs as $wd): ?><span class="chip"><?= htmlspecialchars($wd) ?></span><?php endforeach; ?></div></div></div>
+        <p style="margin-top:12px;color:var(--sub)">Need help? <a href="mailto:support@eyecore.com" class="support-email"><i class="fas fa-envelope"></i> support@eyecore.com</a></p>
+    </div>
+</section>
 
 <?php elseif (!$allApproved): ?>
-<div class="wizard">
-    <div class="state">
-        <div class="state-ico warn"><i class="fas fa-clock"></i></div>
-        <div class="state-title">Documents Under Review</div>
-        <div class="state-body">All documents have been submitted and are currently being reviewed. You will be notified once the process is complete.</div>
-        <div class="state-badge sb-info"><i class="fas fa-info-circle"></i> Please wait — no uploads needed at this time</div>
-    </div>
-</div>
+<section class="card">
+    <div class="ch"><div><h2>Review Status</h2></div></div>
+    <div class="cb"><div class="alert a-wa"><i class="fas fa-clock"></i>
+        <div><b>Documents under review.</b> All documents have been submitted and are being reviewed. You’ll be notified once the process is complete. No uploads needed at this time.</div></div></div>
+</section>
+
 <?php else: ?>
-<div class="wizard">
-    <div class="state">
-        <div class="state-ico ok"><i class="fas fa-circle-check"></i></div>
-        <div class="state-title">All Documents Approved!</div>
-        <div class="state-body">Your clinic documents have been fully reviewed and approved. No further action is required.</div>
-        <div class="state-badge sb-ok"><i class="fas fa-thumbs-up"></i> Your clinic is ready for activation</div>
-    </div>
-</div>
+<section class="card">
+    <div class="ch"><div><h2>Review Status</h2></div></div>
+    <div class="cb"><div class="alert a-ok"><i class="fas fa-circle-check"></i>
+        <div><b>All documents approved.</b> No further action is required. Your clinic is ready for activation.</div></div></div>
+</section>
 <?php endif; ?>
 
 </main>
-</div>
 
-<!-- ── DOCUMENT VIEW MODAL ── -->
+<!-- DOCUMENT VIEW MODAL -->
 <div class="doc-modal-overlay" id="docModalOverlay" onclick="if(event.target===this) closeDocModal()">
     <div class="doc-modal">
         <div class="doc-modal-header">
-            <i class="fas fa-file-lines"></i>
+            <i class="fas fa-file-lines" style="color:var(--teal)"></i>
             <strong id="docModalTitle">Document</strong>
             <button type="button" class="doc-modal-close" onclick="closeDocModal()"><i class="fas fa-xmark"></i></button>
         </div>
@@ -806,48 +558,35 @@ document.addEventListener('DOMContentLoaded',()=>{
         </div>
     </div>
 </div>
-<!-- ── END DOCUMENT VIEW MODAL ── -->
 
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-<!-- Tesseract.js for Client-Side OCR -->
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
-// ── CONFIG ────────────────────────────────────────
+/* ═══ DOCUMENTS JS (unchanged) ═══ */
 const DOCS      = <?= json_encode(array_values($docsToUpload)) ?>;
 const TOTAL     = DOCS.length;
 let   current   = 0;
-const fileData  = {}; // slug -> {base64, mimeType, fileName}
+const fileData  = {};
 
 function slug(doc){ return doc.toLowerCase().replace(/[^a-z0-9]/g,'_'); }
-
-// ── DOCUMENT VIEW MODAL ────────────────────────────
-function isPdfUrl(url){
-    return url.split('?')[0].toLowerCase().endsWith('.pdf');
-}
+function isPdfUrl(url){ return url.split('?')[0].toLowerCase().endsWith('.pdf'); }
 function openDocModal(url, title){
     const overlay = document.getElementById('docModalOverlay');
     const body    = document.getElementById('docModalBody');
     const titleEl = document.getElementById('docModalTitle');
     const openNew = document.getElementById('docModalOpenNew');
-
     titleEl.textContent = title || 'Document';
     openNew.href = url;
     body.innerHTML = '';
-
     if (isPdfUrl(url)) {
         const embed = document.createElement('embed');
-        embed.src  = url;
-        embed.type = 'application/pdf';
-        embed.className = 'doc-modal-pdf';
+        embed.src = url; embed.type = 'application/pdf'; embed.className = 'doc-modal-pdf';
         body.appendChild(embed);
     } else {
         const img = document.createElement('img');
-        img.src = url;
-        img.alt = title || 'Document preview';
-        img.className = 'doc-modal-img';
+        img.src = url; img.alt = title || 'Document preview'; img.className = 'doc-modal-img';
         body.appendChild(img);
     }
-
     overlay.classList.add('visible');
     document.body.style.overflow = 'hidden';
 }
@@ -862,11 +601,8 @@ function closeDocModal(){
     document.getElementById('docModalBody').innerHTML = '';
     document.body.style.overflow = '';
 }
-document.addEventListener('keydown', e=>{
-    if(e.key === 'Escape') closeDocModal();
-});
+document.addEventListener('keydown', e=>{ if(e.key === 'Escape') closeDocModal(); });
 
-// ── NAVIGATION ────────────────────────────────────
 function goTo(idx){
     if(idx<0||idx>=TOTAL) return;
     DOCS.forEach((d,i)=>{
@@ -877,8 +613,6 @@ function goTo(idx){
     });
     current = idx;
     const sl = slug(DOCS[idx]);
-    document.querySelector(`.sbi[data-slug="${sl}"]`)?.classList.add('active');
-    document.querySelectorAll('.sbi').forEach(el=>{ if(el.dataset.slug!==sl) el.classList.remove('active'); });
     document.getElementById('termsWrap').style.display = idx===TOTAL-1 ? 'block':'none';
     const btnBack = document.getElementById('btnBack');
     const btnNext = document.getElementById('btnNext');
@@ -919,9 +653,8 @@ function nextStep(){
     goTo(current+1);
 }
 function prevStep(){ goTo(current-1); }
-function jumpTo(sl){ const idx=DOCS.findIndex(d=>slug(d)===sl); if(idx!==-1) goTo(idx); }
+function jumpTo(sl){ const idx=DOCS.findIndex(d=>slug(d)===sl); if(idx!==-1){ goTo(idx); document.getElementById('docForm')?.scrollIntoView({behavior:'smooth',block:'start'}); } }
 
-// ── FILE HANDLE + AI OCR ──────────────────────────
 async function handleFile(sl, docName, input){
     if(!input.files.length) return;
     const file = input.files[0];
@@ -945,9 +678,7 @@ async function handleFile(sl, docName, input){
         fillField('own-'+sl, extracted.owner_name);
         fillDateField('rel-'+sl, extracted.release_date);
         fillDateField('exp-'+sl, extracted.expiry_date);
-    } catch(e){
-        console.warn('AI extraction failed:', e);
-    }
+    } catch(e){ console.warn('AI extraction failed:', e); }
 
     document.getElementById('ai-'+sl).classList.remove('visible');
     document.getElementById('fields-'+sl).style.display = 'grid';
@@ -981,32 +712,37 @@ function parseDate(str){
 }
 
 async function extractWithClaude(base64, mimeType, docName) {
-    console.log('Calling OCR API for:', docName);
     try {
         const res = await fetch('/api/ocr_extract.php', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ base64, mimeType, docName })
         });
-        if (!res.ok) {
-            console.warn('OCR API returned:', res.status);
-            return { owner_name: null, release_date: null, expiry_date: null };
+        if (!res.ok) return { owner_name: null, release_date: null, expiry_date: null };
+        let data;
+        try { data = JSON.parse(await res.text()); } catch (e) { return { owner_name: null, release_date: null, expiry_date: null }; }
+
+        if (data.warning === 'blurry') {
+            Swal.fire({ 
+                icon: 'warning', 
+                title: 'Document is Blurry', 
+                text: 'We could not read the text clearly. Please try uploading a clearer photo or double-check the details.', 
+                confirmButtonColor: '#0d9488' 
+            });
+            document.getElementById('ocr_warning_hidden').value = 'Blurry Document';
+        } else if (data.warning === 'address_mismatch') {
+            Swal.fire({ 
+                icon: 'info', 
+                title: 'Address Notice', 
+                text: 'The detected address seems outside Cavite. You can continue, but please verify the address on your document.', 
+                confirmButtonColor: '#0d9488' 
+            });
+            document.getElementById('ocr_warning_hidden').value = 'Address Outside Cavite';
+        } else {
+            document.getElementById('ocr_warning_hidden').value = '';
         }
-        const data = await res.json();
-        console.log('OCR Result:', data);
         return data;
-    } catch (err) {
-        console.error('OCR error:', err);
-        return { owner_name: null, release_date: null, expiry_date: null };
-    }
-}
-function normalizeDateClient(dateStr) {
-    if (!dateStr) return null;
-    const match = dateStr.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-    if (match) {
-        return `${match[3]}-${match[2].padStart(2,'0')}-${match[1].padStart(2,'0')}`;
-    }
-    return null;
+    } catch (err) { return { owner_name: null, release_date: null, expiry_date: null }; }
 }
 function toBase64(file){
     return new Promise((res,rej)=>{
@@ -1016,7 +752,6 @@ function toBase64(file){
         r.readAsDataURL(file);
     });
 }
-
 function resetFile(sl){
     const fileInput = document.querySelector(`#panel-${sl} input[type="file"]`);
     if(fileInput) fileInput.value = '';
@@ -1027,16 +762,15 @@ function resetFile(sl){
     document.getElementById('ai-'+sl).classList.remove('visible');
     document.getElementById('prev-'+sl)?.classList.remove('visible');
     ['own-','rel-','exp-'].forEach(p=>document.getElementById(p+sl)?.classList.remove('ai-filled'));
+    document.getElementById('ocr_warning_hidden').value = '';
 }
 
-// Drag visual
 document.querySelectorAll('.upload-box').forEach(z=>{
     z.addEventListener('dragover', e=>{ e.preventDefault(); z.classList.add('drag'); });
     z.addEventListener('dragleave', ()=> z.classList.remove('drag'));
     z.addEventListener('drop',      ()=> z.classList.remove('drag'));
 });
 
-// ── SUBMIT ────────────────────────────────────────
 function doSubmit(){
     let allErrs = [];
     DOCS.forEach(doc=>{
@@ -1074,11 +808,276 @@ function doSubmit(){
     });
 }
 
-// Legacy alias
-function validateForm(){ return doSubmit(); }
-
-// Init
 document.addEventListener('DOMContentLoaded',()=>{ if(TOTAL>0) goTo(0); });
+
+/* ═══ IDENTITY VERIFICATION JS (unchanged) ═══ */
+let idvCurrentStep = 0;
+const idvTotalSteps = 3;
+let selfieStream = null, idStream = null, selfieData = null, idData = null, isOcrRunning = false;
+
+const ID_TYPE_HINTS = {
+    'Philippine Passport':'Photo page with MRZ at bottom',
+    "Driver's License":"Front side with photo & license no.",
+    'UMID':'Front side (photo + CRN)',
+    'PhilHealth ID':'Front side with PhilHealth number',
+    'SSS ID':'Front side with SS number',
+    'PRC ID':'Front side with PRC license number',
+    'Postal ID':'Front side with photo & ID number',
+    "Voter's ID":'Front side with voter info',
+    'National ID (PhilSys)':'Front side with PhilSys number & QR',
+    'Barangay ID':'Front side with photo & barangay',
+};
+
+const ID_FORMATS = {
+    'Philippine Passport':   { max: 9,  pattern: /^[A-Z0-9]{8,9}$/, mask: 'P1234567A', hint: 'Format: Letter + 7 Numbers + Letter (e.g. P1234567A)' },
+    "Driver's License":      { max: 13, pattern: /^[A-Z0-9\-]{10,13}$/, mask: 'N01-23-456789', hint: 'Format: N01-XX-XXXXXX' },
+    'UMID':                  { max: 12, pattern: /^\d{4}-\d{7}-\d{1}$/, mask: '0000-0000000-0', hint: 'Format: 4 digits - 7 digits - 1 digit' },
+    'PhilHealth ID':         { max: 14, pattern: /^\d{2}-\d{9}-\d{1}$/, mask: '00-000000000-0', hint: 'Format: 2 digits - 9 digits - 1 digit' },
+    'SSS ID':                { max: 12, pattern: /^\d{2}-\d{7}-\d{1}$/, mask: '00-0000000-0', hint: 'Format: 2 digits - 7 digits - 1 digit' },
+    'PRC ID':                { max: 7,  pattern: /^\d{7}$/, mask: '0000000', hint: 'Format: 7 digits' },
+    'Postal ID':             { max: 15, pattern: /^[A-Z0-9\-]{10,15}$/, mask: 'PHL-0000-000', hint: 'Format: Letters and numbers' },
+    "Voter's ID":            { max: 22, pattern: /^[A-Z0-9\-]{10,22}$/, mask: '0000-0000A-0000', hint: 'Format: Alphanumeric' },
+    'National ID (PhilSys)': { max: 16, pattern: /^\d{4}-\d{4}-\d{4}-\d{4}$/, mask: '0000-0000-0000-0000', hint: 'Format: 16 digits (XXXX-XXXX-XXXX-XXXX)' },
+    'Barangay ID':           { max: 20, pattern: /^[A-Z0-9\-]{5,20}$/, mask: 'BRGY-0000', hint: 'Format: Alphanumeric' },
+};
+
+document.getElementById('idTypeSelect')?.addEventListener('change', e => {
+    const hint = document.getElementById('idTypeHint');
+    const numInput = document.getElementById('idNumber');
+    const type = e.target.value;
+    if (type && ID_FORMATS[type]) {
+        hint.textContent = 'Capture or upload the ' + (ID_TYPE_HINTS[type] || 'front side of this ID');
+        numInput.placeholder = ID_FORMATS[type].mask;
+        numInput.maxLength = ID_FORMATS[type].max;
+        numInput.value = '';
+    } else {
+        hint.textContent = 'Select an ID type first';
+        numInput.placeholder = 'Select ID type first';
+        numInput.maxLength = 20;
+    }
+});
+
+function idvGoTo(step) {
+    idvCurrentStep = step;
+    for (let i = 0; i < idvTotalSteps; i++) {
+        document.getElementById(`idv-panel-${i+1}`).classList.toggle('active', i === step);
+        document.getElementById(`idv-tab-${i+1}`).classList.toggle('active', i === step);
+        document.getElementById(`idv-tab-${i+1}`).classList.toggle('done', i < step);
+    }
+    document.getElementById('idvBtnBack').style.visibility = step === 0 ? 'hidden' : 'visible';
+    document.getElementById('idvStepCtr').textContent = `Step ${step + 1} of ${idvTotalSteps}`;
+    const btnNext = document.getElementById('idvBtnNext');
+    if (step === idvTotalSteps - 1) {
+        btnNext.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Identity';
+        btnNext.onclick = submitIdentity;
+    } else {
+        btnNext.innerHTML = 'Next <i class="fas fa-arrow-right"></i>';
+        btnNext.onclick = idvNextStep;
+    }
+}
+
+function idvNextStep() {
+    if (idvCurrentStep === 0) {
+        const idType = document.getElementById('idTypeSelect').value;
+        const idNum  = document.getElementById('idNumber').value.trim();
+        if (!idType || !idNum) {
+            Swal.fire({icon:'warning', title:'Incomplete', text:'Please fill in ID Type and ID Number.', confirmButtonColor:'#0d9488'});
+            return;
+        }
+        const format = ID_FORMATS[idType];
+        if (format && !format.pattern.test(idNum)) {
+            Swal.fire({
+                icon: 'warning', title: 'Invalid ID Format',
+                html: `The ID Number for <b>${idType}</b> does not match the required format.<br><br><b>${format.hint}</b>`,
+                confirmButtonColor: '#0d9488'
+            });
+            return;
+        }
+    }
+    if (idvCurrentStep === 1) {
+        if (!idData) {
+            Swal.fire({icon:'warning', title:'Incomplete', text:'Please upload or capture your ID photo.', confirmButtonColor:'#0d9488'});
+            return;
+        }
+    }
+    if (idvCurrentStep < idvTotalSteps - 1) idvGoTo(idvCurrentStep + 1);
+}
+function idvPrevStep() { if (idvCurrentStep > 0) idvGoTo(idvCurrentStep - 1); }
+
+async function startSelfieCam() {
+    try {
+        selfieStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 640, height: 480 }, audio: false });
+        const v = document.getElementById('selfieVideo');
+        v.srcObject = selfieStream;
+        v.style.display = 'block';
+        document.getElementById('selfieShot').style.display = 'none';
+        document.getElementById('btnStartCam').style.display = 'none';
+        document.getElementById('btnTakeShot').style.display = '';
+        document.getElementById('btnRetakeSelfie').style.display = 'none';
+    } catch (err) {
+        Swal.fire({ icon: 'error', title: 'Camera unavailable', text: 'Please allow camera access.', confirmButtonColor: '#0d9488' });
+    }
+}
+function captureSelfie() {
+    const video  = document.getElementById('selfieVideo');
+    const canvas = document.getElementById('selfieCanvas');
+    canvas.width  = video.videoWidth  || 640;
+    canvas.height = video.videoHeight || 480;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    canvas.toBlob(blob => {
+        const reader = new FileReader();
+        reader.onload = e => {
+            selfieData = { blob, dataUrl: e.target.result };
+            document.getElementById('selfieShot').src = e.target.result;
+            document.getElementById('selfieShot').style.display = 'block';
+            video.style.display = 'none';
+            stopSelfieCam();
+            document.getElementById('btnStartCam').style.display = 'none';
+            document.getElementById('btnTakeShot').style.display = 'none';
+            document.getElementById('btnRetakeSelfie').style.display = '';
+        };
+        reader.readAsDataURL(blob);
+    }, 'image/jpeg', 0.9);
+}
+function retakeSelfie() {
+    selfieData = null;
+    document.getElementById('selfieShot').style.display = 'none';
+    document.getElementById('btnRetakeSelfie').style.display = 'none';
+    document.getElementById('btnStartCam').style.display = '';
+    startSelfieCam();
+}
+function stopSelfieCam() { if (selfieStream) { selfieStream.getTracks().forEach(t => t.stop()); selfieStream = null; } }
+
+async function startIdCam() {
+    try {
+        idStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: 1280, height: 720 }, audio: false });
+        const v = document.getElementById('idVideo');
+        v.srcObject = idStream;
+        v.style.display = 'block';
+        document.getElementById('idEmptyState').style.display = 'none';
+        document.getElementById('idShot').style.display = 'none';
+        document.getElementById('btnStartIdCam').style.display = 'none';
+        document.getElementById('btnSnapId').style.display = '';
+    } catch (err) {
+        Swal.fire({ icon: 'error', title: 'Camera unavailable', text: 'Use Upload Photo.', confirmButtonColor: '#0d9488' });
+    }
+}
+function captureId() {
+    const video  = document.getElementById('idVideo');
+    const canvas = document.getElementById('idCanvas');
+    canvas.width  = video.videoWidth  || 1280;
+    canvas.height = video.videoHeight || 720;
+    canvas.getContext('2d').drawImage(video, 0, 0);
+    canvas.toBlob(blob => {
+        const reader = new FileReader();
+        reader.onload = e => {
+            idData = { blob, dataUrl: e.target.result };
+            document.getElementById('idShot').src = e.target.result;
+            document.getElementById('idShot').style.display = 'block';
+            video.style.display = 'none';
+            stopIdCam();
+            document.getElementById('btnStartIdCam').style.display = 'none';
+            document.getElementById('btnSnapId').style.display = 'none';
+            document.getElementById('btnRetakeId').style.display = '';
+        };
+        reader.readAsDataURL(blob);
+    }, 'image/jpeg', 0.92);
+}
+function handleIdUpload(input) {
+    if (!input.files || !input.files.length) return;
+    const file = input.files[0];
+    if (file.size > 8 * 1024 * 1024) {
+        Swal.fire({ icon:'error', title:'File too large', text:'Max 8MB.', confirmButtonColor:'#0d9488' });
+        input.value = ''; return;
+    }
+    const reader = new FileReader();
+    reader.onload = e => {
+        idData = { blob: file, dataUrl: e.target.result };
+        document.getElementById('idShot').src = e.target.result;
+        document.getElementById('idShot').style.display = 'block';
+        document.getElementById('idEmptyState').style.display = 'none';
+        document.getElementById('btnStartIdCam').style.display = 'none';
+        document.getElementById('btnRetakeId').style.display = '';
+    };
+    reader.readAsDataURL(file);
+}
+function retakeId() {
+    idData = null;
+    document.getElementById('idShot').style.display = 'none';
+    document.getElementById('idEmptyState').style.display = '';
+    document.getElementById('btnStartIdCam').style.display = '';
+    document.getElementById('btnRetakeId').style.display = 'none';
+    document.getElementById('idFile').value = '';
+}
+function stopIdCam() { if (idStream) { idStream.getTracks().forEach(t => t.stop()); idStream = null; } }
+
+async function submitIdentity() {
+    const idType = document.getElementById('idTypeSelect').value;
+    const idNumber = document.getElementById('idNumber').value.trim();
+
+    if (!selfieData) {
+        Swal.fire({ icon: 'warning', title: 'Incomplete', text: 'Take or upload a live selfie.', confirmButtonColor: '#0d9488' });
+        idvGoTo(2);
+        return;
+    }
+    if (isOcrRunning) return;
+    isOcrRunning = true;
+
+    Swal.fire({ title: 'Analyzing ID...', html: 'Scanning text to verify if it matches your selection.', allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+
+    try {
+        const fd = new FormData();
+        fd.append('id_type', idType);
+        fd.append('id_number', idNumber);
+        fd.append('selfie',   selfieData.blob, 'selfie.jpg');
+        fd.append('id_image', idData.blob,     'id_image.jpg');
+
+        const res = await fetch('/api/submit_identity_verification.php', { method: 'POST', body: fd });
+        const text = await res.text();
+        let data;
+        try { data = JSON.parse(text); }
+        catch (e) { throw new Error('Bad server response: ' + text.slice(0, 200)); }
+        if (!data.ok) throw new Error(data.error || 'Submission failed');
+
+        Swal.close();
+
+        const resCard = document.getElementById('idvResultCard');
+        if (resCard) {
+            document.getElementById('resFaceMatch').innerText = data.matches.face_match ? 'Yes' : 'No';
+
+            if (data.matches.name_match) {
+                document.getElementById('resNameMatch').innerText = 'Matched';
+                document.getElementById('resNameMatch').className = 'text-success';
+            } else {
+                document.getElementById('resNameMatch').innerText = 'Manual Check';
+                document.getElementById('resNameMatch').className = 'text-warning';
+            }
+            if (data.matches.id_type_match) {
+                document.getElementById('resIdMatch').innerText = 'Matched';
+                document.getElementById('resIdMatch').className = 'text-success';
+            } else {
+                document.getElementById('resIdMatch').innerText = 'Manual Check';
+                document.getElementById('resIdMatch').className = 'text-warning';
+            }
+            const ocrDisplay = data.matches.ocr_raw_text ? data.matches.ocr_raw_text.replace(/\n/g, '<br>') : 'No text detected.';
+            document.getElementById('resOcrText').innerHTML = ocrDisplay;
+
+            resCard.classList.add('visible');
+            resCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+            const btnNext = document.getElementById('idvBtnNext');
+            btnNext.innerHTML = 'Done';
+            btnNext.onclick = () => location.reload();
+            document.getElementById('idvBtnBack').style.display = 'none';
+        }
+    } catch (err) {
+        Swal.fire({ icon: 'error', title: 'Error', text: err.message, confirmButtonColor: '#0d9488' });
+    } finally {
+        isOcrRunning = false;
+    }
+}
+
+window.addEventListener('beforeunload', () => { stopSelfieCam(); stopIdCam(); });
 </script>
 </body>
 </html>

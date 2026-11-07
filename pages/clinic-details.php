@@ -1351,6 +1351,38 @@ mysqli_data_seek($products_query, 0);
 
             <!-- RIGHT COLUMN (Sidebar) -->
             <div class="clinic-sidebar">
+                
+                <!-- BAGONG CARD: CLINIC TYPE & FREE CLINIC -->
+                <?php if (!empty($clinic['hospital_type']) || ($clinic['payment_policy'] ?? '') === 'no_payment'): ?>
+                <div class="sidebar-card">
+                    <h2><i class="fas fa-info-circle"></i> Clinic Type</h2>
+                    
+                    <?php if (!empty($clinic['hospital_type'])): ?>
+                        <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 15px; padding-bottom: 15px; <?php echo (($clinic['payment_policy'] ?? '') === 'no_payment') ? 'border-bottom: 1px solid var(--border-light);' : ''; ?>">
+                            <div style="width: 42px; height: 42px; background: <?php echo $clinic['hospital_type'] === 'Public' ? '#DBEAFE' : '#F3F4F6'; ?>; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: <?php echo $clinic['hospital_type'] === 'Public' ? '#1E40AF' : '#374151'; ?>; font-size: 18px;">
+                                <i class="fas fa-<?php echo $clinic['hospital_type'] === 'Public' ? 'hospital' : 'building'; ?>"></i>
+                            </div>
+                            <div>
+                                <div style="font-size: 12px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px;">Hospital Type</div>
+                                <div style="font-weight: 700; font-size: 16px; color: var(--text-primary);"><?php echo htmlspecialchars($clinic['hospital_type']); ?> Hospital</div>
+                            </div>
+                        </div>
+                    <?php endif; ?>
+
+                    <?php if (($clinic['payment_policy'] ?? '') === 'no_payment'): ?>
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <div style="width: 42px; height: 42px; background: #D1FAE5; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: #065F46; font-size: 18px;">
+                                <i class="fas fa-hand-holding-heart"></i>
+                            </div>
+                            <div>
+                                <div style="font-size: 12px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px;">Service Fee</div>
+                                <div style="font-weight: 700; font-size: 16px; color: #065F46;">Free Check-up</div>
+                            </div>
+                        </div>
+                    <?php endif; ?>
+                </div>
+                <?php endif; ?>
+
                 <!-- Business Hours -->
                 <div class="sidebar-card">
                     <h2><i class="fas fa-clock"></i> Business Hours</h2>

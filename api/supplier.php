@@ -443,6 +443,87 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
+if ($action === 'reupload_document') {
+        // Tanggalin ang check sa admin session at RBAC
+        // Ang security ay naka-base sa supplier session
+
+        $docId      = (int)($_POST['doc_id'] ?? 0);
+        $supplierId = (int)($_POST['supplier_id'] ?? 0);
+
+        if (!$docId || !$supplierId) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Missing document ID or supplier ID']);
+            exit;
+        }
+
+        if (!isset($_FILES['new_file']) || $_FILES['new_file']['error'] !== UPLOAD_ERR_OK) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Please select a valid file to upload.']);
+            exit;
+        }
+
+        $file = $_FILES['new_file'];
+        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        $allowed = ['pdf', 'jpg', 'jpeg', 'png'];
+        
+        if (!in_array($ext, $allowed)) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'Invalid file type. Allowed: PDF, JPG, PNG.']);
+            exit;
+        }
+
+        if ($file['size'] > 5 * 1024 * 1024) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'File too large. Max 5MB.']);
+            exit;
+        }
+
+        try {
+            // Verify doc belongs to supplier
+            $check = $pdo->prepare("SELECT document_type FROM supplier_documents WHERE id = ? AND supplier_id = ?");
+            $check->execute([$docId, $supplierId]);
+            $doc = $check->fetch();
+
+            if (!$doc) {
+                http_response_code(404);
+                echo json_encode(['success' => false, 'error' => 'Document not found or does not belong to you.']);
+                exit;
+            }
+
+            // Upload new file
+            $uploadDir = __DIR__ . '/../uploads/suppliers/documents/' . $supplierId . '/';
+            if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
+
+            $safeName = $doc['document_type'] . '_' . date('YmdHis') . '_' . bin2hex(random_bytes(6)) . '.' . $ext;
+            $fullPath = $uploadDir . $safeName;
+
+            if (move_uploaded_file($file['tmp_name'], $fullPath)) {
+                $relativePath = 'uploads/suppliers/documents/' . $supplierId . '/' . $safeName;
+                
+                // Update DB
+                $stmt = $pdo->prepare("
+                    UPDATE supplier_documents 
+                    SET file_name = ?, file_path = ?, original_name = ?, file_size = ?, 
+                        status = 'Pending', rejection_reason = NULL, upload_date = NOW()
+                    WHERE id = ?
+                ");
+                $stmt->execute([$safeName, $relativePath, basename($file['name']), $file['size'], $docId]);
+
+                // If supplier was rejected, set back to Pending
+                $pdo->prepare("UPDATE suppliers SET status = 'Pending' WHERE id = ? AND status = 'Rejected'")->execute([$supplierId]);
+
+                echo json_encode(['success' => true, 'message' => 'Document re-uploaded successfully.']);
+            } else {
+                http_response_code(500);
+                echo json_encode(['success' => false, 'error' => 'Failed to save the uploaded file.']);
+            }
+        } catch (Exception $e) {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'error' => $e->getMessage()]);
+        }
+        exit;
+    }
+
     http_response_code(400);
     echo json_encode(['error' => 'Invalid action']);
     exit;

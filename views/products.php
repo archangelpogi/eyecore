@@ -355,6 +355,141 @@ select[multiple] option:hover {
         transform: translateY(0);
     }
 }
+
+/* ✅ SWEETALERT2 TEAL GREEN THEME */
+.swal2-popup {
+    border-radius: 16px !important;
+    border-top: 4px solid #008080 !important;
+    box-shadow: 0 12px 40px rgba(0,128,128,0.25) !important;
+    font-family: 'Inter', -apple-system, sans-serif !important;
+}
+.swal2-title {
+    color: #006666 !important;
+    font-weight: 700 !important;
+}
+.swal2-html-container {
+    color: #4a6060 !important;
+}
+.swal2-confirm {
+    background: #008080 !important;
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+    padding: 10px 24px !important;
+    transition: all 0.2s !important;
+}
+.swal2-confirm:hover {
+    background: #006666 !important;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(0,128,128,0.4) !important;
+}
+.swal2-cancel {
+    background: #6c757d !important;
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+}
+.swal2-cancel:hover {
+    background: #5a6268 !important;
+}
+.swal2-deny {
+    background: #dc3545 !important;
+    border-radius: 8px !important;
+    font-weight: 600 !important;
+}
+.swal2-success .swal2-success-ring,
+.swal2-success [class^='swal2-success-line'] {
+    border-color: #008080 !important;
+}
+.swal2-success .swal2-success-line-tip,
+.swal2-success .swal2-success-line-long {
+    background-color: #008080 !important;
+}
+.swal2-loader {
+    border-color: #008080 transparent #008080 transparent !important;
+}
+.swal2-timer-progress-bar {
+    background: #008080 !important;
+}
+
+/* ✅ Inventory filter pills */
+.filter-pill {
+    background: #ffffff;
+    border: 1.5px solid var(--border);
+    color: var(--text-soft);
+    border-radius: 20px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+.filter-pill:hover {
+    border-color: var(--teal);
+    color: var(--teal);
+}
+.filter-pill.active {
+    background: var(--teal);
+    color: white;
+    border-color: var(--teal);
+}
+
+/* ✅ Inventory item card */
+.inventory-item {
+    background: #ffffff;
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.inventory-item:hover {
+    border-color: var(--teal);
+    background: #f8fdfd;
+    transform: translateX(3px);
+}
+.inventory-item.selected {
+    border-color: var(--teal);
+    background: #e0f2f2;
+    box-shadow: 0 2px 8px rgba(0,128,128,0.15);
+}
+.inventory-item .item-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    background: var(--teal-light);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    flex-shrink: 0;
+}
+.inventory-item .item-info {
+    flex-grow: 1;
+    min-width: 0;
+}
+.inventory-item .item-name {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.inventory-item .item-meta {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+.inventory-item .item-price {
+    font-weight: 700;
+    color: var(--teal);
+    font-size: 13px;
+    white-space: nowrap;
+}
     </style>
 </head>
 <body>
@@ -463,12 +598,81 @@ select[multiple] option:hover {
             <div class="modal-body">
                 <input type="hidden" id="service_id">
                 <div class="row g-3">
-                    <div class="col-md-8"><label class="form-label fw-semibold">Service Name <span class="text-danger">*</span></label><input type="text" class="form-control" id="service_name" placeholder="e.g., Basic Eye Exam"></div>
+                    <div class="col-md-8">
+    <label class="form-label fw-semibold">Service Name <span class="text-danger">*</span></label>
+    <select class="form-select" id="service_name" onchange="onServiceNameChange()">
+        <option value="">-- Select Service --</option>
+        <optgroup label="👁️ Eye Examination">
+            <option value="Comprehensive Eye Exam">Comprehensive Eye Exam</option>
+            <option value="Basic Eye Exam">Basic Eye Exam</option>
+            <option value="Visual Acuity Test">Visual Acuity Test</option>
+            <option value="Refraction Test">Refraction Test</option>
+            <option value="Fundoscopy / Fundus Exam">Fundoscopy / Fundus Exam</option>
+            <option value="Slit Lamp Examination">Slit Lamp Examination</option>
+            <option value="Tonometry (Eye Pressure)">Tonometry (Eye Pressure)</option>
+            <option value="Pachymetry (Corneal Thickness)">Pachymetry (Corneal Thickness)</option>
+            <option value="Amsler Grid Test">Amsler Grid Test</option>
+            <option value="Color Vision Test">Color Vision Test</option>
+            <option value="Contrast Sensitivity Test">Contrast Sensitivity Test</option>
+            <option value="Visual Field Test">Visual Field Test</option>
+        </optgroup>
+        <optgroup label="👓 Eyeglasses & Frames">
+            <option value="Eyeglass Fitting">Eyeglass Fitting</option>
+            <option value="Frame Adjustment">Frame Adjustment</option>
+            <option value="Lens Replacement">Lens Replacement</option>
+            <option value="Frame Repair">Frame Repair</option>
+            <option value="Nosepad Replacement">Nosepad Replacement</option>
+            <option value="Temple / Hinge Repair">Temple / Hinge Repair</option>
+        </optgroup>
+        <optgroup label="👁️ Contact Lens">
+            <option value="Contact Lens Fitting">Contact Lens Fitting</option>
+            <option value="Contact Lens Training">Contact Lens Training (First-time Users)</option>
+            <option value="Contact Lens Evaluation">Contact Lens Evaluation</option>
+        </optgroup>
+        <optgroup label="🧪 Screening & Diagnostics">
+            <option value="Glaucoma Screening">Glaucoma Screening</option>
+            <option value="Diabetic Retinopathy Screening">Diabetic Retinopathy Screening</option>
+            <option value="Cataract Screening">Cataract Screening</option>
+            <option value="Dry Eye Assessment">Dry Eye Assessment</option>
+            <option value="Pediatric Eye Screening">Pediatric Eye Screening</option>
+            <option value="Computer Vision Syndrome Screening">Computer Vision Syndrome Screening</option>
+            <option value="Color Blindness Screening">Color Blindness Screening</option>
+        </optgroup>
+        <optgroup label="💧 Treatment & Procedures (Non-Surgical)">
+            <option value="Eye Irrigation / Wash">Eye Irrigation / Wash</option>
+            <option value="Foreign Body Removal">Foreign Body Removal</option>
+            <option value="Patching / Eye Dressing">Patching / Eye Dressing</option>
+            <option value="Dry Eye Treatment">Dry Eye Treatment</option>
+            <option value="Punctal Plug Insertion">Punctal Plug Insertion</option>
+            <option value="Eyelid Cleaning / BlephEx">Eyelid Cleaning / BlephEx</option>
+            <option value="Warm Compress Therapy">Warm Compress Therapy</option>
+            <option value="Vision Therapy Session">Vision Therapy Session</option>
+        </optgroup>
+        <optgroup label="🌿 Other Services">
+            <option value="Prescription Issuance">Prescription Issuance</option>
+            <option value="Follow-up Consultation">Follow-up Consultation</option>
+            <option value="Medical Certificate">Medical Certificate</option>
+            <option value="Low Vision Assessment">Low Vision Assessment</option>
+            <option value="Others (Custom)">Others (Custom) →</option>
+        </optgroup>
+    </select>
+    <input type="text" class="form-control mt-2" id="service_name_custom" 
+           placeholder="Enter custom service name..." style="display:none;">
+</div>
                     <div class="col-md-4"><label class="form-label fw-semibold">Category <span class="text-danger">*</span></label><select class="form-select" id="service_category"><option value="">-- Select --</option><?php foreach ($serviceCategories as $cat): ?><option><?= htmlspecialchars($cat) ?></option><?php endforeach; ?></select></div>
                     <div class="col-12"><label class="form-label fw-semibold">Description</label><textarea class="form-control" id="service_description" rows="3" placeholder="Describe what this service includes..."></textarea></div>
-                    <div class="col-md-4"><label class="form-label fw-semibold">Price (₱) <span class="text-danger">*</span></label><input type="number" step="0.01" class="form-control" id="service_price" placeholder="0.00"></div>
+                    <div class="col-md-4"><label class="form-label fw-semibold">Price (₱) <span class="text-danger" id="priceRequiredMark">*</span></label><input type="number" step="0.01" class="form-control" id="service_price" placeholder="0.00"></div>
                     <div class="col-md-4"><label class="form-label fw-semibold">Duration (minutes)</label><input type="number" class="form-control" id="service_duration" placeholder="e.g., 30"></div>
                     <div class="col-md-4"><label class="form-label fw-semibold">Status</label><select class="form-select" id="service_status"><option value="active">Active</option><option value="inactive">Inactive</option></select></div>
+                    <div class="col-md-4">
+                        <label class="form-label fw-semibold">Service Fee</label>
+                        <div class="form-check form-switch mt-2">
+                            <input class="form-check-input" type="checkbox" id="service_is_free" onchange="toggleFreeService()">
+                            <label class="form-check-label" for="service_is_free">
+                                <i class="bi bi-gift text-success"></i> <strong>Libreng Serbisyo</strong> (Free)
+                            </label>
+                        </div>
+                    </div>
                 </div>
             </div>
             <div class="modal-footer"><button type="button" class="btn btn-light" data-bs-dismiss="modal">Cancel</button><button type="button" class="btn-teal" onclick="saveService()"><i class="bi bi-check-lg me-1"></i> Save Service</button></div>
@@ -486,23 +690,52 @@ select[multiple] option:hover {
             </div>
             <div class="modal-body">
                 <form id="postProductForm" enctype="multipart/form-data">
-                    <!-- SELECT ITEM -->
-                    <div class="section-card mb-4">
-                        <div class="section-card-head"><i class="bi bi-search"></i> Select Item from Inventory</div>
-                        <div class="section-card-body">
-                            <div class="row">
-                                <div class="col-md-8">
-                                    <label class="form-label fw-semibold">Choose Item</label>
-                                    <select class="form-select form-select-lg" id="selectItem" onchange="loadItemDetails()">
-                                        <option value="">-- Select an item --</option>
-                                    </select>
-                                </div>
-                                <div class="col-md-4 d-flex align-items-end">
-                                    <button type="button" class="btn-outline-teal w-100" onclick="refreshInventory()"><i class="bi bi-arrow-repeat"></i> Refresh List</button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
+<!-- SELECT ITEM (Search + Category + List) -->
+<div class="section-card mb-4">
+    <div class="section-card-head d-flex justify-content-between align-items-center">
+        <span><i class="bi bi-search me-2"></i> Select Item from Inventory</span>
+        <button type="button" class="btn-outline-teal btn-sm" onclick="refreshInventory()">
+            <i class="bi bi-arrow-repeat"></i> Refresh
+        </button>
+    </div>
+    <div class="section-card-body">
+        <!-- Search Bar -->
+        <div class="mb-3">
+            <div class="search-box" style="min-width:unset;">
+                <i class="bi bi-search"></i>
+                <input type="text" id="inventorySearch" placeholder="Search by name or brand..." oninput="filterInventory()">
+            </div>
+        </div>
+
+        <!-- Category Pills -->
+        <div class="mb-3 d-flex gap-2 flex-wrap" id="inventoryCategoryPills">
+            <button type="button" class="filter-pill active" data-cat="" onclick="filterByCategory('')">All</button>
+            <button type="button" class="filter-pill" data-cat="Frames" onclick="filterByCategory('Frames')">👓 Frames</button>
+            <button type="button" class="filter-pill" data-cat="Lenses" onclick="filterByCategory('Lenses')">🔍 Lenses</button>
+            <button type="button" class="filter-pill" data-cat="Contact Lenses" onclick="filterByCategory('Contact Lenses')">👁️ Contact Lenses</button>
+            <button type="button" class="filter-pill" data-cat="Accessories" onclick="filterByCategory('Accessories')">🧰 Accessories</button>
+            <button type="button" class="filter-pill" data-cat="Solutions" onclick="filterByCategory('Solutions')">💧 Solutions</button>
+            <button type="button" class="filter-pill" data-cat="Parts" onclick="filterByCategory('Parts')">🔧 Parts</button>
+        </div>
+
+        <!-- Selected Item Display -->
+        <div id="selectedItemDisplay" class="alert alert-success py-2" style="display:none;background:#e8f5e9;border-color:#c8e6c9;">
+            <i class="bi bi-check-circle-fill text-success me-2"></i>
+            <strong>Selected:</strong> <span id="selectedItemLabel">—</span>
+            <button type="button" class="btn btn-sm btn-outline-danger ms-auto float-end" onclick="clearSelectedItem()">
+                <i class="bi bi-x-lg"></i> Clear
+            </button>
+        </div>
+
+        <!-- Inventory List -->
+        <div id="inventoryList" style="max-height: 350px; overflow-y: auto; padding-right: 5px;">
+            <div class="text-center text-muted py-4">
+                <div class="spinner-border" style="color:var(--teal);" role="status"></div>
+                <p class="mt-2 small">Loading inventory...</p>
+            </div>
+        </div>
+    </div>
+</div>
                     <!-- PRODUCT INFO -->
                     <div class="section-card mb-4">
                         <div class="section-card-head"><i class="bi bi-info-circle"></i> Product Information</div>
@@ -515,6 +748,7 @@ select[multiple] option:hover {
                                 <div class="col-md-4"><label class="form-label fw-semibold">Stock</label><input type="number" class="form-control" id="product_stock" readonly></div>
                                 <div class="col-md-4"><label class="form-label fw-semibold">Source</label><input type="text" class="form-control" id="product_source" readonly></div>
                                 <div class="col-12"><label class="form-label fw-semibold">Description</label><textarea class="form-control" id="product_description" rows="3" placeholder="Add description..."></textarea></div>
+
                             </div>
                         </div>
                     </div>
@@ -549,6 +783,46 @@ select[multiple] option:hover {
                             <small class="text-muted mt-3 d-block"><i class="bi bi-info-circle me-1"></i>Add all available colors. These will appear in the 3D viewer color palette.</small>
                         </div>
                     </div>
+                    <!-- SUBSIDY SECTION -->
+                    <div class="section-card mb-4" style="border-color:#28a745;">
+                        <div class="section-card-head" style="background:#e8f5e9;color:#2e7d32;border-color:#c8e6c9;">
+                            <i class="bi bi-gift"></i> Subsidy / Free Product
+                        </div>
+                        <div class="section-card-body">
+                            <div class="form-check form-switch mb-3">
+                                <input class="form-check-input" type="checkbox" id="product_is_free" onchange="toggleProductSubsidy()">
+                                <label class="form-check-label fw-semibold" for="product_is_free">
+                                    <i class="bi bi-gift"></i> Free / Subsidized Product
+                                </label>
+                            </div>
+                            <div id="subsidyFields" style="display:none;">
+                                <div class="row g-3">
+                                    <div class="col-md-6">
+                                        <label class="form-label fw-semibold">Subsidy Source</label>
+                                        <select class="form-select" id="subsidy_source">
+                                            <option value="philhealth">PhilHealth Optometry Package</option>
+                                            <option value="lgu">LGU / City Health Program</option>
+                                            <option value="doh">DOH Program</option>
+                                            <option value="donation">Donation / NGO</option>
+                                            <option value="clinic">Clinic Charity Fund</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-6">
+                                        <label class="form-label fw-semibold">Covered Amount (₱)</label>
+                                        <input type="number" class="form-control" id="subsidy_amount" value="2500" step="0.01">
+                                    </div>
+                                    <div class="col-12">
+                                        <small class="text-muted">
+                                            <i class="bi bi-info-circle"></i>
+                                            Ang pasyente ay magbabayad lamang ng <strong>sobra sa covered amount</strong>.
+                                            Halimbawa: ₱3,000 frame − ₱2,500 covered = ₱500 babayaran ng pasyente.
+                                        </small>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- SALES SECTION -->
                     <div class="section-card mb-4" style="border-color:#ffc107;">
                         <div class="section-card-head" style="background:#fff8e1;color:#795400;border-color:#ffc107;"><i class="bi bi-tag"></i> Sales Options</div>
@@ -672,110 +946,358 @@ select[multiple] option:hover {
                             <span><i class="bi bi-cube me-2"></i>3D Model<span class="ms-2 small fw-normal" id="label3DNote" style="color:var(--text-muted);">(select a product first)</span></span>
                             <div class="form-check form-switch mb-0" id="toggle3DWrap" style="display:none!important;"><input class="form-check-input" type="checkbox" id="enable3DToggle" onchange="onToggle3D(this.checked)"><label class="form-check-label small" for="enable3DToggle" style="color:var(--text-soft);">Enable 3D</label></div>
                         </div>
-                        <div class="section-card-body">
-                            <div id="non3DNote" class="model-section-note"><i class="bi bi-info-circle"></i>3D model is available for <strong>Frames</strong> only. Select a Frame item to enable this feature.</div>
-                            <div id="model3DOptions" style="display:none;">
-                                <div class="mb-4"><div class="form-check"><input class="form-check-input" type="radio" name="modelOption" id="optionDefault" value="default" checked onclick="toggleModelOption()"><label class="form-check-label fw-semibold" for="optionDefault"><i class="bi bi-check-circle-fill text-success"></i> Use Default 3D Model (Free)</label></div><div class="ms-4 mt-2" id="defaultModelSection"><label class="form-label fw-semibold">Choose Frame Style:</label><select class="form-select mb-3" id="default_model_id" onchange="previewDefaultFrame3D(this.value)"><option value="">-- Select a frame style --</option><?php foreach ($defaultModels as $model): ?><option value="<?= $model['id'] ?>" data-path="<?= htmlspecialchars($model['model_file']) ?>" data-name="<?= htmlspecialchars($model['model_name']) ?>"><?= htmlspecialchars($model['model_name']) ?></option><?php endforeach; ?></select><div id="default-frame-preview" class="frame-preview-container" style="display:none;"><div class="preview-controls"><button type="button" onclick="rotateDefaultPreview('left')" title="Rotate Left"><i class="bi bi-arrow-left"></i></button><button type="button" onclick="rotateDefaultPreview('right')" title="Rotate Right"><i class="bi bi-arrow-right"></i></button><button type="button" onclick="resetDefaultPreview()" title="Reset View"><i class="bi bi-arrow-repeat"></i></button></div></div><div class="text-center mt-2" id="expandPreviewBtn" style="display:none;"><button type="button" class="btn-outline-teal btn-sm" onclick="expandDefaultPreview()"><i class="bi bi-arrows-fullscreen"></i> View Full Screen</button></div><div id="default-frame-colors" class="color-palette" style="display:none;"></div><small class="text-muted mt-2 d-block">20+ default frames available instantly!</small></div></div>
-                                <div class="mb-4"><div class="form-check"><input class="form-check-input" type="radio" name="modelOption" id="optionRequest" value="request" onclick="toggleModelOption()"><label class="form-check-label fw-semibold" for="optionRequest"><i class="bi bi-envelope-paper"></i> Request Custom 3D Model (₱100/model)</label></div><div class="ms-4 mt-2" id="requestModelSection" style="display:none;"><div class="alert alert-info small"><strong>Custom 3D Modeling Service</strong> — ₱100.00 per model (includes 5 color variations)<br><small>Processing time: 2-3 business days after payment</small></div><div class="row g-3"><div class="col-md-6"><label class="form-label fw-semibold">Model Type <span class="text-danger">*</span></label><select class="form-select" id="request_model_type"><option value="">-- Select Type --</option><option value="frame">👓 Frames</option><option value="contact_lens">👁️ Contact Lens</option></select></div><div class="col-md-6"><label class="form-label fw-semibold">Frame/Brand Name <span class="text-danger">*</span></label><input type="text" class="form-control" id="request_product_name" placeholder="e.g., Ray-Ban Aviator"></div><div class="col-12"><label class="form-label fw-semibold">Upload Reference Photos <span class="text-danger">*</span></label><div class="border rounded-3 p-3 text-center" style="cursor:pointer;background:var(--bg);" onclick="document.getElementById('requestImages').click()"><i class="bi bi-camera fs-2 text-muted"></i><div class="small text-muted mt-1">Upload photos (front, side, angle)</div></div><input type="file" id="requestImages" class="d-none" multiple accept="image/*" onchange="previewRequestImages(this)"><div class="row g-2 mt-2" id="requestImagePreviewContainer"></div></div><div class="col-12"><label class="form-label fw-semibold">Additional Notes</label><textarea class="form-control" id="request_notes" rows="2" placeholder="Material details, logo placement, color specs..."></textarea></div><div class="col-12"><label class="form-label fw-semibold">Desired Colors</label><input type="text" class="form-control" id="request_colors" placeholder="e.g., Black, Gold, Silver"></div></div><div class="section-card mt-3" style="border-color:var(--teal);"><div class="section-card-head"><i class="bi bi-credit-card"></i> Payment Method</div><div class="section-card-body"><div class="d-flex gap-3 mb-3"><div class="form-check"><input class="form-check-input" type="radio" name="payment_method" id="payment_gcash" value="gcash" checked><label class="form-check-label" for="payment_gcash">GCash</label></div><div class="form-check"><input class="form-check-input" type="radio" name="payment_method" id="payment_maya" value="maya"><label class="form-check-label" for="payment_maya">Maya</label></div><div class="form-check"><input class="form-check-input" type="radio" name="payment_method" id="payment_bank" value="bank"><label class="form-check-label" for="payment_bank">Bank Transfer</label></div></div><div id="gcash_details" class="p-3 rounded" style="background:var(--bg);"><p class="mb-1 small"><strong>GCash:</strong> 0917 123 4567 — Eyecore 3D Services</p><small class="text-muted">Send exact amount: ₱100.00</small></div><div id="maya_details" class="p-3 rounded" style="background:var(--bg);display:none;"><p class="mb-1 small"><strong>Maya:</strong> 0918 765 4321 — Eyecore 3D Services</p><small class="text-muted">Send exact amount: ₱100.00</small></div><div id="bank_details" class="p-3 rounded" style="background:var(--bg);display:none;"><p class="mb-1 small"><strong>BDO:</strong> 001234567890 — Eyecore 3D Services</p><small class="text-muted">Send exact amount: ₱100.00</small></div><div class="mt-3"><label class="form-label fw-semibold small">Upload Payment Proof</label><input type="file" class="form-control form-control-sm" id="payment_proof" accept="image/*"></div></div></div><div class="form-check mt-3"><input class="form-check-input" type="checkbox" id="terms_agree"><label class="form-check-label small" for="terms_agree">I understand this is a paid service (₱100) processed after payment confirmation.</label></div></div></div>
-<div><div class="form-check"><input class="form-check-input" type="radio" name="modelOption" id="optionMyModels" value="mymodels" onclick="toggleModelOption()"><label class="form-check-label fw-semibold" for="optionMyModels"><i class="bi bi-cube" style="color:var(--teal);"></i> My Completed 3D Models</label></div>
-<div class="ms-4 mt-2" id="myModelsSection" style="display:none;">
-    <?php 
-    try { 
-        $stmt = $pdo->prepare("SELECT r.*, DATE_FORMAT(r.completed_at,'%M %d, %Y') as completed_date FROM custom_3d_requests r WHERE r.clinic_id=? AND r.status='completed' ORDER BY r.completed_at DESC LIMIT 20"); 
-        $stmt->execute([$clinicId]); 
-        $completedRequests = $stmt->fetchAll(PDO::FETCH_ASSOC); 
-    } catch (Exception $e) { 
-        $completedRequests = []; 
-    } 
-    ?>
-    
-    <?php if (empty($completedRequests)): ?>
-        <div class="empty-models-state text-center p-5 bg-light rounded-3">
-            <i class="bi bi-cube fs-1 text-muted mb-3 d-block"></i>
-            <h6 class="fw-semibold">No Completed 3D Models Yet</h6>
-            <p class="text-muted small mb-3">Complete a 3D model request first and it will appear here.</p>
-            <button type="button" class="btn-outline-teal btn-sm" onclick="$('#optionRequest').prop('checked',true); toggleModelOption();">
-                <i class="bi bi-plus-circle me-1"></i> Request Custom Model
-            </button>
-        </div>
-    <?php else: ?>
-        <div class="completed-models-header mb-3">
-            <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
-                <div>
-                    <i class="bi bi-check-circle-fill text-success me-1"></i>
-                    <span class="fw-semibold small">My Completed 3D Models</span>
-                    <span class="badge bg-success ms-2"><?= count($completedRequests) ?></span>
-                </div>
-                <small class="text-muted"><i class="bi bi-info-circle"></i> Select a model to attach to this product</small>
+<div class="section-card-body">
+    <div id="non3DNote" class="model-section-note"><i class="bi bi-info-circle"></i>3D model is available for <strong>Frames</strong> only. Select a Frame item to enable this feature.</div>
+    <div id="model3DOptions" style="display:none;">
+        
+        <!-- ✅ OPTION 1: MY PURCHASED 3D FRAMES (NEW - Primary) -->
+        <div class="mb-4">
+            <div class="form-check">
+                <input class="form-check-input" type="radio" name="modelOption" id="optionPurchased" value="purchased" checked onclick="toggleModelOption()">
+                <label class="form-check-label fw-semibold" for="optionPurchased">
+                    <i class="bi bi-cube-fill" style="color: var(--teal);"></i> 
+                    My Purchased 3D Frames 
+                    <span class="badge bg-success ms-1">Recommended</span>
+                </label>
+            </div>
+            <div class="ms-4 mt-2" id="purchasedModelSection">
+                <?php 
+                try { 
+                    // Fetch supplier products with 3D that are active
+                    $purchasedStmt = $pdo->prepare("
+                        SELECT sp.id, sp.product_name, sp.brand, sp.category,
+                               sp.model_3d_path, sp.model_3d_filename,
+                               s.supplier_name
+                        FROM supplier_products sp
+                        INNER JOIN suppliers s ON s.id = sp.supplier_id
+                        WHERE sp.has_3d_model = 1 
+                          AND sp.is_active = 1
+                          AND s.status = 'Active'
+                        ORDER BY sp.product_name ASC
+                        LIMIT 30
+                    "); 
+                    $purchasedStmt->execute(); 
+                    $purchasedFrames = $purchasedStmt->fetchAll(PDO::FETCH_ASSOC); 
+                } catch (Exception $e) { 
+                    $purchasedFrames = []; 
+                } 
+                ?>
+                
+                <?php if (empty($purchasedFrames)): ?>
+                    <div class="empty-models-state text-center p-5 bg-light rounded-3">
+                        <i class="bi bi-cube fs-1 text-muted mb-3 d-block"></i>
+                        <h6 class="fw-semibold">No 3D Frames Available Yet</h6>
+                        <p class="text-muted small mb-3">Wala pang supplier na nag-upload ng 3D frames. Bumalik mamaya o mag-request ng custom model.</p>
+                        <button type="button" class="btn-outline-teal btn-sm" onclick="$('#optionRequest').prop('checked',true); toggleModelOption();">
+                            <i class="bi bi-plus-circle me-1"></i> Request Custom Model (Advanced)
+                        </button>
+                    </div>
+                <?php else: ?>
+                    <div class="alert alert-info small mb-3">
+                        <i class="bi bi-info-circle me-1"></i>
+                        <strong>Recommended:</strong> Pumili ng 3D frame galing sa mga supplier. Available agad, walang bayad na extra.
+                    </div>
+                    
+                    <div class="completed-models-header mb-3">
+                        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                            <div>
+                                <i class="bi bi-check-circle-fill text-success me-1"></i>
+                                <span class="fw-semibold small">Available Supplier 3D Frames</span>
+                                <span class="badge bg-success ms-2"><?= count($purchasedFrames) ?></span>
+                            </div>
+                            <small class="text-muted"><i class="bi bi-info-circle"></i> Pumili ng frame para i-attach sa product</small>
+                        </div>
+                    </div>
+                    
+                    <div class="completed-models-grid" style="max-height: 400px; overflow-y: auto; padding-right: 5px;">
+                        <?php foreach ($purchasedFrames as $frame): ?>
+                            <div class="completed-model-card mb-3 p-3 border rounded-3 hover-shadow" style="transition: all 0.2s ease; cursor: pointer;" 
+                                 onclick="selectPurchasedFrame(<?= $frame['id'] ?>, '<?= htmlspecialchars(addslashes($frame['product_name'])) ?>', '<?= htmlspecialchars(addslashes($frame['model_3d_path'])) ?>')">
+                                <div class="d-flex align-items-start gap-3">
+                                    <!-- Model Preview Icon -->
+                                    <div class="model-preview-icon flex-shrink-0" style="width: 60px; height: 60px; background: linear-gradient(135deg, #e0f2f2, #b8e0e0); border-radius: 12px; display: flex; align-items: center; justify-content: center;">
+                                        <i class="bi bi-cube-fill fs-2" style="color: #008080;"></i>
+                                    </div>
+                                    
+                                    <!-- Model Info -->
+                                    <div class="flex-grow-1">
+                                        <div class="d-flex justify-content-between align-items-start flex-wrap gap-2">
+                                            <div>
+                                                <div class="fw-semibold"><?= htmlspecialchars($frame['product_name']) ?></div>
+                                                <div class="small text-muted mt-1">
+                                                    <i class="bi bi-shop me-1"></i><?= htmlspecialchars($frame['supplier_name']) ?>
+                                                    <?php if (!empty($frame['brand'])): ?>
+                                                        <span class="ms-2"><i class="bi bi-tag me-1"></i><?= htmlspecialchars($frame['brand']) ?></span>
+                                                    <?php endif; ?>
+                                                </div>
+                                                <div class="small mt-1">
+                                                    <span class="badge" style="background: #e6f3f3; color: #008080; font-size: 0.7rem;">
+                                                        <i class="bi bi-cube me-1"></i>3D Ready
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            
+                                            <!-- Action Buttons -->
+                                            <div class="d-flex gap-2">
+                                                <button type="button" class="btn btn-sm btn-outline-secondary" 
+                                                        onclick="event.stopPropagation(); previewPurchasedFrame('<?= htmlspecialchars(addslashes($frame['model_3d_path'])) ?>', '<?= htmlspecialchars(addslashes($frame['product_name'])) ?>')" 
+                                                        title="Preview 3D Model">
+                                                    <i class="bi bi-eye"></i> Preview
+                                                </button>
+                                                <div class="form-check mt-1">
+                                                    <input class="form-check-input" type="radio" name="purchased_frame_id" 
+                                                           id="pf_<?= $frame['id'] ?>" 
+                                                           value="<?= $frame['id'] ?>" 
+                                                           data-file="<?= htmlspecialchars($frame['model_3d_path']) ?>" 
+                                                           data-name="<?= htmlspecialchars($frame['product_name']) ?>" 
+                                                           onclick="event.stopPropagation();">
+                                                    <label class="form-check-label small" for="pf_<?= $frame['id'] ?>">Select</label>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <!-- Selected Badge -->
+                                        <div id="selected_pf_badge_<?= $frame['id'] ?>" class="mt-2" style="display: none;">
+                                            <span class="badge bg-success">
+                                                <i class="bi bi-check-circle-fill me-1"></i> Selected
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                    
+                    <!-- Selected Frame Preview -->
+                    <div id="selectedPurchasedFramePreview" class="mt-3 p-3 bg-light rounded-3" style="display: none;">
+                        <div class="d-flex align-items-center gap-2">
+                            <i class="bi bi-check-circle-fill text-success fs-5"></i>
+                            <span class="fw-semibold">Selected 3D Frame:</span>
+                            <span id="selectedPurchasedFrameName" class="small"></span>
+                            <button type="button" class="btn btn-sm btn-outline-danger ms-auto" onclick="clearSelectedPurchasedFrame()">
+                                <i class="bi bi-x-lg"></i> Clear
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <small class="text-muted mt-3 d-block">
+                        <i class="bi bi-info-circle-fill me-1"></i>
+                        Selected 3D frame will be attached to this product. Available agad, walang extra bayad.
+                    </small>
+                <?php endif; ?>
             </div>
         </div>
         
-        <div class="completed-models-grid" style="max-height: 400px; overflow-y: auto; padding-right: 5px;">
-            <?php foreach ($completedRequests as $req): ?>
-                <div class="completed-model-card mb-3 p-3 border rounded-3 hover-shadow" style="transition: all 0.2s ease; cursor: pointer;" onclick="selectCompletedModel(<?= $req['id'] ?>, '<?= htmlspecialchars($req['product_name']) ?>')">
-                    <div class="d-flex align-items-start gap-3">
-                        <!-- Model Preview Icon -->
-                        <div class="model-preview-icon flex-shrink-0" style="width: 60px; height: 60px; background: linear-gradient(135deg, #e0f2f2, #b8e0e0); border-radius: 12px; display: flex; align-items: center; justify-content: center;">
-                            <i class="bi bi-cube fs-2" style="color: #008080;"></i>
+        <!-- ✅ OPTION 2: DEFAULT 3D MODEL (Free) -->
+        <div class="mb-4">
+            <div class="form-check">
+                <input class="form-check-input" type="radio" name="modelOption" id="optionDefault" value="default" onclick="toggleModelOption()">
+                <label class="form-check-label fw-semibold" for="optionDefault">
+                    <i class="bi bi-check-circle-fill text-success"></i> Use Default 3D Model (Free)
+                </label>
+            </div>
+            <div class="ms-4 mt-2" id="defaultModelSection" style="display: none;">
+                <label class="form-label fw-semibold">Choose Frame Style:</label>
+                <select class="form-select mb-3" id="default_model_id" onchange="previewDefaultFrame3D(this.value)">
+                    <option value="">-- Select a frame style --</option>
+                    <?php foreach ($defaultModels as $model): ?>
+                        <option value="<?= $model['id'] ?>" data-path="<?= htmlspecialchars($model['model_file']) ?>" data-name="<?= htmlspecialchars($model['model_name']) ?>">
+                            <?= htmlspecialchars($model['model_name']) ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+                <div id="default-frame-preview" class="frame-preview-container" style="display:none;">
+                    <div class="preview-controls">
+                        <button type="button" onclick="rotateDefaultPreview('left')" title="Rotate Left"><i class="bi bi-arrow-left"></i></button>
+                        <button type="button" onclick="rotateDefaultPreview('right')" title="Rotate Right"><i class="bi bi-arrow-right"></i></button>
+                        <button type="button" onclick="resetDefaultPreview()" title="Reset View"><i class="bi bi-arrow-repeat"></i></button>
+                    </div>
+                </div>
+                <div class="text-center mt-2" id="expandPreviewBtn" style="display:none;">
+                    <button type="button" class="btn-outline-teal btn-sm" onclick="expandDefaultPreview()">
+                        <i class="bi bi-arrows-fullscreen"></i> View Full Screen
+                    </button>
+                </div>
+                <div id="default-frame-colors" class="color-palette" style="display:none;"></div>
+                <small class="text-muted mt-2 d-block">20+ default frames available instantly!</small>
+            </div>
+        </div>
+        
+        <!-- ✅ OPTION 3: REQUEST CUSTOM 3D MODEL (₱100 - Advanced) -->
+        <div class="mb-4">
+            <div class="form-check">
+                <input class="form-check-input" type="radio" name="modelOption" id="optionRequest" value="request" onclick="toggleModelOption()">
+                <label class="form-check-label fw-semibold" for="optionRequest">
+                    <i class="bi bi-envelope-paper"></i> Request Custom 3D Model (₱100/model) 
+                    <span class="badge bg-warning text-dark ms-1">Advanced</span>
+                </label>
+            </div>
+            <div class="ms-4 mt-2" id="requestModelSection" style="display:none;">
+                <div class="alert alert-info small">
+                    <strong>Custom 3D Modeling Service</strong> — ₱100.00 per model (includes 5 color variations)<br>
+                    <small>Processing time: 2-3 business days after payment</small>
+                </div>
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold">Model Type <span class="text-danger">*</span></label>
+                        <select class="form-select" id="request_model_type">
+                            <option value="">-- Select Type --</option>
+                            <option value="frame">👓 Frames</option>
+                            <option value="contact_lens">👁️ Contact Lens</option>
+                        </select>
+                    </div>
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold">Frame/Brand Name <span class="text-danger">*</span></label>
+                        <input type="text" class="form-control" id="request_product_name" placeholder="e.g., Ray-Ban Aviator">
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label fw-semibold">Upload Reference Photos <span class="text-danger">*</span></label>
+                        <div class="border rounded-3 p-3 text-center" style="cursor:pointer;background:var(--bg);" onclick="document.getElementById('requestImages').click()">
+                            <i class="bi bi-camera fs-2 text-muted"></i>
+                            <div class="small text-muted mt-1">Upload photos (front, side, angle)</div>
                         </div>
-                        
-                        <!-- Model Info -->
-                        <div class="flex-grow-1">
-                            <div class="d-flex justify-content-between align-items-start flex-wrap gap-2">
-                                <div>
-                                    <div class="fw-semibold"><?= htmlspecialchars($req['product_name']) ?></div>
-                                    <div class="small text-muted mt-1">
-                                        <i class="bi bi-calendar-check me-1"></i>Completed: <?= $req['completed_date'] ?>
-                                        <?php if (!empty($req['colors_requested'])): ?>
-                                            <span class="ms-2"><i class="bi bi-palette me-1"></i><?= htmlspecialchars($req['colors_requested']) ?></span>
-                                        <?php endif; ?>
-                                    </div>
-                                </div>
-                                
-                                <!-- Action Buttons -->
-                                <div class="d-flex gap-2">
-                                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="event.stopPropagation(); viewCompletedModel(<?= $req['id'] ?>)" title="Preview 3D Model">
-                                        <i class="bi bi-eye"></i> Preview
-                                    </button>
-                                    <div class="form-check mt-1">
-                                        <input class="form-check-input" type="radio" name="completed_model_id" id="cm_<?= $req['id'] ?>" value="<?= $req['id'] ?>" data-file="<?= htmlspecialchars($req['completed_model_file'] ?? '') ?>" data-name="<?= htmlspecialchars($req['product_name']) ?>" onclick="event.stopPropagation();">
-                                        <label class="form-check-label small" for="cm_<?= $req['id'] ?>">Select</label>
-                                    </div>
-                                </div>
+                        <input type="file" id="requestImages" class="d-none" multiple accept="image/*" onchange="previewRequestImages(this)">
+                        <div class="row g-2 mt-2" id="requestImagePreviewContainer"></div>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label fw-semibold">Additional Notes</label>
+                        <textarea class="form-control" id="request_notes" rows="2" placeholder="Material details, logo placement, color specs..."></textarea>
+                    </div>
+                    <div class="col-12">
+                        <label class="form-label fw-semibold">Desired Colors</label>
+                        <input type="text" class="form-control" id="request_colors" placeholder="e.g., Black, Gold, Silver">
+                    </div>
+                </div>
+                <div class="section-card mt-3" style="border-color:var(--teal);">
+                    <div class="section-card-head"><i class="bi bi-credit-card"></i> Payment Method</div>
+                    <div class="section-card-body">
+                        <div class="d-flex gap-3 mb-3">
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="payment_method" id="payment_gcash" value="gcash" checked>
+                                <label class="form-check-label" for="payment_gcash">GCash</label>
                             </div>
-                            
-                            <!-- Selected Badge (shown when selected) -->
-                            <div id="selected_badge_<?= $req['id'] ?>" class="mt-2" style="display: none;">
-                                <span class="badge bg-success">
-                                    <i class="bi bi-check-circle-fill me-1"></i> Selected
-                                </span>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="payment_method" id="payment_maya" value="maya">
+                                <label class="form-check-label" for="payment_maya">Maya</label>
                             </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="payment_method" id="payment_bank" value="bank">
+                                <label class="form-check-label" for="payment_bank">Bank Transfer</label>
+                            </div>
+                        </div>
+                        <div id="gcash_details" class="p-3 rounded" style="background:var(--bg);">
+                            <p class="mb-1 small"><strong>GCash:</strong> 0917 123 4567 — Eyecore 3D Services</p>
+                            <small class="text-muted">Send exact amount: ₱100.00</small>
+                        </div>
+                        <div id="maya_details" class="p-3 rounded" style="background:var(--bg);display:none;">
+                            <p class="mb-1 small"><strong>Maya:</strong> 0918 765 4321 — Eyecore 3D Services</p>
+                            <small class="text-muted">Send exact amount: ₱100.00</small>
+                        </div>
+                        <div id="bank_details" class="p-3 rounded" style="background:var(--bg);display:none;">
+                            <p class="mb-1 small"><strong>BDO:</strong> 001234567890 — Eyecore 3D Services</p>
+                            <small class="text-muted">Send exact amount: ₱100.00</small>
+                        </div>
+                        <div class="mt-3">
+                            <label class="form-label fw-semibold small">Upload Payment Proof</label>
+                            <input type="file" class="form-control form-control-sm" id="payment_proof" accept="image/*">
                         </div>
                     </div>
                 </div>
-            <?php endforeach; ?>
-        </div>
-        
-        <!-- Selected Model Preview Section -->
-        <div id="selectedModelPreview" class="mt-3 p-3 bg-light rounded-3" style="display: none;">
-            <div class="d-flex align-items-center gap-2">
-                <i class="bi bi-check-circle-fill text-success fs-5"></i>
-                <span class="fw-semibold">Selected Model:</span>
-                <span id="selectedModelName" class="small"></span>
-                <button type="button" class="btn btn-sm btn-outline-danger ms-auto" onclick="clearSelectedModel()">
-                    <i class="bi bi-x-lg"></i> Clear
-                </button>
+                <div class="form-check mt-3">
+                    <input class="form-check-input" type="checkbox" id="terms_agree">
+                    <label class="form-check-label small" for="terms_agree">
+                        I understand this is a paid service (₱100) processed after payment confirmation.
+                    </label>
+                </div>
             </div>
         </div>
         
-        <small class="text-muted mt-3 d-block">
-            <i class="bi bi-info-circle-fill me-1"></i>
-            Selected 3D model will be attached to this product and visible in the product viewer.
-        </small>
-    <?php endif; ?>
-</div></div>
+        <!-- ✅ OPTION 4: MY COMPLETED 3D MODELS (Dating flow - keep for backward compatibility) -->
+        <div>
+            <div class="form-check">
+                <input class="form-check-input" type="radio" name="modelOption" id="optionMyModels" value="mymodels" onclick="toggleModelOption()">
+                <label class="form-check-label fw-semibold" for="optionMyModels">
+                    <i class="bi bi-archive" style="color: var(--text-muted);"></i> 
+                    My Completed 3D Models (Archive)
+                </label>
+            </div>
+            <div class="ms-4 mt-2" id="myModelsSection" style="display:none;">
+                <?php 
+                try { 
+                    $stmt = $pdo->prepare("SELECT r.*, DATE_FORMAT(r.completed_at,'%M %d, %Y') as completed_date FROM custom_3d_requests r WHERE r.clinic_id=? AND r.status='completed' ORDER BY r.completed_at DESC LIMIT 20"); 
+                    $stmt->execute([$clinicId]); 
+                    $completedRequests = $stmt->fetchAll(PDO::FETCH_ASSOC); 
+                } catch (Exception $e) { 
+                    $completedRequests = []; 
+                } 
+                ?>
+                
+                <?php if (empty($completedRequests)): ?>
+                    <div class="empty-models-state text-center p-5 bg-light rounded-3">
+                        <i class="bi bi-archive fs-1 text-muted mb-3 d-block"></i>
+                        <h6 class="fw-semibold">No Archived 3D Models</h6>
+                        <p class="text-muted small mb-3">Wala kang dating custom 3D request na completed. Gamitin yung "My Purchased 3D Frames" o "Request Custom Model".</p>
+                    </div>
+                <?php else: ?>
+                    <div class="alert alert-warning small mb-3">
+                        <i class="bi bi-exclamation-triangle me-1"></i>
+                        <strong>Legacy option:</strong> Ito yung mga dating custom 3D request mo. Gamitin lang kung walang available na supplier frame.
+                    </div>
+                    
+                    <div class="completed-models-header mb-3">
+                        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2">
+                            <div>
+                                <i class="bi bi-archive-fill text-muted me-1"></i>
+                                <span class="fw-semibold small">My Archived 3D Models</span>
+                                <span class="badge bg-secondary ms-2"><?= count($completedRequests) ?></span>
                             </div>
                         </div>
+                    </div>
+                    
+                    <div class="completed-models-grid" style="max-height: 400px; overflow-y: auto; padding-right: 5px;">
+                        <?php foreach ($completedRequests as $req): ?>
+                            <div class="completed-model-card mb-3 p-3 border rounded-3 hover-shadow" style="transition: all 0.2s ease; cursor: pointer;" onclick="selectCompletedModel(<?= $req['id'] ?>, '<?= htmlspecialchars($req['product_name']) ?>')">
+                                <div class="d-flex align-items-start gap-3">
+                                    <div class="model-preview-icon flex-shrink-0" style="width: 60px; height: 60px; background: linear-gradient(135deg, #f0f0f0, #e0e0e0); border-radius: 12px; display: flex; align-items: center; justify-content: center;">
+                                        <i class="bi bi-cube fs-2" style="color: #666;"></i>
+                                    </div>
+                                    
+                                    <div class="flex-grow-1">
+                                        <div class="d-flex justify-content-between align-items-start flex-wrap gap-2">
+                                            <div>
+                                                <div class="fw-semibold"><?= htmlspecialchars($req['product_name']) ?></div>
+                                                <div class="small text-muted mt-1">
+                                                    <i class="bi bi-calendar-check me-1"></i>Completed: <?= $req['completed_date'] ?>
+                                                </div>
+                                            </div>
+                                            
+                                            <div class="d-flex gap-2">
+                                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="event.stopPropagation(); viewCompletedModel(<?= $req['id'] ?>)" title="Preview 3D Model">
+                                                    <i class="bi bi-eye"></i> Preview
+                                                </button>
+                                                <div class="form-check mt-1">
+                                                    <input class="form-check-input" type="radio" name="completed_model_id" id="cm_<?= $req['id'] ?>" value="<?= $req['id'] ?>" data-file="<?= htmlspecialchars($req['completed_model_file'] ?? '') ?>" data-name="<?= htmlspecialchars($req['product_name']) ?>" onclick="event.stopPropagation();">
+                                                    <label class="form-check-label small" for="cm_<?= $req['id'] ?>">Select</label>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        
+                                        <div id="selected_badge_<?= $req['id'] ?>" class="mt-2" style="display: none;">
+                                            <span class="badge bg-secondary">
+                                                <i class="bi bi-check-circle-fill me-1"></i> Selected
+                                            </span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        <?php endforeach; ?>
+                    </div>
+                <?php endif; ?>
+            </div>
+        </div>
+        
+    </div>
+</div>
                     </div>
                     <input type="hidden" id="selected_item_id">
                     <input type="hidden" id="selected_source">
@@ -822,6 +1344,48 @@ const permissions = {
     canReject:  <?= json_encode($canReject) ?>
 };
 const clinicId = <?= $clinicId ?>;
+
+// ============================================================
+// ✅ GLOBAL SWEETALERT2 TEAL GREEN THEME
+// ============================================================
+const SwalTeal = Swal.mixin({
+    confirmButtonColor: '#008080',
+    cancelButtonColor: '#6c757d',
+    denyButtonColor: '#dc3545',
+    background: '#ffffff',
+    color: '#1a2e2e',
+    iconColor: '#008080',
+    customClass: {
+        popup: 'swal-teal-popup',
+        title: 'swal-teal-title',
+        confirmButton: 'swal-teal-confirm',
+        cancelButton: 'swal-teal-cancel'
+    },
+    buttonsStyling: true
+});
+
+// Override global default
+const _origSwalFire = Swal.fire.bind(Swal);
+Swal.fire = function(opts) {
+    if (typeof opts === 'string') {
+        // Shorthand Swal.fire('title', 'text', 'icon')
+        const args = Array.from(arguments);
+        return _origSwalFire({
+            title: args[0],
+            text: args[1],
+            icon: args[2],
+            confirmButtonColor: '#008080',
+            background: '#ffffff',
+            iconColor: '#008080'
+        });
+    }
+    if (typeof opts === 'object' && opts !== null) {
+        opts.confirmButtonColor = opts.confirmButtonColor || '#008080';
+        opts.background         = opts.background         || '#ffffff';
+        opts.iconColor          = opts.iconColor          || '#008080';
+    }
+    return _origSwalFire.apply(Swal, arguments);
+};
 
 // ============================================================
 // GLOBALS
@@ -1008,6 +1572,24 @@ function renderProducts(products) {
         if (approvalStatus === 'pending')  approvalBadge = '<span class="badge-pending"><i class="bi bi-clock me-1"></i>Pending</span>';
         if (approvalStatus === 'rejected') approvalBadge = '<span class="badge-rejected"><i class="bi bi-x-circle me-1"></i>Rejected</span>';
 
+        // ✅ SUBSIDIZED / FREE BADGE
+        const isFree = (p.is_free == 1 || p.is_free === true || p.is_free === '1');
+        const subsidyAmount = parseFloat(p.subsidy_amount) || 0;
+        const subsidySource = p.subsidy_source || '';
+        let freeBadge = '';
+        if (isFree) {
+            const sourceLabel = {
+                'philhealth': 'PhilHealth',
+                'lgu': 'LGU',
+                'doh': 'DOH',
+                'donation': 'Donation',
+                'clinic': 'Charity'
+            }[subsidySource] || 'Subsidized';
+            freeBadge = `<span class="badge" style="background:#28a745;color:white;font-size:10px;font-weight:700;padding:3px 8px;border-radius:20px;">
+                <i class="bi bi-gift me-1"></i>${sourceLabel}${subsidyAmount > 0 ? ` ₱${subsidyAmount.toLocaleString()}` : ''}
+            </span>`;
+        }
+
         let imgHtml = '';
         if (p.images_json) {
             try {
@@ -1049,6 +1631,7 @@ function renderProducts(products) {
                 <div class="card-name">${htmlEsc(p.name||'—')}</div>
                 <div class="card-brand">${htmlEsc(p.brand||'No brand')}</div>
                 <div class="card-meta"><span class="badge-cat">${htmlEsc(p.category||'')}</span>${priceHtml}</div>
+                ${freeBadge ? `<div class="mt-2">${freeBadge}</div>` : ''}
                 ${displayColorSwatches(colors)}
             </div>
             <div class="card-footer">${actionButtons}</div>
@@ -1110,36 +1693,80 @@ function renderServices(services) {
         return;
     }
     let html = '';
-    services.forEach(s => {
-        const cat   = s.category || 'Other';
-        const price = parseFloat(s.price) || 0;
-        const statusBadge = (s.status||'active')==='active' ? '<span class="badge-stock-ok">Active</span>' : '<span style="background:#f8d7da;color:#721c24;font-size:10px;padding:2px 8px;border-radius:20px;font-weight:600;">Inactive</span>';
-        const dur = s.duration_minutes ? `<span class="service-duration"><i class="bi bi-clock"></i> ${s.duration_minutes} min</span>` : '<span class="text-muted small">—</span>';
-        const editBtn   = permissions.canEdit   ? `<button class="btn-sm-icon" onclick="editService(${s.id})" title="Edit"><i class="bi bi-pencil"></i></button>` : `<button class="btn-sm-icon" disabled><i class="bi bi-pencil"></i></button>`;
-        const deleteBtn = permissions.canDelete ? `<button class="btn-sm-icon danger" onclick="deleteService(${s.id},'${htmlEsc(s.name)}')" title="Delete"><i class="bi bi-trash"></i></button>` : `<button class="btn-sm-icon" disabled><i class="bi bi-trash"></i></button>`;
-        
-        // ✅ FIXED: Proper HTML string using template literals
-        html += `
-            <tr>
-                <td><div class="service-name">${htmlEsc(s.name)}</div><div class="service-desc">${htmlEsc(s.description||'')}</div></td>
-                <td><span class="cat-pill ${getCatClass(cat)}">${htmlEsc(cat)}</span></td>
-                <td><span class="service-price">₱${price.toLocaleString('en-PH',{minimumFractionDigits:2})}</span></td>
-                <td>${dur}</td>
-                <td>${statusBadge}</td>
-                <td style="text-align:right;"><div class="d-flex justify-content-end gap-1">${editBtn}${deleteBtn}</div></td>
-            </tr>
-        `;
-    });
+services.forEach(s => {
+    const cat   = s.category || 'Other';
+    const price = parseFloat(s.price) || 0;
+    const isFree = (s.is_free == 1 || s.is_free === true || s.is_free === '1');
+    const statusBadge = (s.status||'active')==='active' ? '<span class="badge-stock-ok">Active</span>' : '<span style="background:#f8d7da;color:#721c24;font-size:10px;padding:2px 8px;border-radius:20px;font-weight:600;">Inactive</span>';
+    const dur = s.duration_minutes ? `<span class="service-duration"><i class="bi bi-clock"></i> ${s.duration_minutes} min</span>` : '<span class="text-muted small">—</span>';
+    const editBtn   = permissions.canEdit   ? `<button class="btn-sm-icon" onclick="editService(${s.id})" title="Edit"><i class="bi bi-pencil"></i></button>` : `<button class="btn-sm-icon" disabled><i class="bi bi-pencil"></i></button>`;
+    const deleteBtn = permissions.canDelete ? `<button class="btn-sm-icon danger" onclick="deleteService(${s.id},'${htmlEsc(s.name)}')" title="Delete"><i class="bi bi-trash"></i></button>` : `<button class="btn-sm-icon" disabled><i class="bi bi-trash"></i></button>`;
+    
+    // ✅ Show FREE badge instead of price
+    const priceDisplay = isFree
+        ? `<span class="badge" style="background:#d4edda;color:#155724;font-size:11px;font-weight:700;padding:5px 12px;border-radius:20px;"><i class="bi bi-gift me-1"></i>FREE</span>`
+        : `<span class="service-price">₱${price.toLocaleString('en-PH',{minimumFractionDigits:2})}</span>`;
+    
+    html += `
+        <tr>
+            <td><div class="service-name">${htmlEsc(s.name)}</div><div class="service-desc">${htmlEsc(s.description||'')}</div></td>
+            <td><span class="cat-pill ${getCatClass(cat)}">${htmlEsc(cat)}</span></td>
+            <td>${priceDisplay}</td>
+            <td>${dur}</td>
+            <td>${statusBadge}</td>
+            <td style="text-align:right;"><div class="d-flex justify-content-end gap-1">${editBtn}${deleteBtn}</div></td>
+        </tr>
+    `;
+});
     $('#servicesBody').html(html);
+}
+
+// ✅ Handle dropdown selection + custom input toggle
+function onServiceNameChange() {
+    const val = $('#service_name').val();
+    if (val === 'Others (Custom)') {
+        $('#service_name_custom').show().focus();
+    } else {
+        $('#service_name_custom').hide().val('');
+    }
+}
+
+// ✅ Get final service name (dropdown value or custom input)
+function getServiceName() {
+    const val = $('#service_name').val();
+    if (val === 'Others (Custom)') {
+        return $('#service_name_custom').val().trim();
+    }
+    return (val || '').trim();
 }
 
 function openServiceModal() {
     if (!requirePermission('canCreate','add')) return;
-    $('#service_id,#service_name,#service_description,#service_price,#service_duration').val('');
+    $('#service_id,#service_description,#service_price,#service_duration').val('');
+    $('#service_name').val('');
+    $('#service_name_custom').val('').hide();
     $('#service_category').val('');
-    $('#service_status').val('active');
+    $('#service_is_free').prop('checked', false);
     $('#serviceModalTitle').html('<i class="bi bi-clipboard2-pulse me-2"></i>Add New Service');
+    toggleFreeService();
     new bootstrap.Modal(document.getElementById('serviceModal')).show();
+}
+
+// ✅ NEW: Toggle price field based on is_free checkbox
+function toggleFreeService() {
+    const isFree = $('#service_is_free').is(':checked');
+    const priceInput = $('#service_price');
+    const requiredMark = $('#priceRequiredMark');
+    
+    if (isFree) {
+        priceInput.val(0).prop('disabled', true).prop('required', false);
+        priceInput.attr('placeholder', 'FREE');
+        requiredMark.hide();
+    } else {
+        priceInput.prop('disabled', false).prop('required', false);
+        priceInput.attr('placeholder', '0.00');
+        requiredMark.show();
+    }
 }
 
 function editService(id) {
@@ -1147,13 +1774,28 @@ function editService(id) {
     const s = allServices.find(x => x.id == id);
     if (!s) return;
     $('#service_id').val(s.id);
-    $('#service_name').val(s.name);
     $('#service_description').val(s.description||'');
     $('#service_price').val(s.price);
     $('#service_duration').val(s.duration_minutes||'');
     $('#service_category').val(s.category||'');
     $('#service_status').val(s.status||'active');
+    $('#service_is_free').prop('checked', s.is_free == 1 || s.is_free === true);
     $('#serviceModalTitle').html('<i class="bi bi-pencil me-2"></i>Edit Service');
+
+    // ✅ Check if existing name matches a preset option
+    const nameSelect = $('#service_name');
+    const nameExists = nameSelect.find(`option[value="${s.name.replace(/"/g, '\\"')}"]`).length > 0;
+
+    if (nameExists && s.name !== 'Others (Custom)') {
+        nameSelect.val(s.name);
+        $('#service_name_custom').val('').hide();
+    } else {
+        // Not in preset list → fallback to "Others (Custom)"
+        nameSelect.val('Others (Custom)');
+        $('#service_name_custom').val(s.name).show();
+    }
+
+    toggleFreeService();
     new bootstrap.Modal(document.getElementById('serviceModal')).show();
 }
 
@@ -1161,26 +1803,172 @@ function saveService() {
     const isEdit = !!$('#service_id').val();
     if (isEdit && !requirePermission('canEdit','edit')) return;
     if (!isEdit && !requirePermission('canCreate','create')) return;
-    const name = $('#service_name').val().trim(), cat = $('#service_category').val(), price = $('#service_price').val();
-    if (!name||!cat||!price) { Swal.fire({icon:'warning',title:'Missing Fields',text:'Name, category, and price are required.',confirmButtonColor:'#008080'}); return; }
-    const data = { id:$('#service_id').val()||null, name, category:cat, description:$('#service_description').val().trim(), price, duration_minutes:$('#service_duration').val()||null, status:$('#service_status').val() };
+
+    const name = getServiceName();
+    const cat = $('#service_category').val();
+    const isFree = $('#service_is_free').is(':checked');
+    const price = isFree ? 0 : $('#service_price').val();
+
+    if (!name || !cat || (!isFree && !price)) {
+        Swal.fire({
+            icon:'warning',
+            title:'Missing Fields',
+            text: isFree 
+                ? 'Service name and category are required.' 
+                : 'Name, category, and price are required.',
+            confirmButtonColor:'#008080',
+            background:'#ffffff'
+        });
+        return;
+    }
+
+    const data = { 
+        id: $('#service_id').val() || null, 
+        name, 
+        category: cat, 
+        description: $('#service_description').val().trim(), 
+        price: isFree ? 0 : price, 
+        duration_minutes: $('#service_duration').val() || null, 
+        status: $('#service_status').val(),
+        is_free: isFree ? 1 : 0
+    };
     const action = data.id ? 'update_service' : 'add_service';
-    $.ajax({
-        url:'api/services.php', method:'POST',
-        data:JSON.stringify({action,...data}), contentType:'application/json',
-        success:function(res){ if(res.success){ bootstrap.Modal.getInstance(document.getElementById('serviceModal')).hide(); loadServices(); Swal.fire({icon:'success',title:'Saved!',text:res.message,timer:1800,showConfirmButton:false}); } else { Swal.fire({icon:'error',title:'Error',text:res.message,confirmButtonColor:'#008080'}); } },
-        error:function(){ Swal.fire({icon:'error',title:'Error',text:'Connection error',confirmButtonColor:'#008080'}); }
+
+    // ✅ Bulletproof close
+    const modalEl = document.getElementById('serviceModal');
+    let modalInstance = bootstrap.Modal.getInstance(modalEl);
+    if (!modalInstance) modalInstance = new bootstrap.Modal(modalEl);
+
+    $(modalEl).one('hidden.bs.modal', function () {
+        document.querySelectorAll('.modal-backdrop').forEach(el => el.remove());
+        document.body.classList.remove('modal-open');
+        document.body.style.removeProperty('overflow');
+        document.body.style.removeProperty('padding-right');
+
+        Swal.fire({
+            title: 'Saving Service...',
+            allowOutsideClick: false,
+            allowEscapeKey: false,
+            showConfirmButton: false,
+            background: '#ffffff',
+            didOpen: () => Swal.showLoading()
+        });
+
+        $.ajax({
+            url:'api/services.php', method:'POST',
+            data:JSON.stringify({action,...data}), contentType:'application/json',
+            success:function(res){ 
+                if(res.success){ 
+                    loadServices(); 
+                    Swal.fire({
+                        icon:'success',
+                        title:'Saved!',
+                        text:res.message,
+                        confirmButtonText:'OK',
+                        confirmButtonColor:'#008080',
+                        background:'#ffffff',
+                        iconColor:'#008080'
+                    }); 
+                } else { 
+                    Swal.fire({
+                        icon:'error',
+                        title:'Error',
+                        text:res.message,
+                        confirmButtonColor:'#008080',
+                        background:'#ffffff',
+                        iconColor:'#dc3545'
+                    }).then(() => {
+                        setTimeout(() => {
+                            bootstrap.Modal.getOrCreateInstance(modalEl).show();
+                        }, 300);
+                    });
+                } 
+            },
+            error:function(){ 
+                Swal.fire({
+                    icon:'error',
+                    title:'Error',
+                    text:'Connection error',
+                    confirmButtonColor:'#008080',
+                    background:'#ffffff',
+                    iconColor:'#dc3545'
+                }).then(() => {
+                    setTimeout(() => {
+                        bootstrap.Modal.getOrCreateInstance(modalEl).show();
+                    }, 300);
+                });
+            }
+        });
     });
+
+    modalInstance.hide();
 }
 
 function deleteService(id, name) {
     if (!requirePermission('canDelete','delete')) return;
-    Swal.fire({title:'Delete Service?',html:`Remove <strong>${name}</strong>?`,icon:'warning',showCancelButton:true,confirmButtonColor:'#dc3545',confirmButtonText:'Yes, Delete'}).then(r=>{
-        if (!r.isConfirmed) return;
-        $.ajax({url:'api/services.php',method:'POST',data:JSON.stringify({action:'delete_service',id}),contentType:'application/json',success:function(res){ if(res.success){loadServices();Swal.fire({icon:'success',title:'Deleted',timer:1500,showConfirmButton:false});}else{Swal.fire({icon:'error',text:res.message});}},error:function(){Swal.fire({icon:'error',text:'Connection error'});}});
+    Swal.fire({
+        title: 'Deactivate Service?',
+        html: `May mga appointment na gumagamit ng <strong>${name}</strong>.<br><br>
+               I-deactivate na lang para hindi na mapili sa mga bagong booking?`,
+        icon: 'warning',
+        showCancelButton: true,
+        showDenyButton: true,
+        confirmButtonColor: '#008080',
+        denyButtonColor: '#dc3545',
+        confirmButtonText: 'Deactivate (Safe)',
+        denyButtonText: 'Delete Permanently',
+        cancelButtonText: 'Cancel'
+    }).then(r => {
+        if (r.isConfirmed) {
+            // Soft delete
+            $.ajax({
+                url: 'api/services.php',
+                method: 'POST',
+                data: JSON.stringify({ action: 'update_service', id, status: 'inactive' }),
+                contentType: 'application/json',
+                success: function(res) {
+                    if (res.success) {
+                        loadServices();
+                        Swal.fire({ icon: 'success', title: 'Deactivated', timer: 1500, showConfirmButton: false });
+                    } else {
+                        Swal.fire({ icon: 'error', text: res.message });
+                    }
+                }
+            });
+        } else if (r.isDenied) {
+            // Hard delete — baka mag-fail kung may appointments
+            $.ajax({
+                url: 'api/services.php',
+                method: 'POST',
+                data: JSON.stringify({ action: 'delete_service', id }),
+                contentType: 'application/json',
+                success: function(res) {
+                    if (res.success) {
+                        loadServices();
+                        Swal.fire({ icon: 'success', title: 'Deleted', timer: 1500, showConfirmButton: false });
+                    } else {
+                        Swal.fire({
+                            icon: 'error',
+                            title: 'Hindi Ma-delete',
+                            html: 'May mga appointment na gumagamit ng service na ito.<br><br>' +
+                                  '<small class="text-muted">Gamitin na lang ang <strong>Deactivate</strong> option.</small>',
+                            confirmButtonColor: '#008080'
+                        });
+                    }
+                },
+                error: function(xhr) {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Hindi Ma-delete',
+                        html: 'May naka-link na appointments sa service na ito.<br><br>' +
+                              '<small class="text-muted">I-deactivate na lang ito.</small>',
+                        confirmButtonColor: '#008080'
+                    });
+                }
+            });
+        }
     });
 }
-
 // ============================================================
 // PRODUCT MODAL OPEN
 // ============================================================
@@ -1191,40 +1979,176 @@ function openPostModal() {
     new bootstrap.Modal(document.getElementById('postProductModal')).show();
 }
 
+let allInventoryItems = [];
+let filteredInventoryItems = [];
+let currentInventoryCategory = '';
+let selectedInventoryItemId = null;
+
 function loadInventoryItems() {
     $.ajax({
         url: 'api/products.php?action=get_inventory_items',
         success: function (res) {
             if (res.success && res.data && res.data.length) {
-                let opts = '<option value="">-- Select an item --</option>';
-                res.data.forEach(item => {
-                    const icon = item.category === 'Frames' ? '👓' : (item.category === 'Contact Lenses' ? '👁️' : '📦');
-                    const colorsData = item.colors ? JSON.stringify(item.colors) : '[]';
-                    // ✅ Store product_details as JSON string in attribute
-                    const productDetailsData = item.product_details ? JSON.stringify(item.product_details) : '{}';
-                    
-                    console.log(`Item: ${item.name}, Product Details:`, item.product_details);
-                    
-                    opts += `<option value="${item.id}"
-                        data-category="${htmlEsc(item.category)}"
-                        data-brand="${htmlEsc(item.brand||'')}"
-                        data-price="${item.price}"
-                        data-stock="${item.stock}"
-                        data-source="${item.source}"
-                        data-colors='${colorsData}'
-                        data-product-details='${productDetailsData}'>
-                        ${icon} ${htmlEsc(item.name)} - ${htmlEsc(item.brand||'No Brand')} (₱${item.price}) [Stock: ${item.stock}]
-                    </option>`;
-                });
-                $('#selectItem').html(opts);
+                allInventoryItems = res.data;
+                filterInventory();
             } else {
-                $('#selectItem').html('<option value="">-- No inventory items available --</option>');
+                allInventoryItems = [];
+                $('#inventoryList').html(`
+                    <div class="text-center text-muted py-4">
+                        <i class="bi bi-box fs-1 mb-2 opacity-50 d-block"></i>
+                        <p class="mb-0 small">No inventory items available</p>
+                    </div>
+                `);
             }
         },
         error: function () {
-            $('#selectItem').html('<option value="">Connection error — please refresh</option>');
+            $('#inventoryList').html(`
+                <div class="text-center text-danger py-4">
+                    <i class="bi bi-exclamation-triangle fs-1 mb-2"></i>
+                    <p class="mb-0 small">Connection error — please refresh</p>
+                </div>
+            `);
         }
     });
+}
+
+function filterByCategory(cat) {
+    currentInventoryCategory = cat;
+    $('#inventoryCategoryPills .filter-pill').removeClass('active');
+    $(`#inventoryCategoryPills .filter-pill[data-cat="${cat}"]`).addClass('active');
+    filterInventory();
+}
+
+function filterInventory() {
+    const q = ($('#inventorySearch').val() || '').toLowerCase().trim();
+    const cat = currentInventoryCategory.toLowerCase();
+
+    filteredInventoryItems = allInventoryItems.filter(item => {
+        const matchesSearch = !q ||
+            (item.name || '').toLowerCase().includes(q) ||
+            (item.brand || '').toLowerCase().includes(q);
+        const matchesCat = !cat || (item.category || '').toLowerCase() === cat;
+        return matchesSearch && matchesCat;
+    });
+
+    renderInventoryList();
+}
+
+function renderInventoryList() {
+    const container = $('#inventoryList');
+
+    if (!filteredInventoryItems.length) {
+        container.html(`
+            <div class="text-center text-muted py-4">
+                <i class="bi bi-search fs-1 mb-2 opacity-50 d-block"></i>
+                <p class="mb-0 small">No items found</p>
+                <small>Try a different search or category</small>
+            </div>
+        `);
+        return;
+    }
+
+    let html = '';
+    filteredInventoryItems.forEach(item => {
+        const icon = item.category === 'Frames' ? '👓' : (item.category === 'Contact Lenses' ? '👁️' : '📦');
+        const isSelected = (selectedInventoryItemId == item.id) ? 'selected' : '';
+        const price = parseFloat(item.price) || 0;
+        const stock = item.stock || 0;
+        const stockBadge = stock <= 0 ? 'badge-stock-out' : (stock < 10 ? 'badge-stock-low' : 'badge-stock-ok');
+        const stockText = stock <= 0 ? 'Out of Stock' : (stock < 10 ? 'Low Stock' : 'In Stock');
+
+        html += `
+            <div class="inventory-item ${isSelected}" onclick='selectInventoryItem(${JSON.stringify(item).replace(/'/g, "&apos;")})'>
+                <div class="item-icon">${icon}</div>
+                <div class="item-info">
+                    <div class="item-name">${htmlEsc(item.name)}</div>
+                    <div class="item-meta">
+                        ${htmlEsc(item.brand || 'No Brand')} · ${htmlEsc(item.category)}
+                        <span class="badge ${stockBadge}" style="font-size:9px;padding:1px 6px;margin-left:4px;">${stockText} (${stock})</span>
+                    </div>
+                </div>
+                <div class="item-price">₱${price.toLocaleString()}</div>
+            </div>
+        `;
+    });
+    container.html(html);
+}
+
+function selectInventoryItem(item) {
+    selectedInventoryItemId = item.id;
+
+    // Update selected display
+    $('#selectedItemDisplay').show();
+    $('#selectedItemLabel').text(`${item.name} — ${item.brand || 'No Brand'} (₱${parseFloat(item.price).toLocaleString()})`);
+
+    // Highlight item
+    renderInventoryList();
+
+    // ✅ Trigger existing loadItemDetails by simulating select
+    loadItemDetailsFromItem(item);
+}
+
+function clearSelectedItem() {
+    selectedInventoryItemId = null;
+    $('#selectedItemDisplay').hide();
+
+    // Reset product info fields
+    $('#product_name,#product_category,#product_brand,#product_price,#product_stock,#product_source,#selected_item_id,#selected_source').val('');
+    currentCategory = '';
+    update3DSection('');
+    updateCategoryExtraFieldsFromInventory('', null);
+    clearColorRows();
+    resetWarrantyForm();
+
+    const freeCheck = document.getElementById('product_is_free');
+    if (freeCheck) freeCheck.checked = false;
+    const subsidyFields = document.getElementById('subsidyFields');
+    if (subsidyFields) subsidyFields.style.display = 'none';
+
+    renderInventoryList();
+}
+
+// ✅ New function that handles the actual data loading (replaces old loadItemDetails)
+function loadItemDetailsFromItem(item) {
+    const category = item.category || '';
+    const inventoryId = item.id;
+
+    $('#product_name').val(item.name || '');
+    $('#product_category').val(category);
+    $('#product_brand').val(item.brand || 'N/A');
+    $('#product_price').val(item.price);
+    $('#product_stock').val(item.stock);
+    $('#product_source').val(item.source === 'inventory' ? '📦 Inventory' : '📋 Other');
+    $('#selected_item_id').val(item.id);
+    $('#selected_source').val(item.source);
+    document.getElementById('originalPriceDisplay').textContent = parseFloat(item.price || 0).toFixed(2);
+
+    currentCategory = category;
+    update3DSection(category);
+
+    // Product details
+    let productDetails = item.product_details || null;
+    if (productDetails) {
+        updateCategoryExtraFieldsFromInventory(category, productDetails);
+    } else {
+        fetchInventoryItemDetails(inventoryId, category);
+    }
+
+    // Colors
+    if (item.colors && item.colors.length > 0) {
+        clearColorRows();
+        loadColorsFromInventory(item.colors);
+    } else {
+        clearColorRows();
+    }
+
+    // Reset subsidy state on new item
+    const freeCheck = document.getElementById('product_is_free');
+    if (freeCheck) freeCheck.checked = false;
+    const subsidyFields = document.getElementById('subsidyFields');
+    if (subsidyFields) subsidyFields.style.display = 'none';
+
+    triggerWarrantyAutoSuggest();
 }
 function loadItemDetails() {
     const sel = document.getElementById('selectItem');
@@ -1237,8 +2161,21 @@ function loadItemDetails() {
         updateCategoryExtraFieldsFromInventory('', null);
         clearColorRows();
         resetWarrantyForm();
+        
+        // ✅ Reset subsidy fields sa empty selection
+        const freeCheck = document.getElementById('product_is_free');
+        if (freeCheck) freeCheck.checked = false;
+        const subsidyFields = document.getElementById('subsidyFields');
+        if (subsidyFields) subsidyFields.style.display = 'none';
+        
         return;
     }
+
+    // ✅ Reset subsidy fields pag nagpalit ng item
+    const freeCheck = document.getElementById('product_is_free');
+    if (freeCheck) freeCheck.checked = false;
+    const subsidyFields = document.getElementById('subsidyFields');
+    if (subsidyFields) subsidyFields.style.display = 'none';
 
     const rawName = opt.text.split(' - ')[0].replace(/[👓👁️📦]/g,'').trim();
     const category = opt.getAttribute('data-category') || '';
@@ -1586,6 +2523,17 @@ function syncColorPaletteToPreview() {
 }
 
 // ============================================================
+// ✅ PRODUCT SUBSIDY TOGGLE
+// ============================================================
+function toggleProductSubsidy() {
+    const isFree = $('#product_is_free').is(':checked');
+    const fields = document.getElementById('subsidyFields');
+    if (fields) {
+        fields.style.display = isFree ? 'block' : 'none';
+    }
+}
+
+// ============================================================
 // SALE FIELDS
 // ============================================================
 function toggleSaleFields() {
@@ -1641,15 +2589,26 @@ function refreshRequestImagePreview() {
 }
 function removeRequestImage(i) { selectedRequestImages.splice(i,1); refreshRequestImagePreview(); }
 
-// ============================================================
-// POST PRODUCT
-// ============================================================
+let _postingInProgress = false;  // ✅ Global flag
+
 function postProduct() {
     if (!requirePermission('canCreate','post')) return;
+    
+    // ✅ Prevent double-click
+    if (_postingInProgress) {
+        console.warn('Post already in progress — ignoring duplicate click');
+        return;
+    }
 
     const itemId = $('#selected_item_id').val();
     if (!itemId) {
-        Swal.fire({icon:'warning',title:'Warning',text:'Please select an item first',confirmButtonColor:'#008080'});
+        Swal.fire({
+            icon:'warning',
+            title:'Warning',
+            text:'Please select an item first',
+            confirmButtonColor:'#008080',
+            background:'#ffffff'
+        });
         return;
     }
 
@@ -1668,8 +2627,14 @@ function postProduct() {
     if (onSale) {
         const salePrice    = $('#sale_price').val();
         const originalPrice = parseFloat($('#product_price').val());
-        if (!salePrice || parseFloat(salePrice) <= 0) { Swal.fire({icon:'warning',text:'Enter valid sale price',confirmButtonColor:'#008080'}); return; }
-        if (parseFloat(salePrice) >= originalPrice)    { Swal.fire({icon:'warning',text:'Sale price must be less than original price',confirmButtonColor:'#008080'}); return; }
+        if (!salePrice || parseFloat(salePrice) <= 0) {
+            Swal.fire({icon:'warning',text:'Enter valid sale price',confirmButtonColor:'#008080',background:'#ffffff'});
+            return;
+        }
+        if (parseFloat(salePrice) >= originalPrice) {
+            Swal.fire({icon:'warning',text:'Sale price must be less than original price',confirmButtonColor:'#008080',background:'#ffffff'});
+            return;
+        }
         formData.append('sale_price', salePrice);
         formData.append('sale_start', $('#sale_start').val()||'');
         formData.append('sale_end',   $('#sale_end').val()||'');
@@ -1684,13 +2649,20 @@ function postProduct() {
     const extraFields = getAllExtraFields();
     if (Object.keys(extraFields).length) formData.append('extra_fields_json', JSON.stringify(extraFields));
 
-    // ✅ Add warranty data
+    // Warranty
     const warrantyData = collectWarrantyData();
     if (warrantyData) {
         formData.append('warranty_period', warrantyData.period);
         formData.append('warranty_coverage', JSON.stringify(warrantyData.coverage));
         formData.append('warranty_terms', warrantyData.terms);
-        formData.append('warranty_premium_price', warrantyData.premium_price);
+    }
+
+    // Subsidy
+    const isFree = document.getElementById('product_is_free').checked;
+    formData.append('is_free', isFree ? '1' : '0');
+    if (isFree) {
+        formData.append('subsidy_source', $('#subsidy_source').val() || '');
+        formData.append('subsidy_amount', $('#subsidy_amount').val() || '0');
     }
 
     const isFrame  = currentCategory.toLowerCase() === 'frames';
@@ -1699,7 +2671,17 @@ function postProduct() {
     if (isFrame && enable3D) {
         const modelOption = $('input[name="modelOption"]:checked').val();
         formData.append('model_option', modelOption || 'none');
-        if (modelOption === 'default') {
+        if (modelOption === 'purchased') {
+            const selectedFrame = $('input[name="purchased_frame_id"]:checked');
+            if (selectedFrame.length > 0) {
+                formData.append('use_purchased_frame', '1');
+                formData.append('purchased_frame_id', selectedFrame.val());
+                const frameFile = selectedFrame.attr('data-file');
+                if (frameFile) formData.append('purchased_frame_file', frameFile);
+                const frameName = selectedFrame.attr('data-name');
+                if (frameName) formData.append('purchased_frame_name', frameName);
+            }
+        } else if (modelOption === 'default') {
             const defaultModelId = $('#default_model_id').val();
             if (defaultModelId) {
                 formData.append('use_default_model', '1');
@@ -1720,37 +2702,106 @@ function postProduct() {
         formData.append('model_option', 'none');
     }
 
-    bootstrap.Modal.getInstance(document.getElementById('postProductModal')).hide();
-    Swal.fire({title:'Posting Product...',allowOutsideClick:false,didOpen:()=>Swal.showLoading()});
+    // ── MODAL CLOSE LOGIC (bulletproof) ──────────────────────────
+    const modalEl = document.getElementById('postProductModal');
+    let modalInstance = bootstrap.Modal.getInstance(modalEl);
+    if (!modalInstance) modalInstance = new bootstrap.Modal(modalEl);
 
-    $.ajax({
-        url: 'api/products.php?action=post_product',
-        method: 'POST',
-        data: formData,
-        processData: false,
-        contentType: false,
-        success: function (response) {
-            if (response.success) {
-                resetPostForm();
-                loadProducts();
-                Swal.fire({icon:'success',title:'Product Posted!',text:response.message,timer:2000,showConfirmButton:false});
-            } else {
-                Swal.fire({icon:'error',title:'Error',text:response.message||'Failed to post product',confirmButtonColor:'#008080'});
-                new bootstrap.Modal(document.getElementById('postProductModal')).show();
+    // ✅ Use jQuery event (auto-cleanup) — no double-firing
+    $(modalEl).one('hidden.bs.modal', function () {
+        _postingInProgress = true;   // ✅ Lock
+        
+        // ✅ Force remove any leftover backdrop
+        document.querySelectorAll('.modal-backdrop').forEach(el => el.remove());
+        document.body.classList.remove('modal-open');
+        document.body.style.removeProperty('overflow');
+        document.body.style.removeProperty('padding-right');
+
+        // ✅ Now show loading Swal (teal green)
+        Swal.fire({
+            title: 'Posting Product...',
+            html: '<div class="text-muted small mt-2">Please wait...</div>',
+            allowOutsideClick: false,
+            allowEscapeKey: false,
+            showConfirmButton: false,
+            background: '#ffffff',
+            didOpen: () => Swal.showLoading()
+        });
+
+        $.ajax({
+            url: 'api/products.php?action=post_product',
+            method: 'POST',
+            data: formData,
+            processData: false,
+            contentType: false,
+            success: function (response) {
+                _postingInProgress = false;   // ✅ Unlock
+                if (response.success) {
+                    loadProducts();
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Product Posted!',
+                        text: response.message,
+                        confirmButtonText: 'OK',
+                        confirmButtonColor: '#008080',
+                        background: '#ffffff',
+                        iconColor: '#008080'
+                    }).then(() => {
+                        // ✅ Reset AFTER user clicks OK
+                        resetPostForm();
+                    });
+                } else {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Error',
+                        text: response.message || 'Failed to post product',
+                        confirmButtonColor: '#008080',
+                        background: '#ffffff',
+                        iconColor: '#dc3545'
+                    }).then(() => {
+                        // ✅ Reopen modal fresh
+                        setTimeout(() => {
+                            const m = bootstrap.Modal.getOrCreateInstance(modalEl);
+                            m.show();
+                        }, 300);
+                    });
+                }
+            },
+            error: function (xhr, status, error) {
+                _postingInProgress = false;   // ✅ Unlock
+                console.error('Post error:', error, xhr.responseText);
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    text: 'Failed to post product: ' + (error || 'Unknown error'),
+                    confirmButtonColor: '#008080',
+                    background: '#ffffff',
+                    iconColor: '#dc3545'
+                }).then(() => {
+                    setTimeout(() => {
+                        const m = bootstrap.Modal.getOrCreateInstance(modalEl);
+                        m.show();
+                    }, 300);
+                });
             }
-        },
-        error: function (xhr, status, error) {
-            console.error('Post error:', error, xhr.responseText);
-            Swal.fire({icon:'error',title:'Error',text:'Failed to post product: ' + (error||'Unknown error'),confirmButtonColor:'#008080'});
-            new bootstrap.Modal(document.getElementById('postProductModal')).show();
-        }
+        });
     });
+
+    // ✅ Hide modal — hidden.bs.modal will fire after transition
+    modalInstance.hide();
 }
 
 function resetPostForm() {
-    $('#postProductForm')[0].reset();
-    selectedProductImages = []; selectedRequestImages = [];
-    $('#imagePreviewContainer,#requestImagePreviewContainer').empty();
+    // ✅ Native form reset
+    const form = $('#postProductForm')[0];
+    if (form) form.reset();
+    
+    // ✅ Reset images
+    selectedProductImages = [];
+    selectedRequestImages = [];
+    $('#imagePreviewContainer, #requestImagePreviewContainer').empty();
+    
+    // ✅ Reset color rows
     document.getElementById('colorRowsContainer').innerHTML = `
         <div class="text-center text-muted py-4" id="noColorsMessage">
             <i class="bi bi-palette fs-1 mb-3 opacity-50 d-block"></i>
@@ -1759,20 +2810,72 @@ function resetPostForm() {
         </div>`;
     colorRowCount = 0;
     currentCategory = '';
+    
+    // ✅ Reset 3D section
     $('#defaultModelSection').show();
-    $('#requestModelSection,#myModelsSection').hide();
-    $('input[name="modelOption"][value="default"]').prop('checked',true);
+    $('#requestModelSection, #myModelsSection').hide();
+    $('input[name="modelOption"][value="default"]').prop('checked', true);
     cleanupDefaultPreview();
-    document.getElementById('enableSale').checked = false;
-    document.getElementById('saleFields').style.display = 'none';
-    document.getElementById('categoryExtraCard').style.display = 'none';
-    document.getElementById('categoryExtraFields').innerHTML = '';
     update3DSection('');
-    document.getElementById('enable3DToggle').checked = false;
-    $('#gcash_details').show(); $('#maya_details,#bank_details').hide();
+    
+    const enable3D = document.getElementById('enable3DToggle');
+    if (enable3D) enable3D.checked = false;
+    
+    // ✅ Clear 3D selections
+    document.querySelectorAll('input[name="purchased_frame_id"]').forEach(r => r.checked = false);
+    document.querySelectorAll('input[name="completed_model_id"]').forEach(r => r.checked = false);
+    document.querySelectorAll('[id^="selected_pf_badge_"]').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('[id^="selected_badge_"]').forEach(el => el.style.display = 'none');
+    
+    const selectedPurchasedPreview = document.getElementById('selectedPurchasedFramePreview');
+    if (selectedPurchasedPreview) selectedPurchasedPreview.style.display = 'none';
+    
+    // ✅ Reset sale section
+    const enableSale = document.getElementById('enableSale');
+    if (enableSale) enableSale.checked = false;
+    const saleFields = document.getElementById('saleFields');
+    if (saleFields) saleFields.style.display = 'none';
+    
+    // ✅ Reset category extra fields
+    const categoryExtraCard = document.getElementById('categoryExtraCard');
+    if (categoryExtraCard) categoryExtraCard.style.display = 'none';
+    const categoryExtraFields = document.getElementById('categoryExtraFields');
+    if (categoryExtraFields) categoryExtraFields.innerHTML = '';
+    
+    // ✅ Reset payment method
+    $('#gcash_details').show();
+    $('#maya_details, #bank_details').hide();
     
     // ✅ Reset warranty form
     resetWarrantyForm();
+    
+    // ✅ Reset inventory search & filters
+    selectedInventoryItemId = null;
+    currentInventoryCategory = '';
+    const searchInput = document.getElementById('inventorySearch');
+    if (searchInput) searchInput.value = '';
+    $('#inventoryCategoryPills .filter-pill').removeClass('active');
+    $('#inventoryCategoryPills .filter-pill[data-cat=""]').addClass('active');
+    $('#selectedItemDisplay').hide();
+    filterInventory();
+
+    // ✅ Reset subsidy fields (ONCE only)
+    const freeCheck = document.getElementById('product_is_free');
+    if (freeCheck) {
+        freeCheck.checked = false;
+        freeCheck.disabled = false;
+    }
+    
+    const subsidyFields = document.getElementById('subsidyFields');
+    if (subsidyFields) {
+        subsidyFields.style.display = 'none';
+    }
+    
+    const subsidySource = document.getElementById('subsidy_source');
+    if (subsidySource) subsidySource.value = 'philhealth';
+    
+    const subsidyAmount = document.getElementById('subsidy_amount');
+    if (subsidyAmount) subsidyAmount.value = '2500';
 }
 
 function updateCategoryExtraFieldsFromInventory(category, productDetails) {
@@ -2013,10 +3116,16 @@ function onToggle3D(enabled) {
 
 function toggleModelOption() {
     const opt = $('input[name="modelOption"]:checked').val();
-    $('#defaultModelSection, #requestModelSection, #myModelsSection').hide();
+    $('#defaultModelSection, #requestModelSection, #myModelsSection, #purchasedModelSection').hide();
     cleanupDefaultPreview();
     
-    if (opt === 'default') {
+    if (opt === 'purchased') {
+        $('#purchasedModelSection').show();
+        // Clear selection when switching to this tab
+        if (typeof clearSelectedPurchasedFrame === 'function') {
+            clearSelectedPurchasedFrame();
+        }
+    } else if (opt === 'default') {
         $('#defaultModelSection').show();
         const sel = $('#default_model_id').val();
         if (sel) previewDefaultFrame3D(sel);
@@ -2024,11 +3133,91 @@ function toggleModelOption() {
         $('#requestModelSection').show();
     } else if (opt === 'mymodels') {
         $('#myModelsSection').show();
-        // Clear any previous selection when switching to this tab
         if (typeof clearSelectedModel === 'function') {
             clearSelectedModel();
         }
     }
+}
+
+// ============================================
+// ✅ PURCHASED FRAME SELECTION
+// ============================================
+let selectedPurchasedFrameId = null;
+let selectedPurchasedFrameName = null;
+let selectedPurchasedFramePath = null;
+
+function selectPurchasedFrame(id, name, path) {
+    // Clear previous selection
+    if (selectedPurchasedFrameId) {
+        const prevBadge = document.getElementById(`selected_pf_badge_${selectedPurchasedFrameId}`);
+        if (prevBadge) prevBadge.style.display = 'none';
+        const prevRadio = document.getElementById(`pf_${selectedPurchasedFrameId}`);
+        if (prevRadio) prevRadio.checked = false;
+    }
+    
+    // Set new selection
+    selectedPurchasedFrameId = id;
+    selectedPurchasedFrameName = name;
+    selectedPurchasedFramePath = path;
+    
+    // Update radio
+    const radio = document.getElementById(`pf_${id}`);
+    if (radio) radio.checked = true;
+    
+    // Show badge
+    const badge = document.getElementById(`selected_pf_badge_${id}`);
+    if (badge) badge.style.display = 'block';
+    
+    // Update preview
+    const previewDiv = document.getElementById('selectedPurchasedFramePreview');
+    const nameSpan = document.getElementById('selectedPurchasedFrameName');
+    if (previewDiv && nameSpan) {
+        nameSpan.textContent = name;
+        previewDiv.style.display = 'block';
+    }
+}
+
+function clearSelectedPurchasedFrame() {
+    if (selectedPurchasedFrameId) {
+        const badge = document.getElementById(`selected_pf_badge_${selectedPurchasedFrameId}`);
+        if (badge) badge.style.display = 'none';
+        const radio = document.getElementById(`pf_${selectedPurchasedFrameId}`);
+        if (radio) radio.checked = false;
+    }
+    selectedPurchasedFrameId = null;
+    selectedPurchasedFrameName = null;
+    selectedPurchasedFramePath = null;
+    
+    const previewDiv = document.getElementById('selectedPurchasedFramePreview');
+    if (previewDiv) previewDiv.style.display = 'none';
+}
+
+function previewPurchasedFrame(path, name) {
+    if (!path) {
+        Swal.fire('Error', '3D model path not found', 'error');
+        return;
+    }
+    
+    // Reuse existing frame viewer modal
+    const modalEl = document.getElementById('frameViewerModal');
+    const modal = new bootstrap.Modal(modalEl);
+    
+    // Set default colors
+    const defaultColors = [
+        {name:'Black', code:'#000000', is_available: true},
+        {name:'Gold', code:'#FFD700', is_available: true},
+        {name:'Silver', code:'#C0C0C0', is_available: true},
+        {name:'Brown', code:'#8B4513', is_available: true},
+        {name:'Blue', code:'#0000FF', is_available: true},
+        {name:'Red', code:'#FF0000', is_available: true}
+    ];
+    
+    modal.show();
+    
+    modalEl.addEventListener('shown.bs.modal', function onShown() {
+        modalEl.removeEventListener('shown.bs.modal', onShown);
+        initFrameViewer(path, defaultColors);
+    }, { once: true });
 }
 
 function refreshInventory() { loadInventoryItems(); }
@@ -2038,27 +3227,292 @@ function refreshInventory() { loadInventoryItems(); }
 // ============================================================
 function editProduct(id) {
     if (!requirePermission('canEdit','edit')) return;
-    $.ajax({
-        url:'api/products.php?action=get_products',
-        success:function(res){
-            if (res.success) {
-                const p = res.data.find(x => x.id == id);
-                if (!p) return;
-                Swal.fire({
-                    title:'Edit Product',
-                    html:`<div class="text-start"><div class="mb-3"><label class="form-label">Product Name</label><input type="text" id="edit_name" class="form-control" value="${escapeHtml(p.name)}"></div><div class="mb-3"><label class="form-label">Description</label><textarea id="edit_description" class="form-control" rows="3">${escapeHtml(p.description||'')}</textarea></div><div class="mb-3"><label class="form-label">Price (₱)</label><input type="number" id="edit_price" class="form-control" step="0.01" value="${p.price}"></div><div class="mb-3"><label class="form-label">Category</label><input type="text" id="edit_category" class="form-control" value="${escapeHtml(p.category)}"></div></div>`,
-                    showCancelButton:true, confirmButtonText:'Save Changes', confirmButtonColor:'#008080',
-                    preConfirm:()=>({name:document.getElementById('edit_name').value.trim(),description:document.getElementById('edit_description').value,price:parseFloat(document.getElementById('edit_price').value),category:document.getElementById('edit_category').value.trim()})
-                }).then(result => {
-                    if (!result.isConfirmed) return;
-                    $.ajax({url:'api/products.php',method:'POST',data:JSON.stringify({action:'edit_product',id,...result.value}),contentType:'application/json',
-                        success:function(r){ if(r.success){Swal.fire({icon:'success',title:'Updated!',text:r.message,timer:1500,showConfirmButton:false});loadProducts();}else{Swal.fire('Error!',r.message,'error');} },
-                        error:function(){Swal.fire('Error!','Failed to update','error');}
+
+    // Kunin ang product data mula sa allProducts (loaded na)
+    const p = allProducts.find(x => x.id == id);
+    if (!p) {
+        Swal.fire({ icon:'error', title:'Not Found', text:'Product not found in current list. Please refresh.', confirmButtonColor:'#008080' });
+        return;
+    }
+
+    // ✅ Gumawa ng editable category dropdown
+    const categoryOptions = ['Frames','Lenses','Contact Lenses','Accessories','Solutions','Parts'];
+    let categoryOptsHtml = '';
+    categoryOptions.forEach(cat => {
+        const sel = (p.category === cat) ? 'selected' : '';
+        categoryOptsHtml += `<option value="${cat}" ${sel}>${cat}</option>`;
+    });
+
+    // ✅ Sale price (kung may existing sale)
+    const isOnSale = (p.is_on_sale == 1 || p.is_on_sale === true);
+    const salePrice = parseFloat(p.sale_price) || 0;
+    const origPrice = parseFloat(p.price) || 0;
+    const saleSectionStyle = isOnSale ? 'block' : 'none';
+
+    // ✅ Warranty period options
+    const warrantyPeriods = {
+        '': '-- No Warranty --',
+        '3_months': '3 Months',
+        '6_months': '6 Months',
+        '12_months': '12 Months (Standard)',
+        '24_months': '24 Months (Premium)',
+        '36_months': '36 Months (Extended)'
+    };
+    let warrantyOptsHtml = '';
+    Object.keys(warrantyPeriods).forEach(key => {
+        const sel = (p.warranty_period === key) ? 'selected' : '';
+        warrantyOptsHtml += `<option value="${key}" ${sel}>${warrantyPeriods[key]}</option>`;
+    });
+
+    // ✅ Stock display (read-only — hindi basta-basta mababago)
+    const stock = parseInt(p.stock) || 0;
+    const stockBadge = stock <= 0 
+        ? '<span class="badge bg-danger">Out of Stock</span>' 
+        : (stock < 10 
+            ? '<span class="badge bg-warning text-dark">Low Stock</span>' 
+            : '<span class="badge bg-success">In Stock</span>');
+
+    // ✅ Check kung category ay Frames (para sa warning)
+    const isFrame = (p.category === 'Frames');
+
+    Swal.fire({
+        title: '<i class="bi bi-pencil-square me-2"></i>Edit Product',
+        width: '720px',
+        html: `
+            <div class="text-start">
+                <!-- ⚠️ CATEGORY CHANGE WARNING -->
+                <div id="categoryWarning" class="alert alert-warning py-2 mb-3" style="display:none;background:#fff3cd;border-color:#ffc107;">
+                    <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                    <strong>Babala:</strong> Ang pagpapalit ng category ay maaaring mag-reset ng 3D model at filters. Sigurado ka ba?
+                </div>
+
+                <!-- PRODUCT NAME -->
+                <div class="mb-3">
+                    <label class="form-label fw-semibold small">Product Name <span class="text-danger">*</span></label>
+                    <input type="text" id="edit_name" class="form-control" value="${escapeHtml(p.name)}" placeholder="Product name">
+                </div>
+
+                <!-- DESCRIPTION -->
+                <div class="mb-3">
+                    <label class="form-label fw-semibold small">Description</label>
+                    <textarea id="edit_description" class="form-control" rows="3" placeholder="Describe the product...">${escapeHtml(p.description||'')}</textarea>
+                </div>
+
+                <div class="row g-3">
+                    <!-- PRICE -->
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold small">Price (₱) <span class="text-danger">*</span></label>
+                        <input type="number" id="edit_price" class="form-control" step="0.01" value="${origPrice}" placeholder="0.00">
+                        <small class="text-muted"><i class="bi bi-info-circle"></i> Mag-sync sa inventory price</small>
+                    </div>
+
+                    <!-- CATEGORY -->
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold small">Category <span class="text-danger">*</span></label>
+                        <select id="edit_category" class="form-select" onchange="checkCategoryChange('${p.category}')">
+                            ${categoryOptsHtml}
+                        </select>
+                    </div>
+
+                    <!-- STOCK (READ-ONLY) -->
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold small">Stock <i class="bi bi-lock-fill text-muted"></i></label>
+                        <div class="input-group">
+                            <input type="number" id="edit_stock_display" class="form-control" value="${stock}" readonly style="background:#f0f4f4;">
+                            <span class="input-group-text">${stockBadge}</span>
+                        </div>
+                        <small class="text-muted"><i class="bi bi-info-circle"></i> This comes from inventory — it cannot be easily edited</small>
+                    </div>
+
+                    <!-- WARRANTY -->
+                    <div class="col-md-6">
+                        <label class="form-label fw-semibold small">Warranty Period</label>
+                        <select id="edit_warranty_period" class="form-select">
+                            ${warrantyOptsHtml}
+                        </select>
+                    </div>
+                </div>
+
+                <!-- SALE SECTION -->
+                <div class="border rounded-3 p-3 mt-3" style="background:#fff8e1;border-color:#ffc107 !important;">
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="edit_enableSale" ${isOnSale ? 'checked' : ''} onchange="toggleEditSaleFields()">
+                        <label class="form-check-label fw-semibold small" for="edit_enableSale">
+                            <i class="bi bi-percent me-1"></i> On Sale
+                        </label>
+                    </div>
+                    <div id="editSaleFields" style="display:${saleSectionStyle};">
+                        <div class="row g-2">
+                            <div class="col-md-6">
+                                <label class="form-label small">Sale Price (₱)</label>
+                                <input type="number" id="edit_sale_price" class="form-control form-control-sm" step="0.01" value="${salePrice > 0 ? salePrice : ''}" placeholder="0.00">
+                                <small class="text-muted">Dapat mas mababa sa original price</small>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label small">Sale Label</label>
+                                <input type="text" id="edit_sale_label" class="form-control form-control-sm" value="${escapeHtml(p.sale_label || '')}" placeholder="e.g., Flash Sale">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SUBSIDY SECTION -->
+                <div class="border rounded-3 p-3 mt-3" style="background:#e8f5e9;border-color:#c8e6c9 !important;">
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" id="edit_is_free" ${p.is_free == 1 ? 'checked' : ''} onchange="toggleEditSubsidy()">
+                        <label class="form-check-label fw-semibold small" for="edit_is_free" style="color:#2e7d32;">
+                            <i class="bi bi-gift me-1"></i> Free / Subsidized Product
+                        </label>
+                    </div>
+                    <div id="editSubsidyFields" style="display:${p.is_free == 1 ? 'block' : 'none'};">
+                        <div class="row g-2">
+                            <div class="col-md-6">
+                                <label class="form-label small">Subsidy Source</label>
+                                <select id="edit_subsidy_source" class="form-select form-select-sm">
+                                    <option value="philhealth" ${p.subsidy_source === 'philhealth' ? 'selected' : ''}>PhilHealth</option>
+                                    <option value="lgu" ${p.subsidy_source === 'lgu' ? 'selected' : ''}>LGU / City Health</option>
+                                    <option value="doh" ${p.subsidy_source === 'doh' ? 'selected' : ''}>DOH</option>
+                                    <option value="donation" ${p.subsidy_source === 'donation' ? 'selected' : ''}>Donation / NGO</option>
+                                    <option value="clinic" ${p.subsidy_source === 'clinic' ? 'selected' : ''}>Clinic Charity</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label small">Covered Amount (₱)</label>
+                                <input type="number" id="edit_subsidy_amount" class="form-control form-control-sm" value="${parseFloat(p.subsidy_amount) || 0}" step="0.01">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        `,
+        showCancelButton: true,
+        confirmButtonText: '<i class="bi bi-check-lg me-1"></i> Save Changes',
+        cancelButtonText: 'Cancel',
+        confirmButtonColor: '#008080',
+        cancelButtonColor: '#6c757d',
+        focusConfirm: false,
+        preConfirm: () => {
+            // ✅ Validate fields
+            const name = document.getElementById('edit_name').value.trim();
+            const price = parseFloat(document.getElementById('edit_price').value);
+            const category = document.getElementById('edit_category').value;
+            const isOnSaleEdit = document.getElementById('edit_enableSale').checked;
+            const salePriceEdit = parseFloat(document.getElementById('edit_sale_price').value) || 0;
+            const isFreeEdit = document.getElementById('edit_is_free').checked;
+
+            if (!name) {
+                Swal.showValidationMessage('Product name is required');
+                return false;
+            }
+            if (!price || price <= 0) {
+                Swal.showValidationMessage('Valid price is required');
+                return false;
+            }
+            if (!category) {
+                Swal.showValidationMessage('Category is required');
+                return false;
+            }
+            if (isOnSaleEdit) {
+                if (!salePriceEdit || salePriceEdit <= 0) {
+                    Swal.showValidationMessage('Enter valid sale price');
+                    return false;
+                }
+                if (salePriceEdit >= price) {
+                    Swal.showValidationMessage('Sale price must be less than original price');
+                    return false;
+                }
+            }
+
+            return {
+                id: id,
+                name: name,
+                description: document.getElementById('edit_description').value,
+                price: price,
+                category: category,
+                warranty_period: document.getElementById('edit_warranty_period').value || null,
+                is_on_sale: isOnSaleEdit ? 1 : 0,
+                sale_price: isOnSaleEdit ? salePriceEdit : null,
+                sale_label: isOnSaleEdit ? (document.getElementById('edit_sale_label').value || 'SALE') : null,
+                is_free: isFreeEdit ? 1 : 0,
+                subsidy_source: isFreeEdit ? document.getElementById('edit_subsidy_source').value : null,
+                subsidy_amount: isFreeEdit ? (parseFloat(document.getElementById('edit_subsidy_amount').value) || 0) : 0
+            };
+        }
+    }).then(result => {
+        if (!result.isConfirmed) return;
+
+        // ✅ Close Swal first, then show loading
+        Swal.fire({
+            title: 'Saving...',
+            allowOutsideClick: false,
+            allowEscapeKey: false,
+            showConfirmButton: false,
+            background: '#ffffff',
+            didOpen: () => Swal.showLoading()
+        });
+
+        $.ajax({
+            url: 'api/products.php',
+            method: 'POST',
+            data: JSON.stringify({ action: 'edit_product', ...result.value }),
+            contentType: 'application/json',
+            success: function (r) {
+                if (r.success) {
+                    loadProducts();
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Updated!',
+                        text: r.message,
+                        confirmButtonText: 'OK',
+                        confirmButtonColor: '#008080',
+                        background: '#ffffff',
+                        iconColor: '#008080'
                     });
+                } else {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Error',
+                        text: r.message,
+                        confirmButtonColor: '#008080',
+                        background: '#ffffff',
+                        iconColor: '#dc3545'
+                    });
+                }
+            },
+            error: function () {
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Error',
+                    text: 'Failed to update product',
+                    confirmButtonColor: '#008080',
+                    background: '#ffffff',
+                    iconColor: '#dc3545'
                 });
             }
-        }
+        });
     });
+}
+
+// ✅ Helper functions para sa edit modal
+function toggleEditSaleFields() {
+    const isOn = document.getElementById('edit_enableSale').checked;
+    document.getElementById('editSaleFields').style.display = isOn ? 'block' : 'none';
+}
+
+function toggleEditSubsidy() {
+    const isOn = document.getElementById('edit_is_free').checked;
+    document.getElementById('editSubsidyFields').style.display = isOn ? 'block' : 'none';
+}
+
+function checkCategoryChange(originalCategory) {
+    const currentCat = document.getElementById('edit_category').value;
+    const warning = document.getElementById('categoryWarning');
+    if (currentCat !== originalCategory) {
+        warning.style.display = 'block';
+    } else {
+        warning.style.display = 'none';
+    }
 }
 
 function deleteProduct(id, name) {
@@ -2642,8 +4096,48 @@ $(document).ready(function() {
 
     // Post product modal cleanup
     $('#postProductModal').on('hidden.bs.modal', function () {
+        console.log('🔴 [DEBUG] postProductModal hidden.bs.modal fired');
         cleanupDefaultPreview();
     });
+
+    // ✅ DEBUG: Trace kung sino nag-reset ng form
+    $('#postProductModal').on('shown.bs.modal', function () {
+        console.log('🟢 [DEBUG] postProductModal shown');
+        const freeCheck = document.getElementById('product_is_free');
+        const subsidyFields = document.getElementById('subsidyFields');
+        console.log('🟢 [DEBUG] Initial state:', {
+            is_free_checked: freeCheck ? freeCheck.checked : 'NOT FOUND',
+            subsidy_display: subsidyFields ? subsidyFields.style.display : 'NOT FOUND'
+        });
+    });
+
+    // ✅ DEBUG: Watch for checkbox changes
+    document.addEventListener('change', function(e) {
+        if (e.target.id === 'product_is_free') {
+            const subsidyFields = document.getElementById('subsidyFields');
+            console.log('🟡 [DEBUG] product_is_free changed:', {
+                checked: e.target.checked,
+                subsidy_display: subsidyFields ? subsidyFields.style.display : 'NOT FOUND',
+                event_target: e.target.tagName
+            });
+        }
+    });
+
+    // ✅ DEBUG: Watch for display changes sa subsidyFields
+    const subsidyObserver = new MutationObserver(function(mutations) {
+        mutations.forEach(function(m) {
+            if (m.target.id === 'subsidyFields' && m.attributeName === 'style') {
+                console.log('🔵 [DEBUG] subsidyFields style changed to:', m.target.style.display);
+                console.trace('🔵 [DEBUG] Call stack ng change:');
+            }
+        });
+    });
+    
+    const subsidyEl = document.getElementById('subsidyFields');
+    if (subsidyEl) {
+        subsidyObserver.observe(subsidyEl, { attributes: true, attributeFilter: ['style'] });
+        console.log('✅ [DEBUG] MutationObserver attached sa subsidyFields');
+    }
 
     // ✅ Warranty coverage checkboxes - update preview
     $('#cov_defect, #cov_breakage, #cov_coating, #cov_hinge, #cov_fading').on('change', function() {

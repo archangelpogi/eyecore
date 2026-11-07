@@ -90,12 +90,18 @@ function fetchOrder(PDO $pdo, int $id, int $clinicId): ?array
                rd.name AS rider_name,
                rd.phone AS rider_phone,
                cu.first_name AS collector_first,
-               cu.last_name  AS collector_last
+               cu.last_name  AS collector_last,
+               up.od_sph, up.od_cyl, up.od_axis,
+               up.os_sph, up.os_cyl, up.os_axis,
+               up.prescription_source,
+               up.prescription_file,
+               up.created_at AS prescription_created_at
         FROM reservations r
         JOIN users u ON r.user_id = u.id
         JOIN products p ON r.product_id = p.id
         LEFT JOIN riders rd ON r.assigned_rider_id = rd.id
         LEFT JOIN users cu ON r.collected_by = cu.id
+        LEFT JOIN user_prescriptions up ON r.prescription_id = up.id
         WHERE r.id = ? AND r.clinic_id = ?
     ");
     $stmt->execute([$id, $clinicId]);
@@ -652,6 +658,69 @@ $sql = "
 }
 
 // ════════════════════════════════════════════════════════════════
+// ✅ PHASE 5: LIST REMITTANCES (Clinic)
+// ════════════════════════════════════════════════════════════════
+if ($action === 'list_remittances') {
+    $status = $_GET['status'] ?? '';
+    $limit  = min((int)($_GET['limit'] ?? 100), 200);
+
+    $sql = "
+        SELECT 
+            cr.id,
+            cr.rider_id,
+            cr.clinic_id,
+            cr.remittance_code,
+            cr.amount,
+            cr.method,
+            cr.status,
+            cr.proof_image,
+            cr.handed_to,
+            cr.notes,
+            cr.admin_notes,
+            cr.rejection_reason,
+            cr.submitted_at,
+            cr.completed_at,
+            cr.paymongo_checkout_id,
+            cr.paymongo_status,
+            r.name AS rider_name,
+            r.email AS rider_email,
+            r.phone AS rider_phone,
+            CONCAT(hu.first_name, ' ', hu.last_name) AS handed_to_name
+        FROM cod_remittances cr
+        LEFT JOIN riders r ON cr.rider_id = r.id
+        LEFT JOIN users hu ON cr.handed_to = hu.id
+        WHERE cr.clinic_id = ?
+    ";
+    $params = [$clinicId];
+
+    if ($status !== '') {
+        $sql .= " AND cr.status = ?";
+        $params[] = $status;
+    }
+
+    $sql .= " ORDER BY cr.submitted_at DESC LIMIT {$limit}";
+
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    $remittances = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // ✅ Format each
+    foreach ($remittances as &$rm) {
+        $rm['amount'] = (float)$rm['amount'];
+        $rm['submitted_at_formatted'] = !empty($rm['submitted_at']) 
+            ? date('M d, Y • g:i A', strtotime($rm['submitted_at'])) 
+            : null;
+        $rm['completed_at_formatted'] = !empty($rm['completed_at']) 
+            ? date('M d, Y • g:i A', strtotime($rm['completed_at'])) 
+            : null;
+        $rm['handed_to_name'] = $rm['handed_to_name'] ?? null;
+    }
+    unset($rm);
+
+    respond(true, '', ['remittances' => $remittances, 'count' => count($remittances)]);
+}
+
+// ════════════════════════════════════════════════════════════════
 //  REFUND DETAILS (Clinic)
 // ════════════════════════════════════════════════════════════════
 if ($action === 'refund_details') {
@@ -839,6 +908,16 @@ if (in_array($action, ['mark_received', 'request_refund', 'approve_refund', 'rej
     exit;
 }
 
+// ═══════════════════════════════════════════════════════════════
+// ✅ PHASE 5: CASH REMITTANCE ACTIONS
+// ═══════════════════════════════════════════════════════════════
+if (in_array($action, ['submit_cash_remittance', 'approve_cash_remittance', 'reject_cash_remittance'])) {
+    $riderId = (int)($_SESSION['rider_id'] ?? 0);
+    $userId  = $currentUid; // already set above
+    handleCashRemittance($pdo, $data, $action, $riderId, $userId, $clinicId);
+    exit;
+}
+
 if ($action !== '' && $action !== 'create') {
     $reservationId = (int)($data['reservation_id'] ?? 0);
     if (!$reservationId) respond(false, 'Reservation ID required', null, 400);
@@ -912,6 +991,571 @@ if ($action !== '' && $action !== 'create') {
     respond(false, $e->getMessage(), null, 500);
 }
 
+
+// ════════════════════════════════════════════════════════════════
+// ✅ PHASE 2: COD WALLET — Record Collection Helper
+// ════════════════════════════════════════════════════════════════
+/**
+ * Auto-add sa rider wallet kapag may COD collection.
+ * 
+ * @param PDO    $pdo
+ * @param int    $reservationId   Order ID
+ * @param int    $riderId         Rider ID (from riders table)
+ * @param float  $amount          COD amount na na-collect
+ * @param string $orderCode       Reservation code (for notes)
+ * @return array Result: ['ok' => bool, 'reason' => ?, 'new_balance' => ?, 'status' => ?]
+ */
+function recordCodCollection(
+    PDO $pdo, 
+    int $reservationId, 
+    int $riderId, 
+    float $amount, 
+    string $orderCode
+): array {
+    // ✅ Validation
+    if ($riderId <= 0) {
+        return ['ok' => false, 'reason' => 'Invalid rider ID'];
+    }
+    if ($amount <= 0) {
+        return ['ok' => false, 'reason' => 'Amount must be positive'];
+    }
+    
+    try {
+        // ✅ Idempotency: Check if already recorded
+        $check = $pdo->prepare("
+            SELECT id FROM rider_wallet_transactions 
+            WHERE reservation_id = ? 
+              AND type = 'cod_collected'
+            LIMIT 1
+        ");
+        $check->execute([$reservationId]);
+        if ($check->fetch()) {
+            // Already recorded — skip
+            return ['ok' => false, 'reason' => 'Already recorded (idempotent skip)'];
+        }
+        
+        // ✅ Get current rider wallet info
+        $rStmt = $pdo->prepare("
+            SELECT wallet_balance, wallet_limit 
+            FROM riders 
+            WHERE id = ? 
+            LIMIT 1
+        ");
+        $rStmt->execute([$riderId]);
+        $rider = $rStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$rider) {
+            return ['ok' => false, 'reason' => 'Rider not found'];
+        }
+        
+        $oldBalance = (float)($rider['wallet_balance'] ?? 0);
+        $limit      = (float)($rider['wallet_limit'] ?? 5000);
+        $newBalance = $oldBalance + $amount;
+        
+        // ✅ Compute wallet status based sa limit
+        // < limit*0.8      → normal
+        // >= limit*0.8     → warning
+        // >= limit         → blocked_cod
+        // >= limit*1.6     → blocked_all
+        $newStatus = 'normal';
+        if ($newBalance >= $limit * 1.6) {
+            $newStatus = 'blocked_all';
+        } elseif ($newBalance >= $limit) {
+            $newStatus = 'blocked_cod';
+        } elseif ($newBalance >= $limit * 0.8) {
+            $newStatus = 'warning';
+        }
+        
+        // ✅ Update rider wallet
+        $pdo->prepare("
+            UPDATE riders 
+            SET wallet_balance = ?,
+                wallet_status  = ?,
+                updated_at     = NOW()
+            WHERE id = ?
+        ")->execute([$newBalance, $newStatus, $riderId]);
+        
+        // ✅ Insert audit trail
+        $noteText = "COD collected for order #{$orderCode}";
+        $pdo->prepare("
+            INSERT INTO rider_wallet_transactions 
+                (rider_id, reservation_id, remittance_id, type, amount, balance_after, notes, created_at)
+            VALUES 
+                (?, ?, NULL, 'cod_collected', ?, ?, ?, NOW())
+        ")->execute([
+            $riderId,
+            $reservationId,
+            $amount,
+            $newBalance,
+            $noteText
+        ]);
+        
+        return [
+            'ok'          => true,
+            'new_balance' => $newBalance,
+            'old_balance' => $oldBalance,
+            'status'      => $newStatus,
+            'limit'       => $limit
+        ];
+        
+    } catch (Exception $e) {
+        error_log("recordCodCollection error: " . $e->getMessage());
+        return ['ok' => false, 'reason' => 'DB error: ' . $e->getMessage()];
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
+// ✅ PHASE 4: CHECK IF RIDER CAN ACCEPT ORDER
+// ════════════════════════════════════════════════════════════════
+/**
+ * Check kung pwedeng tanggapin ng rider ang order base sa wallet status.
+ * 
+ * @param PDO   $pdo
+ * @param int   $riderId
+ * @param array $order    Order row (may payment_status, etc.)
+ * @return array Result: ['ok' => bool, 'reason' => ?, 'code' => ?]
+ */
+function canAcceptOrder(PDO $pdo, int $riderId, array $order): array
+{
+    try {
+        // ✅ Get fresh wallet status
+        $stmt = $pdo->prepare("
+            SELECT wallet_balance, wallet_limit, wallet_status
+            FROM riders
+            WHERE id = ?
+            LIMIT 1
+        ");
+        $stmt->execute([$riderId]);
+        $rider = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$rider) {
+            return [
+                'ok' => false,
+                'reason' => 'Rider not found',
+                'code' => 'rider_not_found'
+            ];
+        }
+        
+        $balance = (float)($rider['wallet_balance'] ?? 0);
+        $status  = $rider['wallet_status'] ?? 'normal';
+        
+        // ✅ Fresh compute (in case stale ang DB status)
+        $limit = (float)($rider['wallet_limit'] ?? 5000);
+        if ($limit <= 0) $limit = 5000;
+        
+        if ($balance >= $limit * 1.6) {
+            $status = 'blocked_all';
+        } elseif ($balance >= $limit) {
+            $status = 'blocked_cod';
+        } elseif ($balance >= $limit * 0.8) {
+            $status = 'warning';
+        } else {
+            $status = 'normal';
+        }
+        
+        // ✅ Rule 1: blocked_all — walang exception
+        if ($status === 'blocked_all') {
+            return [
+                'ok' => false,
+                'reason' => 'Account restricted. You have ₱' . number_format($balance, 2) . 
+                            ' pending COD. Please remit immediately to continue accepting orders.',
+                'code' => 'blocked_all',
+                'balance' => $balance,
+                'status' => $status
+            ];
+        }
+        
+        // ✅ Rule 2: blocked_cod — COD orders lang
+        if ($status === 'blocked_cod') {
+            $isCOD = in_array($order['payment_status'] ?? '', ['cod', 'onsite', 'unpaid', 'partial'], true);
+            
+            if ($isCOD) {
+                return [
+                    'ok' => false,
+                    'reason' => 'Cannot accept COD orders. You have ₱' . number_format($balance, 2) . 
+                                ' pending COD. Please remit to continue.',
+                    'code' => 'blocked_cod',
+                    'balance' => $balance,
+                    'status' => $status
+                ];
+            }
+            // PAID orders — pwede
+        }
+        
+        // ✅ Normal or warning — pwede lahat
+        return [
+            'ok' => true,
+            'balance' => $balance,
+            'status' => $status
+        ];
+        
+    } catch (Exception $e) {
+        error_log("canAcceptOrder error: " . $e->getMessage());
+        // Fail-open: huwag i-block kung may DB error
+        return ['ok' => true, 'reason' => 'Check skipped due to error'];
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
+// ✅ PHASE 5: CASH REMITTANCE HANDLER
+// ════════════════════════════════════════════════════════════════
+function handleCashRemittance(PDO $pdo, array $data, string $action, int $riderId, int $userId, int $clinicId): void
+{
+    // ═══════════════════════════════════════════════════════════
+    // 1. SUBMIT CASH REMITTANCE (Rider)
+    // ═══════════════════════════════════════════════════════════
+    if ($action === 'submit_cash_remittance') {
+        
+        // ✅ Get rider wallet
+        $rStmt = $pdo->prepare("
+            SELECT name, email, wallet_balance, wallet_status
+            FROM riders
+            WHERE id = ? AND clinic_id = ? AND status = 'active'
+            LIMIT 1
+        ");
+        $rStmt->execute([$riderId, $clinicId]);
+        $rider = $rStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$rider) {
+            respond(false, 'Rider not found or not active', null, 404);
+        }
+        
+        $balance = (float)$rider['wallet_balance'];
+        
+        if ($balance <= 0) {
+            respond(false, 'Walang balance na ire-remit', null, 400);
+        }
+        
+        // ✅ Idempotency: Check if may pending cash remittance na
+        $dupStmt = $pdo->prepare("
+            SELECT id, remittance_code
+            FROM cod_remittances
+            WHERE rider_id = ?
+              AND method = 'cash'
+              AND status = 'pending'
+            ORDER BY id DESC
+            LIMIT 1
+        ");
+        $dupStmt->execute([$riderId]);
+        $existing = $dupStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($existing) {
+            respond(false, 'May pending cash remittance ka na. Hintayin ang approval.', [
+                'code' => 'duplicate_pending',
+                'existing_code' => $existing['remittance_code']
+            ], 409);
+        }
+        
+        // ✅ Get handed_to + notes
+        $handedTo = (int)($data['handed_to'] ?? 0);
+        $notes = trim($data['notes'] ?? '');
+        
+        if (!$handedTo) {
+            respond(false, 'Please select kung kanino mo ibinigay ang cash', null, 400);
+        }
+        
+        // ✅ Get admin name for validation
+        $aStmt = $pdo->prepare("
+            SELECT id, CONCAT(first_name, ' ', last_name) AS name
+            FROM users
+            WHERE id = ? AND clinic_id = ? AND status = 'Active'
+            LIMIT 1
+        ");
+        $aStmt->execute([$handedTo, $clinicId]);
+        $admin = $aStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$admin) {
+            respond(false, 'Invalid admin selected', null, 400);
+        }
+        
+        // ✅ Handle proof photo upload (required for cash)
+        $proofPath = null;
+        
+        if (isset($_FILES['proof_photo']) && $_FILES['proof_photo']['error'] === UPLOAD_ERR_OK) {
+            $file = $_FILES['proof_photo'];
+            
+            $allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+            $finfo = finfo_open(FILEINFO_MIME_TYPE);
+            $mimeType = finfo_file($finfo, $file['tmp_name']);
+            finfo_close($finfo);
+            
+            if (!in_array($mimeType, $allowedTypes)) {
+                respond(false, 'Invalid image type. JPG, PNG, or WEBP only.', null, 400);
+            }
+            
+            if ($file['size'] > 5 * 1024 * 1024) {
+                respond(false, 'Image too large. Maximum 5MB.', null, 400);
+            }
+            
+            $uploadDir = __DIR__ . '/../uploads/remittance_proofs/';
+            if (!is_dir($uploadDir)) {
+                mkdir($uploadDir, 0755, true);
+            }
+            
+            $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
+            $ext = strtolower($ext);
+            if (!in_array($ext, ['jpg', 'jpeg', 'png', 'webp'])) {
+                $ext = 'jpg';
+            }
+            
+            $filename = 'remit_' . $riderId . '_' . time() . '_' . bin2hex(random_bytes(3)) . '.' . $ext;
+            $filepath = $uploadDir . $filename;
+            
+            if (!move_uploaded_file($file['tmp_name'], $filepath)) {
+                respond(false, 'Failed to save proof photo', null, 500);
+            }
+            
+            $proofPath = 'uploads/remittance_proofs/' . $filename;
+        } else {
+            respond(false, 'Proof photo is required for cash remittance', null, 400);
+        }
+        
+        // ✅ Generate remittance code
+        $remittanceCode = 'RMT-CASH-' . date('Ymd') . '-' . strtoupper(substr(bin2hex(random_bytes(3)), 0, 6));
+        
+        // ✅ Insert record
+        try {
+            $insertStmt = $pdo->prepare("
+                INSERT INTO cod_remittances 
+                    (rider_id, clinic_id, remittance_code, amount, method, status,
+                     proof_image, handed_to, notes, submitted_at)
+                VALUES (?, ?, ?, ?, 'cash', 'pending', ?, ?, ?, NOW())
+            ");
+            $insertStmt->execute([
+                $riderId,
+                $clinicId,
+                $remittanceCode,
+                $balance,
+                $proofPath,
+                $handedTo,
+                $notes ?: null
+            ]);
+            
+            $remittanceId = (int)$pdo->lastInsertId();
+            
+            // ✅ Notify clinic admins
+            $adminUsersStmt = $pdo->prepare("
+                SELECT id FROM users
+                WHERE clinic_id = ? 
+                  AND role IN ('ClinicAdmin', 'Finance', 'SCM')
+                  AND status = 'Active'
+                LIMIT 10
+            ");
+            $adminUsersStmt->execute([$clinicId]);
+            $clinicAdmins = $adminUsersStmt->fetchAll(PDO::FETCH_COLUMN);
+            
+            foreach ($clinicAdmins as $adminId) {
+                $title = '💰 New Cash Remittance';
+                $message = "{$rider['name']} submitted ₱" . number_format($balance, 2) . 
+                           " cash remittance ({$remittanceCode}). Review and approve.";
+                
+                $pdo->prepare("
+                    INSERT INTO notifications (user_id, title, message, type, link, is_read, created_at)
+                    VALUES (?, ?, ?, 'remittance', 'main.php?view=reservations&tab=remittances', 0, NOW())
+                ")->execute([$adminId, $title, $message]);
+            }
+            
+            respond(true, 'Cash remittance submitted. Waiting for clinic approval.', [
+                'remittance_id'   => $remittanceId,
+                'remittance_code' => $remittanceCode,
+                'amount'          => $balance,
+                'handed_to'       => $admin['name']
+            ]);
+            
+        } catch (Exception $e) {
+            error_log("Cash remittance insert error: " . $e->getMessage());
+            respond(false, 'Database error: ' . $e->getMessage(), null, 500);
+        }
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // 2. APPROVE CASH REMITTANCE (Clinic)
+    // ═══════════════════════════════════════════════════════════
+    if ($action === 'approve_cash_remittance') {
+        
+        if (!canEditReservations()) {
+            respond(false, 'No permission', null, 403);
+        }
+        
+        $remittanceId = (int)($data['remittance_id'] ?? 0);
+        $adminNotes = trim($data['admin_notes'] ?? '');
+        
+        if (!$remittanceId) {
+            respond(false, 'Remittance ID required', null, 400);
+        }
+        
+        // ✅ Get remittance
+        $stmt = $pdo->prepare("
+            SELECT cr.*, r.name AS rider_name, r.user_id AS rider_user_id,
+                   r.wallet_balance, r.wallet_limit
+            FROM cod_remittances cr
+            JOIN riders r ON cr.rider_id = r.id
+            WHERE cr.id = ? AND cr.clinic_id = ?
+            LIMIT 1
+        ");
+        $stmt->execute([$remittanceId, $clinicId]);
+        $rem = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$rem) {
+            respond(false, 'Remittance not found', null, 404);
+        }
+        
+        if ($rem['status'] !== 'pending') {
+            respond(false, 'Remittance is no longer pending', null, 400);
+        }
+        
+        if ($rem['method'] !== 'cash') {
+            respond(false, 'Only cash remittances need approval', null, 400);
+        }
+        
+        $riderId = (int)$rem['rider_id'];
+        $amount  = (float)$rem['amount'];
+        $oldBalance = (float)$rem['wallet_balance'];
+        $limit = (float)$rem['wallet_limit'];
+        if ($limit <= 0) $limit = 5000;
+        
+        $newBalance = max(0, $oldBalance - $amount);
+        
+        // Recompute wallet status
+        $newStatus = 'normal';
+        if ($newBalance >= $limit * 1.6) {
+            $newStatus = 'blocked_all';
+        } elseif ($newBalance >= $limit) {
+            $newStatus = 'blocked_cod';
+        } elseif ($newBalance >= $limit * 0.8) {
+            $newStatus = 'warning';
+        }
+        
+        $pdo->beginTransaction();
+        
+        try {
+            // ✅ Update remittance
+            $pdo->prepare("
+                UPDATE cod_remittances
+                SET status = 'completed',
+                    completed_at = NOW(),
+                    approved_by = ?,
+                    admin_notes = ?
+                WHERE id = ?
+            ")->execute([$userId, $adminNotes ?: null, $remittanceId]);
+            
+            // ✅ Update rider wallet
+            $pdo->prepare("
+                UPDATE riders
+                SET wallet_balance = ?,
+                    wallet_status = ?,
+                    last_remit_at = NOW()
+                WHERE id = ?
+            ")->execute([$newBalance, $newStatus, $riderId]);
+            
+            // ✅ Insert wallet transaction (audit)
+            $pdo->prepare("
+                INSERT INTO rider_wallet_transactions 
+                    (rider_id, reservation_id, remittance_id, type, amount, balance_after, notes, created_at)
+                VALUES (?, NULL, ?, 'remit_cash', ?, ?, ?, NOW())
+            ")->execute([
+                $riderId,
+                $remittanceId,
+                -$amount,
+                $newBalance,
+                'Cash remittance — ' . $rem['remittance_code']
+            ]);
+            
+            $pdo->commit();
+            
+            // ✅ Notify rider
+            if (!empty($rem['rider_user_id'])) {
+                $title = '✅ Cash Remittance Approved';
+                $message = "Your cash remittance of ₱" . number_format($amount, 2) . 
+                           " has been approved. New balance: ₱" . number_format($newBalance, 2) . ".";
+                
+                $pdo->prepare("
+                    INSERT INTO notifications (user_id, title, message, type, link, is_read, created_at)
+                    VALUES (?, ?, ?, 'wallet', 'rider_dashboard.php', 0, NOW())
+                ")->execute([$rem['rider_user_id'], $title, $message]);
+            }
+            
+            respond(true, 'Cash remittance approved. Wallet cleared.', [
+                'remittance_id' => $remittanceId,
+                'new_balance'   => $newBalance,
+                'new_status'    => $newStatus
+            ]);
+            
+        } catch (Exception $e) {
+            $pdo->rollBack();
+            error_log("Approve cash remittance error: " . $e->getMessage());
+            respond(false, 'Transaction failed: ' . $e->getMessage(), null, 500);
+        }
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // 3. REJECT CASH REMITTANCE (Clinic)
+    // ═══════════════════════════════════════════════════════════
+    if ($action === 'reject_cash_remittance') {
+        
+        if (!canEditReservations()) {
+            respond(false, 'No permission', null, 403);
+        }
+        
+        $remittanceId = (int)($data['remittance_id'] ?? 0);
+        $reason = trim($data['rejection_reason'] ?? '');
+        
+        if (!$remittanceId) {
+            respond(false, 'Remittance ID required', null, 400);
+        }
+        if (!$reason) {
+            respond(false, 'Rejection reason is required', null, 400);
+        }
+        
+        // ✅ Get remittance
+        $stmt = $pdo->prepare("
+            SELECT cr.*, r.name AS rider_name, r.user_id AS rider_user_id
+            FROM cod_remittances cr
+            JOIN riders r ON cr.rider_id = r.id
+            WHERE cr.id = ? AND cr.clinic_id = ?
+            LIMIT 1
+        ");
+        $stmt->execute([$remittanceId, $clinicId]);
+        $rem = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$rem) {
+            respond(false, 'Remittance not found', null, 404);
+        }
+        
+        if ($rem['status'] !== 'pending') {
+            respond(false, 'Remittance is no longer pending', null, 400);
+        }
+        
+        // ✅ Update remittance to rejected
+        $pdo->prepare("
+            UPDATE cod_remittances
+            SET status = 'rejected',
+                completed_at = NOW(),
+                approved_by = ?,
+                rejection_reason = ?
+            WHERE id = ?
+        ")->execute([$userId, $reason, $remittanceId]);
+        
+        // ✅ Notify rider (wallet NOT touched — intact pa rin)
+        if (!empty($rem['rider_user_id'])) {
+            $title = '❌ Cash Remittance Rejected';
+            $message = "Your cash remittance of ₱" . number_format($rem['amount'], 2) . 
+                       " was rejected. Reason: {$reason}. Please contact the clinic.";
+            
+            $pdo->prepare("
+                INSERT INTO notifications (user_id, title, message, type, link, is_read, created_at)
+                VALUES (?, ?, ?, 'wallet', 'rider_dashboard.php', 0, NOW())
+            ")->execute([$rem['rider_user_id'], $title, $message]);
+        }
+        
+        respond(true, 'Cash remittance rejected. Rider notified.', [
+            'remittance_id' => $remittanceId
+        ]);
+    }
+    
+    // Fallback
+    respond(false, 'Unknown cash remittance action', null, 400);
+}
 // ════════════════════════════════════════════════════════════════
 // RIDER ACTION HANDLER
 // ════════════════════════════════════════════════════════════════
@@ -945,6 +1589,23 @@ function handleRiderAction(PDO $pdo, array $data, string $action): void
 if ($action === 'rider_pickup') {
     if ($order['delivery_status'] !== 'assigned') {
         respond(false, 'Order is not in assigned state', null, 400);
+    }
+    
+    // ═══════════════════════════════════════════════════════════
+    // ✅ PHASE 4: CHECK KUNG MAKA-ACCEPT ANG RIDER
+    // ═══════════════════════════════════════════════════════════
+    $acceptCheck = canAcceptOrder($pdo, $riderId, $order);
+    if (!$acceptCheck['ok']) {
+        respond(
+            false,
+            $acceptCheck['reason'],
+            [
+                'code'    => $acceptCheck['code'],
+                'balance' => $acceptCheck['balance'] ?? 0,
+                'status'  => $acceptCheck['status'] ?? 'normal'
+            ],
+            403
+        );
     }
     
     // ✅ Generate tracking number if not yet set
@@ -1091,6 +1752,26 @@ if ($action === 'rider_deliver') {
         ]);
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // ✅ PHASE 2: AUTO-ADD SA WALLET
+    // ═══════════════════════════════════════════════════════════
+    $walletResult = null;
+    if ($isCOD && $collectedAmount > 0) {
+        $walletResult = recordCodCollection(
+            $pdo,
+            $orderId,
+            $riderId,       // ← from session
+            $collectedAmount,
+            $code
+        );
+        
+        // Non-blocking: log error lang kung fail
+        if (!$walletResult['ok']) {
+            error_log("Wallet update failed for order #{$code}: " . ($walletResult['reason'] ?? 'Unknown'));
+        }
+    }
+
+    // ✅ Notify customer
     $msg = "Your order #{$code} has been delivered. Thank you!";
     if ($isCOD) {
         $msg .= " Payment received: ₱" . number_format($collectedAmount, 2) . ".";
@@ -1102,10 +1783,29 @@ if ($action === 'rider_deliver') {
     notifyUser($pdo, $customerId, 'Order Delivered 🎉', $msg,
         'reservation', 'my-reservations.php', $orderId);
 
+    // ✅ Notify rider ng bagong balance (kung successful)
+    if ($walletResult && $walletResult['ok']) {
+        $newBal = number_format($walletResult['new_balance'], 2);
+        $warnMsg = "";
+        
+        if ($walletResult['status'] === 'warning') {
+            $warnMsg = " ⚠️ Nearing limit. Please remit soon.";
+        } elseif ($walletResult['status'] === 'blocked_cod') {
+            $warnMsg = " 🚫 COD orders blocked. Remit to unlock.";
+        } elseif ($walletResult['status'] === 'blocked_all') {
+            $warnMsg = " 🚫 All orders blocked. Remit immediately.";
+        }
+        
+        notifyUser($pdo, $userId, '💰 COD Balance Updated',
+            "COD ₱" . number_format($collectedAmount, 2) . " added for order #{$code}. New balance: ₱{$newBal}.{$warnMsg}",
+            'wallet', 'rider_dashboard.php', $orderId);
+    }
+
     respond(true, 'Order delivered with proof.', [
         'collected_amount' => $collectedAmount,
         'change_amount'    => $changeAmount,
-        'total_due'        => $totalDue
+        'total_due'        => $totalDue,
+        'wallet'           => $walletResult
     ]);
 }
 
@@ -1113,8 +1813,53 @@ if ($action === 'rider_deliver') {
 }
 
 // ════════════════════════════════════════════════════════════════
-// SINGLE STATUS UPDATE
+// ✅ HANDOVER PHOTOS — Save base64 images with timestamps
 // ════════════════════════════════════════════════════════════════
+function saveHandoverPhotos(int $orderId, string $photosJson): array
+{
+    if (empty($photosJson)) return [];
+    
+    $photos = json_decode($photosJson, true);
+    if (!is_array($photos) || empty($photos)) return [];
+    
+    $uploadDir = __DIR__ . '/../uploads/handover_photos/';
+    if (!is_dir($uploadDir)) {
+        mkdir($uploadDir, 0755, true);
+    }
+    
+    $saved = [];
+    $maxPhotos = 3;
+    
+    foreach (array_slice($photos, 0, $maxPhotos) as $idx => $photo) {
+        if (empty($photo['data'])) continue;
+        
+        $dataUrl = $photo['data'];
+        
+        // ✅ Validate data URL format
+        if (!preg_match('/^data:image\/(jpeg|jpg|png|webp);base64,(.+)$/i', $dataUrl, $matches)) {
+            continue;
+        }
+        
+        $ext  = strtolower($matches[1]) === 'jpeg' ? 'jpg' : strtolower($matches[1]);
+        $data = base64_decode($matches[2]);
+        
+        if ($data === false || strlen($data) > 5 * 1024 * 1024) {
+            continue; // invalid or >5MB
+        }
+        
+        $filename = 'handover_' . $orderId . '_' . time() . '_' . $idx . '_' . bin2hex(random_bytes(3)) . '.' . $ext;
+        $filepath = $uploadDir . $filename;
+        
+        if (file_put_contents($filepath, $data) !== false) {
+            $saved[] = [
+                'path'      => 'uploads/handover_photos/' . $filename,
+                'timestamp' => $photo['timestamp'] ?? date('M d, Y (D) H:i:s')
+            ];
+        }
+    }
+    
+    return $saved;
+}
 function handleStatusUpdate(PDO $pdo, int $clinicId, int $currentUid, array $data, string $action, int $reservationId): void
 {
     $order = fetchOrder($pdo, $reservationId, $clinicId);
@@ -1166,149 +1911,179 @@ function handleStatusUpdate(PDO $pdo, int $clinicId, int $currentUid, array $dat
         respond(true, 'Marked as preparing.');
     }
 
-if ($action === 'assign_rider') {
-    if (!canEditReservations()) respond(false, 'No permission', null, 403);
-
-    $riderId   = (int)($data['rider_id'] ?? 0);
-    $notes     = trim($data['delivery_notes'] ?? '');
-    $eta       = $data['delivery_date'] ?? null;
-    $timeStart = $data['delivery_time_start'] ?? null;  // ✅ BAGO
-    $timeEnd   = $data['delivery_time_end'] ?? null;    // ✅ BAGO
-
-    // ✅ Basic validation
-    if (!$riderId)   respond(false, 'Please select a rider', null, 400);
-    if (!$eta)       respond(false, 'Delivery date is required', null, 400);
-    if (!$timeStart) respond(false, 'Delivery time start is required', null, 400);
-    if (!$timeEnd)   respond(false, 'Delivery time end is required', null, 400);
-
-    if ($timeStart >= $timeEnd) {
-        respond(false, 'Delivery time end must be after start time', null, 400);
-    }
-
-    // ✅ Get rider info + employee_id
-    $rStmt = $pdo->prepare("
-        SELECT name, employee_id 
-        FROM riders 
-        WHERE id = ? AND clinic_id = ? AND status = 'active'
-    ");
-    $rStmt->execute([$riderId, $clinicId]);
-    $rider = $rStmt->fetch(PDO::FETCH_ASSOC);
-
-    if (!$rider) {
-        respond(false, 'Rider not found or not active', null, 404);
-    }
-
-    if (!$rider['employee_id']) {
-        respond(false, 'Rider is not linked to an employee record. Please link it first.', null, 400);
-    }
-
-    $riderName = $rider['name'];
-
     // ═══════════════════════════════════════════════════════════
-    // ✅ CHECK 1: Within rider's working hours?
+    // ASSIGN RIDER — with LIVE HANDOVER PHOTOS
     // ═══════════════════════════════════════════════════════════
-    $workingCheck = isRiderWithinWorkingHours(
-        $pdo,
-        (int)$rider['employee_id'],
-        $clinicId,
-        $eta,
-        $timeStart,
-        $timeEnd
-    );
+    if ($action === 'assign_rider') {
+        if (!canEditReservations()) respond(false, 'No permission', null, 403);
 
-    if (!$workingCheck['ok']) {
-        respond(false, $workingCheck['reason'], [
-            'error_type' => 'outside_working_hours',
-            'schedule'   => $workingCheck['schedule']
-        ], 422);
-    }
+        $riderId   = (int)($data['rider_id'] ?? 0);
+        $notes     = trim($data['delivery_notes'] ?? '');
+        $eta       = $data['delivery_date'] ?? null;
+        $timeStart = $data['delivery_time_start'] ?? null;
+        $timeEnd   = $data['delivery_time_end'] ?? null;
+        $handoverNotes = trim($data['handover_notes'] ?? '');
+        $handoverPhotosJson = $data['handover_photos'] ?? '';
 
-    // ═══════════════════════════════════════════════════════════
-    // ✅ CHECK 2: Conflict sa ibang delivery?
-    // ═══════════════════════════════════════════════════════════
-    $conflict = hasRiderConflict(
-        $pdo,
-        $riderId,
-        $clinicId,
-        $eta,
-        $timeStart,
-        $timeEnd,
-        $reservationId  // exclude current order
-    );
+        // ✅ Basic validation
+        // ✅ Basic validation
+        if (!$riderId)   respond(false, 'Please select a rider', null, 400);
+        if (!$eta)       respond(false, 'Delivery date is required', null, 400);
+        if (!$timeStart) respond(false, 'Delivery time start is required', null, 400);
+        if (!$timeEnd)   respond(false, 'Delivery time end is required', null, 400);
 
-    if ($conflict) {
-        respond(false,
-            "Rider is already booked at this time. Conflict with order #{$conflict['reservation_code']} " .
-            "({$conflict['delivery_time_start']}–{$conflict['delivery_time_end']}).",
-            [
-                'error_type' => 'time_conflict',
-                'conflict'   => $conflict
-            ],
-            409  // HTTP Conflict
+        // ═══════════════════════════════════════════════════════════
+        // ✅ PHASE 4: CHECK KUNG MAKA-ACCEPT ANG RIDER
+        // ═══════════════════════════════════════════════════════════
+        $acceptCheck = canAcceptOrder($pdo, $riderId, $order);
+        if (!$acceptCheck['ok']) {
+            // Get rider name for message
+            $rNameStmt = $pdo->prepare("SELECT name FROM riders WHERE id = ?");
+            $rNameStmt->execute([$riderId]);
+            $rName = $rNameStmt->fetchColumn() ?: 'Rider';
+            
+            $reason = $acceptCheck['code'] === 'blocked_all'
+                ? "{$rName} has ₱" . number_format($acceptCheck['balance'] ?? 0, 2) . 
+                  " pending COD. Account is restricted — cannot assign to any order."
+                : "{$rName} has ₱" . number_format($acceptCheck['balance'] ?? 0, 2) . 
+                  " pending COD. Cannot assign to COD orders. Try another rider or a paid order.";
+            
+            respond(false, $reason, [
+                'code' => $acceptCheck['code'],
+                'balance' => $acceptCheck['balance'] ?? 0
+            ], 403);
+        }
+
+        // ✅ REQUIRE live photos
+        if (empty($handoverPhotosJson)) {
+            respond(false, 'Live parcel photo is required before assigning rider', null, 400);
+        }
+
+        if ($timeStart >= $timeEnd) {
+            respond(false, 'Delivery time end must be after start time', null, 400);
+        }
+
+        // ✅ Save photos first
+        $savedPhotos = saveHandoverPhotos($reservationId, $handoverPhotosJson);
+        if (empty($savedPhotos)) {
+            respond(false, 'Failed to save photos. Please retake and try again.', null, 400);
+        }
+
+        // ✅ Get rider info
+        $rStmt = $pdo->prepare("
+            SELECT name, employee_id 
+            FROM riders 
+            WHERE id = ? AND clinic_id = ? AND status = 'active'
+        ");
+        $rStmt->execute([$riderId, $clinicId]);
+        $rider = $rStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$rider) respond(false, 'Rider not found or not active', null, 404);
+        if (!$rider['employee_id']) respond(false, 'Rider is not linked to an employee record', null, 400);
+
+        $riderName = $rider['name'];
+
+        // ✅ Check working hours
+        $workingCheck = isRiderWithinWorkingHours(
+            $pdo, (int)$rider['employee_id'], $clinicId, $eta, $timeStart, $timeEnd
         );
+        if (!$workingCheck['ok']) {
+            // Cleanup saved photos kung mag-fail
+            foreach ($savedPhotos as $p) {
+                @unlink(__DIR__ . '/../' . $p['path']);
+            }
+            respond(false, $workingCheck['reason'], ['error_type' => 'outside_working_hours'], 422);
+        }
+
+        // ✅ Check conflict
+        $conflict = hasRiderConflict($pdo, $riderId, $clinicId, $eta, $timeStart, $timeEnd, $reservationId);
+        if ($conflict) {
+            // Cleanup saved photos kung may conflict
+            foreach ($savedPhotos as $p) {
+                @unlink(__DIR__ . '/../' . $p['path']);
+            }
+            respond(false,
+                "Rider is already booked at this time. Conflict with order #{$conflict['reservation_code']} " .
+                "({$conflict['delivery_time_start']}–{$conflict['delivery_time_end']}).",
+                ['error_type' => 'time_conflict', 'conflict' => $conflict],
+                409
+            );
+        }
+
+        // ✅ Save all data
+        $photosJsonToStore = json_encode(array_column($savedPhotos, 'path'));
+
+        $pdo->prepare("
+            UPDATE reservations
+            SET assigned_rider_id   = ?,
+                delivery_status     = 'assigned',
+                delivery_date       = ?,
+                delivery_time_start = ?,
+                delivery_time_end   = ?,
+                handover_photos     = ?,
+                handover_photo_at   = NOW(),
+                handover_notes      = ?,
+                handover_by         = ?,
+                notes               = CONCAT(IFNULL(notes,''), ?),
+                updated_at          = NOW()
+            WHERE id = ? AND clinic_id = ?
+        ")->execute([
+            $riderId,
+            $eta,
+            $timeStart,
+            $timeEnd,
+            $photosJsonToStore,
+            $handoverNotes ?: null,
+            $currentUid,
+            $notes ? "\n[Rider note: $notes]" : '',
+            $reservationId,
+            $clinicId
+        ]);
+
+        // ✅ Notify customer
+        notifyUser($pdo, $userId, 'Rider Assigned 🏍️',
+            "A rider ({$riderName}) has been assigned to your order #{$code} on {$eta} from {$timeStart} to {$timeEnd}.",
+            'reservation', 'my-reservations.php', $reservationId);
+
+        respond(true, 'Rider assigned successfully with ' . count($savedPhotos) . ' photo(s).', [
+            'rider_name'          => $riderName,
+            'delivery_date'       => $eta,
+            'delivery_time_start' => $timeStart,
+            'delivery_time_end'   => $timeEnd,
+            'photos_saved'        => count($savedPhotos),
+            'photos'              => $savedPhotos
+        ]);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // ✅ All checks passed — assign rider
-    // ═══════════════════════════════════════════════════════════
-    $pdo->prepare("
-        UPDATE reservations
-        SET assigned_rider_id   = ?,
-            delivery_status     = 'assigned',
-            delivery_date       = ?,
-            delivery_time_start = ?,
-            delivery_time_end   = ?,
-            notes               = CONCAT(IFNULL(notes,''), ?),
-            updated_at          = NOW()
-        WHERE id = ? AND clinic_id = ?
-    ")->execute([
-        $riderId,
-        $eta,
-        $timeStart,
-        $timeEnd,
-        $notes ? "\n[Rider note: $notes]" : '',
-        $reservationId,
-        $clinicId
-    ]);
+    if ($action === 'dispatch') {
+        if (!canEditReservations()) respond(false, 'No permission', null, 403);
+        if (!$order['assigned_rider_id']) respond(false, 'Please assign a rider first', null, 400);
 
-    // ✅ Notify customer
-    notifyUser($pdo, $userId, 'Rider Assigned 🏍️',
-        "A rider ({$riderName}) has been assigned to your order #{$code} on {$eta} from {$timeStart} to {$timeEnd}.",
-        'reservation', 'my-reservations.php', $reservationId);
+        // ✅ REQUIRE handover photos bago mag-dispatch
+        if (empty($order['handover_photos'])) {
+            respond(false, 'Cannot dispatch. Parcel photo is required. Please re-assign rider with live photo.', null, 400);
+        }
 
-    respond(true, 'Rider assigned successfully.', [
-        'rider_name'          => $riderName,
-        'delivery_date'       => $eta,
-        'delivery_time_start' => $timeStart,
-        'delivery_time_end'   => $timeEnd
-    ]);
-}
+        $tracking = $order['tracking_number'];
+        if (empty($tracking)) {
+            $tracking = generateTrackingNumber($pdo);
+        }
 
-if ($action === 'dispatch') {
-    if (!canEditReservations()) respond(false, 'No permission', null, 403);
-    if (!$order['assigned_rider_id']) respond(false, 'Please assign a rider first', null, 400);
-    
-    // ✅ Generate tracking number if not yet set
-    $tracking = $order['tracking_number'];
-    if (empty($tracking)) {
-        $tracking = generateTrackingNumber($pdo);
+        $pdo->prepare("
+            UPDATE reservations 
+            SET status='dispatched', 
+                delivery_status='in_transit', 
+                tracking_number = ?,
+                updated_at=NOW() 
+            WHERE id=? AND clinic_id=?
+        ")->execute([$tracking, $reservationId, $clinicId]);
+
+        notifyUser($pdo, $userId, 'Order Dispatched 🚚',
+            "Your order #{$code} is on the way! Tracking: {$tracking}",
+            'reservation', 'my-reservations.php', $reservationId);
+
+        respond(true, 'Order dispatched.', ['tracking_number' => $tracking]);
     }
-
-    $pdo->prepare("
-        UPDATE reservations 
-        SET status='dispatched', 
-            delivery_status='in_transit', 
-            tracking_number = ?,
-            updated_at=NOW() 
-        WHERE id=? AND clinic_id=?
-    ")->execute([$tracking, $reservationId, $clinicId]);
-    
-    notifyUser($pdo, $userId, 'Order Dispatched 🚚',
-        "Your order #{$code} is on the way! Tracking: {$tracking}",
-        'reservation', 'my-reservations.php', $reservationId);
-    
-    respond(true, 'Order dispatched.', ['tracking_number' => $tracking]);
-}
 
     if ($action === 'deliver') {
         if (!canEditReservations()) respond(false, 'No permission', null, 403);
@@ -1338,6 +2113,26 @@ if ($action === 'dispatch') {
             WHERE id=? AND clinic_id=?
         ")->execute([$reservationId, $clinicId]);
 
+        // ═══════════════════════════════════════════════════════════
+        // ✅ PHASE 2: AUTO-ADD SA WALLET (kung may assigned rider)
+        // ═══════════════════════════════════════════════════════════
+        $walletResult = null;
+        $assignedRiderId = (int)($order['assigned_rider_id'] ?? 0);
+        
+        if ($assignedRiderId > 0 && $collectedAmount !== null && $collectedAmount > 0) {
+            $walletResult = recordCodCollection(
+                $pdo,
+                $reservationId,
+                $assignedRiderId,
+                $collectedAmount,
+                $code
+            );
+            
+            if (!$walletResult['ok']) {
+                error_log("Clinic deliver — wallet update failed for #{$code}: " . ($walletResult['reason'] ?? 'Unknown'));
+            }
+        }
+
         $msg = "Your order #{$code} has been delivered. Thank you!";
         if ($collectionResult && $collectionResult['status'] === 'paid') $msg .= " Payment received. ✅";
         elseif ($collectionResult && $collectionResult['status'] === 'partial') $msg .= " Partial payment received.";
@@ -1345,44 +2140,59 @@ if ($action === 'dispatch') {
         notifyUser($pdo, $userId, 'Order Delivered 🎉', $msg,
             'reservation', 'my-reservations.php', $reservationId);
 
-        respond(true, 'Order delivered.', ['collection' => $collectionResult]);
+        // ✅ Notify rider (kung may assigned)
+        if ($walletResult && $walletResult['ok'] && $assignedRiderId > 0) {
+            $rStmt2 = $pdo->prepare("SELECT user_id FROM riders WHERE id = ?");
+            $rStmt2->execute([$assignedRiderId]);
+            $riderUserId = (int)$rStmt2->fetchColumn();
+            
+            if ($riderUserId > 0) {
+                $newBal = number_format($walletResult['new_balance'], 2);
+                notifyUser($pdo, $riderUserId, '💰 COD Balance Updated',
+                    "COD ₱" . number_format($collectedAmount, 2) . " added for order #{$code} (clinic delivery). New balance: ₱{$newBal}.",
+                    'wallet', 'rider_dashboard.php', $reservationId);
+            }
+        }
+
+        respond(true, 'Order delivered.', [
+            'collection' => $collectionResult,
+            'wallet'     => $walletResult
+        ]);
     }
 
-if ($action === 'complete') {
-    if (!canEditReservations()) respond(false, 'No permission', null, 403);
-    
-    // ✅ Allow completion from 'delivered' (delivery) OR 'ready_for_pickup' (pickup)
-    $allowedStatuses = ['delivered', 'ready_for_pickup'];
-    if (!in_array($order['status'], $allowedStatuses, true)) {
-        respond(false, 'Order cannot be completed in current status', null, 400);
-    }
-    
-    // ✅ Collection check (for COD/onsite/unpaid orders)
-    $collectedAmount = isset($data['collected_amount']) ? (float)$data['collected_amount'] : null;
-    $collectionNotes = trim($data['collection_notes'] ?? '');
-    $collectionResult = null;
-    
-    if (requiresCollection($order)) {
-        if ($collectedAmount === null) {
-            respond(false, 'Collection amount is required for this order', null, 400);
+    if ($action === 'complete') {
+        if (!canEditReservations()) respond(false, 'No permission', null, 403);
+
+        $allowedStatuses = ['delivered', 'ready_for_pickup'];
+        if (!in_array($order['status'], $allowedStatuses, true)) {
+            respond(false, 'Order cannot be completed in current status', null, 400);
         }
-        $collectionResult = recordCollection($pdo, $reservationId, $clinicId, $collectedAmount, $collectionNotes, $currentUid);
-        if (!$collectionResult['ok']) {
-            respond(false, $collectionResult['reason'] ?? 'Collection failed', null, 400);
+
+        $collectedAmount = isset($data['collected_amount']) ? (float)$data['collected_amount'] : null;
+        $collectionNotes = trim($data['collection_notes'] ?? '');
+        $collectionResult = null;
+
+        if (requiresCollection($order)) {
+            if ($collectedAmount === null) {
+                respond(false, 'Collection amount is required for this order', null, 400);
+            }
+            $collectionResult = recordCollection($pdo, $reservationId, $clinicId, $collectedAmount, $collectionNotes, $currentUid);
+            if (!$collectionResult['ok']) {
+                respond(false, $collectionResult['reason'] ?? 'Collection failed', null, 400);
+            }
         }
+
+        $pdo->prepare("UPDATE reservations SET status='completed', updated_at=NOW() WHERE id=? AND clinic_id=?")
+            ->execute([$reservationId, $clinicId]);
+
+        $msg = "Your order #{$code} has been COMPLETED. Thank you!";
+        if ($collectionResult && $collectionResult['status'] === 'paid') $msg .= " Payment received. ✅";
+
+        notifyUser($pdo, $userId, 'Order Completed 🎉', $msg,
+            'reservation', 'my-reservations.php', $reservationId);
+
+        respond(true, 'Order completed.', ['collection' => $collectionResult]);
     }
-    
-    $pdo->prepare("UPDATE reservations SET status='completed', updated_at=NOW() WHERE id=? AND clinic_id=?")
-        ->execute([$reservationId, $clinicId]);
-    
-    $msg = "Your order #{$code} has been COMPLETED. Thank you!";
-    if ($collectionResult && $collectionResult['status'] === 'paid') $msg .= " Payment received. ✅";
-    
-    notifyUser($pdo, $userId, 'Order Completed 🎉', $msg,
-        'reservation', 'my-reservations.php', $reservationId);
-    
-    respond(true, 'Order completed.', ['collection' => $collectionResult]);
-}
 
     if ($action === 'cancel') {
         if (!canRejectReservations()) respond(false, 'No permission', null, 403);
@@ -1405,9 +2215,6 @@ if ($action === 'complete') {
     respond(false, 'Unknown action', null, 400);
 }
 
-// ════════════════════════════════════════════════════════════════
-// BULK ACTIONS
-// ════════════════════════════════════════════════════════════════
 function handleBulkAction(PDO $pdo, int $clinicId, int $currentUid, array $data, string $action): void
 {
     $bulkActions = [
@@ -1437,57 +2244,118 @@ function handleBulkAction(PDO $pdo, int $clinicId, int $currentUid, array $data,
     $collectedAmounts = $data['collected_amounts'] ?? [];
     $collectionNotes  = trim($data['collection_notes'] ?? '');
 
-if ($action === 'bulk_assign_rider') {
-    if (!$riderId) respond(false, 'Please select a rider', null, 400);
-    if (!$deliveryDate) respond(false, 'Delivery date is required', null, 400);
+    // ═══════════════════════════════════════════════════════════
+    // BULK ASSIGN RIDER — with LIVE HANDOVER PHOTOS
+    // ═══════════════════════════════════════════════════════════
+    if ($action === 'bulk_assign_rider') {
+        if (!$riderId) respond(false, 'Please select a rider', null, 400);
+        if (!$deliveryDate) respond(false, 'Delivery date is required', null, 400);
 
-    // ✅ Get bulk time inputs
-    $bulkTimeStart = $data['delivery_time_start'] ?? null;
-    $bulkTimeEnd   = $data['delivery_time_end'] ?? null;
+        $bulkTimeStart = $data['delivery_time_start'] ?? null;
+        $bulkTimeEnd   = $data['delivery_time_end'] ?? null;
+        $handoverNotes = trim($data['handover_notes'] ?? '');
+        $handoverPhotosJson = $data['handover_photos'] ?? '';
 
-    if (!$bulkTimeStart || !$bulkTimeEnd) {
-        respond(false, 'Delivery time start and end are required', null, 400);
+        if (!$bulkTimeStart || !$bulkTimeEnd) {
+            respond(false, 'Delivery time start and end are required', null, 400);
+        }
+
+        if ($bulkTimeStart >= $bulkTimeEnd) {
+            respond(false, 'Delivery time end must be after start time', null, 400);
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // ✅ PHASE 4: EARLY RIDER BLOCK CHECK (before photos)
+        // ============================================================
+        // Get rider wallet status once — check kung blocked
+        $rBlockStmt = $pdo->prepare("
+            SELECT name, wallet_balance, wallet_limit, wallet_status
+            FROM riders
+            WHERE id = ? AND clinic_id = ? AND status = 'active'
+        ");
+        $rBlockStmt->execute([$riderId, $clinicId]);
+        $rBlockInfo = $rBlockStmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($rBlockInfo) {
+            $rBlockBalance = (float)($rBlockInfo['wallet_balance'] ?? 0);
+            $rBlockLimit   = (float)($rBlockInfo['wallet_limit'] ?? 5000);
+            if ($rBlockLimit <= 0) $rBlockLimit = 5000;
+            
+            // Fresh compute
+            $rBlockStatus = 'normal';
+            if ($rBlockBalance >= $rBlockLimit * 1.6) {
+                $rBlockStatus = 'blocked_all';
+            } elseif ($rBlockBalance >= $rBlockLimit) {
+                $rBlockStatus = 'blocked_cod';
+            } elseif ($rBlockBalance >= $rBlockLimit * 0.8) {
+                $rBlockStatus = 'warning';
+            }
+            
+            if ($rBlockStatus === 'blocked_all') {
+                respond(false, 
+                    "{$rBlockInfo['name']} has ₱" . number_format($rBlockBalance, 2) . 
+                    " pending COD. Account is restricted — cannot assign to any order.",
+                    ['code' => 'blocked_all', 'balance' => $rBlockBalance],
+                    403
+                );
+            }
+            // blocked_cod: depende sa order type — i-check later per order
+            // Para sa bulk, kung may mixed COD at PAID, selective lang
+        }
+
+        // ✅ REQUIRE live photos
+        if (empty($handoverPhotosJson)) {
+            respond(false, 'Live parcel photo is required before assigning rider', null, 400);
+        }
+
+        // ✅ REQUIRE live photos
+        if (empty($handoverPhotosJson)) {
+            respond(false, 'Live parcel photo is required before assigning rider', null, 400);
+        }
+
+        // ✅ Validate photos JSON structure once
+        $photoData = json_decode($handoverPhotosJson, true);
+        if (!is_array($photoData) || empty($photoData)) {
+            respond(false, 'Invalid photo data', null, 400);
+        }
+
+        // ✅ Get rider info
+        $rStmt = $pdo->prepare("
+            SELECT name, employee_id 
+            FROM riders 
+            WHERE id = ? AND clinic_id = ? AND status = 'active'
+        ");
+        $rStmt->execute([$riderId, $clinicId]);
+        $rider = $rStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$rider) respond(false, 'Rider not found or not active', null, 404);
+        if (!$rider['employee_id']) {
+            respond(false, 'Rider is not linked to an employee record.', null, 400);
+        }
+
+        $riderName = $rider['name'];
+
+        // ✅ Check working hours once
+        $workingCheck = isRiderWithinWorkingHours(
+            $pdo,
+            (int)$rider['employee_id'],
+            $clinicId,
+            $deliveryDate,
+            $bulkTimeStart,
+            $bulkTimeEnd
+        );
+
+        if (!$workingCheck['ok']) {
+            respond(false, $workingCheck['reason'], null, 422);
+        }
+
+    } else {
+        $riderName     = null;
+        $bulkTimeStart = null;
+        $bulkTimeEnd   = null;
+        $handoverNotes = '';
+        $handoverPhotosJson = '';
     }
-
-    if ($bulkTimeStart >= $bulkTimeEnd) {
-        respond(false, 'Delivery time end must be after start time', null, 400);
-    }
-
-    // ✅ Get rider info + employee_id
-    $rStmt = $pdo->prepare("
-        SELECT name, employee_id 
-        FROM riders 
-        WHERE id = ? AND clinic_id = ? AND status = 'active'
-    ");
-    $rStmt->execute([$riderId, $clinicId]);
-    $rider = $rStmt->fetch(PDO::FETCH_ASSOC);
-
-    if (!$rider) respond(false, 'Rider not found or not active', null, 404);
-    if (!$rider['employee_id']) {
-        respond(false, 'Rider is not linked to an employee record.', null, 400);
-    }
-
-    $riderName = $rider['name'];
-
-    // ✅ Check working hours (isang beses lang)
-    $workingCheck = isRiderWithinWorkingHours(
-        $pdo,
-        (int)$rider['employee_id'],
-        $clinicId,
-        $deliveryDate,
-        $bulkTimeStart,
-        $bulkTimeEnd
-    );
-
-    if (!$workingCheck['ok']) {
-        respond(false, $workingCheck['reason'], null, 422);
-    }
-
-} else {
-    $riderName    = null;
-    $bulkTimeStart = null;
-    $bulkTimeEnd   = null;
-}
 
     $success = []; $failed = [];
 
@@ -1516,62 +2384,110 @@ if ($action === 'bulk_assign_rider') {
                 notifyUser($pdo, $userId, 'Order Preparing 📦', "Your order #{$code} is being prepared.", 'reservation', 'my-reservations.php', $id);
                 $success[] = $id;
             }
-elseif ($action === 'bulk_assign_rider') {
-    if ($order['fulfillment_type'] !== 'delivery') {
-        $failed[] = ['id'=>$id,'code'=>$code,'reason'=>'Not a delivery'];
-        continue;
-    }
-    if (in_array($order['status'], ['delivered','completed','cancelled'], true)) {
-        $failed[] = ['id'=>$id,'code'=>$code,'reason'=>'Already finalized'];
-        continue;
-    }
+            // ═══════════════════════════════════════════════════════
+            // BULK ASSIGN RIDER — save photos per order
+            // ═══════════════════════════════════════════════════════
+            elseif ($action === 'bulk_assign_rider') {
+                if ($order['fulfillment_type'] !== 'delivery') {
+                    $failed[] = ['id'=>$id,'code'=>$code,'reason'=>'Not a delivery'];
+                    continue;
+                }
+                if (in_array($order['status'], ['delivered','completed','cancelled'], true)) {
+                    $failed[] = ['id'=>$id,'code'=>$code,'reason'=>'Already finalized'];
+                    continue;
+                }
 
-    // ✅ Check conflict for THIS order
-    $conflict = hasRiderConflict(
-        $pdo, $riderId, $clinicId,
-        $deliveryDate, $bulkTimeStart, $bulkTimeEnd,
-        $id
-    );
+                // ═══════════════════════════════════════════════════════
+                // ✅ PHASE 4: CHECK IF RIDER CAN ACCEPT THIS ORDER
+                // ═══════════════════════════════════════════════════════
+                $acceptCheck = canAcceptOrder($pdo, $riderId, $order);
+                if (!$acceptCheck['ok']) {
+                    $failed[] = [
+                        'id'     => $id,
+                        'code'   => $code,
+                        'reason' => $acceptCheck['code'] === 'blocked_cod' 
+                                    ? 'Rider blocked for COD orders' 
+                                    : 'Rider account restricted'
+                    ];
+                    continue;
+                }
 
-    if ($conflict) {
-        $failed[] = [
-            'id'     => $id,
-            'code'   => $code,
-            'reason' => "Conflict with #{$conflict['reservation_code']}"
-        ];
-        continue;
-    }
+                // ✅ Check conflict for THIS order
+                $conflict = hasRiderConflict(
+                    $pdo, $riderId, $clinicId,
+                    $deliveryDate, $bulkTimeStart, $bulkTimeEnd,
+                    $id
+                );
 
-    // ✅ Save with time
-    $pdo->prepare("
-        UPDATE reservations 
-        SET assigned_rider_id   = ?, 
-            delivery_status     = 'assigned', 
-            delivery_date       = ?,
-            delivery_time_start = ?,
-            delivery_time_end   = ?,
-            updated_at          = NOW() 
-        WHERE id = ? AND clinic_id = ?
-    ")->execute([
-        $riderId,
-        $deliveryDate,
-        $bulkTimeStart,
-        $bulkTimeEnd,
-        $id,
-        $clinicId
-    ]);
+                if ($conflict) {
+                    $failed[] = [
+                        'id'     => $id,
+                        'code'   => $code,
+                        'reason' => "Conflict with #{$conflict['reservation_code']}"
+                    ];
+                    continue;
+                }
 
-    notifyUser($pdo, $userId, 'Rider Assigned 🏍️',
-        "A rider ({$riderName}) has been assigned to your order #{$code} on {$deliveryDate} from {$bulkTimeStart} to {$bulkTimeEnd}.",
-        'reservation', 'my-reservations.php', $id);
+                // ✅ Save photos for THIS order (each order gets its own copies)
+                $savedPhotos = saveHandoverPhotos($id, $handoverPhotosJson);
+                if (empty($savedPhotos)) {
+                    $failed[] = ['id'=>$id,'code'=>$code,'reason'=>'Photo save failed'];
+                    continue;
+                }
 
-    $success[] = $id;
-}
+                $photosJsonToStore = json_encode(array_column($savedPhotos, 'path'));
+
+                // ✅ Save with photos
+                $pdo->prepare("
+                    UPDATE reservations 
+                    SET assigned_rider_id   = ?, 
+                        delivery_status     = 'assigned', 
+                        delivery_date       = ?,
+                        delivery_time_start = ?,
+                        delivery_time_end   = ?,
+                        handover_photos     = ?,
+                        handover_photo_at   = NOW(),
+                        handover_notes      = ?,
+                        handover_by         = ?,
+                        updated_at          = NOW() 
+                    WHERE id = ? AND clinic_id = ?
+                ")->execute([
+                    $riderId,
+                    $deliveryDate,
+                    $bulkTimeStart,
+                    $bulkTimeEnd,
+                    $photosJsonToStore,
+                    $handoverNotes ?: null,
+                    $currentUid,
+                    $id,
+                    $clinicId
+                ]);
+
+                notifyUser($pdo, $userId, 'Rider Assigned 🏍️',
+                    "A rider ({$riderName}) has been assigned to your order #{$code} on {$deliveryDate} from {$bulkTimeStart} to {$bulkTimeEnd}.",
+                    'reservation', 'my-reservations.php', $id);
+
+                $success[] = $id;
+            }
             elseif ($action === 'bulk_dispatch') {
                 if (!$order['assigned_rider_id']) { $failed[] = ['id'=>$id,'code'=>$code,'reason'=>'No rider assigned']; continue; }
                 if (in_array($order['status'], ['dispatched','delivered','completed','cancelled'], true)) { $failed[] = ['id'=>$id,'code'=>$code,'reason'=>'Cannot dispatch']; continue; }
-                $pdo->prepare("UPDATE reservations SET status='dispatched', delivery_status='in_transit', updated_at=NOW() WHERE id=? AND clinic_id=?")->execute([$id, $clinicId]);
-                notifyUser($pdo, $userId, 'Order Dispatched 🚚', "Your order #{$code} is on the way!", 'reservation', 'my-reservations.php', $id);
+                
+                // ✅ REQUIRE handover photos
+                if (empty($order['handover_photos'])) {
+                    $failed[] = ['id'=>$id,'code'=>$code,'reason'=>'Missing parcel photos'];
+                    continue;
+                }
+
+                // ✅ Generate tracking number
+                $tracking = $order['tracking_number'];
+                if (empty($tracking)) {
+                    $tracking = generateTrackingNumber($pdo);
+                }
+
+                $pdo->prepare("UPDATE reservations SET status='dispatched', delivery_status='in_transit', tracking_number=?, updated_at=NOW() WHERE id=? AND clinic_id=?")
+                    ->execute([$tracking, $id, $clinicId]);
+                notifyUser($pdo, $userId, 'Order Dispatched 🚚', "Your order #{$code} is on the way! Tracking: {$tracking}", 'reservation', 'my-reservations.php', $id);
                 $success[] = $id;
             }
             elseif ($action === 'bulk_deliver') {
@@ -1579,6 +2495,7 @@ elseif ($action === 'bulk_assign_rider') {
 
                 $paymentUpdate = "";
                 $collectionResult = null;
+                $amt = null;
 
                 if (requiresCollection($order)) {
                     $amt = isset($collectedAmounts[$id]) ? (float)$collectedAmounts[$id] : null;
@@ -1589,6 +2506,18 @@ elseif ($action === 'bulk_assign_rider') {
 
                 $pdo->prepare("UPDATE reservations SET status='delivered', delivery_status='delivered', delivered_at=NOW() {$paymentUpdate}, updated_at=NOW() WHERE id=? AND clinic_id=?")
                     ->execute([$id, $clinicId]);
+
+                // ═══════════════════════════════════════════════════════════
+                // ✅ PHASE 2: AUTO-ADD SA WALLET
+                // ═══════════════════════════════════════════════════════════
+                $assignedRiderId = (int)($order['assigned_rider_id'] ?? 0);
+                if ($assignedRiderId > 0 && $amt !== null && $amt > 0) {
+                    $wResult = recordCodCollection($pdo, $id, $assignedRiderId, $amt, $code);
+                    if (!$wResult['ok']) {
+                        error_log("Bulk deliver — wallet update failed for #{$code}: " . ($wResult['reason'] ?? 'Unknown'));
+                    }
+                }
+
                 $msg = "Your order #{$code} has been delivered. Thank you!";
                 if ($collectionResult && $collectionResult['status'] === 'paid') $msg .= " Payment received. ✅";
                 notifyUser($pdo, $userId, 'Order Delivered 🎉', $msg, 'reservation', 'my-reservations.php', $id);

@@ -75,7 +75,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
                 $_SESSION['swal'] = [
                     'icon'  => 'warning',
                     'title' => 'Account Inactive',
-                    'text'  => 'Your account has been deactivated. Please contact admin.'
+                    'text'  => 'Your account has been deactivated. Please contact Clinic Admin.'
                 ];
                 header("Location: {$base_url}admin/login.php");
                 exit();
@@ -119,7 +119,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
                 $_SESSION['swal'] = [
                     'icon'  => 'error',
                     'title' => 'Rider Account Inactive',
-                    'text'  => 'Your rider account is not active. Please contact admin.'
+                    'text'  => 'Your rider account is not active. Please contact Clinic Admin.'
                 ];
                 header("Location: {$base_url}admin/login.php");
                 exit();
@@ -218,22 +218,67 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
         RBACHelper::loadPermissionsToSession($user['id'], $user['clinic_id']);
 
         /* ===============================
-           REDIRECT BASED ON ROLE
+           REDIRECT BASED ON ROLE + GRACE PERIOD
         ================================ */
         require_once __DIR__ . '/../include/SubscriptionHelper.php';
         $subHelper = new SubscriptionHelper($pdo, $user['clinic_id']);
         $hasSubscription = $subHelper->hasActiveSubscription();
 
-        if (in_array($user['role'], ['ClinicAdmin', 'Optometrist', 'Staff', 'HR', 'Finance', 'CRM', 'SCM'])) {
-            $redirect = $hasSubscription
-                ? $base_url . "main.php"
-                : $base_url . "views/subscription.php";
-        } elseif ($user['role'] === 'Rider') {
-            // ✅ Rider redirect to rider dashboard
-            $redirect = $base_url . "views/rider_dashboard.php";
-        } else {
-            $redirect = "{$base_url}access_denied.php?role=" . urlencode($user['role']);
+        // Get expiry info
+        $expiryInfo = $subHelper->getExpiryInfo();
+        $_SESSION['subscription_expired']  = $expiryInfo['expired'];
+        $_SESSION['days_expired']          = $expiryInfo['days_expired'];
+        $_SESSION['grace_status']          = $expiryInfo['grace_status'];
+        $_SESSION['subscription_end_date'] = $expiryInfo['end_date'];
+        $_SESSION['is_clinic_admin']       = ($user['role'] === 'ClinicAdmin');
+
+        // BLOCKED (8+ days) — employees hard block
+        if ($expiryInfo['grace_status'] === 'blocked' && $user['role'] !== 'ClinicAdmin' && $user['role'] !== 'SuperAdmin') {
+            session_destroy();
+            session_name('eyecore_admin');
+            session_start();
+            $_SESSION['swal'] = [
+                'icon'  => 'error',
+                'title' => 'Subscription Expired',
+                'text'  => 'Your clinic subscription expired ' . $expiryInfo['days_expired'] . ' days ago. Please contact your clinic administrator to renew.'
+            ];
+            header("Location: {$base_url}admin/login.php");
+            exit();
         }
+
+// REDIRECT LOGIC
+if ($expiryInfo['grace_status'] === 'blocked' && $user['role'] === 'ClinicAdmin') {
+    // ✅ FIXED: Blocked owner → subscription_manage.php (renew/upgrade page)
+    $redirect = $base_url . "views/subscription_manage.php?blocked=1";
+} elseif (in_array($user['role'], ['ClinicAdmin', 'Optometrist', 'Staff', 'HR', 'Finance', 'CRM', 'SCM'])) {
+    if ($hasSubscription) {
+        $redirect = $base_url . "main.php";
+    } else {
+        // ✅ FIXED: Expired/warning user → subscription_manage.php (renew/upgrade page)
+        // Differentiate new vs existing based on subscription history
+        $hasHistory = false;
+        try {
+            $stmt = $pdo->prepare("
+                SELECT COUNT(*) FROM clinic_subscriptions 
+                WHERE clinic_id = ?
+            ");
+            $stmt->execute([$user['clinic_id']]);
+            $hasHistory = ($stmt->fetchColumn() > 0);
+        } catch (PDOException $e) {
+            error_log("Subscription history check error: " . $e->getMessage());
+        }
+        
+        if ($hasHistory) {
+            $redirect = $base_url . "views/subscription_manage.php?expired=1";
+        } else {
+            $redirect = $base_url . "views/subscription.php";
+        }
+    }
+} elseif ($user['role'] === 'Rider') {
+    $redirect = $base_url . "views/rider_dashboard.php";
+} else {
+    $redirect = "{$base_url}access_denied.php?role=" . urlencode($user['role']);
+}
 
         ?>
         <!DOCTYPE html>
@@ -281,6 +326,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['login'])) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Eyecore - Login</title>
+    <link rel="icon" type="image/png" href="../assets/images/eyecore-logo.png">
 
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">

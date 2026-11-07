@@ -147,6 +147,128 @@ $nextDelivery = !empty($activeDeliveries) ? $activeDeliveries[0] : null;
 
 // ✅ Count remaining today
 $remainingToday = (int)($todaySched['total'] ?? 0);
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ PHASE 3: COD WALLET DATA
+// ═══════════════════════════════════════════════════════════════
+
+// Wallet info (nasa $rider na, pero i-refresh para sure)
+$rStmt2 = $pdo->prepare("
+    SELECT wallet_balance, wallet_limit, wallet_status, last_remit_at
+    FROM riders
+    WHERE id = ?
+");
+$rStmt2->execute([$riderId]);
+$walletInfo = $rStmt2->fetch(PDO::FETCH_ASSOC);
+
+$walletBalance = (float)($walletInfo['wallet_balance'] ?? 0);
+$walletLimit   = (float)($walletInfo['wallet_limit'] ?? 5000);
+$walletStatus  = $walletInfo['wallet_status'] ?? 'normal';
+$lastRemitAt   = $walletInfo['last_remit_at'] ?? null;
+
+// Compute progress percentage (cap at 100%)
+$walletPercent = $walletLimit > 0 ? ($walletBalance / $walletLimit) * 100 : 0;
+$walletPercentDisplay = min(100, round($walletPercent));
+
+// Count total COD collections (hindi pa remitted)
+$cStmt = $pdo->prepare("
+    SELECT COUNT(*) AS total
+    FROM rider_wallet_transactions
+    WHERE rider_id = ?
+      AND type = 'cod_collected'
+      AND (remittance_id IS NULL OR remittance_id = 0)
+");
+$cStmt->execute([$riderId]);
+$codCollectionCount = (int)$cStmt->fetchColumn();
+
+// Recent COD collections (last 5)
+$tStmt = $pdo->prepare("
+    SELECT 
+        rwt.reservation_id,
+        rwt.amount,
+        rwt.balance_after,
+        rwt.created_at,
+        r.reservation_code,
+        CONCAT(u.first_name, ' ', u.last_name) AS customer_name
+    FROM rider_wallet_transactions rwt
+    LEFT JOIN reservations r ON rwt.reservation_id = r.id
+    LEFT JOIN users u ON r.user_id = u.id
+    WHERE rwt.rider_id = ?
+      AND rwt.type = 'cod_collected'
+    ORDER BY rwt.created_at DESC
+    LIMIT 5
+");
+$tStmt->execute([$riderId]);
+$recentCollections = $tStmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Status config (colors + text)
+$statusConfig = [
+    'normal' => [
+        'icon'      => 'bi-wallet2',
+        'label'     => 'COD WALLET',
+        'color'     => '#00B761',
+        'bg'        => '#f0fdf4',
+        'border'    => '#86efac',
+        'bar_color' => '#00B761',
+        'button_bg' => 'var(--ec-primary)',
+        'button_text' => 'Remit Full Balance',
+        'message'   => null,
+    ],
+    'warning' => [
+        'icon'      => 'bi-exclamation-triangle-fill',
+        'label'     => 'COD WALLET',
+        'color'     => '#F59E0B',
+        'bg'        => '#fffbeb',
+        'border'    => '#fcd34d',
+        'bar_color' => '#F59E0B',
+        'button_bg' => '#F59E0B',
+        'button_text' => 'Remit Now',
+        'message'   => 'Nearing limit. Please remit soon.',
+    ],
+    'blocked_cod' => [
+        'icon'      => 'bi-x-octagon-fill',
+        'label'     => 'COD BLOCKED',
+        'color'     => '#EF4444',
+        'bg'        => '#fef2f2',
+        'border'    => '#fca5a5',
+        'bar_color' => '#EF4444',
+        'button_bg' => '#EF4444',
+        'button_text' => 'Remit to Unlock COD',
+        'message'   => 'Cannot accept new COD orders. Remit to unlock.',
+    ],
+    'blocked_all' => [
+        'icon'      => 'bi-shield-exclamation',
+        'label'     => 'ACCOUNT RESTRICTED',
+        'color'     => '#DC2626',
+        'bg'        => '#fef2f2',
+        'border'    => '#dc2626',
+        'bar_color' => '#DC2626',
+        'button_bg' => '#DC2626',
+        'button_text' => 'Remit Immediately',
+        'message'   => 'Cannot accept any orders until you remit.',
+    ],
+];
+
+$sc = $statusConfig[$walletStatus] ?? $statusConfig['normal'];
+
+// ═══════════════════════════════════════════════════════════════
+// ✅ PHASE 5: Get clinic admins (for cash remittance dropdown)
+// ═══════════════════════════════════════════════════════════════
+$adminStmt = $pdo->prepare("
+    SELECT id, CONCAT(first_name, ' ', last_name) AS name
+    FROM users
+    WHERE clinic_id = ?
+      AND role IN ('ClinicAdmin', 'Finance', 'SCM')
+      AND status = 'Active'
+    ORDER BY first_name ASC
+");
+$adminStmt->execute([$clinicId]);
+$clinicAdmins = $adminStmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Fallback kung walang admin
+if (empty($clinicAdmins)) {
+    $clinicAdmins = [];
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1709,6 +1831,52 @@ $remainingToday = (int)($todaySched['total'] ?? 0);
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: var(--ec-border); border-radius: 3px; }
         ::-webkit-scrollbar-thumb:hover { background: var(--ec-text-muted); }
+
+        .delivery-status-tag[onclick] {
+    cursor: pointer;
+    transition: all .15s;
+}
+.delivery-status-tag[onclick]:hover {
+    transform: scale(1.08);
+    box-shadow: 0 2px 6px rgba(0,0,0,.15);
+}
+
+        /* ═══════════════ PHASE 3: COD WALLET CARD ═══════════════ */
+        .cod-wallet-card {
+            animation: walletSlideIn .35s ease-out;
+        }
+
+        @keyframes walletSlideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-8px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Mobile adjustments */
+        @media (max-width: 767.98px) {
+            .cod-wallet-card {
+                padding: 1rem 1.1rem !important;
+            }
+            .cod-wallet-card > div:first-child > div:first-child > div:last-child > div:nth-child(2) {
+                font-size: 1.5rem !important;
+            }
+            .cod-wallet-card button {
+                font-size: .78rem !important;
+                padding: .75rem 1rem !important;
+                min-height: 42px !important;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .cod-wallet-card {
+                padding: .875rem 1rem !important;
+            }
+        }
     </style>
 </head>
 <body>
@@ -1745,17 +1913,30 @@ $remainingToday = (int)($todaySched['total'] ?? 0);
                 </div>
             </div>
 
-            <div class="header-actions">
-                <button class="icon-btn" title="Notifications">
-                    <i class="bi bi-bell"></i>
-                </button>
-                <button class="text-btn primary" onclick="refreshPage()">
-                    <i class="bi bi-arrow-clockwise"></i> <span>Refresh</span>
-                </button>
-                <button class="text-btn" onclick="logout()">
-                    <i class="bi bi-box-arrow-right"></i> <span>Logout</span>
-                </button>
-            </div>
+<div class="header-actions">
+    <!-- ✅ NOTIFICATIONS -->
+    <button class="icon-btn" title="Notifications">
+        <i class="bi bi-bell"></i>
+    </button>
+
+    <!-- ✅ MESSAGES -->
+    <button class="icon-btn" onclick="toggleRiderChat()" title="Messages" style="position:relative;">
+        <i class="bi bi-chat-dots"></i>
+        <span id="riderChatBadge" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger d-none" style="font-size:0.55rem; padding:2px 4px; border:1.5px solid #fff;">
+            0
+        </span>
+    </button>
+
+    <!-- ✅ REFRESH -->
+    <button class="text-btn primary" onclick="refreshPage()">
+        <i class="bi bi-arrow-clockwise"></i> <span>Refresh</span>
+    </button>
+
+    <!-- ✅ LOGOUT -->
+    <button class="text-btn" onclick="logout()">
+        <i class="bi bi-box-arrow-right"></i> <span>Logout</span>
+    </button>
+</div>
         </div>
     </div>
 
@@ -1796,6 +1977,227 @@ $remainingToday = (int)($todaySched['total'] ?? 0);
                 <div class="shift-item-value"><?= (int)($todaySched['total'] ?? 0) ?></div>
             </div>
         </div>
+
+                <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- ✅ PHASE 3: COD WALLET CARD                             -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <div class="cod-wallet-card" style="
+            background: <?= $sc['bg'] ?>;
+            border: 2px solid <?= $sc['border'] ?>;
+            border-radius: 14px;
+            padding: 1.25rem 1.35rem;
+            margin-bottom: 1.25rem;
+            box-shadow: 0 4px 16px rgba(15,23,42,.06);
+            position: relative;
+            overflow: hidden;
+        ">
+            <!-- Header row -->
+            <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;margin-bottom:1rem;">
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <div style="
+                        width:44px;height:44px;border-radius:10px;
+                        background:<?= $sc['color'] ?>15;
+                        color:<?= $sc['color'] ?>;
+                        display:flex;align-items:center;justify-content:center;
+                        font-size:22px;flex-shrink:0;
+                    ">
+                        <i class="bi <?= $sc['icon'] ?>"></i>
+                    </div>
+                    <div>
+                        <div style="
+                            font-size:.65rem;text-transform:uppercase;
+                            letter-spacing:.08em;font-weight:800;
+                            color:<?= $sc['color'] ?>;
+                            margin-bottom:2px;
+                        "><?= $sc['label'] ?></div>
+                        <div style="
+                            font-size:1.75rem;font-weight:800;
+                            color:var(--ec-text);
+                            letter-spacing:-.02em;
+                            line-height:1.1;
+                        ">₱<?= number_format($walletBalance, 2) ?></div>
+                        <div style="
+                            font-size:.72rem;color:var(--ec-text-muted);
+                            font-weight:600;margin-top:3px;
+                        ">
+                            <?= $codCollectionCount ?> collection<?= $codCollectionCount !== 1 ? 's' : '' ?>
+                            · limit ₱<?= number_format($walletLimit, 0) ?>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Percent badge -->
+                <div style="
+                    background:<?= $sc['color'] ?>15;
+                    color:<?= $sc['color'] ?>;
+                    padding:6px 12px;border-radius:999px;
+                    font-size:.72rem;font-weight:800;
+                    letter-spacing:.04em;
+                    white-space:nowrap;
+                ">
+                    <?= $walletPercentDisplay ?>% USED
+                </div>
+            </div>
+
+            <!-- Progress bar -->
+            <div style="
+                width:100%;height:8px;
+                background:rgba(0,0,0,.06);
+                border-radius:999px;
+                overflow:hidden;
+                margin-bottom:<?= $sc['message'] ? '0.75rem' : '1rem' ?>;
+            ">
+                <div style="
+                    width:<?= $walletPercentDisplay ?>%;
+                    height:100%;
+                    background:<?= $sc['bar_color'] ?>;
+                    border-radius:999px;
+                    transition:width .4s ease;
+                "></div>
+            </div>
+
+            <?php if ($sc['message']): ?>
+            <!-- Warning/Blocked message -->
+            <div style="
+                display:flex;align-items:flex-start;gap:8px;
+                padding:.65rem .85rem;
+                background:<?= $sc['color'] ?>10;
+                border-left:3px solid <?= $sc['color'] ?>;
+                border-radius:6px;
+                margin-bottom:1rem;
+                font-size:.78rem;
+                color:<?= $sc['color'] ?>;
+                font-weight:600;
+                line-height:1.4;
+            ">
+                <i class="bi bi-info-circle-fill" style="font-size:14px;flex-shrink:0;margin-top:1px;"></i>
+                <span><?= $sc['message'] ?></span>
+            </div>
+            <?php endif; ?>
+
+            <!-- Action button -->
+            <?php if ($walletBalance > 0): ?>
+                <button 
+                    onclick="handleRemitClick()"
+                    style="
+                        width:100%;
+                        background:<?= $sc['button_bg'] ?>;
+                        color:#fff;
+                        border:none;
+                        padding:.85rem 1.25rem;
+                        border-radius:10px;
+                        font-size:.85rem;
+                        font-weight:800;
+                        letter-spacing:.03em;
+                        text-transform:uppercase;
+                        cursor:pointer;
+                        transition:all .15s;
+                        font-family:inherit;
+                        display:flex;
+                        align-items:center;
+                        justify-content:center;
+                        gap:8px;
+                        min-height:46px;
+                    "
+                    onmouseover="this.style.transform='translateY(-1px)';this.style.boxShadow='0 4px 12px <?= $sc['color'] ?>40';"
+                    onmouseout="this.style.transform='';this.style.boxShadow='';"
+                >
+                    <i class="bi bi-cash-stack"></i>
+                    <?= $sc['button_text'] ?> — ₱<?= number_format($walletBalance, 2) ?>
+                    <i class="bi bi-arrow-right"></i>
+                </button>
+            <?php else: ?>
+                <div style="
+                    text-align:center;
+                    padding:.85rem;
+                    background:rgba(0,0,0,.03);
+                    border-radius:10px;
+                    color:var(--ec-text-muted);
+                    font-size:.82rem;
+                    font-weight:700;
+                ">
+                    <i class="bi bi-check-circle-fill" style="color:#00B761;margin-right:6px;"></i>
+                    All clear — walang pending COD
+                </div>
+            <?php endif; ?>
+        </div>
+
+        <?php if (!empty($recentCollections)): ?>
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <!-- ✅ PHASE 3: RECENT COLLECTIONS LIST                     -->
+        <!-- ═══════════════════════════════════════════════════════ -->
+        <div style="
+            background:#fff;
+            border:1px solid var(--ec-border);
+            border-radius:12px;
+            margin-bottom:1.25rem;
+            overflow:hidden;
+            box-shadow:var(--ec-shadow-sm);
+        ">
+            <div style="
+                padding:.85rem 1.15rem;
+                border-bottom:1px solid var(--ec-border);
+                display:flex;
+                justify-content:space-between;
+                align-items:center;
+                background:#f8fafc;
+            ">
+                <div style="
+                    font-size:.7rem;
+                    text-transform:uppercase;
+                    letter-spacing:.08em;
+                    font-weight:800;
+                    color:var(--ec-text-muted);
+                    display:flex;align-items:center;gap:6px;
+                ">
+                    <i class="bi bi-clock-history"></i>
+                    Recent Collections
+                </div>
+                <div style="font-size:.7rem;color:var(--ec-text-muted);font-weight:600;">
+                    Last <?= count($recentCollections) ?>
+                </div>
+            </div>
+
+            <?php foreach ($recentCollections as $idx => $col): ?>
+                <div style="
+                    display:flex;
+                    justify-content:space-between;
+                    align-items:center;
+                    padding:.75rem 1.15rem;
+                    border-bottom:<?= $idx < count($recentCollections) - 1 ? '1px solid var(--ec-border)' : 'none' ?>;
+                    gap:1rem;
+                ">
+                    <div style="min-width:0;flex:1;">
+                        <div style="
+                            font-family:'Courier New',monospace;
+                            font-weight:800;
+                            color:var(--ec-primary);
+                            font-size:.78rem;
+                            margin-bottom:2px;
+                        ">#<?= htmlspecialchars($col['reservation_code'] ?? '—') ?></div>
+                        <div style="
+                            font-size:.72rem;
+                            color:var(--ec-text-muted);
+                            white-space:nowrap;
+                            overflow:hidden;
+                            text-overflow:ellipsis;
+                        ">
+                            <?= htmlspecialchars($col['customer_name'] ?? 'Unknown customer') ?>
+                            · <?= date('M d, g:i A', strtotime($col['created_at'])) ?>
+                        </div>
+                    </div>
+                    <div style="
+                        font-weight:800;
+                        font-size:1rem;
+                        color:#00B761;
+                        letter-spacing:-.01em;
+                        white-space:nowrap;
+                    ">+₱<?= number_format($col['amount'], 2) ?></div>
+                </div>
+            <?php endforeach; ?>
+        </div>
+        <?php endif; ?>
+
 
         <!-- ═══ STATS CARDS (ParcelGo Style) ═══ -->
         <div class="stats-row">
@@ -2037,10 +2439,32 @@ $remainingToday = (int)($todaySched['total'] ?? 0);
 
                         <!-- Column 1: ID + Customer + Address -->
                         <div class="delivery-col">
-                            <div class="delivery-id-badge">
-                                <span class="delivery-id">#<?= htmlspecialchars($d['reservation_code']) ?></span>
-                                <span class="delivery-status-tag tag-<?= $st['class'] ?>"><?= $st['label'] ?></span>
-                            </div>
+                        <div class="delivery-id-badge">
+                            <span class="delivery-id">#<?= htmlspecialchars($d['reservation_code']) ?></span>
+                            <span class="delivery-status-tag tag-<?= $st['class'] ?>"><?= $st['label'] ?></span>
+                            
+                            <?php 
+                            // ✅ Parcel photo indicator
+                            $hasHandoverPhotos = false;
+                            $handoverPhotoCount = 0;
+                            if (!empty($d['handover_photos'])) {
+                                $decoded = json_decode($d['handover_photos'], true);
+                                if (is_array($decoded) && count($decoded) > 0) {
+                                    $hasHandoverPhotos = true;
+                                    $handoverPhotoCount = count($decoded);
+                                }
+                            }
+                            ?>
+                            <?php if ($hasHandoverPhotos): ?>
+                                <span class="delivery-status-tag" 
+                                    style="background:#d1fae5;color:#065f46;border:1px solid #6ee7b7;"
+                                    title="Parcel photos available"
+                                    onclick="event.stopPropagation(); showHandoverPhotos(<?= (int)$d['id'] ?>, <?= htmlspecialchars(json_encode($d['handover_photos']), ENT_QUOTES) ?>, <?= htmlspecialchars(json_encode($d['handover_notes'] ?? ''), ENT_QUOTES) ?>, <?= htmlspecialchars(json_encode($d['handover_photo_at'] ?? ''), ENT_QUOTES) ?>)">
+                                    <i class="bi bi-camera-fill"></i>
+                                    <?= $handoverPhotoCount ?>
+                                </span>
+                            <?php endif; ?>
+                        </div>
                             <div class="delivery-customer-name"><?= htmlspecialchars($d['customer_name']) ?></div>
                             <div class="delivery-address-line">
                                 <i class="bi bi-geo-alt"></i>
@@ -2252,33 +2676,67 @@ $remainingToday = (int)($todaySched['total'] ?? 0);
                         <div id="collectionResult" class="collection-result" style="display:none;"></div>
                     </div>
 
-                    <div class="mb-3">
-                        <label class="form-label fw-bold" style="font-size:.8rem;">
-                            <i class="bi bi-camera-fill me-1" style="color:var(--ec-danger);"></i>
-                            Proof of Delivery <span style="color:var(--ec-danger);">*</span>
-                        </label>
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- ✅ PARCEL PHOTOS (BEFORE HANDOVER) — OUTSIDE label       -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div id="handoverPhotosSection" style="display:none;margin-bottom:1rem;">
+    <div style="background:#f0fdf4;border:2px solid #86efac;border-radius:10px;padding:.75rem;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:.6rem;">
+            <div style="font-size:.75rem;font-weight:800;color:#065f46;display:flex;align-items:center;gap:6px;">
+                <i class="bi bi-shield-check"></i>
+                PARCEL PHOTOS (BEFORE HANDOVER)
+            </div>
+            <span id="handoverPhotoCountBadge" 
+                  style="font-size:.65rem;font-weight:800;color:#065f46;background:#d1fae5;padding:2px 8px;border-radius:999px;">
+                0 photos
+            </span>
+        </div>
+        
+        <div style="font-size:.7rem;color:#166534;margin-bottom:.5rem;">
+            <i class="bi bi-info-circle"></i>
+            This is the parcel condition before handover to you. Please verify before delivery.
+        </div>
+        
+        <div id="handoverPhotosGrid" 
+             style="display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem;">
+        </div>
+        
+        <div id="handoverNotesBox" 
+             style="display:none;margin-top:.6rem;padding:.5rem .75rem;background:#fff;border-radius:6px;font-size:.75rem;color:#166534;">
+        </div>
+        
+        <div id="handoverPhotoAtBox" 
+             style="display:none;margin-top:.4rem;font-size:.65rem;color:#6b7280;text-align:right;">
+        </div>
+    </div>
+</div>
 
-                        <div id="proofPreviewWrap" class="proof-preview-wrap" style="display:none;">
-                            <img id="proofPreview" src="" alt="Proof of Delivery">
-                            <button type="button" class="proof-remove-btn" onclick="clearProof()" title="Remove">
-                                <i class="bi bi-x-lg"></i>
-                            </button>
-                        </div>
+<!-- Proof of Delivery Section (standalone) -->
+<div class="mb-3">
+    <label class="form-label fw-bold" style="font-size:.8rem;">
+        <i class="bi bi-camera-fill me-1" style="color:var(--ec-danger);"></i>
+        Proof of Delivery <span style="color:var(--ec-danger);">*</span>
+        <span class="badge bg-danger ms-1" style="font-size:.55rem;letter-spacing:.05em;">
+            <i class="bi bi-record-circle"></i> LIVE
+        </span>
+    </label>
 
-                        <div id="proofUploadWrap">
-                            <label for="proofInput" class="proof-upload-box">
-                                <i class="bi bi-camera"></i>
-                                <div class="label">Tap to take photo</div>
-                                <div class="hint">Take a photo of the parcel with the recipient</div>
-                            </label>
-                            <input type="file" 
-                                   id="proofInput"
-                                   accept="image/*"
-                                   capture="environment"
-                                   style="display:none;"
-                                   onchange="previewProof(event)">
-                        </div>
-                    </div>
+    <div id="proofPreviewWrap" class="proof-preview-wrap" style="display:none;">
+        <img id="proofPreview" src="" alt="Proof of Delivery">
+        <button type="button" class="proof-remove-btn" onclick="clearProof()" title="Retake">
+            <i class="bi bi-arrow-counterclockwise"></i>
+        </button>
+    </div>
+
+    <div id="proofUploadWrap">
+        <div class="proof-upload-box" onclick="openCamera()">
+            <i class="bi bi-camera-video"></i>
+            <div class="label">Open Live Camera</div>
+            <div class="hint">Live photo only — no gallery upload</div>
+        </div>
+        <input type="file" id="proofInput" accept="image/*" style="display:none;">
+    </div>
+</div>
 
                     <div class="mb-0">
                         <label class="form-label" style="font-size:.8rem; font-weight:600;">
@@ -2300,15 +2758,20 @@ $remainingToday = (int)($todaySched['total'] ?? 0);
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script>
         const API_URL = '../api/reservations.php';
         let deliveryModal;
         let pendingDeliveryId = null;
         let currentTotalDue = 0;
         let currentIsCOD = false;
+        let cameraModal;
+        let videoStream = null;
+        let capturedBlob = null;
 
         document.addEventListener('DOMContentLoaded', function () {
             deliveryModal = new bootstrap.Modal(document.getElementById('deliveryModal'));
+            cameraModal = new bootstrap.Modal(document.getElementById('cameraModal'));
 
             document.getElementById('confirmDeliverBtn')?.addEventListener('click', function () {
                 if (!pendingDeliveryId) return;
@@ -2409,6 +2872,455 @@ $remainingToday = (int)($todaySched['total'] ?? 0);
             });
         });
 
+        // ═══════════════════════════════════════════════════════════
+        // ✅ PHASE 5: REMIT FLOW (Cash + Online)
+        // ═══════════════════════════════════════════════════════════
+        function handleRemitClick() {
+            const balance = <?= json_encode($walletBalance) ?>;
+            const status  = <?= json_encode($walletStatus) ?>;
+            const limit   = <?= json_encode($walletLimit) ?>;
+            
+            if (balance <= 0) {
+                Swal.fire('No Balance', 'Wala kang pending COD balance.', 'info');
+                return;
+            }
+            
+            let statusMsg = '';
+            if (status === 'blocked_all') {
+                statusMsg = `
+                    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;
+                                padding:10px;margin-bottom:12px;text-align:left;font-size:13px;color:#991b1b;">
+                        <strong><i class="bi bi-shield-exclamation"></i> Account Restricted</strong><br>
+                        Cannot accept any orders until you remit.
+                    </div>
+                `;
+            } else if (status === 'blocked_cod') {
+                statusMsg = `
+                    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;
+                                padding:10px;margin-bottom:12px;text-align:left;font-size:13px;color:#991b1b;">
+                        <strong><i class="bi bi-x-octagon-fill"></i> COD Blocked</strong><br>
+                        Cannot accept COD orders until you remit.
+                    </div>
+                `;
+            } else if (status === 'warning') {
+                statusMsg = `
+                    <div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;
+                                padding:10px;margin-bottom:12px;text-align:left;font-size:13px;color:#92400e;">
+                        <strong><i class="bi bi-exclamation-triangle-fill"></i> Nearing Limit</strong><br>
+                        Please remit soon to avoid blocking.
+                    </div>
+                `;
+            }
+
+            Swal.fire({
+                title: '💰 Remit COD Balance',
+                html: `
+                    <div style="text-align:left;">
+                        ${statusMsg}
+                        
+                        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;
+                                    padding:16px;margin-bottom:16px;text-align:center;">
+                            <div style="font-size:11px;color:#64748b;font-weight:700;
+                                        text-transform:uppercase;letter-spacing:.05em;">
+                                Balance to Remit
+                            </div>
+                            <div style="font-size:28px;font-weight:800;color:#0d6e6e;
+                                        letter-spacing:-.02em;margin-top:4px;">
+                                ₱${balance.toFixed(2)}
+                            </div>
+                        </div>
+
+                        <div style="margin-bottom:16px;">
+                            <div style="font-size:13px;color:#374151;font-weight:700;margin-bottom:8px;">
+                                Choose Remittance Method:
+                            </div>
+                            
+                            <div style="display:flex;flex-direction:column;gap:8px;">
+                                <label style="
+                                    display:flex;align-items:flex-start;gap:10px;
+                                    padding:12px 14px;
+                                    border:2px solid #00B761;background:#f0fdf4;
+                                    border-radius:10px;cursor:pointer;
+                                    transition:all .15s;
+                                " onclick="document.getElementById('radioOnline').checked=true;">
+                                    <input type="radio" name="remit_method" id="radioOnline" value="online" checked
+                                           style="margin-top:2px;width:16px;height:16px;accent-color:#00B761;cursor:pointer;">
+                                    <div>
+                                        <div style="font-size:14px;font-weight:800;color:#065f46;">
+                                            <i class="bi bi-credit-card"></i> Online Payment
+                                        </div>
+                                        <div style="font-size:12px;color:#059669;margin-top:2px;">
+                                            Pay via GCash, Maya, or Card. Auto-approved agad.
+                                        </div>
+                                    </div>
+                                </label>
+
+                                <label style="
+                                    display:flex;align-items:flex-start;gap:10px;
+                                    padding:12px 14px;
+                                    border:2px solid #e2e8f0;background:#fff;
+                                    border-radius:10px;cursor:pointer;
+                                    transition:all .15s;
+                                " onclick="document.getElementById('radioCash').checked=true;">
+                                    <input type="radio" name="remit_method" id="radioCash" value="cash"
+                                           style="margin-top:2px;width:16px;height:16px;accent-color:#0d6e6e;cursor:pointer;">
+                                    <div>
+                                        <div style="font-size:14px;font-weight:800;color:#374151;">
+                                            <i class="bi bi-cash-stack"></i> Cash Remittance
+                                        </div>
+                                        <div style="font-size:12px;color:#6b7280;margin-top:2px;">
+                                            Hand over cash sa clinic admin. Needs approval.
+                                        </div>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                `,
+                icon: undefined,
+                width: '500px',
+                showCancelButton: true,
+                showConfirmButton: true,
+                confirmButtonText: 'Continue →',
+                cancelButtonText: 'Cancel',
+                confirmButtonColor: '#0d6e6e',
+                cancelButtonColor: '#6b7280',
+                preConfirm: () => {
+                    const selected = document.querySelector('input[name="remit_method"]:checked');
+                    if (!selected) {
+                        Swal.showValidationMessage('Please select a method');
+                        return false;
+                    }
+                    return selected.value;
+                }
+            }).then((result) => {
+                if (!result.isConfirmed) return;
+                
+                if (result.value === 'online') {
+                    submitOnlineRemit();
+                } else if (result.value === 'cash') {
+                    openCashRemitModal();
+                }
+            });
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // ✅ PHASE 5: ONLINE REMIT (PayMongo)
+        // ═══════════════════════════════════════════════════════════
+        async function submitOnlineRemit() {
+            Swal.fire({
+                title: 'Creating payment session...',
+                allowOutsideClick: false,
+                showConfirmButton: false,
+                didOpen: () => Swal.showLoading()
+            });
+            
+            try {
+                const formData = new FormData();
+                formData.append('action', 'create_remittance_checkout');
+                
+                const res = await fetch('../api/remittance_paymongo.php', {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'same-origin'
+                });
+                
+                const data = await res.json();
+                
+                if (data.success && data.checkout_url) {
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'Redirecting...',
+                        text: 'You will be redirected to the payment page.',
+                        timer: 1000,
+                        showConfirmButton: false
+                    }).then(() => {
+                        window.location.href = data.checkout_url;
+                    });
+                } else {
+                    Swal.fire({
+                        icon: 'error',
+                        title: 'Failed',
+                        text: data.error || 'Could not create payment session',
+                        confirmButtonColor: '#0d6e6e'
+                    });
+                }
+            } catch (err) {
+                console.error('Online remit error:', err);
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Network Error',
+                    text: err.message,
+                    confirmButtonColor: '#0d6e6e'
+                });
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // ✅ PHASE 5: CASH REMIT MODAL
+        // ═══════════════════════════════════════════════════════════
+        function openCashRemitModal() {
+            const balance = <?= json_encode($walletBalance) ?>;
+            const admins = <?= json_encode($clinicAdmins ?? []) ?>;
+            
+            if (!admins || admins.length === 0) {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'No Admins Available',
+                    text: 'Walang clinic admin na pwedeng tanggapin ang cash. Please contact clinic.',
+                    confirmButtonColor: '#0d6e6e'
+                });
+                return;
+            }
+            
+            let adminOptions = '<option value="">-- Select admin --</option>';
+            admins.forEach(a => {
+                adminOptions += `<option value="${a.id}">${escapeHtml(a.name)}</option>`;
+            });
+            
+            Swal.fire({
+                title: '💵 Cash Remittance',
+                html: `
+                    <div style="text-align:left;">
+                        <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:10px;
+                                    padding:14px 16px;margin-bottom:16px;text-align:center;">
+                            <div style="font-size:11px;color:#065f46;font-weight:700;
+                                        text-transform:uppercase;letter-spacing:.05em;">
+                                Amount to Remit
+                            </div>
+                            <div style="font-size:24px;font-weight:800;color:#065f46;
+                                        letter-spacing:-.02em;margin-top:4px;">
+                                ₱${balance.toFixed(2)}
+                            </div>
+                        </div>
+
+                        <div style="margin-bottom:14px;">
+                            <label style="font-size:13px;color:#374151;font-weight:700;
+                                          display:block;margin-bottom:6px;">
+                                Handed to <span style="color:#dc2626;">*</span>
+                            </label>
+                            <select id="cashHandedTo" style="
+                                width:100%;padding:10px 12px;
+                                border:1px solid #d1d5db;border-radius:8px;
+                                font-size:14px;background:#fff;
+                                font-family:inherit;color:#111;
+                            ">
+                                ${adminOptions}
+                            </select>
+                        </div>
+
+                        <div style="margin-bottom:14px;">
+                            <label style="font-size:13px;color:#374151;font-weight:700;
+                                          display:block;margin-bottom:6px;">
+                                Proof Photo <span style="color:#dc2626;">*</span>
+                            </label>
+                            <div style="
+                                border:2px dashed #cbd5e1;border-radius:10px;
+                                padding:16px;text-align:center;
+                                background:#f8fafc;cursor:pointer;
+                                transition:all .15s;
+                            " id="cashProofBox" onclick="document.getElementById('cashProofInput').click()">
+                                <i class="bi bi-camera" style="font-size:24px;color:#0d6e6e;"></i>
+                                <div style="font-size:13px;font-weight:700;color:#334155;margin-top:6px;">
+                                    Click to upload proof
+                                </div>
+                                <div style="font-size:11px;color:#94a3b8;margin-top:2px;">
+                                    Photo ng cash handover o GCash receipt
+                                </div>
+                            </div>
+                            <input type="file" id="cashProofInput" accept="image/*"
+                                   style="display:none;" onchange="previewCashProof(event)">
+                            
+                            <div id="cashProofPreview" style="display:none;margin-top:10px;position:relative;">
+                                <img id="cashProofImg" style="
+                                    width:100%;max-height:200px;object-fit:contain;
+                                    border-radius:8px;border:1px solid #e2e8f0;background:#fff;
+                                ">
+                                <button type="button" onclick="removeCashProof(event)" style="
+                                    position:absolute;top:6px;right:6px;
+                                    background:rgba(220,38,38,.9);color:#fff;
+                                    border:none;border-radius:50%;
+                                    width:28px;height:28px;cursor:pointer;
+                                    display:flex;align-items:center;justify-content:center;
+                                ">
+                                    <i class="bi bi-x-lg" style="font-size:12px;"></i>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div style="margin-bottom:6px;">
+                            <label style="font-size:13px;color:#374151;font-weight:700;
+                                          display:block;margin-bottom:6px;">
+                                Notes <span style="color:#9ca3af;font-weight:400;">(optional)</span>
+                            </label>
+                            <textarea id="cashNotes" rows="2" placeholder="e.g., Handed at clinic front desk at 4PM"
+                                style="
+                                    width:100%;padding:10px 12px;
+                                    border:1px solid #d1d5db;border-radius:8px;
+                                    font-size:13px;font-family:inherit;
+                                    resize:vertical;min-height:56px;
+                                " maxlength="300"></textarea>
+                        </div>
+
+                        <div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;
+                                    padding:10px;margin-top:12px;font-size:12px;color:#92400e;">
+                            <i class="bi bi-info-circle-fill"></i>
+                            <strong>Note:</strong> Kailangan i-approve ng clinic admin ang remittance. 
+                            Hindi mababawasan ang wallet balance hanggang ma-approve.
+                        </div>
+                    </div>
+                `,
+                width: '480px',
+                showCancelButton: true,
+                confirmButtonText: 'Submit Remittance',
+                cancelButtonText: 'Cancel',
+                confirmButtonColor: '#0d6e6e',
+                cancelButtonColor: '#6b7280',
+                preConfirm: () => {
+                    const handedTo = document.getElementById('cashHandedTo').value;
+                    const proofInput = document.getElementById('cashProofInput');
+                    const notes = document.getElementById('cashNotes').value.trim();
+                    
+                    if (!handedTo) {
+                        Swal.showValidationMessage('Please select kung kanino mo ibinigay ang cash');
+                        return false;
+                    }
+                    if (!proofInput.files || proofInput.files.length === 0) {
+                        Swal.showValidationMessage('Proof photo is required');
+                        return false;
+                    }
+                    
+                    return {
+                        handed_to: handedTo,
+                        notes: notes,
+                        proof: proofInput.files[0]
+                    };
+                }
+            }).then((result) => {
+                if (!result.isConfirmed) return;
+                submitCashRemit(result.value);
+            });
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // ✅ PHASE 5: PROOF PHOTO PREVIEW
+        // ═══════════════════════════════════════════════════════════
+        function previewCashProof(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            
+            if (file.size > 5 * 1024 * 1024) {
+                Swal.fire('Too Large', 'Image must be under 5MB.', 'warning');
+                event.target.value = '';
+                return;
+            }
+            
+            if (!file.type.startsWith('image/')) {
+                Swal.fire('Invalid', 'Please select an image file.', 'warning');
+                event.target.value = '';
+                return;
+            }
+            
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                document.getElementById('cashProofImg').src = e.target.result;
+                document.getElementById('cashProofPreview').style.display = 'block';
+                document.getElementById('cashProofBox').style.display = 'none';
+            };
+            reader.readAsDataURL(file);
+        }
+        
+        function removeCashProof(event) {
+            event.stopPropagation();
+            document.getElementById('cashProofInput').value = '';
+            document.getElementById('cashProofPreview').style.display = 'none';
+            document.getElementById('cashProofBox').style.display = 'block';
+        }
+        
+        // ═══════════════════════════════════════════════════════════
+        // ✅ PHASE 5: SUBMIT CASH REMIT
+        // ═══════════════════════════════════════════════════════════
+        async function submitCashRemit(payload) {
+            Swal.fire({
+                title: 'Submitting remittance...',
+                allowOutsideClick: false,
+                showConfirmButton: false,
+                didOpen: () => Swal.showLoading()
+            });
+            
+            try {
+                const formData = new FormData();
+                formData.append('action', 'submit_cash_remittance');
+                formData.append('handed_to', payload.handed_to);
+                formData.append('notes', payload.notes);
+                formData.append('proof_photo', payload.proof);
+                
+                const res = await fetch('../api/reservations.php', {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'same-origin'
+                });
+                
+                const data = await res.json();
+                
+                if (data.success) {
+                    await Swal.fire({
+                        icon: 'success',
+                        title: 'Submitted!',
+                        html: `
+                            <div style="text-align:left;font-size:14px;color:#374151;line-height:1.6;">
+                                <p style="margin-bottom:12px;">Ang remittance mo ay nasubmit na.</p>
+                                <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:10px 12px;font-size:13px;margin-bottom:12px;">
+                                    <div><strong>Code:</strong> ${data.data.remittance_code || '—'}</div>
+                                    <div><strong>Amount:</strong> ₱${parseFloat(data.data.amount || 0).toFixed(2)}</div>
+                                    <div><strong>Handed to:</strong> ${escapeHtml(data.data.handed_to || '')}</div>
+                                </div>
+                                <div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:10px 12px;font-size:12px;color:#92400e;">
+                                    <i class="bi bi-hourglass-split"></i> 
+                                    Waiting for clinic approval. You'll be notified once approved.
+                                </div>
+                            </div>
+                        `,
+                        confirmButtonColor: '#0d6e6e',
+                        confirmButtonText: 'Got it'
+                    });
+                    location.reload();
+                } else {
+                    if (data.data && data.data.code === 'duplicate_pending') {
+                        Swal.fire({
+                            icon: 'warning',
+                            title: 'May Pending Pa',
+                            html: `
+                                <p>May pending cash remittance ka pa:</p>
+                                <div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:8px 12px;margin:8px 0;font-family:monospace;font-weight:700;">
+                                    ${escapeHtml(data.data.existing_code || '')}
+                                </div>
+                                <p style="font-size:13px;color:#6b7280;">Hintayin ang approval bago mag-submit muli.</p>
+                            `,
+                            confirmButtonColor: '#0d6e6e'
+                        });
+                    } else {
+                        Swal.fire('Error', data.message || 'Something went wrong', 'error');
+                    }
+                }
+            } catch (err) {
+                console.error('Cash remit error:', err);
+                Swal.fire('Error', 'Network error: ' + err.message, 'error');
+            }
+        }
+        
+        // ═══════════════════════════════════════════════════════════
+        // ✅ Simple HTML escape helper
+        // ═══════════════════════════════════════════════════════════
+        if (typeof escapeHtml === 'undefined') {
+            window.escapeHtml = function(text) {
+                if (text === null || text === undefined) return '';
+                const d = document.createElement('div');
+                d.textContent = String(text);
+                return d.innerHTML;
+            };
+        }
+
         function refreshPage() { location.reload(); }
 
         function logout() {
@@ -2449,9 +3361,139 @@ $remainingToday = (int)($todaySched['total'] ?? 0);
                 document.getElementById('confirmDeliverBtn').disabled = false;
             }
 
+            loadHandoverPhotosForModal(d);
+
             clearProof();
             document.getElementById('delNotes').value = '';
             deliveryModal.show();
+        }
+
+        function loadHandoverPhotosForModal(d) {
+            const section = document.getElementById('handoverPhotosSection');
+            const grid = document.getElementById('handoverPhotosGrid');
+            const notesBox = document.getElementById('handoverNotesBox');
+            const atBox = document.getElementById('handoverPhotoAtBox');
+            const countBadge = document.getElementById('handoverPhotoCountBadge');
+
+            if (!d.handover_photos) {
+                section.style.display = 'none';
+                return;
+            }
+
+            let photos = [];
+            try {
+                photos = typeof d.handover_photos === 'string' 
+                    ? JSON.parse(d.handover_photos) 
+                    : d.handover_photos;
+            } catch (e) {
+                console.error('Parse error:', e);
+                section.style.display = 'none';
+                return;
+            }
+
+            if (!Array.isArray(photos) || photos.length === 0) {
+                section.style.display = 'none';
+                return;
+            }
+
+            section.style.display = 'block';
+            countBadge.textContent = photos.length + ' photo' + (photos.length > 1 ? 's' : '');
+
+            grid.innerHTML = photos.map((p, i) => {
+                let imgUrl = p;
+                if (p.startsWith('uploads/')) {
+                    imgUrl = '/' + p;
+                } else if (p.startsWith('/uploads/')) {
+                    imgUrl = p;
+                } else if (p.startsWith('../uploads/')) {
+                    imgUrl = p.substring(2);
+                } else {
+                    imgUrl = '/uploads/handover_photos/' + p;
+                }
+                
+                return `
+                    <div style="position:relative;aspect-ratio:1;border-radius:8px;overflow:hidden;
+                                border:2px solid #86efac;background:#fff;cursor:pointer;"
+                         onclick="openHandoverViewer('${imgUrl.replace(/'/g, "\\'")}', 'Parcel Photo ${i + 1}')">
+                        <img src="${imgUrl}" 
+                             style="width:100%;height:100%;object-fit:cover;display:block;"
+                             onerror="this.style.display='none';">
+                        <div style="position:absolute;top:4px;left:4px;background:rgba(13,110,110,.9);
+                                    color:#fff;width:22px;height:22px;border-radius:50%;
+                                    display:flex;align-items:center;justify-content:center;
+                                    font-size:.7rem;font-weight:800;">
+                            ${i + 1}
+                        </div>
+                        <div style="position:absolute;bottom:4px;right:4px;background:rgba(0,0,0,.7);
+                                    color:#fff;padding:2px 6px;border-radius:4px;
+                                    font-size:.6rem;font-weight:700;">
+                            <i class="bi bi-zoom-in"></i>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            if (d.handover_notes) {
+                notesBox.style.display = 'block';
+                notesBox.innerHTML = `<strong>Clinic Notes:</strong> ${escHtml(d.handover_notes)}`;
+            } else {
+                notesBox.style.display = 'none';
+            }
+
+            if (d.handover_photo_at) {
+                atBox.style.display = 'block';
+                atBox.innerHTML = `<i class="bi bi-clock"></i> Captured: ${escHtml(d.handover_photo_at)}`;
+            } else {
+                atBox.style.display = 'none';
+            }
+        }
+
+        function escHtml(t) {
+            if (t === null || t === undefined) return '';
+            const d = document.createElement('div');
+            d.textContent = String(t);
+            return d.innerHTML;
+        }
+
+        function openHandoverViewer(src, alt = '') {
+            let modalEl = document.getElementById('handoverViewerModal');
+            
+            if (!modalEl) {
+                const wrapper = document.createElement('div');
+                wrapper.innerHTML = `
+                    <div class="modal fade" id="handoverViewerModal" tabindex="-1" style="z-index: 9999;">
+                        <div class="modal-dialog modal-dialog-centered modal-xl" style="max-width: 95vw;">
+                            <div class="modal-content" style="background:#0f172a;border:none;">
+                                <div class="modal-header" style="border-bottom:1px solid #334155;">
+                                    <h5 class="modal-title text-white" style="font-size:.9rem;">
+                                        <i class="bi bi-shield-check me-2" style="color:#86efac;"></i>
+                                        <span id="handoverViewerTitle">Parcel Photo</span>
+                                    </h5>
+                                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                                </div>
+                                <div class="modal-body text-center" style="padding:1rem;">
+                                    <img id="handoverViewerImg" src="" alt="" 
+                                         style="max-width:100%;max-height:80vh;border-radius:8px;object-fit:contain;">
+                                </div>
+                                <div class="modal-footer" style="border-top:1px solid #334155;justify-content:space-between;">
+                                    <div style="font-size:.7rem;color:#94a3b8;">
+                                        <i class="bi bi-info-circle"></i> Proof of condition before handover
+                                    </div>
+                                    <button class="btn btn-sm btn-light" data-bs-dismiss="modal">Close</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(wrapper.firstElementChild);
+                modalEl = document.getElementById('handoverViewerModal');
+            }
+
+            document.getElementById('handoverViewerImg').src = src;
+            document.getElementById('handoverViewerTitle').textContent = alt;
+
+            const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+            modal.show();
         }
 
         function validateCollection() {
@@ -2518,31 +3560,6 @@ $remainingToday = (int)($todaySched['total'] ?? 0);
                 confirmBtn.disabled = false;
                 return;
             }
-        }
-
-        function previewProof(event) {
-            const file = event.target.files[0];
-            if (!file) return;
-
-            if (file.size > 5 * 1024 * 1024) {
-                Swal.fire('Too Large', 'Image must be under 5MB.', 'warning');
-                event.target.value = '';
-                return;
-            }
-
-            if (!file.type.startsWith('image/')) {
-                Swal.fire('Invalid File', 'Please select an image file.', 'warning');
-                event.target.value = '';
-                return;
-            }
-
-            const reader = new FileReader();
-            reader.onload = function (e) {
-                document.getElementById('proofPreview').src = e.target.result;
-                document.getElementById('proofPreviewWrap').style.display = 'block';
-                document.getElementById('proofUploadWrap').style.display = 'none';
-            };
-            reader.readAsDataURL(file);
         }
 
         function clearProof() {
@@ -2629,13 +3646,78 @@ $remainingToday = (int)($todaySched['total'] ?? 0);
                                 showConfirmButton: false 
                             }).then(() => location.reload());
                         } else {
-                            Swal.fire('Error', data.message || 'Something went wrong', 'error');
+                            const errCode = data.data && data.data.code;
+                            
+                            if (errCode === 'blocked_cod' || errCode === 'blocked_all') {
+                                showBlockedModal(errCode, data.message, data.data.balance || 0);
+                            } else {
+                                Swal.fire('Error', data.message || 'Something went wrong', 'error');
+                            }
                         }
                     })
                     .catch(err => {
                         Swal.close();
                         Swal.fire('Error', 'Network error: ' + err.message, 'error');
                     });
+            });
+        }
+
+        function showBlockedModal(code, message, balance) {
+            const isAllBlocked = code === 'blocked_all';
+            
+            const title = isAllBlocked ? '🚫 Account Restricted' : '⚠️ Cannot Accept COD';
+            const headerColor = isAllBlocked ? '#DC2626' : '#EF4444';
+            
+            Swal.fire({
+                title: title,
+                html: `
+                    <div style="text-align:left;">
+                        <div style="
+                            background:${isAllBlocked ? '#fef2f2' : '#fff7ed'};
+                            border:1px solid ${isAllBlocked ? '#fca5a5' : '#fed7aa'};
+                            border-radius:10px;
+                            padding:14px 16px;
+                            margin-bottom:16px;
+                        ">
+                            <div style="
+                                font-size:22px;
+                                font-weight:800;
+                                color:${headerColor};
+                                letter-spacing:-.02em;
+                                margin-bottom:4px;
+                            ">₱${parseFloat(balance).toFixed(2)}</div>
+                            <div style="
+                                font-size:11px;
+                                text-transform:uppercase;
+                                letter-spacing:.05em;
+                                font-weight:800;
+                                color:${headerColor};
+                            ">Pending COD Balance</div>
+                        </div>
+
+                        <div style="font-size:14px;color:#374151;line-height:1.5;margin-bottom:16px;">
+                            ${message}
+                        </div>
+
+                        <div style="
+                            background:#eff6ff;
+                            border:1px solid #93c5fd;
+                            border-radius:8px;
+                            padding:10px 12px;
+                            font-size:12px;
+                            color:#1e40af;
+                            text-align:left;
+                        ">
+                            <strong><i class="bi bi-info-circle-fill"></i> Remittance available</strong><br>
+                            Buksan ang COD Wallet card sa dashboard para mag-remit.
+                        </div>
+                    </div>
+                `,
+                icon: undefined,
+                width: '460px',
+                confirmButtonText: 'Got it',
+                confirmButtonColor: headerColor,
+                showCancelButton: false
             });
         }
 
@@ -2656,6 +3738,19 @@ $remainingToday = (int)($todaySched['total'] ?? 0);
         function viewDelivered(d) {
             const collected = parseFloat(d.collected_amount || 0);
             const hasProof = !!d.delivery_proof_image;
+            
+            let handoverPhotos = [];
+            if (d.handover_photos) {
+                try {
+                    handoverPhotos = typeof d.handover_photos === 'string' 
+                        ? JSON.parse(d.handover_photos) 
+                        : d.handover_photos;
+                } catch (e) {
+                    handoverPhotos = [];
+                }
+            }
+            const hasHandover = Array.isArray(handoverPhotos) && handoverPhotos.length > 0;
+
             Swal.fire({
                 title: d.reservation_code,
                 html: `
@@ -2672,18 +3767,510 @@ $remainingToday = (int)($todaySched['total'] ?? 0);
                         ${collected > 0 ? `<div style="padding:8px 0;border-bottom:1px solid #eee;color:#065f46;">
                             <strong>Collected:</strong> ₱${collected.toFixed(2)}
                         </div>` : ''}
+                        
+                        ${hasHandover ? `
+                            <div style="padding:8px 0;border-bottom:1px solid #eee;">
+                                <strong style="color:#065f46;">
+                                    <i class="bi bi-shield-check"></i> Parcel Photos (Before Handover):
+                                </strong>
+                                <div style="font-size:12px;color:#6b7280;margin-top:2px;">
+                                    ${handoverPhotos.length} photo(s) captured by clinic
+                                </div>
+                                <div style="display:grid;grid-template-columns:repeat(${Math.min(handoverPhotos.length, 3)},1fr);
+                                            gap:6px;margin-top:8px;">
+                                    ${handoverPhotos.map((p, i) => {
+                                        let imgUrl = p;
+                                        if (p.startsWith('uploads/')) {
+                                            imgUrl = '/' + p;
+                                        } else if (p.startsWith('/uploads/')) {
+                                            imgUrl = p;
+                                        } else if (p.startsWith('../uploads/')) {
+                                            imgUrl = p.substring(2);
+                                        } else {
+                                            imgUrl = '/uploads/handover_photos/' + p;
+                                        }
+                                        
+                                        return `
+                                            <div style="position:relative;aspect-ratio:1;border-radius:6px;overflow:hidden;
+                                                        border:2px solid #86efac;cursor:pointer;"
+                                                 onclick="openHandoverViewer('${imgUrl.replace(/'/g, "\\'")}', 'Parcel Photo ${i + 1}')">
+                                                <img src="${imgUrl}" 
+                                                     style="width:100%;height:100%;object-fit:cover;display:block;"
+                                                     onerror="this.style.display='none';">
+                                            </div>
+                                        `;
+                                    }).join('')}
+                                </div>
+                            </div>
+                        ` : ''}
+                        
                         ${hasProof ? `
                             <div style="padding:8px 0;">
-                                <strong>Proof:</strong><br>
-                                <img src="../${d.delivery_proof_image}" style="max-width:100%;max-height:240px;border-radius:8px;margin-top:6px;border:1px solid #eee;">
+                                <strong style="color:#065f46;">
+                                    <i class="bi bi-camera-fill"></i> Proof of Delivery:
+                                </strong><br>
+                                <img src="../${d.delivery_proof_image}" 
+                                     style="max-width:100%;max-height:240px;border-radius:8px;margin-top:6px;border:1px solid #eee;cursor:pointer;"
+                                     onclick="openHandoverViewer('../${d.delivery_proof_image}', 'Proof of Delivery')">
                             </div>
                         ` : ''}
                     </div>
                 `,
+                width: '600px',
                 confirmButtonColor: '#0d6e6e',
                 confirmButtonText: 'Close'
             });
         }
-    </script>
+
+        async function openCamera() {
+            try {
+                videoStream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: { ideal: 'environment' },
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 }
+                    },
+                    audio: false
+                });
+                
+                const video = document.getElementById('cameraStream');
+                video.srcObject = videoStream;
+                cameraModal.show();
+            } catch (err) {
+                Swal.fire({
+                    icon: 'error',
+                    title: 'Camera Error',
+                    text: 'Hindi ma-access ang camera. Siguraduhing pinayagan ang camera permission at may HTTPS ang site.',
+                    confirmButtonColor: '#0d6e6e'
+                });
+            }
+        }
+
+        function capturePhoto() {
+            const video = document.getElementById('cameraStream');
+            const canvas = document.getElementById('cameraCanvas');
+            
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            canvas.toBlob(function (blob) {
+                capturedBlob = blob;
+                
+                const url = URL.createObjectURL(blob);
+                document.getElementById('proofPreview').src = url;
+                document.getElementById('proofPreviewWrap').style.display = 'block';
+                document.getElementById('proofUploadWrap').style.display = 'none';
+                
+                const file = new File([blob], 'live_capture_' + Date.now() + '.jpg', { type: 'image/jpeg' });
+                const dt = new DataTransfer();
+                dt.items.add(file);
+                document.getElementById('proofInput').files = dt.files;
+                
+                closeCamera();
+            }, 'image/jpeg', 0.9);
+        }
+
+        function closeCamera() {
+            if (videoStream) {
+                videoStream.getTracks().forEach(track => track.stop());
+                videoStream = null;
+            }
+            cameraModal.hide();
+        }
+
+        function showHandoverPhotos(orderId, photosJson, notes, photoAt) {
+            let photos = [];
+            try {
+                photos = typeof photosJson === 'string' ? JSON.parse(photosJson) : photosJson;
+            } catch (e) {
+                console.error(e);
+                return;
+            }
+
+            if (!Array.isArray(photos) || photos.length === 0) {
+                Swal.fire('No Photos', 'Walang parcel photos na naka-save.', 'info');
+                return;
+            }
+
+            const photosHtml = photos.map((p, i) => {
+                let imgUrl = p;
+                if (p.startsWith('uploads/')) {
+                    imgUrl = '/' + p;
+                } else if (p.startsWith('/uploads/')) {
+                    imgUrl = p;
+                } else if (p.startsWith('../uploads/')) {
+                    imgUrl = p.substring(2);
+                } else {
+                    imgUrl = '/uploads/handover_photos/' + p;
+                }
+                
+                return `
+                    <div style="position:relative;border-radius:8px;overflow:hidden;
+                                border:2px solid #86efac;background:#fff;cursor:pointer;"
+                         onclick="openHandoverViewer('${imgUrl.replace(/'/g, "\\'")}', 'Parcel Photo ${i + 1}')">
+                        <img src="${imgUrl}" 
+                             style="width:100%;height:auto;max-height:200px;object-fit:contain;display:block;"
+                             onerror="this.style.display='none';">
+                        <div style="position:absolute;top:4px;left:4px;background:rgba(13,110,110,.9);
+                                    color:#fff;width:22px;height:22px;border-radius:50%;
+                                    display:flex;align-items:center;justify-content:center;
+                                    font-size:.7rem;font-weight:800;">
+                            ${i + 1}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            Swal.fire({
+                title: 'Parcel Photos',
+                html: `
+                    <div style="text-align:left;">
+                        <div style="font-size:.75rem;color:#166534;background:#f0fdf4;
+                                    border:1px solid #86efac;border-radius:8px;padding:8px 12px;
+                                    margin-bottom:12px;">
+                            <i class="bi bi-info-circle"></i>
+                            Kondisyon ng parcel bago ibinigay sa iyo ng clinic.
+                        </div>
+                        <div style="display:grid;grid-template-columns:repeat(${Math.min(photos.length, 3)},1fr);
+                                    gap:8px;margin-bottom:12px;">
+                            ${photosHtml}
+                        </div>
+                        ${notes ? `
+                            <div style="font-size:.75rem;padding:8px;background:#f8fafc;border-radius:6px;margin-bottom:6px;">
+                                <strong>Clinic Notes:</strong> ${escHtml(notes)}
+                            </div>
+                        ` : ''}
+                        ${photoAt ? `
+                            <div style="font-size:.7rem;color:#6b7280;text-align:right;">
+                                <i class="bi bi-clock"></i> Captured: ${escHtml(photoAt)}
+                            </div>
+                        ` : ''}
+                    </div>
+                `,
+                width: '600px',
+                confirmButtonColor: '#0d6e6e',
+                confirmButtonText: 'Close'
+            });
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // ✅ PHASE 5: Handle return from PayMongo
+        // ═══════════════════════════════════════════════════════════
+        document.addEventListener('DOMContentLoaded', function() {
+            const params = new URLSearchParams(window.location.search);
+            const remitStatus = params.get('remit');
+            const rid = params.get('rid');
+            
+            if (remitStatus === 'success' && rid) {
+                verifyOnlineRemit(rid);
+            } else if (remitStatus === 'cancelled' && rid) {
+                Swal.fire({
+                    icon: 'info',
+                    title: 'Payment Cancelled',
+                    text: 'Hindi natuloy ang payment. Balance mo ay hindi nagbago.',
+                    confirmButtonColor: '#0d6e6e'
+                }).then(() => {
+                    window.history.replaceState({}, '', window.location.pathname);
+                });
+            }
+        });
+
+async function verifyOnlineRemit(remittanceId) {
+    Swal.fire({
+        title: 'Verifying payment...',
+        allowOutsideClick: false,
+        showConfirmButton: false,
+        didOpen: () => Swal.showLoading()
+    });
+    
+    try {
+        const formData = new FormData();
+        formData.append('action', 'verify_remittance_checkout');
+        formData.append('remittance_id', remittanceId);
+        
+        const res = await fetch('../api/remittance_paymongo.php', {
+            method: 'POST',
+            body: formData,
+            credentials: 'same-origin'
+        });
+        
+        const data = await res.json();
+        
+        if (data.success && data.status === 'completed') {
+            await Swal.fire({
+                icon: 'success',
+                title: 'Remittance Complete!',
+                html: `
+                    <p>Ang online remittance mo ay confirmed na.</p>
+                    <p style="font-size:13px;color:#6b7280;">Ang balance mo ay na-update na.</p>
+                `,
+                confirmButtonColor: '#00B761',
+                confirmButtonText: 'Great!'
+            });
+            // ✅ Clear URL bago mag-reload — para hindi ma-loop
+            window.history.replaceState({}, '', window.location.pathname);
+            location.reload();
+        } else if (data.success && data.status !== 'completed') {
+            Swal.fire({
+                icon: 'info',
+                title: 'Payment Still Processing',
+                text: 'Please wait a moment. Refresh later to see updates.',
+                confirmButtonColor: '#0d6e6e'
+            }).then(() => {
+                window.history.replaceState({}, '', window.location.pathname);
+                location.reload();
+            });
+        } else {
+            Swal.fire({
+                icon: 'error',
+                title: 'Verification Failed',
+                text: data.error || 'Please contact clinic if payment was made.',
+                confirmButtonColor: '#0d6e6e'
+            }).then(() => {
+                window.history.replaceState({}, '', window.location.pathname);
+            });
+        }
+    } catch (err) {
+        Swal.fire({
+            icon: 'error',
+            title: 'Network Error',
+            text: err.message
+        }).then(() => {
+            window.history.replaceState({}, '', window.location.pathname);
+        });
+    }
+}
+   
+   </script>
+    <!-- LIVE CAMERA MODAL -->
+<div class="modal fade" id="cameraModal" tabindex="-1" data-bs-backdrop="static">
+    <div class="modal-dialog modal-dialog-centered modal-fullscreen-sm-down">
+        <div class="modal-content" style="border:none;border-radius:var(--ec-radius);overflow:hidden;">
+            <div class="modal-header" style="background:#000;color:#fff;border:none;">
+                <h5 class="modal-title" style="font-weight:700;font-size:.9rem;">
+                    <i class="bi bi-record-circle text-danger"></i> Live Camera
+                </h5>
+                <button type="button" class="btn-close btn-close-white" onclick="closeCamera()"></button>
+            </div>
+            <div class="modal-body" style="background:#000;padding:0;position:relative;">
+                <video id="cameraStream" autoplay playsinline style="width:100%;display:block;max-height:70vh;object-fit:cover;"></video>
+                <canvas id="cameraCanvas" style="display:none;"></canvas>
+            </div>
+            <div class="modal-footer" style="background:#000;border:none;justify-content:center;padding:1rem;">
+                <button type="button" class="btn btn-light btn-lg rounded-circle" onclick="capturePhoto()" 
+                        style="width:68px;height:68px;border:4px solid #fff;">
+                    <i class="bi bi-camera-fill" style="font-size:1.6rem;color:#0d6e6e;"></i>
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================ -->
+<!-- ✅ CLINIC ↔ RIDER CHAT WIDGET (CENTRALIZED) -->
+<!-- ============================================ -->
+<div id="riderChatWindow" style="display: none; position: fixed; bottom: 20px; right: 20px; width: 360px; height: 500px; background: #fff; border-radius: 16px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); z-index: 9999; flex-direction: column; overflow: hidden; font-family: 'Plus Jakarta Sans', sans-serif;">
+    
+    <div style="background: linear-gradient(135deg, #0d6e6e, #095050); color: #fff; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <div style="width: 36px; height: 36px; border-radius: 50%; background: rgba(255,255,255,0.2); display: flex; align-items: center; justify-content: center;">
+                <i class="bi bi-headset"></i>
+            </div>
+            <div>
+                <div style="font-weight: 800; font-size: 14px;">Clinic Support</div>
+                <div style="font-size: 10px; opacity: 0.8; display: flex; align-items: center; gap: 4px;">
+                    <span style="width: 6px; height: 6px; background: #10b981; border-radius: 50%;"></span>
+                    Online
+                </div>
+            </div>
+        </div>
+        <button onclick="toggleRiderChat()" style="background: rgba(255,255,255,0.2); border: none; color: #fff; width: 28px; height: 28px; border-radius: 50%; cursor: pointer;">
+            <i class="bi bi-x-lg" style="font-size: 12px;"></i>
+        </button>
+    </div>
+
+    <div id="riderChatMessages" style="flex: 1; overflow-y: auto; padding: 16px; background: #f8fafc;">
+        <div style="text-align: center; color: #94a3b8; padding: 40px 20px;">
+            <i class="bi bi-chat-dots" style="font-size: 3rem; opacity: 0.3; display: block; margin-bottom: 12px;"></i>
+            <p style="font-size: 13px; margin: 0;">May katanungan ka ba sa clinic? I-type mo lang dito.</p>
+        </div>
+    </div>
+
+    <div id="riderChatImgPreview" style="display: none; padding: 8px 12px; background: #fff; border-top: 1px solid #e2e8f0;">
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <img id="riderChatImgThumb" src="" style="width: 40px; height: 40px; border-radius: 6px; object-fit: cover; border: 1px solid #e2e8f0;">
+            <span style="font-size: 11px; color: #64748b; flex: 1;">Image ready</span>
+            <button onclick="removeRiderChatImage()" style="background: #fee2e2; color: #dc2626; border: none; width: 24px; height: 24px; border-radius: 50%; cursor: pointer;">
+                <i class="bi bi-x" style="font-size: 12px;"></i>
+            </button>
+        </div>
+    </div>
+
+    <div style="padding: 12px; background: #fff; border-top: 1px solid #e2e8f0;">
+        <form onsubmit="sendRiderChatMessage(event)" style="display: flex; gap: 8px; align-items: center;">
+            <input type="file" id="riderChatImgInput" accept="image/*" style="display: none;" onchange="handleRiderChatImage(event)">
+            <button type="button" onclick="document.getElementById('riderChatImgInput').click()" 
+                    style="width: 36px; height: 36px; border-radius: 50%; border: 1px solid #e2e8f0; background: #fff; color: #64748b; cursor: pointer; display: flex; align-items: center; justify-content: center;">
+                <i class="bi bi-image"></i>
+            </button>
+            <input type="text" id="riderChatInput" placeholder="Type message..." 
+                   style="flex: 1; padding: 10px 14px; border: 1px solid #e2e8f0; border-radius: 20px; font-size: 13px; outline: none; font-family: inherit;">
+            <button type="submit" 
+                    style="width: 36px; height: 36px; border-radius: 50%; border: none; background: #0d6e6e; color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center;">
+                <i class="bi bi-send"></i>
+            </button>
+        </form>
+    </div>
+</div>
+
+<script>
+const RIDER_CHAT_API = '../api/rider_chat.php';
+const RIDER_ID = <?= json_encode($riderId) ?>;  // ✅ GINAWANG $riderId
+const RIDER_TYPE = 'clinic';
+let riderChatInterval = null;
+let riderChatSelectedImage = null;
+
+function toggleRiderChat() {
+    const chatWindow = document.getElementById('riderChatWindow');
+    const isOpen = chatWindow.style.display === 'flex';
+    
+    if (isOpen) {
+        chatWindow.style.display = 'none';
+        if (riderChatInterval) clearInterval(riderChatInterval);
+    } else {
+        chatWindow.style.display = 'flex';
+        loadRiderChatMessages();
+        riderChatInterval = setInterval(loadRiderChatMessages, 5000);
+    }
+}
+
+function loadRiderChatMessages() {
+    fetch(RIDER_CHAT_API + '?action=get_messages&rider_id=' + RIDER_ID + '&rider_type=' + RIDER_TYPE)
+        .then(res => res.json())
+        .then(data => {
+            const container = document.getElementById('riderChatMessages');
+            
+            if (!Array.isArray(data) || data.length === 0) {
+                container.innerHTML = `
+                    <div style="text-align: center; color: #94a3b8; padding: 40px 20px;">
+                        <i class="bi bi-chat-dots" style="font-size: 3rem; opacity: 0.3; display: block; margin-bottom: 12px;"></i>
+                        <p style="font-size: 13px; margin: 0;">May katanungan ka ba sa clinic? I-type mo lang dito.</p>
+                    </div>
+                `;
+                return;
+            }
+            
+            let html = '';
+            let lastDate = '';
+            
+            data.forEach(m => {
+                const isMine = m.is_mine;
+                const bubbleStyle = isMine 
+                    ? 'background: #0d6e6e; color: #fff; margin-left: auto; border-bottom-right-radius: 4px;' 
+                    : 'background: #fff; color: #1e293b; border: 1px solid #e2e8f0; margin-right: auto; border-bottom-left-radius: 4px;';
+                const align = isMine ? 'justify-content: flex-end;' : 'justify-content: flex-start;';
+                
+                let imgHtml = '';
+                if (m.image) {
+                    imgHtml = `<img src="${m.image}" style="max-width: 100%; border-radius: 8px; margin-top: 6px; cursor: pointer;" onclick="window.open('${m.image}', '_blank')">`;
+                }
+                
+                if (m.date !== lastDate) {
+                    html += `
+                        <div style="text-align: center; margin: 12px 0;">
+                            <span style="background: #f1f5f9; color: #64748b; padding: 4px 12px; border-radius: 20px; font-size: 10px; font-weight: 600;">
+                                ${m.date}
+                            </span>
+                        </div>
+                    `;
+                    lastDate = m.date;
+                }
+                
+                html += `
+                    <div style="display: flex; ${align} margin-bottom: 8px;">
+                        <div style="max-width: 80%; padding: 10px 14px; border-radius: 16px; font-size: 13px; ${bubbleStyle}">
+                            ${!isMine ? `<div style="font-weight: 700; font-size: 10px; color: #0d6e6e; margin-bottom: 4px;">${m.sender_name}</div>` : ''}
+                            <div>${m.message}</div>
+                            ${imgHtml}
+                            <div style="font-size: 9px; opacity: 0.7; text-align: right; margin-top: 4px;">${m.time}</div>
+                        </div>
+                    </div>
+                `;
+            });
+            
+            container.innerHTML = html;
+            container.scrollTop = container.scrollHeight;
+        })
+        .catch(err => console.error('Chat load error:', err));
+}
+
+function sendRiderChatMessage(e) {
+    e.preventDefault();
+    const input = document.getElementById('riderChatInput');
+    const message = input.value.trim();
+    
+    if (!message && !riderChatSelectedImage) return;
+    
+    input.value = '';
+    
+    const fd = new FormData();
+    fd.append('action', 'send_message');
+    fd.append('rider_id', RIDER_ID);
+    fd.append('rider_type', RIDER_TYPE);
+    fd.append('message', message);
+    if (riderChatSelectedImage) fd.append('image', riderChatSelectedImage);
+    
+    fetch(RIDER_CHAT_API, { method: 'POST', body: fd })
+        .then(res => res.json())
+        .then(data => {
+            if (data.success) {
+                removeRiderChatImage();
+                loadRiderChatMessages();
+            } else {
+                alert('Error: ' + data.message);
+            }
+        })
+        .catch(err => alert('Network error: ' + err.message));
+}
+
+function handleRiderChatImage(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { alert('Max 5MB only.'); return; }
+    
+    riderChatSelectedImage = file;
+    
+    const reader = new FileReader();
+    reader.onload = function(evt) {
+        document.getElementById('riderChatImgThumb').src = evt.target.result;
+        document.getElementById('riderChatImgPreview').style.display = 'block';
+    };
+    reader.readAsDataURL(file);
+}
+
+function removeRiderChatImage() {
+    riderChatSelectedImage = null;
+    document.getElementById('riderChatImgInput').value = '';
+    document.getElementById('riderChatImgPreview').style.display = 'none';
+}
+
+setInterval(function() {
+    fetch(RIDER_CHAT_API + '?action=get_unread_count&rider_id=' + RIDER_ID + '&rider_type=' + RIDER_TYPE)
+        .then(res => res.json())
+        .then(data => {
+            const badge = document.getElementById('riderChatBadge');
+            if (data.success && data.unread > 0) {
+                badge.textContent = data.unread > 9 ? '9+' : data.unread;
+                badge.classList.remove('d-none');
+            } else {
+                badge.classList.add('d-none');
+            }
+        })
+        .catch(e => console.log(e));
+}, 15000);
+</script>
 </body>
 </html>

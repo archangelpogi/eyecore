@@ -12,6 +12,8 @@ $totalUsers = $pdo->query("SELECT COUNT(*) FROM users")->fetchColumn();
 $activeUsers = $pdo->query("SELECT COUNT(*) FROM users WHERE status='Active'")->fetchColumn();
 $adminUsers = $pdo->query("SELECT COUNT(*) FROM users WHERE role='ClinicAdmin'")->fetchColumn();
 $optometristUsers = $pdo->query("SELECT COUNT(*) FROM users WHERE role='Optometrist'")->fetchColumn();
+
+function e($v) { return htmlspecialchars((string)($v ?? ''), ENT_QUOTES, 'UTF-8'); }
 ?>
 
 <!DOCTYPE html>
@@ -25,107 +27,152 @@ $optometristUsers = $pdo->query("SELECT COUNT(*) FROM users WHERE role='Optometr
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
 
 <!-- Lucide icons -->
-<script src="https://unpkg.com/lucide@latest"></script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
 
-<!-- DataTables CSS & Buttons -->
-<link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
-<link rel="stylesheet" href="https://cdn.datatables.net/buttons/2.4.1/css/buttons.dataTables.min.css">
+<!-- DataTables (Bootstrap 5 theme) & Buttons -->
+<link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css">
+<link rel="stylesheet" href="https://cdn.datatables.net/buttons/2.4.1/css/buttons.bootstrap5.min.css">
 
-<!-- jQuery & DataTables JS -->
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+<script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
 <script src="https://cdn.datatables.net/buttons/2.4.1/js/dataTables.buttons.min.js"></script>
+<script src="https://cdn.datatables.net/buttons/2.4.1/js/buttons.bootstrap5.min.js"></script>
 <script src="https://cdn.datatables.net/buttons/2.4.1/js/buttons.html5.min.js"></script>
 <script src="https://cdn.datatables.net/buttons/2.4.1/js/buttons.print.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 
 <style>
-body { background:#f8fafc; font-family: 'Inter', sans-serif; }
-.card-soft { background:#fff; border:1px solid #e5e7eb; border-radius:12px; }
-.icon-box { width:48px; height:48px; border-radius:10px; display:flex; align-items:center; justify-content:center; }
-.table-hover tbody tr:hover { background:#f9fafb; }
-.badge-superadmin { background:#fef3c7; color:#92400e; }
-.badge-clinicadmin { background:#dbeafe; color:#1e40af; }
-.badge-optometrist { background:#dcfce7; color:#166534; }
-.badge-staff { background:#e5e7eb; color:#374151; }
-.badge-active { background:#dcfce7; color:#166534; }
-.badge-inactive { background:#f3f4f6; color:#374151; }
-.user-avatar { width:40px; height:40px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px; color:white; }
-.table td, .table th { vertical-align: middle; }
-.form-control:focus, .form-select:focus { border-color:#0d9488; box-shadow:0 0 0 0.25rem rgba(13, 148, 136, 0.25); }
+:root {
+    --primary:#0F766E; --secondary:#0D9488; --bg:#F8FAFC; --card:#fff;
+    --text:#0F172A; --muted:#64748B; --border:#E2E8F0; --radius:12px;
+}
+body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; font-size:.9rem; }
+.text-muted { color:var(--muted) !important; }
+
+.page-title { font-size:1.25rem; font-weight:700; margin:0; }
+.page-desc { color:var(--muted); font-size:.85rem; margin:2px 0 0; }
+
+/* Stat cards */
+.kcard { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px; height:100%; display:flex; justify-content:space-between; align-items:center; }
+.klabel { color:var(--muted); font-size:.74rem; font-weight:600; text-transform:uppercase; letter-spacing:.03em; }
+.kvalue { font-size:1.55rem; font-weight:700; line-height:1.25; font-variant-numeric:tabular-nums; }
+.kicon { width:32px; height:32px; border-radius:8px; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+.kicon svg { width:16px; height:16px; }
+
+/* Single panel: toolbar + table */
+.panel { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; }
+.toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; padding:12px 14px; border-bottom:1px solid var(--border); }
+.search-box { position:relative; flex:1 1 240px; max-width:340px; }
+.search-box svg { position:absolute; left:10px; top:50%; transform:translateY(-50%); width:14px; height:14px; color:var(--muted); pointer-events:none; }
+.search-box input { padding-left:32px; }
+.toolbar .form-select { width:auto; min-width:150px; }
+.toolbar .spacer { flex:1 1 auto; }
+.form-control:focus, .form-select:focus { border-color:var(--secondary); box-shadow:0 0 0 .2rem rgba(13,148,136,.2); }
+
+/* Table */
+#usersTable { margin:0 !important; border-collapse:collapse !important; }
+#usersTable thead th { font-size:.7rem; font-weight:700; letter-spacing:.04em; text-transform:uppercase; color:var(--muted); background:#F8FAFC; border-bottom:1px solid var(--border); padding:9px 14px; white-space:nowrap; }
+#usersTable tbody td { padding:10px 14px; border-color:#EEF2F6; vertical-align:middle; }
+#usersTable.table-hover tbody tr:hover { background:#F8FAFC; }
+.user-avatar { width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:600; font-size:12px; color:#fff; flex-shrink:0; }
+.user-name { font-weight:600; }
+
+/* Badges */
+.badge { font-weight:600; font-size:.72rem; padding:.35em .65em; border-radius:6px; }
+.badge-superadmin { background:#FEF3C7; color:#92400E; }
+.badge-clinicadmin { background:#DBEAFE; color:#1E40AF; }
+.badge-optometrist { background:#DCFCE7; color:#166534; }
+.badge-staff { background:#F1F5F9; color:#475569; }
+.badge-secondary { background:#F1F5F9; color:#475569; }
+.badge-active, .badge-inactive { display:inline-flex; align-items:center; gap:6px; }
+.badge-active::before, .badge-inactive::before { content:''; width:6px; height:6px; border-radius:50%; background:currentColor; }
+.badge-active { background:#DCFCE7; color:#166534; }
+.badge-inactive { background:#F1F5F9; color:#64748B; }
+
+/* DataTables footer + buttons */
+.dt-footer { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:8px; padding:10px 14px; border-top:1px solid var(--border); }
+.dataTables_info { padding:0 !important; color:var(--muted); font-size:.8rem; }
+.dataTables_paginate { padding:0 !important; }
+.page-item.active .page-link { background:var(--secondary); border-color:var(--secondary); }
+.page-link { color:var(--primary); font-size:.8rem; }
+div.dt-buttons .btn { font-size:.78rem; padding:.25rem .6rem; background:#fff; border:1px solid var(--border); color:var(--text); }
+div.dt-buttons .btn:hover { background:#F8FAFC; }
+@media (max-width:575.98px) { .search-box, .toolbar .form-select { flex:1 1 100%; max-width:none; } .toolbar .spacer { display:none; } }
 </style>
 </head>
 <body>
-<div class="container-fluid p-4">
+<div class="container-fluid py-4 px-3 px-lg-4">
 
 <!-- HEADER -->
-<div class="d-flex flex-column flex-md-row justify-content-between gap-3 mb-4">
-    <div>
-        <h2 class="fw-bold">User Management</h2>
-        <p class="text-muted">View all system users</p>
-    </div>
+<div class="mb-3">
+    <h1 class="page-title">User Management</h1>
+    <p class="page-desc">View all system users</p>
 </div>
 
 <!-- STATS -->
-<div class="row g-3 mb-4">
-    <div class="col-md-3">
-        <div class="card-soft p-4 d-flex justify-content-between">
-            <div><small class="text-muted">Total Users</small><h4 id="totalUsers" class="fw-bold mt-1"><?= $totalUsers ?></h4></div>
-            <div class="icon-box bg-teal-100"><i data-lucide="users" class="text-success"></i></div>
+<div class="row g-2 g-md-3 mb-3">
+    <div class="col-6 col-md-3">
+        <div class="kcard">
+            <div><div class="klabel">Total Users</div><div id="totalUsers" class="kvalue"><?= e($totalUsers) ?></div></div>
+            <div class="kicon" style="background:#F0FDFA;color:#0D9488;"><i data-lucide="users"></i></div>
         </div>
     </div>
-    <div class="col-md-3">
-        <div class="card-soft p-4 d-flex justify-content-between">
-            <div><small class="text-muted">Active Users</small><h4 id="activeUsers" class="fw-bold mt-1"><?= $activeUsers ?></h4></div>
-            <div class="icon-box bg-green-100"><i data-lucide="user-check" class="text-success"></i></div>
+    <div class="col-6 col-md-3">
+        <div class="kcard">
+            <div><div class="klabel">Active Users</div><div id="activeUsers" class="kvalue"><?= e($activeUsers) ?></div></div>
+            <div class="kicon" style="background:#DCFCE7;color:#16A34A;"><i data-lucide="user-check"></i></div>
         </div>
     </div>
-    <div class="col-md-3">
-        <div class="card-soft p-4 d-flex justify-content-between">
-            <div><small class="text-muted">Admins</small><h4 id="adminUsers" class="fw-bold mt-1"><?= $adminUsers ?></h4></div>
-            <div class="icon-box bg-blue-100"><i data-lucide="shield" class="text-primary"></i></div>
+    <div class="col-6 col-md-3">
+        <div class="kcard">
+            <div><div class="klabel">Admins</div><div id="adminUsers" class="kvalue"><?= e($adminUsers) ?></div></div>
+            <div class="kicon" style="background:#DBEAFE;color:#2563EB;"><i data-lucide="shield"></i></div>
         </div>
     </div>
-    <div class="col-md-3">
-        <div class="card-soft p-4 d-flex justify-content-between">
-            <div><small class="text-muted">Optometrists</small><h4 id="optometristUsers" class="fw-bold mt-1"><?= $optometristUsers ?></h4></div>
-            <div class="icon-box bg-purple-100"><i data-lucide="eye" class="text-purple"></i></div>
-        </div>
-    </div>
-</div>
-
-<!-- FILTERS -->
-<div class="card-soft p-3 mb-4">
-    <div class="row g-3">
-        <div class="col-md-4"><input type="text" id="searchInput" class="form-control" placeholder="Search by name, email, or role..."></div>
-        <div class="col-md-4">
-            <select id="clinicFilter" class="form-select">
-                <option value="">All Clinics</option>
-                <?php
-                $stmt = $pdo->query("SELECT id, clinic_name FROM clinics ORDER BY clinic_name ASC");
-                foreach($stmt->fetchAll(PDO::FETCH_ASSOC) as $c) {
-                    echo "<option value='{$c['clinic_name']}'>{$c['clinic_name']}</option>";
-                }
-                ?>
-            </select>
-        </div>
-        <div class="col-md-4">
-            <select id="roleFilter" class="form-select">
-                <option value="">All Roles</option>
-                <option value="SuperAdmin">Super Admin</option>
-                <option value="ClinicAdmin">Clinic Admin</option>
-                <option value="Optometrist">Optometrist</option>
-                <option value="Staff">Staff</option>
-            </select>
+    <div class="col-6 col-md-3">
+        <div class="kcard">
+            <div><div class="klabel">Optometrists</div><div id="optometristUsers" class="kvalue"><?= e($optometristUsers) ?></div></div>
+            <div class="kicon" style="background:#EDE9FE;color:#7C3AED;"><i data-lucide="eye"></i></div>
         </div>
     </div>
 </div>
 
-<!-- USERS TABLE -->
-<div class="card-soft overflow-hidden">
+<!-- TOOLBAR + USERS TABLE (one panel) -->
+<div class="panel">
+    <div class="toolbar">
+        <div class="search-box">
+            <i data-lucide="search"></i>
+            <input type="text" id="searchInput" class="form-control form-control-sm" placeholder="Search name, email, or role…">
+        </div>
+        <select id="clinicFilter" class="form-select form-select-sm">
+            <option value="">All Clinics</option>
+            <?php
+            $stmt = $pdo->query("SELECT id, clinic_name FROM clinics ORDER BY clinic_name ASC");
+            foreach($stmt->fetchAll(PDO::FETCH_ASSOC) as $c) {
+                echo "<option value='" . e($c['clinic_name']) . "'>" . e($c['clinic_name']) . "</option>";
+            }
+            ?>
+        </select>
+        <select id="roleFilter" class="form-select form-select-sm">
+            <option value="">All Roles</option>
+            <option value="SuperAdmin">Super Admin</option>
+            <option value="ClinicAdmin">Clinic Admin</option>
+            <option value="Optometrist">Optometrist</option>
+            <option value="Staff">Staff</option>
+        </select>
+        <select id="statusFilter" class="form-select form-select-sm">
+            <option value="">All Status</option>
+            <option value="Active">Active</option>
+            <option value="Inactive">Inactive</option>
+        </select>
+        <span class="spacer"></span>
+        <div id="exportBtns"></div>
+    </div>
+
     <div class="table-responsive">
-        <table id="usersTable" class="table table-hover mb-0">
-            <thead class="bg-light">
+        <table id="usersTable" class="table table-hover align-middle">
+            <thead>
                 <tr>
                     <th>User</th>
                     <th>Contact</th>
@@ -143,13 +190,7 @@ body { background:#f8fafc; font-family: 'Inter', sans-serif; }
                 $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
                 function avatarColor($name) {
-                    $colors = [
-                        'linear-gradient(135deg,#0d9488,#3b82f6)',
-                        'linear-gradient(135deg,#f97316,#facc15)',
-                        'linear-gradient(135deg,#9333ea,#8b5cf6)',
-                        'linear-gradient(135deg,#ec4899,#f43f5e)',
-                        'linear-gradient(135deg,#10b981,#14b8a6)'
-                    ];
+                    $colors = ['#0D9488', '#2563EB', '#7C3AED', '#DB2777', '#D97706'];
                     return $colors[crc32($name) % count($colors)];
                 }
 
@@ -165,13 +206,14 @@ body { background:#f8fafc; font-family: 'Inter', sans-serif; }
                     };
                     $statusBadge = $u['status']=='Active'?'badge-active':'badge-inactive';
                     $avatarBg = avatarColor($fullName);
+                    $clinic = $u['clinic_name'] ? e($u['clinic_name']) : '—';
 
                     echo "<tr>
-                            <td><div class='d-flex align-items-center gap-2'><div class='user-avatar' style='background: {$avatarBg}'>{$initials}</div><span>{$fullName}</span></div></td>
-                            <td>{$u['email']}</td>
-                            <td><span class='badge {$roleBadge}'>{$u['role']}</span></td>
-                            <td>{$u['clinic_name']}</td>
-                            <td><span class='badge {$statusBadge}'>{$u['status']}</span></td>
+                            <td><div class='d-flex align-items-center gap-2'><div class='user-avatar' style='background: {$avatarBg}'>" . e($initials) . "</div><span class='user-name'>" . e($fullName) . "</span></div></td>
+                            <td class='text-muted'>" . e($u['email']) . "</td>
+                            <td><span class='badge {$roleBadge}'>" . e($u['role']) . "</span></td>
+                            <td>{$clinic}</td>
+                            <td><span class='badge {$statusBadge}'>" . e($u['status']) . "</span></td>
                           </tr>";
                 }
                 ?>
@@ -180,21 +222,29 @@ body { background:#f8fafc; font-family: 'Inter', sans-serif; }
     </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
 <script>lucide.createIcons();</script>
 
 <script>
 $(document).ready(function () {
-    // Initialize DataTable only once
+    // Built-in search box removed from layout (we use our own #searchInput) to avoid a duplicate search bar
     const table = $('#usersTable').DataTable({
-        dom: 'Bfrtip',
+        dom: 'Brt<"dt-footer"ip>',
         buttons: ['copy', 'excel', 'print'],
-        pageLength: 10
+        pageLength: 10,
+        language: { emptyTable: 'No users found.', zeroRecords: 'No users match your filters.' }
     });
 
+    // Move export buttons into the toolbar
+    table.buttons().container().appendTo('#exportBtns');
+
+    // Exact-match helper so "Active" doesn't also match "Inactive"
+    const exact = v => v ? '^' + $.fn.dataTable.util.escapeRegex(v) + '$' : '';
+
     // Filters
-    $('#clinicFilter').on('change', function () { table.column(3).search(this.value).draw(); });
-    $('#roleFilter').on('change', function () { table.column(2).search(this.value).draw(); });
+    $('#clinicFilter').on('change', function () { table.column(3).search(exact(this.value), true, false).draw(); });
+    $('#roleFilter').on('change', function () { table.column(2).search(exact(this.value), true, false).draw(); });
+    $('#statusFilter').on('change', function () { table.column(4).search(exact(this.value), true, false).draw(); });
     $('#searchInput').on('keyup', function () { table.search(this.value).draw(); });
 });
 </script>

@@ -19,6 +19,10 @@ if (!isset($_SESSION['user_id'])) {
 
 $user_id = (int) $_SESSION['user_id'];
 
+/* ═══════════════════════════════════════════════════════════════
+   ⚠️  AJAX HANDLERS — HUWAG GALAWIN (backend logic intact)
+   ═══════════════════════════════════════════════════════════════ */
+
 // ===== AJAX: CANCEL ORDER WITH HYBRID REFUND LOGIC (Option C) =====
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'cancel') {
     header('Content-Type: application/json');
@@ -31,7 +35,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit();
     }
 
-    // ✅ Get full reservation data including payment info
     $check = mysqli_query($conn,
         "SELECT r.*, p.name as product_name, c.name as clinic_name
          FROM reservations r
@@ -55,9 +58,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit();
     }
 
-    // ═══════════════════════════════════════════════════
-    // ✅ DETERMINE IF REFUND IS NEEDED
-    // ═══════════════════════════════════════════════════
     $payment_status      = $res['payment_status'] ?? 'unpaid';
     $paymongo_payment_id = $res['paymongo_payment_id'] ?? null;
     $total_amount        = (float)($res['total_amount'] ?? 0);
@@ -65,55 +65,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $balance_amount      = (float)($res['balance_amount'] ?? 0);
     $created_at          = $res['created_at'] ?? null;
 
-    // ✅ COMPUTE amount_paid (WALANG amount_paid column)
     $amount_paid = 0;
     if ($payment_status === 'paid') {
-        $amount_paid = $total_amount;  // Bayad lahat
+        $amount_paid = $total_amount;
     } elseif ($payment_status === 'partial') {
         $amount_paid = $downpayment_amount > 0 ? $downpayment_amount : $balance_amount;
     } elseif ($payment_status === 'refunded') {
         $amount_paid = 0;
     }
 
-    // ✅ Determine if payment was made
     $is_paid = in_array($payment_status, ['paid', 'partial'], true) && $amount_paid > 0;
     $is_cash_based = in_array($payment_status, ['cod', 'onsite', 'unpaid', 'free'], true);
-
-    // ✅ Determine if PayMongo refund is possible
     $has_paymongo_ref = !empty($paymongo_payment_id) && strpos($paymongo_payment_id, 'pay_') === 0;
 
-    // ✅ Check if within 24 HOURS FROM PAYMENT TIME
     $paid_at = $res['paid_at'] ?? null;
     $within_15_min = false;
     
     if ($paid_at) {
-        // Use payment time if available
         $paid_time = strtotime($paid_at);
-        $within_15_min = (time() - $paid_time) <= (24 * 60 * 60); // 24 hours
+        $within_15_min = (time() - $paid_time) <= (24 * 60 * 60);
     } elseif ($created_at) {
-        // Fallback: use created_at if paid_at is NULL
         $created_time = strtotime($created_at);
-        $within_15_min = (time() - $created_time) <= (24 * 60 * 60); // 24 hours
+        $within_15_min = (time() - $created_time) <= (24 * 60 * 60);
     }
 
-    // ═══════════════════════════════════════════════════
-    // ✅ DEBUG LOG
-    // ═══════════════════════════════════════════════════
-    error_log("=== CANCEL DEBUG (Reservation ID: $id) ===");
-    error_log("Payment Status: $payment_status");
-    error_log("PayMongo Payment ID: " . ($paymongo_payment_id ?? 'NULL'));
-    error_log("Total Amount: $total_amount");
-    error_log("Downpayment Amount: $downpayment_amount");
-    error_log("Computed Amount Paid: $amount_paid");
-    error_log("Is Paid: " . ($is_paid ? 'YES' : 'NO'));
-    error_log("Is Cash Based: " . ($is_cash_based ? 'YES' : 'NO'));
-    error_log("Has PayMongo Ref: " . ($has_paymongo_ref ? 'YES' : 'NO'));
-    error_log("Within 15 Min: " . ($within_15_min ? 'YES' : 'NO'));
-    error_log("=========================================");
-
-    // ═══════════════════════════════════════════════════
-    // ✅ 1. CANCEL THE ORDER FIRST
-    // ═══════════════════════════════════════════════════
     $reason_esc = mysqli_real_escape_string($conn, $cancel_reason);
     $update = mysqli_query($conn,
         "UPDATE reservations 
@@ -128,9 +103,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit();
     }
 
-    // ═══════════════════════════════════════════════════
-    // ✅ 2. RESTORE STOCK
-    // ═══════════════════════════════════════════════════
     if (!empty($res['color_code'])) {
         mysqli_query($conn, "
             UPDATE product_color_inventory 
@@ -141,23 +113,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         ");
     }
 
-    // ═══════════════════════════════════════════════════
-    // ✅ 3. HYBRID REFUND LOGIC
-    // ═══════════════════════════════════════════════════
     $refund_message = '';
     $refund_created = false;
     $auto_refunded = false;
 
     if ($is_cash_based) {
-        // COD / Onsite / Unpaid — walang pera involved
-        $refund_message = ' No payment involved (walang refund na kailangan).';
+        $refund_message = ' No payment involved';
     } elseif ($is_paid) {
-        // ✅ May bayad — kailangan ng refund
-
         if ($has_paymongo_ref && $within_15_min) {
-            // ═══════════════════════════════════════════════
-            // OPTION C: AUTO-REFUND within 15 minutes
-            // ═══════════════════════════════════════════════
             $auto_refund_result = attemptAutoRefund(
                 $conn,
                 $paymongo_payment_id,
@@ -173,7 +136,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 $auto_refunded = true;
                 $refund_message = ' ✅ Auto-refund of ₱' . number_format($amount_paid, 2) . ' is being processed.';
                 
-                // Update payment_status
                 mysqli_query($conn, "UPDATE reservations SET payment_status = 'refunded', refund_status = 'processing' WHERE id = $id");
                 
                 if (function_exists('addNotification')) {
@@ -185,10 +147,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     );
                 }
             } else {
-                // ❌ AUTO-REFUND FAILED — create refund request
-                $auto_refund_error = $auto_refund_result['error'] ?? 'Unknown error';
-                
-                // Fallback: create refund request
                 $refund_created = createRefundRequest(
                     $conn, $id, $user_id, $res['clinic_id'],
                     $amount_paid, $total_amount,
@@ -198,13 +156,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     $res['product_name']
                 );
                 
-                // ✅ Malinis na message — walang error text
                 $refund_message = ' Refund request created (₱' . number_format($amount_paid, 2) . '). Please wait for clinic approval.';
             }
         } else {
-            // ═══════════════════════════════════════════════
-            // OPTION C: CREATE REFUND REQUEST (after 15 min or no PayMongo ref)
-            // ═══════════════════════════════════════════════
             $reason_text = $within_15_min 
                 ? 'Order cancelled by customer' 
                 : 'Order cancelled after 15-minute window';
@@ -221,9 +175,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
     }
 
-    // ═══════════════════════════════════════════════════
-    // ✅ 4. NOTIFY USER
-    // ═══════════════════════════════════════════════════
     if (function_exists('addNotification') && !$auto_refunded) {
         addNotification(
             $user_id, 'reservation',
@@ -243,24 +194,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 }
 
 // ═══════════════════════════════════════════════════
-// ✅ HELPER: Attempt Auto-Refund via PayMongo (with actual amount check)
+// ✅ HELPER: Attempt Auto-Refund via PayMongo
 // ═══════════════════════════════════════════════════
 function attemptAutoRefund($conn, $paymongo_payment_id, $amount, $reservation_id, $user_id, $clinic_id, $order_code, $product_name) {
-    // ═══════════════════════════════════════════════════
-    // ✅ STEP 0: Check PayMongo configuration
-    // ═══════════════════════════════════════════════════
     $paymongo_secret = defined('PAYMONGO_SECRET_KEY') ? PAYMONGO_SECRET_KEY : null;
     if (empty($paymongo_secret)) {
         error_log("❌ Auto-refund failed: PAYMONGO_SECRET_KEY not defined");
         return ['success' => false, 'error' => 'PayMongo not configured'];
     }
 
-    error_log("=== ATTEMPT AUTO-REFUND ===");
-    error_log("Order: $order_code | Payment: $paymongo_payment_id | Requested: ₱$amount");
-
-    // ═══════════════════════════════════════════════════
-    // ✅ STEP 1: Get the ACTUAL paid amount from PayMongo
-    // ═══════════════════════════════════════════════════
     $ch = curl_init('https://api.paymongo.com/v1/payments/' . urlencode($paymongo_payment_id));
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
@@ -290,42 +232,27 @@ function attemptAutoRefund($conn, $paymongo_payment_id, $amount, $reservation_id
         return ['success' => false, 'error' => 'Cannot fetch payment'];
     }
 
-    // ✅ Actual amount na natanggap (in centavos)
     $actual_paid_centavos = (int) $payment_result['data']['attributes']['amount'];
     $actual_paid = $actual_paid_centavos / 100;
 
-    // ✅ Get refundable amount from PayMongo
     $refundable_centavos = isset($payment_result['data']['attributes']['amount_refundable'])
         ? (int) $payment_result['data']['attributes']['amount_refundable']
         : $actual_paid_centavos;
     $refundable = $refundable_centavos / 100;
 
-    error_log("💰 Requested refund: ₱$amount | Actual paid: ₱$actual_paid | Refundable: ₱$refundable");
-
-    // ═══════════════════════════════════════════════════
-    // ✅ STEP 2: Compute safe refund amount
-    // ═══════════════════════════════════════════════════
-    // Cap sa refundable amount (mas safe kaysa actual paid)
     $refund_amount = min($amount, $refundable);
     $refund_centavos = (int) round($refund_amount * 100);
 
-    // Final check: hindi dapat lumagpas sa refundable
     if ($refund_centavos > $refundable_centavos) {
         $refund_centavos = $refundable_centavos;
         $refund_amount = $refundable;
     }
 
-    // Check kung may refundable pa
     if ($refund_centavos <= 0) {
         error_log("❌ Auto-refund: No refundable amount (already refunded?)");
         return ['success' => false, 'error' => 'No refundable amount'];
     }
 
-    error_log("✅ Final refund amount: ₱$refund_amount ($refund_centavos centavos)");
-
-    // ═══════════════════════════════════════════════════
-    // ✅ STEP 3: Prepare refund payload
-    // ═══════════════════════════════════════════════════
     $refund_data = [
         'data' => [
             'attributes' => [
@@ -337,11 +264,6 @@ function attemptAutoRefund($conn, $paymongo_payment_id, $amount, $reservation_id
         ]
     ];
 
-    error_log("📤 Refund payload: " . json_encode($refund_data));
-
-    // ═══════════════════════════════════════════════════
-    // ✅ STEP 4: Call PayMongo Refunds API
-    // ═══════════════════════════════════════════════════
     $ch = curl_init('https://api.paymongo.com/v1/refunds');
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
@@ -362,9 +284,6 @@ function attemptAutoRefund($conn, $paymongo_payment_id, $amount, $reservation_id
     $curl_error = curl_error($ch);
     curl_close($ch);
 
-    error_log("📥 PayMongo Refund Response — HTTP $http_code");
-    error_log("Response: " . substr($response ?: 'EMPTY', 0, 1000));
-
     if ($curl_error) {
         error_log("❌ Auto-refund curl error: $curl_error");
         return ['success' => false, 'error' => $curl_error];
@@ -372,16 +291,10 @@ function attemptAutoRefund($conn, $paymongo_payment_id, $amount, $reservation_id
 
     $result = json_decode($response, true);
 
-    // ═══════════════════════════════════════════════════
-    // ✅ STEP 5: Handle success
-    // ═══════════════════════════════════════════════════
     if ($http_code >= 200 && $http_code < 300 && !empty($result['data']['id'])) {
         $refund_id = $result['data']['id'];
         $refund_status = $result['data']['attributes']['status'] ?? 'pending';
 
-        error_log("✅ Refund SUCCESS — ID: $refund_id | Status: $refund_status");
-
-        // Log refund in refund_requests table
         $refund_id_esc = mysqli_real_escape_string($conn, $refund_id);
         $amount_esc = (float) $refund_amount;
 
@@ -399,10 +312,6 @@ function attemptAutoRefund($conn, $paymongo_payment_id, $amount, $reservation_id
             )
         ");
 
-        if (!$insert) {
-            error_log("⚠️ Failed to insert refund request: " . mysqli_error($conn));
-        }
-
         return [
             'success' => true,
             'refund_id' => $refund_id,
@@ -411,9 +320,6 @@ function attemptAutoRefund($conn, $paymongo_payment_id, $amount, $reservation_id
         ];
     }
 
-    // ═══════════════════════════════════════════════════
-    // ✅ STEP 6: Handle failure — detailed error log
-    // ═══════════════════════════════════════════════════
     $error_detail = 'Unknown error';
     if (!empty($result['errors'][0]['detail'])) {
         $error_detail = $result['errors'][0]['detail'];
@@ -421,15 +327,11 @@ function attemptAutoRefund($conn, $paymongo_payment_id, $amount, $reservation_id
         $error_detail = $result['errors'][0]['code'];
     }
 
-    error_log("❌ Auto-refund FAILED — HTTP $http_code");
-    error_log("Error: $error_detail");
-    error_log("Full response: $response");
-
     return ['success' => false, 'error' => $error_detail];
 }
 
 // ═══════════════════════════════════════════════════
-// ✅ HELPER: Create Refund Request (manual review)
+// ✅ HELPER: Create Refund Request
 // ═══════════════════════════════════════════════════
 function createRefundRequest($conn, $reservation_id, $user_id, $clinic_id, $amount, $total_amount, $reason, $details, $order_code, $product_name) {
     $amount_esc    = (float) $amount;
@@ -438,14 +340,13 @@ function createRefundRequest($conn, $reservation_id, $user_id, $clinic_id, $amou
     $details_esc   = mysqli_real_escape_string($conn, $details);
     $percentage    = ($total_esc > 0) ? round(($amount_esc / $total_esc) * 100) : 100;
 
-    // Check existing refund request
     $existing = mysqli_query($conn, "
         SELECT id FROM refund_requests 
         WHERE reservation_id = $reservation_id 
         AND status IN ('pending','approved','processing')
     ");
     if ($existing && mysqli_num_rows($existing) > 0) {
-        return false; // Already may refund request
+        return false;
     }
 
     $insert = mysqli_query($conn, "
@@ -467,10 +368,8 @@ function createRefundRequest($conn, $reservation_id, $user_id, $clinic_id, $amou
         return false;
     }
 
-    // Update reservation refund_status
     mysqli_query($conn, "UPDATE reservations SET refund_status = 'pending' WHERE id = $reservation_id");
 
-    // Notify clinic staff
     $staff_q = mysqli_query($conn, "
         SELECT id FROM users WHERE clinic_id = $clinic_id AND role IN ('ClinicAdmin','Staff')
     ");
@@ -487,6 +386,7 @@ function createRefundRequest($conn, $reservation_id, $user_id, $clinic_id, $amou
 
     return true;
 }
+
 // ===== AJAX: MARK ORDER AS RECEIVED =====
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'mark_received') {
     header('Content-Type: application/json');
@@ -545,7 +445,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 }
 
 // ===== AJAX: REQUEST REFUND / RETURN =====
-// ✅ NEW: Return Method support
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'request_refund') {
     header('Content-Type: application/json');
 
@@ -555,7 +454,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $refund_type    = ($_POST['refund_type'] ?? 'full') === 'partial' ? 'partial' : 'full';
     $partial_amount = isset($_POST['partial_amount']) ? (float) $_POST['partial_amount'] : null;
     
-    // ✅ NEW: Return method fields
     $return_method        = trim($_POST['return_method'] ?? 'dropoff');
     $return_address       = trim($_POST['return_address'] ?? '');
     $return_scheduled_date = trim($_POST['return_scheduled_date'] ?? '');
@@ -564,13 +462,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $return_contact_phone = trim($_POST['return_contact_phone'] ?? '');
     $return_notes         = trim($_POST['return_notes'] ?? '');
     
-    // ✅ Validate return method
     $valid_methods = ['dropoff', 'pickup', 'courier'];
     if (!in_array($return_method, $valid_methods)) {
         $return_method = 'dropoff';
     }
     
-    // ✅ If pickup, address is required
     if ($return_method === 'pickup' && empty($return_address)) {
         echo json_encode(['success' => false, 'message' => 'Pickup address is required for pickup method.']);
         exit();
@@ -600,7 +496,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit();
     }
 
-    // ✅ Check refund window (7 days from delivered_at)
     if (!empty($order['delivered_at'])) {
         $delivered_time = strtotime($order['delivered_at']);
         $deadline = $delivered_time + (7 * 24 * 60 * 60);
@@ -610,7 +505,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
     }
 
-    // ✅ Check existing refund request
     $existing = mysqli_query($conn, "
         SELECT id FROM refund_requests
         WHERE reservation_id = $reservation_id AND status IN ('pending','approved','processing')
@@ -620,7 +514,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit();
     }
 
-    // ✅ Determine refund amount
     $refund_amount = ($refund_type === 'partial' && $partial_amount)
         ? $partial_amount
         : (float) $order['total_amount'];
@@ -634,12 +527,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         exit();
     }
 
-// ✅ FIXED: Handle MULTIPLE evidence uploads
 $evidence_paths = [];
-$evidence_path = null; // For backward compatibility
+$evidence_path = null;
 
 if (isset($_FILES['evidence']) && is_array($_FILES['evidence']['name'])) {
-    // Multiple files
     $file_count = count($_FILES['evidence']['name']);
     $allowed_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
     
@@ -648,7 +539,7 @@ if (isset($_FILES['evidence']) && is_array($_FILES['evidence']['name'])) {
         mkdir($upload_dir, 0755, true);
     }
     
-    for ($i = 0; $i < min($file_count, 5); $i++) { // Max 5 files
+    for ($i = 0; $i < min($file_count, 5); $i++) {
         if ($_FILES['evidence']['error'][$i] !== UPLOAD_ERR_OK) continue;
         if ($_FILES['evidence']['size'][$i] > 5 * 1024 * 1024) continue;
         
@@ -668,12 +559,10 @@ if (isset($_FILES['evidence']) && is_array($_FILES['evidence']['name'])) {
         }
     }
     
-    // Set first as primary (backward compatibility)
     if (!empty($evidence_paths)) {
         $evidence_path = $evidence_paths[0];
     }
 } elseif (isset($_FILES['evidence']) && !is_array($_FILES['evidence']['name'])) {
-    // Single file (legacy)
     $file = $_FILES['evidence'];
     $allowed_types = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
     
@@ -699,7 +588,6 @@ if (isset($_FILES['evidence']) && is_array($_FILES['evidence']['name'])) {
     $details_esc = mysqli_real_escape_string($conn, $details);
     $clinic_id   = (int) $order['clinic_id'];
     
-    // ✅ NEW: Escape return method fields
     $return_method_esc         = mysqli_real_escape_string($conn, $return_method);
     $return_address_esc        = mysqli_real_escape_string($conn, $return_address);
     $return_contact_name_esc   = mysqli_real_escape_string($conn, $return_contact_name);
@@ -713,7 +601,6 @@ if (isset($_FILES['evidence']) && is_array($_FILES['evidence']['name'])) {
         ? "'" . mysqli_real_escape_string($conn, $return_scheduled_time) . "'" 
         : "NULL";
 
-// ✅ FIXED: Escape evidence paths
 $evidence_path_esc = $evidence_path ? mysqli_real_escape_string($conn, $evidence_path) : null;
 $evidence_path_sql = $evidence_path_esc ? "'$evidence_path_esc'" : 'NULL';
 
@@ -750,13 +637,10 @@ $insert = mysqli_query($conn, "
 
     $refund_id = mysqli_insert_id($conn);
 
-
-
     mysqli_query($conn, "
         UPDATE reservations SET refund_status = 'pending', updated_at = NOW() WHERE id = $reservation_id
     ");
 
-    // ✅ Notify clinic staff
     $staff_q = mysqli_query($conn, "
         SELECT id FROM users WHERE clinic_id = $clinic_id AND role IN ('ClinicAdmin','Staff')
     ");
@@ -779,7 +663,6 @@ $insert = mysqli_query($conn, "
         }
     }
 
-    // ✅ Notify customer
     if (function_exists('addNotification')) {
         addNotification(
             $user_id, 'refund',
@@ -796,6 +679,10 @@ $insert = mysqli_query($conn, "
     ]);
     exit();
 }
+
+/* ═══════════════════════════════════════════════════════════════
+   END AJAX HANDLERS
+   ═══════════════════════════════════════════════════════════════ */
 
 // Get user data for navbar
 $user_query = mysqli_query($conn, "SELECT * FROM users WHERE id = $user_id");
@@ -851,20 +738,22 @@ $reservations_query = mysqli_query($conn, "
            rr.return_contact_name,
            rr.return_contact_phone,
            rr.return_notes,
-           rr.return_status
+           rr.return_status,
+           rider.name as rider_name,
+           rider.phone as rider_phone,
+           rider.vehicle_type as rider_vehicle,
+           rider.plate_number as rider_plate
     FROM reservations r
     JOIN products p ON r.product_id = p.id
     JOIN clinics c ON r.clinic_id = c.id
     LEFT JOIN refund_requests rr ON r.id = rr.reservation_id AND rr.id = (
         SELECT MAX(id) FROM refund_requests WHERE reservation_id = r.id
     )
+    LEFT JOIN riders rider ON r.assigned_rider_id = rider.id
     WHERE r.user_id = $user_id
     ORDER BY r.created_at DESC
 ");
 
-// ============================================
-// ✅ FIXED: GET PRODUCT IMAGE URL
-// ============================================
 function getProductImageUrl($product) {
     $imageUrl = '/assets/img/no-image.png';
     
@@ -918,9 +807,6 @@ function getProductImageUrl($product) {
     return $imageUrl;
 }
 
-// ============================================
-// ✅ FIXED: GET CLINIC LOGO
-// ============================================
 function getClinicLogo($reservation) {
     if (!empty($reservation['logo'])) {
         $logo = trim($reservation['logo']);
@@ -943,7 +829,6 @@ function getClinicLogo($reservation) {
     return null;
 }
 
-// Helper function for category icon
 function getCategoryIcon($category) {
     $icons = [
         'Frames' => 'fa-glasses',
@@ -957,9 +842,6 @@ function getCategoryIcon($category) {
     return $icons[$category] ?? 'fa-box';
 }
 
-// ============================================
-// ✅ DELIVERY FEATURE — Delivery status helper
-// ============================================
 function getDeliveryStatusInfo($status) {
     $map = [
         'pending'    => ['label' => 'Order Placed',    'class' => 'ds-pending',    'icon' => 'fa-clock',        'step' => 1],
@@ -974,7 +856,6 @@ function getDeliveryStatusInfo($status) {
     return $map[$status] ?? $map['pending'];
 }
 
-// ✅ NEW: Return method label helper
 function getReturnMethodInfo($method) {
     $map = [
         'dropoff' => [
@@ -999,7 +880,6 @@ function getReturnMethodInfo($method) {
     return $map[$method] ?? $map['dropoff'];
 }
 
-// ✅ NEW: Return status helper
 function getReturnStatusInfo($status) {
     $map = [
         'pending'    => ['label' => 'Awaiting Approval', 'class' => 'refund-pending',    'icon' => 'fa-clock'],
@@ -1013,10 +893,8 @@ function getReturnStatusInfo($status) {
     return $map[$status] ?? $map['pending'];
 }
 
-// Include navbar
 $active_nav = 'reservations';
 
-// Get stats
 $total_reservations = mysqli_num_rows($reservations_query);
 $pending_count = 0;
 $confirmed_count = 0;
@@ -1027,9 +905,6 @@ while($temp = mysqli_fetch_assoc($reservations_query)) {
     $reservations_data[] = $temp;
 }
 
-// ============================================
-// WARRANTY HELPER FUNCTIONS
-// ============================================
 function calculateWarrantyEndDateRes($purchase_date, $warranty_period) {
     if (empty($purchase_date) || empty($warranty_period)) return null;
     
@@ -1150,10 +1025,161 @@ mysqli_data_seek($reservations_query, 0);
         .back-btn { display: flex; align-items: center; gap: 8px; padding: 10px 20px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: var(--radius-full); color: var(--text-secondary); text-decoration: none; font-size: 14px; font-weight: 500; transition: all 0.3s; }
         .back-btn:hover { background: var(--primary); color: white; border-color: var(--primary); }
 
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px; margin-bottom: 28px; }
+        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 16px; margin-bottom: 20px; }
         .stat-card { background: var(--bg-secondary); border-radius: var(--radius-lg); padding: 16px 20px; border: 1px solid var(--border-light); transition: all 0.2s; }
         .stat-value { font-size: 28px; font-weight: 800; color: var(--primary); line-height: 1; }
         .stat-label { font-size: 12px; color: var(--text-muted); margin-top: 5px; display: flex; align-items: center; gap: 5px; }
+
+        /* ═══ ORDERS TOOLBAR (Tabs + Search) ═══ */
+        .orders-toolbar {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        .orders-search {
+            position: relative;
+            flex: 1;
+            min-width: 220px;
+            max-width: 380px;
+            margin-left: auto;
+        }
+
+        .orders-search i.fa-search {
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-muted);
+            font-size: 13px;
+            pointer-events: none;
+        }
+
+        .orders-search input {
+            width: 100%;
+            padding: 10px 38px 10px 38px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-full);
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 13px;
+            font-family: inherit;
+            font-weight: 500;
+            transition: all 0.2s;
+            outline: none;
+        }
+
+        .orders-search input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(0,183,97,0.12);
+        }
+
+        .orders-search input::placeholder {
+            color: var(--text-muted);
+            font-weight: 400;
+        }
+
+        .orders-search .search-clear {
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: var(--bg-primary);
+            border: none;
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            color: var(--text-muted);
+            font-size: 10px;
+            transition: all 0.2s;
+        }
+
+        .orders-search .search-clear:hover {
+            background: var(--danger);
+            color: white;
+        }
+
+        @media (max-width: 640px) {
+            .orders-toolbar {
+                flex-direction: column;
+                align-items: stretch;
+                gap: 10px;
+            }
+            .orders-search {
+                max-width: 100%;
+                margin-left: 0;
+            }
+        }
+
+        /* ═══ FILTER TABS ═══ */
+        .filter-tabs {
+            display: flex;
+            flex-wrap: nowrap;           /* ✅ HUWAG mag-wrap pababa */
+            gap: 8px;
+            overflow-x: auto;             /* ✅ Scroll pakanan */
+            overflow-y: hidden;
+            scrollbar-width: none;
+            -webkit-overflow-scrolling: touch;
+            padding-bottom: 2px;
+            width: 100%;
+            max-width: 100%;
+        }
+        .filter-tabs::-webkit-scrollbar { display: none; }
+
+        /* ✅ Siguraduhing hindi mag-shrink 'yung tabs */
+        .filter-tab {
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+
+        .filter-tab {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 9px 16px;
+            border-radius: var(--radius-full);
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            white-space: nowrap;
+            font-family: inherit;
+            flex-shrink: 0;
+        }
+        .filter-tab:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+        .filter-tab.active {
+            background: var(--primary-gradient);
+            color: white;
+            border-color: transparent;
+            box-shadow: 0 4px 12px rgba(0,183,97,0.25);
+        }
+        .filter-tab .tab-count {
+            background: rgba(0,0,0,0.08);
+            color: inherit;
+            padding: 1px 7px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 700;
+            line-height: 1.4;
+        }
+        .filter-tab.active .tab-count {
+            background: rgba(255,255,255,0.25);
+        }
+        .theme-dark .filter-tab .tab-count {
+            background: rgba(255,255,255,0.08);
+        }
 
         .reservations-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 20px; }
         .reservation-card { background: var(--bg-secondary); border-radius: var(--radius-lg); border: 1px solid var(--border-light); overflow: hidden; transition: all 0.2s; }
@@ -1196,7 +1222,95 @@ mysqli_data_seek($reservations_query, 0);
         .payment-label { color: var(--text-muted); }
         .payment-amount { font-weight: 700; color: var(--primary); }
         .payment-balance { font-weight: 700; color: var(--warning); }
+                /* ═══ PAYMENT METHOD BADGE ═══ */
+        .payment-method-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: var(--radius-sm);
+            font-size: 12px;
+            font-weight: 600;
+            margin-top: 6px;
+        }
+        .payment-method-row.cod {
+            background: #FEF3C7;
+            color: #92400E;
+            border: 1px solid #FCD34D;
+        }
+        .payment-method-row.paid {
+            background: #D1FAE5;
+            color: #065F46;
+            border: 1px solid #6EE7B7;
+        }
+        .payment-method-row.partial {
+            background: #DBEAFE;
+            color: #1E40AF;
+            border: 1px solid #93C5FD;
+        }
+        .payment-method-row.unpaid {
+            background: #FEE2E2;
+            color: #991B1B;
+            border: 1px solid #FCA5A5;
+        }
+        .payment-method-row.onsite {
+            background: #FFEDD5;
+            color: #9A3412;
+            border: 1px solid #FDBA74;
+        }
+        .payment-method-row.free {
+            background: #D1FAE5;
+            color: #065F46;
+            border: 1px solid #6EE7B7;
+        }
+        .payment-method-row.refunded {
+            background: #EDE9FE;
+            color: #5B21B6;
+            border: 1px solid #C4B5FD;
+        }
+        .payment-method-row i {
+            font-size: 14px;
+            flex-shrink: 0;
+        }
+        .payment-method-row .pm-text {
+            flex: 1;
+            line-height: 1.4;
+        }
+        .payment-method-row .pm-text strong {
+            font-weight: 800;
+        }
 
+        .theme-dark .payment-method-row.cod {
+            background: #3B2F0F;
+            color: #FDE68A;
+            border-color: #B45309;
+        }
+        .theme-dark .payment-method-row.paid,
+        .theme-dark .payment-method-row.free {
+            background: #0D2818;
+            color: #6EE7B7;
+            border-color: #065F46;
+        }
+        .theme-dark .payment-method-row.partial {
+            background: #1E3A5F;
+            color: #93C5FD;
+            border-color: #1E40AF;
+        }
+        .theme-dark .payment-method-row.unpaid {
+            background: #3B0F0F;
+            color: #FCA5A5;
+            border-color: #991B1B;
+        }
+        .theme-dark .payment-method-row.onsite {
+            background: #3B1F0F;
+            color: #FDBA74;
+            border-color: #9A3412;
+        }
+        .theme-dark .payment-method-row.refunded {
+            background: #3B1F5C;
+            color: #D8B4FE;
+            border-color: #7C3AED;
+        }
         .card-actions { display: flex; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
         .btn { flex: 1; padding: 10px; border-radius: var(--radius-md); font-size: 13px; font-weight: 600; text-decoration: none; display: flex; align-items: center; justify-content: center; gap: 8px; transition: all 0.2s; cursor: pointer; border: none; min-width: 80px; }
         .btn-primary { background: var(--primary-gradient); color: white; }
@@ -1298,7 +1412,6 @@ mysqli_data_seek($reservations_query, 0);
         .refund-reason strong { color: var(--text-primary); }
         .refund-amount { font-size: 13px; font-weight: 700; color: var(--danger); }
 
-        /* ✅ NEW: Return Method Styles */
         .return-method-section {
             background: var(--bg-secondary);
             border-radius: var(--radius-md);
@@ -1342,7 +1455,6 @@ mysqli_data_seek($reservations_query, 0);
             word-break: break-word;
         }
 
-        /* Refund Modal */
         .refund-modal-reasons { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
         .refund-reason-option { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 2px solid var(--border-color); border-radius: var(--radius-md); cursor: pointer; transition: all 0.2s; background: var(--bg-secondary); }
         .refund-reason-option:hover { border-color: var(--primary); background: var(--primary-light); }
@@ -1359,7 +1471,6 @@ mysqli_data_seek($reservations_query, 0);
         .refund-type-option label { cursor: pointer; font-size: 13px; font-weight: 600; margin: 0; display: block; }
         .refund-type-option small { display: block; font-size: 11px; color: var(--text-muted); margin-top: 4px; font-weight: 400; }
 
-        /* ✅ NEW: Return Method Toggle (inside modal) */
         .return-method-toggle {
             display: flex;
             flex-direction: column;
@@ -1415,7 +1526,6 @@ mysqli_data_seek($reservations_query, 0);
             line-height: 1.4;
         }
 
-        /* ✅ NEW: Conditional fields wrapper */
         .conditional-fields {
             display: none;
             margin-top: 12px;
@@ -1428,71 +1538,190 @@ mysqli_data_seek($reservations_query, 0);
             display: block;
         }
 
-        /* ✅ FIXED: Refund Completed Success Card */
-.refund-completed-card {
-    background: #D1FAE5;
-    border: 1px solid #6EE7B7;
-    border-radius: var(--radius-md);
-    padding: 12px 14px;
-    margin-top: 8px;
-}
+        .refund-completed-card {
+            background: #D1FAE5;
+            border: 1px solid #6EE7B7;
+            border-radius: var(--radius-md);
+            padding: 12px 14px;
+            margin-top: 8px;
+        }
 
-.refund-completed-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    color: #065F46;
-    font-weight: 700;
-    font-size: 13px;
-    margin-bottom: 10px;
-    padding-bottom: 8px;
-    border-bottom: 1px dashed #6EE7B7;
-}
+        .refund-completed-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #065F46;
+            font-weight: 700;
+            font-size: 13px;
+            margin-bottom: 10px;
+            padding-bottom: 8px;
+            border-bottom: 1px dashed #6EE7B7;
+        }
 
-.refund-completed-header i {
-    font-size: 16px;
-}
+        .refund-completed-header i {
+            font-size: 16px;
+        }
 
-.refund-completed-details {
-    color: #065F46;
-    font-size: 12px;
-    line-height: 1.7;
-}
+        .refund-completed-details {
+            color: #065F46;
+            font-size: 12px;
+            line-height: 1.7;
+        }
 
-.refund-completed-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-start;
-    gap: 10px;
-    margin-bottom: 4px;
-}
+        .refund-completed-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 10px;
+            margin-bottom: 4px;
+        }
 
-.refund-completed-row .lbl {
-    color: #047857;
-    flex-shrink: 0;
-}
+        .refund-completed-row .lbl {
+            color: #047857;
+            flex-shrink: 0;
+        }
 
-.refund-completed-row .val {
-    font-weight: 700;
-    color: #065F46;
-    text-align: right;
-    word-break: break-word;
-}
+        .refund-completed-row .val {
+            font-weight: 700;
+            color: #065F46;
+            text-align: right;
+            word-break: break-word;
+        }
 
-.refund-completed-note {
-    margin-top: 8px;
-    padding-top: 8px;
-    border-top: 1px dashed #6EE7B7;
-    font-size: 11px;
-    color: #047857;
-    display: flex;
-    align-items: center;
-    gap: 5px;
-}
+        .refund-completed-note {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px dashed #6EE7B7;
+            font-size: 11px;
+            color: #047857;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
 
-.refund-completed-note i {
-    font-size: 12px;
-}
+        .refund-completed-note i {
+            font-size: 12px;
+        }
+
+        /* ═══ CARD ACCORDION (Details toggle) ═══ */
+        .card-details-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 8px 12px;
+            background: var(--bg-primary);
+            border: 1px dashed var(--border-color);
+            border-radius: var(--radius-md);
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            transition: all 0.2s;
+            user-select: none;
+        }
+        .card-details-toggle:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: var(--primary-light);
+        }
+        .card-details-toggle .chevron {
+            transition: transform 0.25s;
+            font-size: 11px;
+        }
+        .card-details-toggle.open .chevron {
+            transform: rotate(180deg);
+        }
+        .card-details-body {
+            display: none;
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px dashed var(--border-color);
+            animation: detailsSlide 0.25s ease;
+        }
+        .card-details-body.open {
+            display: block;
+        }
+        @keyframes detailsSlide {
+            from { opacity: 0; transform: translateY(-4px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
+
+        /* ═══ MORE MENU (secondary actions) ═══ */
+        .more-menu-wrap {
+            position: relative;
+        }
+        .more-menu-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 10px 14px;
+            border-radius: var(--radius-md);
+            background: transparent;
+            border: 1px solid var(--border-color);
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+        .more-menu-btn:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            background: var(--primary-light);
+        }
+        .more-menu-list {
+            position: absolute;
+            bottom: calc(100% + 6px);
+            right: 0;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius-md);
+            box-shadow: var(--shadow-lg);
+            min-width: 200px;
+            padding: 6px;
+            display: none;
+            z-index: 50;
+        }
+        .more-menu-list.open { display: block; }
+        .more-menu-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.15s;
+            background: none;
+            border: none;
+            width: 100%;
+            text-align: left;
+            text-decoration: none;
+            font-family: inherit;
+        }
+        .more-menu-item:hover {
+            background: var(--bg-primary);
+        }
+        .more-menu-item.danger { color: var(--danger); }
+        .more-menu-item.danger:hover { background: #FEE2E2; }
+        .theme-dark .more-menu-item.danger:hover { background: #3B0F0F; }
+        .more-menu-item i {
+            width: 16px;
+            text-align: center;
+            font-size: 13px;
+        }
+
+        /* Mobile: More menu becomes full-width bottom */
+        @media (max-width: 480px) {
+            .more-menu-list {
+                min-width: 180px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -1504,25 +1733,87 @@ mysqli_data_seek($reservations_query, 0);
                 <i class="fas fa-shopping-bag"></i>
                 <h1>My Orders</h1>
             </div>
-            <a href="dashboard.php" class="back-btn">
-                <i class="fas fa-arrow-left"></i> Back to Dashboard
-            </a>
         </div>
 
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-value"><?php echo $total_reservations; ?></div>
-                <div class="stat-label"><i class="fas fa-shopping-bag"></i> Total Orders</div>
+        <!-- ═══ ORDER FILTER TABS + SEARCH ═══ -->
+        <?php
+            $count_all = 0;
+            $count_pending = 0;
+            $count_to_receive = 0;
+            $count_completed = 0;
+            $count_cancelled = 0;
+
+            foreach ($reservations_data as $r) {
+                $count_all++;
+                $st = $r['status'];
+                if (in_array($st, ['pending', 'confirmed', 'ready_for_pickup'])) {
+                    $count_pending++;
+                } elseif (in_array($st, ['delivered'])) {
+                    $count_to_receive++;
+                } elseif (in_array($st, ['completed'])) {
+                    $count_completed++;
+                } elseif (in_array($st, ['cancelled', 'expired', 'no_show'])) {
+                    $count_cancelled++;
+                }
+            }
+        ?>
+        <?php if ($total_reservations > 0): ?>
+        <div class="orders-toolbar">
+            <div class="filter-tabs" id="orderFilterTabs">
+                <button type="button" class="filter-tab active" data-filter="all">
+                    <i class="fas fa-list"></i> All
+                    <span class="tab-count"><?php echo $count_all; ?></span>
+                </button>
+                <button type="button" class="filter-tab" data-filter="pending">
+                    <i class="fas fa-clock"></i> Confirmed
+                    <span class="tab-count"><?php echo $count_pending; ?></span>
+                </button>
+                <button type="button" class="filter-tab" data-filter="to_receive">
+                    <i class="fas fa-truck"></i> To Receive
+                    <span class="tab-count"><?php echo $count_to_receive; ?></span>
+                </button>
+                <button type="button" class="filter-tab" data-filter="completed">
+                    <i class="fas fa-check-double"></i> Completed
+                    <span class="tab-count"><?php echo $count_completed; ?></span>
+                </button>
+                <button type="button" class="filter-tab" data-filter="cancelled">
+                    <i class="fas fa-times-circle"></i> Cancelled
+                    <span class="tab-count"><?php echo $count_cancelled; ?></span>
+                </button>
             </div>
-            <div class="stat-card">
-                <div class="stat-value"><?php echo $pending_count; ?></div>
-                <div class="stat-label"><i class="fas fa-clock"></i> Pending</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-value"><?php echo $confirmed_count; ?></div>
-                <div class="stat-label"><i class="fas fa-check-circle"></i> Confirmed</div>
+
+            <div class="orders-search">
+                <i class="fas fa-search"></i>
+                <input type="text" id="ordersSearchInput" placeholder="Search by order #, product, or clinic..." autocomplete="off">
+                <button type="button" class="search-clear" id="searchClearBtn" onclick="clearOrderSearch()" style="display:none;">
+                    <i class="fas fa-times"></i>
+                </button>
             </div>
         </div>
+        <?php endif; ?>
+
+        <!-- ═══ ORDER FILTER TABS ═══ -->
+        <?php
+            $count_all = 0;
+            $count_pending = 0;
+            $count_to_receive = 0;
+            $count_completed = 0;
+            $count_cancelled = 0;
+
+            foreach ($reservations_data as $r) {
+                $count_all++;
+                $st = $r['status'];
+                if (in_array($st, ['pending', 'confirmed', 'ready_for_pickup'])) {
+                    $count_pending++;
+                } elseif (in_array($st, ['delivered'])) {
+                    $count_to_receive++;
+                } elseif (in_array($st, ['completed'])) {
+                    $count_completed++;
+                } elseif (in_array($st, ['cancelled', 'expired', 'no_show'])) {
+                    $count_cancelled++;
+                }
+            }
+        ?>
 
         <?php if ($total_reservations > 0): ?>
             <div class="reservations-grid">
@@ -1539,6 +1830,18 @@ mysqli_data_seek($reservations_query, 0);
                         case 'expired': $status_class = 'status-expired'; $status_text = 'Expired'; break;
                         case 'no_show': $status_class = 'status-noshow'; $status_text = 'No Show'; break;
                         default: $status_class = 'status-pending'; $status_text = ucfirst(str_replace('_', ' ', $res['status']));
+                    }
+                    
+                    // ✅ Filter group
+                    $filter_group = 'other';
+                    if (in_array($res['status'], ['pending', 'confirmed', 'ready_for_pickup'])) {
+                        $filter_group = 'pending';
+                    } elseif ($res['status'] === 'delivered') {
+                        $filter_group = 'to_receive';
+                    } elseif ($res['status'] === 'completed') {
+                        $filter_group = 'completed';
+                    } elseif (in_array($res['status'], ['cancelled', 'expired', 'no_show'])) {
+                        $filter_group = 'cancelled';
                     }
                     
                     $product_image_url = getProductImageUrl($res);
@@ -1575,9 +1878,25 @@ mysqli_data_seek($reservations_query, 0);
                             $is_within_warranty = isWithinWarrantyRes($res['created_at'], $res['warranty_period']);
                             $can_claim_warranty = ($res['status'] == 'completed' && $is_within_warranty);
                         }
+                        
+                        $existing_claim = null;
+                        $claim_status_check = mysqli_query($conn, "
+                            SELECT id, status 
+                            FROM warranty_claims 
+                            WHERE product_id = {$res['product_id']} 
+                            AND user_id = $user_id 
+                            AND status IN ('pending', 'processing', 'approved', 'arrived', 'completed')
+                            ORDER BY id DESC
+                            LIMIT 1
+                        ");
+                        
+                        if ($claim_status_check && mysqli_num_rows($claim_status_check) > 0) {
+                            $existing_claim = mysqli_fetch_assoc($claim_status_check);
+                            $can_claim_warranty = false;
+                        }
                     }
                 ?>
-                    <div class="reservation-card" data-reservation-id="<?php echo $res['id']; ?>">
+                    <div class="reservation-card" data-reservation-id="<?php echo $res['id']; ?>" data-filter-group="<?php echo $filter_group; ?>">
                         <div class="product-image-section" onclick="showImageModal('<?php echo htmlspecialchars($product_image_url); ?>', '<?php echo htmlspecialchars($res['product_name']); ?>')">
                             <?php if ($product_image_url && strpos($product_image_url, 'no-image.png') === false): ?>
                                 <img src="<?php echo htmlspecialchars($product_image_url); ?>" alt="<?php echo htmlspecialchars($res['product_name']); ?>" class="product-image"
@@ -1671,6 +1990,57 @@ mysqli_data_seek($reservations_query, 0);
                                     </div>
                                     <?php endif; ?>
 
+                                    <!-- ✅ RIDER INFO CARD (dynamic badge) -->
+                                    <?php if (!empty($res['rider_name']) && !in_array($res['delivery_status'] ?? '', ['cancelled', 'failed', 'delivered'])): ?>
+                                    <div style="background: linear-gradient(135deg, rgba(0,183,97,0.06), rgba(0,183,97,0.02)); border: 1px solid rgba(0,183,97,0.2); border-radius: var(--radius-md); padding: 10px 12px;">
+                                        <?php 
+                                            $rider_status = $res['delivery_status'] ?? 'pending';
+                                            $badge_map = [
+                                                'assigned'   => ['label' => 'ASSIGNED',   'bg' => '#CFFAFE', 'color' => '#0E7490', 'dot' => 'fa-circle'],
+                                                'picked_up'  => ['label' => 'PICKED UP',  'bg' => '#DBEAFE', 'color' => '#1E40AF', 'dot' => 'fa-circle'],
+                                                'in_transit' => ['label' => 'ON THE WAY', 'bg' => '#E9D5FF', 'color' => '#6B21A8', 'dot' => 'fa-circle'],
+                                                'delivered'  => ['label' => 'DELIVERED',  'bg' => '#D1FAE5', 'color' => '#065F46', 'dot' => 'fa-check-circle'],
+                                                'failed'     => ['label' => 'FAILED',     'bg' => '#FEE2E2', 'color' => '#991B1B', 'dot' => 'fa-times-circle'],
+                                                'cancelled'  => ['label' => 'CANCELLED',  'bg' => '#FEE2E2', 'color' => '#991B1B', 'dot' => 'fa-ban'],
+                                            ];
+                                            $rbadge = $badge_map[$rider_status] ?? $badge_map['assigned'];
+                                        ?>
+                                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                                            <i class="fas fa-motorcycle" style="color: var(--primary); font-size: 13px;"></i>
+                                            <strong style="font-size: 12.5px; color: var(--text-primary);">Your Rider</strong>
+                                            <span style="margin-left: auto; background: <?php echo $rbadge['bg']; ?>; color: <?php echo $rbadge['color']; ?>; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px; display: inline-flex; align-items: center; gap: 4px;">
+                                                <i class="fas <?php echo $rbadge['dot']; ?>" style="font-size: 8px;"></i> <?php echo $rbadge['label']; ?>
+                                            </span>
+                                        </div>
+                                        <div style="display: flex; align-items: center; gap: 10px;">
+                                            <div style="width: 40px; height: 40px; border-radius: 50%; background: var(--primary-light); color: var(--primary); display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 16px; flex-shrink: 0; border: 2px solid white; box-shadow: 0 0 0 1px var(--border-color);">
+                                                <?php echo strtoupper(substr($res['rider_name'], 0, 1)); ?>
+                                            </div>
+                                            <div style="flex: 1; min-width: 0;">
+                                                <div style="font-size: 13px; font-weight: 700; color: var(--text-primary); line-height: 1.2;">
+                                                    <?php echo htmlspecialchars($res['rider_name']); ?>
+                                                </div>
+                                                <div style="font-size: 11px; color: var(--text-muted); margin-top: 2px;">
+                                                    <?php if (!empty($res['rider_vehicle'])): ?>
+                                                        <i class="fas fa-motorcycle"></i> <?php echo htmlspecialchars($res['rider_vehicle']); ?>
+                                                    <?php endif; ?>
+                                                    <?php if (!empty($res['rider_plate'])): ?>
+                                                        <span style="font-family: monospace; margin-left: 4px;">• <?php echo htmlspecialchars($res['rider_plate']); ?></span>
+                                                    <?php endif; ?>
+                                                </div>
+                                            </div>
+                                            <?php if (!empty($res['rider_phone'])): ?>
+                                            <a href="tel:<?php echo htmlspecialchars($res['rider_phone']); ?>"
+                                               style="display: inline-flex; align-items: center; gap: 5px; padding: 8px 14px; background: var(--primary); color: white; border-radius: var(--radius-full); font-size: 12px; font-weight: 700; text-decoration: none; flex-shrink: 0; transition: all 0.2s;"
+                                               onmouseover="this.style.transform='translateY(-2px)'; this.style.boxShadow='0 4px 12px rgba(0,183,97,0.3)';"
+                                               onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='none';">
+                                                <i class="fas fa-phone"></i> Call
+                                            </a>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                    <?php endif; ?>
+
                                     <?php if (!empty($res['delivered_at'])): ?>
                                     <div class="delivery-tracking">
                                         <i class="fas fa-check-circle" style="color: var(--success);"></i>
@@ -1684,6 +2054,89 @@ mysqli_data_seek($reservations_query, 0);
                                         <span style="color: var(--danger);">Reason: <?php echo htmlspecialchars($res['cancelled_reason']); ?></span>
                                     </div>
                                     <?php endif; ?>
+
+                                    <?php 
+                                    $delivery_status_now = $res['delivery_status'] ?? 'pending';
+                                    $has_eta = !empty($res['delivery_date']);
+                                    $eta_date_display = '';
+                                    $eta_time_display = '';
+                                    $eta_generic = false; // ✅ NEW: flag for generic ETA
+
+                                    if ($has_eta) {
+                                        $eta_date_display = date('D, M d, Y', strtotime($res['delivery_date']));
+                                        
+                                        if (!empty($res['delivery_time_start']) && !empty($res['delivery_time_end'])) {
+                                            $eta_time_display = date('g:i A', strtotime($res['delivery_time_start'])) . ' – ' . date('g:i A', strtotime($res['delivery_time_end']));
+                                        } elseif (!empty($res['delivery_time_start'])) {
+                                            $eta_time_display = 'from ' . date('g:i A', strtotime($res['delivery_time_start']));
+                                        }
+                                    }
+
+                                    $eta_message = 'Estimated arrival';
+                                    $eta_icon = 'fa-calendar-alt';
+                                    $eta_color = 'var(--primary)';
+                                    $eta_bg = 'rgba(0,183,97,0.08)';
+
+                                    if ($delivery_status_now === 'delivered') {
+                                        $eta_message = 'Delivered on';
+                                        $eta_icon = 'fa-check-circle';
+                                        $eta_color = 'var(--success)';
+                                        $eta_bg = 'rgba(0,183,97,0.1)';
+                                        if (!empty($res['delivered_at'])) {
+                                            $eta_date_display = date('D, M d, Y', strtotime($res['delivered_at']));
+                                            $eta_time_display = date('g:i A', strtotime($res['delivered_at']));
+                                        }
+                                    } elseif ($delivery_status_now === 'in_transit') {
+                                        $eta_message = 'Arriving today';
+                                        $eta_icon = 'fa-truck';
+                                        $eta_color = 'var(--info)';
+                                        $eta_bg = 'rgba(59,130,246,0.08)';
+                                    } elseif ($delivery_status_now === 'picked_up') {
+                                        $eta_message = 'Rider on the way';
+                                        $eta_icon = 'fa-box-open';
+                                        $eta_color = '#6B21A8';
+                                        $eta_bg = 'rgba(107,33,168,0.08)';
+                                    } elseif ($delivery_status_now === 'assigned') {
+                                        $eta_message = 'Rider assigned — ETA';
+                                        $eta_icon = 'fa-user-check';
+                                        $eta_color = '#0E7490';
+                                        $eta_bg = 'rgba(14,116,144,0.08)';
+                                    } elseif (!$has_eta && in_array($delivery_status_now, ['pending', 'preparing'])) {
+                                        // ✅ NEW: Generic ETA kapag bagong order pa lang
+                                        $eta_message = 'Estimated arrival';
+                                        $eta_icon = 'fa-clock';
+                                        $eta_color = 'var(--primary)';
+                                        $eta_bg = 'rgba(0,183,97,0.08)';
+                                        $eta_generic = true;
+                                        $eta_date_display = '2-3 business days';
+                                        $eta_time_display = '';
+                                    } elseif (!$has_eta) {
+                                        $eta_message = 'Awaiting schedule';
+                                        $eta_icon = 'fa-hourglass-half';
+                                        $eta_color = 'var(--text-muted)';
+                                        $eta_bg = 'rgba(156,163,175,0.08)';
+                                    }
+                                    ?>
+
+                                    <div class="delivery-tracking" style="background: <?php echo $eta_bg; ?>; border-left: 3px solid <?php echo $eta_color; ?>;">
+                                        <i class="fas <?php echo $eta_icon; ?>" style="color: <?php echo $eta_color; ?>;"></i>
+                                        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%; gap: 8px; flex-wrap: wrap;">
+                                            <span style="color: var(--text-secondary); font-size: 12px;"><?php echo $eta_message; ?></span>
+                                            <strong style="color: <?php echo $eta_color; ?>; font-size: 12.5px; text-align: right;">
+                                                <?php if ($eta_generic): ?>
+                                                    <i class="fas fa-hourglass-half" style="font-size: 11px; opacity: 0.7;"></i>
+                                                    <?php echo $eta_date_display; ?>
+                                                <?php elseif ($has_eta || $delivery_status_now === 'delivered'): ?>
+                                                    <?php echo $eta_date_display; ?>
+                                                    <?php if ($eta_time_display): ?>
+                                                        <span style="font-weight: 500; opacity: 0.8;">• <?php echo $eta_time_display; ?></span>
+                                                    <?php endif; ?>
+                                                <?php else: ?>
+                                                    —
+                                                <?php endif; ?>
+                                            </strong>
+                                        </div>
+                                    </div>
 
                                     <?php if ($res['delivery_fee'] > 0): ?>
                                     <div class="delivery-fee-row">
@@ -1702,7 +2155,186 @@ mysqli_data_seek($reservations_query, 0);
                                     <i class="fas fa-store"></i> Pickup at Clinic
                                 </div>
                             <?php endif; ?>
-                            
+
+                            <!-- ═══════════════════════════════════════ -->
+                            <!-- ✅ SECONDARY INFO (accordion)          -->
+                            <!-- ═══════════════════════════════════════ -->
+                            <?php
+                                // Compute display total
+                                $display_total = (float)($res['total_amount'] ?: $res['price']);
+                                $display_delivery_fee = (float)($res['delivery_fee'] ?? 0);
+                                $display_downpayment = (float)($res['downpayment_amount'] ?? 0);
+                                $display_balance = (float)($res['balance_amount'] ?? 0);
+
+                                if ($display_downpayment > 0 && $display_downpayment == (float)($res['total_amount'] ?: $res['price'])) {
+                                    $display_downpayment = $display_total;
+                                    $display_balance = 0;
+                                }
+
+                                // Compute effective refund status (for accordion toggle condition)
+                                $effective_refund_status = $res['refund_status'] ?? null;
+                                if (empty($effective_refund_status) || $effective_refund_status === 'none') {
+                                    $effective_refund_status = $res['rr_refund_status'] ?? null;
+                                }
+
+                                $has_secondary_info = 
+                                    !empty($res['color_name']) ||
+                                    !empty($res['notes']) ||
+                                    $display_total > 0 ||
+                                    $has_warranty ||
+                                    (!empty($effective_refund_status) && $effective_refund_status !== 'none') ||
+                                    !empty($res['return_method'] ?? null);
+                            ?>
+
+                            <?php if ($has_secondary_info): ?>
+                            <div class="card-details-toggle" onclick="toggleCardDetails(this)">
+                                <span><i class="fas fa-info-circle"></i> View more details</span>
+                                <i class="fas fa-chevron-down chevron"></i>
+                            </div>
+                            <div class="card-details-body">
+                            <?php endif; ?>
+
+                            <!-- ═══════════════════════════════════════════════════ -->
+                            <!-- ✅ PROOF OF DELIVERY CARD                            -->
+                            <!-- ═══════════════════════════════════════════════════ -->
+                            <?php 
+                            $has_delivery_proof = !empty($res['delivery_proof_image']);
+                            $proof_url = null;
+                            if ($has_delivery_proof) {
+                                $proof_path = $res['delivery_proof_image'];
+                                $proof_path = str_replace('uploads/uploads/', 'uploads/', $proof_path);
+                                if (strpos($proof_path, 'uploads/') === 0) {
+                                    $proof_url = '/' . $proof_path;
+                                } elseif (strpos($proof_path, '/') === 0) {
+                                    $proof_url = $proof_path;
+                                } else {
+                                    $proof_url = '/uploads/' . $proof_path;
+                                }
+                            }
+                            $proof_notes = $res['delivery_proof_notes'] ?? '';
+                            $proof_at = $res['delivery_proof_at'] ?? $res['delivered_at'];
+                            ?>
+
+                            <?php if ($has_delivery_proof): ?>
+                            <div style="
+                                background: linear-gradient(135deg, rgba(0,183,97,0.08), rgba(0,183,97,0.02));
+                                border: 1px solid rgba(0,183,97,0.25);
+                                border-radius: var(--radius-md);
+                                padding: 12px 14px;
+                                margin-bottom: 10px;
+                            ">
+                                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+                                    <i class="fas fa-camera" style="color: var(--primary); font-size: 14px;"></i>
+                                    <strong style="font-size: 13px; color: var(--text-primary);">Proof of Delivery</strong>
+                                    <span style="
+                                        margin-left: auto;
+                                        background: #D1FAE5;
+                                        color: #065F46;
+                                        font-size: 10px;
+                                        font-weight: 700;
+                                        padding: 3px 8px;
+                                        border-radius: 999px;
+                                        letter-spacing: 0.5px;
+                                        display: inline-flex;
+                                        align-items: center;
+                                        gap: 4px;
+                                    ">
+                                        <i class="fas fa-check-circle"></i> VERIFIED
+                                    </span>
+                                </div>
+
+                                <div style="display: flex; gap: 12px; align-items: flex-start;">
+                                    <div 
+                                        onclick="event.stopPropagation(); showImageModal('<?php echo htmlspecialchars($proof_url); ?>', 'Proof of Delivery')"
+                                        style="
+                                            width: 90px;
+                                            height: 90px;
+                                            border-radius: var(--radius-md);
+                                            overflow: hidden;
+                                            cursor: pointer;
+                                            flex-shrink: 0;
+                                            border: 2px solid white;
+                                            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                                            position: relative;
+                                            transition: transform 0.2s;
+                                        "
+                                        onmouseover="this.style.transform='scale(1.05)'"
+                                        onmouseout="this.style.transform='scale(1)'"
+                                    >
+                                        <img 
+                                            src="<?php echo htmlspecialchars($proof_url); ?>" 
+                                            alt="Proof of Delivery"
+                                            style="width: 100%; height: 100%; object-fit: cover;"
+                                            onerror="this.parentElement.innerHTML='<div style=\'width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:var(--bg-primary);\'><i class=\'fas fa-image\' style=\'color:var(--text-muted);font-size:22px;\'></i></div>'"
+                                        >
+                                    </div>
+
+                                    <div style="flex: 1; min-width: 0;">
+                                        <div style="font-size: 12px; color: var(--text-secondary); line-height: 1.6;">
+                                            <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
+                                                <i class="fas fa-user-check" style="color: var(--primary); width: 14px;"></i>
+                                                <span>Received by: <strong style="color: var(--text-primary);"><?php echo htmlspecialchars($res['delivery_name'] ?? 'Customer'); ?></strong></span>
+                                            </div>
+                                            <?php if (!empty($proof_at)): ?>
+                                            <div style="display: flex; align-items: center; gap: 6px;">
+                                                <i class="fas fa-clock" style="color: var(--primary); width: 14px;"></i>
+                                                <span><?php echo date('M d, Y • g:i A', strtotime($proof_at)); ?></span>
+                                            </div>
+                                            <?php endif; ?>
+                                            <?php if (!empty($res['rider_name'])): ?>
+                                            <div style="display: flex; align-items: center; gap: 6px;">
+                                                <i class="fas fa-motorcycle" style="color: var(--primary); width: 14px;"></i>
+                                                <span>Delivered by: <strong style="color: var(--text-primary);"><?php echo htmlspecialchars($res['rider_name']); ?></strong></span>
+                                            </div>
+                                            <?php endif; ?>
+                                            <?php if (!empty($res['tracking_number'])): ?>
+                                            <div style="display: flex; align-items: center; gap: 6px;">
+                                                <i class="fas fa-barcode" style="color: var(--primary); width: 14px;"></i>
+                                                <span style="font-family: monospace; font-size: 11.5px;"><?php echo htmlspecialchars($res['tracking_number']); ?></span>
+                                            </div>
+                                            <?php endif; ?>
+                                            <?php if (!empty($proof_notes)): ?>
+                                            <div style="display: flex; align-items: flex-start; gap: 6px; margin-top: 4px;">
+                                                <i class="fas fa-comment" style="color: var(--primary); width: 14px; margin-top: 3px;"></i>
+                                                <span style="font-style: italic;">"<?php echo htmlspecialchars($proof_notes); ?>"</span>
+                                            </div>
+                                            <?php endif; ?>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <button 
+                                    type="button"
+                                    onclick="event.stopPropagation(); showImageModal('<?php echo htmlspecialchars($proof_url); ?>', 'Proof of Delivery')"
+                                    style="
+                                        width: 100%;
+                                        margin-top: 10px;
+                                        padding: 8px;
+                                        background: var(--primary-light);
+                                        color: var(--primary);
+                                        border: 1px solid var(--primary);
+                                        border-radius: var(--radius-md);
+                                        font-size: 12px;
+                                        font-weight: 700;
+                                        cursor: pointer;
+                                        transition: all 0.2s;
+                                        display: flex;
+                                        align-items: center;
+                                        justify-content: center;
+                                        gap: 6px;
+                                        font-family: inherit;
+                                    "
+                                    onmouseover="this.style.background='var(--primary)'; this.style.color='white';"
+                                    onmouseout="this.style.background='var(--primary-light)'; this.style.color='var(--primary)';"
+                                >
+                                    <i class="fas fa-expand"></i> View Full Photo
+                                </button>
+                            </div>
+                            <?php endif; ?>
+                            <!-- ═══════════════════════════════════════════════════ -->
+                            <!-- END PROOF OF DELIVERY CARD                          -->
+                            <!-- ═══════════════════════════════════════════════════ -->
+
                             <div class="reservation-details">
                                 <div class="detail-row">
                                     <span class="detail-label">Order #:</span>
@@ -1750,407 +2382,446 @@ mysqli_data_seek($reservations_query, 0);
                                 </div>
                                 <?php endif; ?>
                             </div>
-                            
-                            <?php if (!empty($res['total_amount']) || !empty($res['price'])): ?>
+
+                            <?php if ($display_total > 0): ?>
                             <div class="payment-info">
                                 <div class="payment-row">
                                     <span class="payment-label">Total Amount:</span>
-                                    <span class="payment-amount">₱<?php echo number_format($res['total_amount'] ?: $res['price'], 2); ?></span>
+                                    <span class="payment-amount">₱<?php echo number_format($display_total, 2); ?></span>
                                 </div>
-                                <?php if (!empty($res['downpayment_amount']) && $res['downpayment_amount'] > 0): ?>
+                                
+                                <?php if ($display_downpayment > 0): ?>
                                 <div class="payment-row">
-                                    <span class="payment-label">Downpayment (<?php echo $downpayment_percent; ?>%):</span>
-                                    <span class="payment-amount">₱<?php echo number_format($res['downpayment_amount'], 2); ?></span>
+                                    <span class="payment-label">
+                                        <?php 
+                                        if ($downpayment_percent >= 100 || $display_balance <= 0) {
+                                            echo 'Amount Paid:';
+                                        } else {
+                                            echo 'Downpayment (' . $downpayment_percent . '%):';
+                                        }
+                                        ?>
+                                    </span>
+                                    <span class="payment-amount">₱<?php echo number_format($display_downpayment, 2); ?></span>
                                 </div>
                                 <div class="payment-row">
                                     <span class="payment-label">Balance:</span>
-                                    <span class="payment-balance">₱<?php echo number_format($res['balance_amount'], 2); ?></span>
+                                    <span class="payment-balance">₱<?php echo number_format($display_balance, 2); ?></span>
                                 </div>
                                 <?php endif; ?>
-                                <?php if ($res['payment_status'] == 'unpaid' && $res['status'] == 'pending'): ?>
-                                <div class="payment-row">
-                                    <span class="payment-label">Payment Status:</span>
-                                    <span class="payment-balance" style="color: var(--danger);">Unpaid</span>
+                                
+                                <?php 
+                                // ✅ Payment Method Badge
+                                $pm_status = $res['payment_status'] ?? 'unpaid';
+                                $pm_class = '';
+                                $pm_icon = 'fa-circle';
+                                $pm_text = '';
+                                
+                                switch ($pm_status) {
+                                    case 'cod':
+                                        $pm_class = 'cod';
+                                        $pm_icon = 'fa-money-bill-wave';
+                                        $pm_text = '<strong>Cash on Delivery</strong> — Pay <strong>₱' . number_format($display_total, 2) . '</strong> upon delivery';
+                                        break;
+                                    
+                                    case 'paid':
+                                        $pm_class = 'paid';
+                                        $pm_icon = 'fa-check-circle';
+                                        $pm_text = '<strong>Paid</strong> - Thank you for your payment';
+                                        break;
+                                    
+                                    case 'partial':
+                                        $pm_class = 'partial';
+                                        $pm_icon = 'fa-hand-holding-usd';
+                                        $pm_text = '<strong>Downpayment paid</strong> — <strong>₱' . number_format($display_balance, 2) . '</strong> remaining';
+                                        break;
+                                    
+                                    case 'onsite':
+                                        $pm_class = 'onsite';
+                                        $pm_icon = 'fa-store';
+                                        $pm_text = '<strong>Pay at Clinic</strong> — ₱' . number_format($display_total, 2);
+                                        break;
+                                    
+                                    case 'free':
+                                        $pm_class = 'free';
+                                        $pm_icon = 'fa-gift';
+                                        $pm_text = '<strong>Free</strong> — No payment required';
+                                        break;
+                                    
+                                    case 'refunded':
+                                        $pm_class = 'refunded';
+                                        $pm_icon = 'fa-undo';
+                                        $pm_text = '<strong>Refunded</strong>';
+                                        break;
+                                    
+                                    case 'unpaid':
+                                    default:
+                                        $pm_class = 'unpaid';
+                                        $pm_icon = 'fa-exclamation-circle';
+                                        $pm_text = '<strong>Unpaid</strong> — Please complete payment';
+                                        break;
+                                }
+                                ?>
+                                <div class="payment-method-row <?php echo $pm_class; ?>">
+                                    <i class="fas <?php echo $pm_icon; ?>"></i>
+                                    <span class="pm-text">
+                                        <i class="fas fa-wallet" style="font-size: 11px; opacity: 0.7;"></i>
+                                        <?php echo $pm_text; ?>
+                                    </span>
+                                </div>
+                            </div>
+                            <?php endif; ?>
+
+                            <?php 
+                            $hide_warranty = in_array($res['status'], ['cancelled', 'refunded']) 
+                                          || (isset($res['payment_status']) && $res['payment_status'] === 'refunded')
+                                          || (isset($res['refund_status']) && in_array($res['refund_status'], ['pending', 'approved', 'processing', 'completed']))
+                                          || (isset($res['rr_refund_status']) && in_array($res['rr_refund_status'], ['pending', 'approved', 'processing', 'completed']))
+                                          || (isset($res['rr_status']) && in_array($res['rr_status'], ['pending', 'approved', 'processing', 'completed']));
+
+                            if ($has_warranty && !$hide_warranty): 
+                            ?>
+                            <div class="warranty-section">
+                                <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px;">
+                                    <i class="fas fa-shield-alt" style="color: var(--primary);"></i>
+                                    <strong>Warranty</strong>
+                                    <?php if ($warranty_display): ?>
+                                    <span class="warranty-badge"><?php echo $warranty_display; ?></span>
+                                    <?php endif; ?>
+                                </div>
+                                
+                                <?php if ($is_within_warranty && $warranty_end_date): ?>
+                                <div class="warranty-status active">
+                                    <i class="fas fa-check-circle"></i> Active until <?php echo date('M d, Y', strtotime($warranty_end_date)); ?>
+                                </div>
+                                <?php elseif ($has_warranty && !$is_within_warranty && $warranty_end_date): ?>
+                                <div class="warranty-status expired">
+                                    <i class="fas fa-clock"></i> Expired on <?php echo date('M d, Y', strtotime($warranty_end_date)); ?>
+                                </div>
+                                <?php endif; ?>
+                                
+                            <?php if (!empty($existing_claim)): ?>
+                                <?php
+                                    $claim_status_map = [
+                                        'pending'    => ['label' => 'Warranty Claim Pending Review',  'icon' => 'fa-hourglass-half', 'class' => 'warranty-status active'],
+                                        'processing' => ['label' => 'Warranty Claim Being Processed', 'icon' => 'fa-cog fa-spin',    'class' => 'warranty-status active'],
+                                        'approved'   => ['label' => 'Warranty Claim Approved — Visit clinic on scheduled date', 'icon' => 'fa-check-circle', 'class' => 'warranty-status active'],
+                                        'arrived'    => ['label' => 'You have arrived — Claim being processed', 'icon' => 'fa-door-open', 'class' => 'warranty-status active'],
+                                        'completed'  => ['label' => 'Warranty Claim Already Completed', 'icon' => 'fa-check-double', 'class' => 'warranty-status active'],
+                                    ];
+                                    $claim_info = $claim_status_map[$existing_claim['status']] ?? ['label' => 'Warranty Claim in Progress', 'icon' => 'fa-info-circle', 'class' => 'warranty-status active'];
+                                ?>
+                                <div class="<?php echo $claim_info['class']; ?> mt-2" style="justify-content: center; text-align: center;">
+                                    <i class="fas <?php echo $claim_info['icon']; ?>"></i>
+                                    <?php echo $claim_info['label']; ?>
+                                </div>
+                            <?php elseif ($can_claim_warranty): ?>
+                                <button class="btn-warranty-claim-small mt-2" onclick="openWarrantyClaimRes(<?php echo (int)$res['id']; ?>, <?php echo (int)$res['product_id']; ?>, '<?php echo addslashes($res['product_name']); ?>')">
+                                    <i class="fas fa-tools"></i> Claim Warranty
+                                </button>
+                            <?php elseif ($has_warranty && in_array($res['status'], ['delivered', 'completed']) && !$is_within_warranty && $warranty_end_date): ?>
+                                <button class="btn-warranty-expired-small mt-2" disabled>
+                                    <i class="fas fa-clock"></i> Warranty Expired
+                                </button>
+                            <?php elseif ($has_warranty && !in_array($res['status'], ['delivered', 'completed'])): ?>
+                                <div class="warranty-note mt-1">
+                                    <small><i class="fas fa-info-circle"></i> Warranty available after delivery</small>
+                                </div>
+                            <?php endif; ?>
+                            </div>
+                            <?php endif; ?>
+
+                            <!-- ═══════════════════════════════════════════════════════ -->
+                            <!-- ✅ Refund & Return Status Section (UNCHANGED)         -->
+                            <!-- ═══════════════════════════════════════════════════════ -->
+                            <?php 
+                            $effective_refund_status2 = $res['refund_status'] ?? null;
+                            if (empty($effective_refund_status2) || $effective_refund_status2 === 'none') {
+                                $effective_refund_status2 = $res['rr_refund_status'] ?? null;
+                            }
+
+                            if (!empty($effective_refund_status2) && $effective_refund_status2 !== 'none'): 
+                            ?>
+                            <?php
+                                $refund_status_map = [
+                                    'pending'    => ['label' => 'Refund Pending',    'class' => 'refund-pending',    'icon' => 'fa-clock'],
+                                    'approved'   => ['label' => 'Refund Approved',   'class' => 'refund-approved',   'icon' => 'fa-check-circle'],
+                                    'processing' => ['label' => 'Refund Processing', 'class' => 'refund-processing', 'icon' => 'fa-spinner'],
+                                    'completed'  => ['label' => 'Refunded',          'class' => 'refund-completed',  'icon' => 'fa-check-double'],
+                                    'rejected'   => ['label' => 'Refund Rejected',   'class' => 'refund-rejected',   'icon' => 'fa-times-circle'],
+                                    'failed'     => ['label' => 'Refund Failed',     'class' => 'refund-failed',     'icon' => 'fa-exclamation-circle'],
+                                ];
+                                $rs = $refund_status_map[$effective_refund_status2] ?? ['label' => ucfirst($effective_refund_status2), 'class' => 'refund-pending', 'icon' => 'fa-circle'];
+                                
+                                $display_refund_amount = 0;
+                                if (!empty($res['refund_amount']) && (float)$res['refund_amount'] > 0) {
+                                    $display_refund_amount = (float)$res['refund_amount'];
+                                } elseif (!empty($res['refund_amount_actual']) && (float)$res['refund_amount_actual'] > 0) {
+                                    $display_refund_amount = (float)$res['refund_amount_actual'];
+                                } elseif (!empty($res['eligible_refund_amount']) && (float)$res['eligible_refund_amount'] > 0) {
+                                    $display_refund_amount = (float)$res['eligible_refund_amount'];
+                                } else {
+                                    $display_refund_amount = (float)$res['total_amount'];
+                                }
+                                
+                                $display_refund_percent = 0;
+                                if ((float)$res['total_amount'] > 0) {
+                                    $display_refund_percent = round(($display_refund_amount / (float)$res['total_amount']) * 100);
+                                }
+                            ?>
+                            <div class="refund-section">
+                                <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+                                    <div style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700;">
+                                        <i class="fas fa-undo" style="color: var(--danger);"></i>
+                                        <span>Return / Refund</span>
+                                    </div>
+                                    <span class="refund-badge <?php echo $rs['class']; ?>">
+                                        <i class="fas <?php echo $rs['icon']; ?>"></i>
+                                        <?php echo $rs['label']; ?>
+                                    </span>
+                                </div>
+                                
+                                <?php if (!empty($res['cancelled_reason'])): ?>
+                                <div class="refund-reason">
+                                    <strong>Reason:</strong> <?php echo htmlspecialchars($res['cancelled_reason']); ?>
+                                </div>
+                                <?php endif; ?>
+
+                                <?php if ($effective_refund_status2 === 'completed'): ?>
+                                <div class="refund-completed-card">
+                                    <div class="refund-completed-header">
+                                        <i class="fas fa-check-circle"></i>
+                                        <span>Refund Completed</span>
+                                    </div>
+                                    <div class="refund-completed-details">
+                                        <div class="refund-completed-row">
+                                            <span class="lbl">Amount Refunded:</span>
+                                            <span class="val">₱<?php echo number_format($display_refund_amount, 2); ?> (<?php echo $display_refund_percent; ?>%)</span>
+                                        </div>
+                                        <?php if (!empty($res['paymongo_refund_id'])): ?>
+                                        <div class="refund-completed-row">
+                                            <span class="lbl">Refund ID:</span>
+                                            <span class="val" style="font-family:monospace; font-size:11px; word-break:break-all;"><?php echo htmlspecialchars($res['paymongo_refund_id']); ?></span>
+                                        </div>
+                                        <?php endif; ?>
+                                        <?php if (!empty($res['refund_date'])): ?>
+                                        <div class="refund-completed-row">
+                                            <span class="lbl">Refunded on:</span>
+                                            <span class="val"><?php echo date('F j, Y g:i A', strtotime($res['refund_date'])); ?></span>
+                                        </div>
+                                        <?php endif; ?>
+                                        <div class="refund-completed-note">
+                                            <i class="fas fa-info-circle"></i> Amount will reflect in your account within 3-5 business days.
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <?php elseif (in_array($effective_refund_status2, ['pending', 'approved', 'processing'])): ?>
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span style="font-size: 12px; color: var(--text-muted);">Refund Amount:</span>
+                                    <span class="refund-amount">₱<?php echo number_format($display_refund_amount, 2); ?></span>
+                                </div>
+                                
+                                <?php elseif (in_array($effective_refund_status2, ['rejected', 'failed'])): ?>
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span style="font-size: 12px; color: var(--text-muted);">Requested Amount:</span>
+                                    <span class="refund-amount" style="text-decoration:line-through; opacity:0.6;">₱<?php echo number_format($display_refund_amount, 2); ?></span>
+                                </div>
+                                <?php endif; ?>
+
+                                <?php if (!empty($res['return_method'])): ?>
+                                <?php 
+                                    $rm_info = getReturnMethodInfo($res['return_method']);
+                                    
+                                    $effective_return_status = $res['return_status'] ?? 'pending';
+                                    if ($effective_refund_status2 === 'completed') {
+                                        $effective_return_status = 'completed';
+                                    } elseif ($effective_refund_status2 === 'rejected') {
+                                        $effective_return_status = 'rejected';
+                                    } elseif (in_array($effective_refund_status2, ['approved', 'processing'])) {
+                                        if ($effective_return_status === 'pending') {
+                                            $effective_return_status = 'scheduled';
+                                        }
+                                    }
+                                    
+                                    $ret_status_info = getReturnStatusInfo($effective_return_status);
+                                ?>
+                                <div class="return-method-section" style="margin-top: 4px;">
+                                    <div class="return-method-header">
+                                        <i class="fas <?php echo $rm_info['icon']; ?>"></i>
+                                        <span><?php echo $rm_info['label']; ?></span>
+                                    </div>
+                                    <div class="return-method-details">
+                                        <?php if (!empty($res['return_scheduled_date'])): ?>
+                                        <div class="row">
+                                            <span class="lbl">Schedule:</span>
+                                            <span class="val">
+                                                <?php echo date('M d, Y', strtotime($res['return_scheduled_date'])); ?>
+                                                <?php if (!empty($res['return_scheduled_time'])): ?>
+                                                    at <?php echo date('g:i A', strtotime($res['return_scheduled_time'])); ?>
+                                                <?php endif; ?>
+                                            </span>
+                                        </div>
+                                        <?php endif; ?>
+                                        
+                                        <?php if ($res['return_method'] === 'pickup' && !empty($res['return_address'])): ?>
+                                        <div class="row">
+                                            <span class="lbl">Pickup Address:</span>
+                                            <span class="val" style="font-weight: 400; font-size: 11px;"><?php echo htmlspecialchars($res['return_address']); ?></span>
+                                        </div>
+                                        <?php endif; ?>
+
+                                        <div class="row">
+                                            <span class="lbl">Status:</span>
+                                            <span class="val">
+                                                <span class="refund-badge <?php echo $ret_status_info['class']; ?>" style="font-size: 10px; padding: 2px 8px;">
+                                                    <i class="fas <?php echo $ret_status_info['icon']; ?>"></i>
+                                                    <?php echo $ret_status_info['label']; ?>
+                                                </span>
+                                            </span>
+                                        </div>
+                                    </div>
                                 </div>
                                 <?php endif; ?>
                             </div>
                             <?php endif; ?>
 
-<?php 
-// ✅ FIXED: Hide warranty kapag cancelled/refunded/return
-// ✅ FIXED: Check lahat ng sources para sa refund status
-$hide_warranty = in_array($res['status'], ['cancelled', 'refunded']) 
-              || (isset($res['payment_status']) && $res['payment_status'] === 'refunded')
-              || (isset($res['refund_status']) && in_array($res['refund_status'], ['pending', 'approved', 'processing', 'completed']))
-              || (isset($res['rr_refund_status']) && in_array($res['rr_refund_status'], ['pending', 'approved', 'processing', 'completed']))
-              || (isset($res['rr_status']) && in_array($res['rr_status'], ['pending', 'approved', 'processing', 'completed']));
+                            <?php if ($has_secondary_info): ?>
+                            </div><!-- /.card-details-body -->
+                            <?php endif; ?>
 
-if ($has_warranty && !$hide_warranty): 
-?>
-<div class="warranty-section">
-    <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px;">
-        <i class="fas fa-shield-alt" style="color: var(--primary);"></i>
-        <strong>Warranty</strong>
-        <?php if ($warranty_display): ?>
-        <span class="warranty-badge"><?php echo $warranty_display; ?></span>
-        <?php endif; ?>
-    </div>
-    
-    <?php if ($is_within_warranty && $warranty_end_date): ?>
-    <div class="warranty-status active">
-        <i class="fas fa-check-circle"></i> Active until <?php echo date('M d, Y', strtotime($warranty_end_date)); ?>
-    </div>
-    <?php elseif ($has_warranty && !$is_within_warranty && $warranty_end_date): ?>
-    <div class="warranty-status expired">
-        <i class="fas fa-clock"></i> Expired on <?php echo date('M d, Y', strtotime($warranty_end_date)); ?>
-    </div>
-    <?php endif; ?>
-    
-    <?php if ($can_claim_warranty): ?>
-    <button class="btn-warranty-claim-small mt-2" onclick="openWarrantyClaimRes(<?php echo $res['id']; ?>, <?php echo $res['product_id']; ?>, '<?php echo htmlspecialchars($res['product_name']); ?>')">
-        <i class="fas fa-tools"></i> Claim Warranty
-    </button>
-    <?php elseif ($has_warranty && in_array($res['status'], ['delivered', 'completed']) && !$is_within_warranty && $warranty_end_date): ?>
-    <button class="btn-warranty-expired-small mt-2" disabled>
-        <i class="fas fa-clock"></i> Warranty Expired
-    </button>
-    <?php elseif ($has_warranty && !in_array($res['status'], ['delivered', 'completed'])): ?>
-    <div class="warranty-note mt-1">
-        <small><i class="fas fa-info-circle"></i> Warranty available after delivery</small>
-    </div>
-    <?php endif; ?>
-</div>
-<?php endif; ?>
-
-<!-- ═══════════════════════════════════════════════════════ -->
-<!-- ✅ FIXED: Refund & Return Status Section              -->
-<!-- ═══════════════════════════════════════════════════════ -->
-<?php 
-// ✅ Determine effective refund status (fallback to rr_refund_status)
-$effective_refund_status = $res['refund_status'] ?? null;
-if (empty($effective_refund_status) || $effective_refund_status === 'none') {
-    $effective_refund_status = $res['rr_refund_status'] ?? null;
-}
-
-if (!empty($effective_refund_status) && $effective_refund_status !== 'none'): 
-?>
-<?php
-    // ✅ Status map
-    $refund_status_map = [
-        'pending'    => ['label' => 'Refund Pending',    'class' => 'refund-pending',    'icon' => 'fa-clock'],
-        'approved'   => ['label' => 'Refund Approved',   'class' => 'refund-approved',   'icon' => 'fa-check-circle'],
-        'processing' => ['label' => 'Refund Processing', 'class' => 'refund-processing', 'icon' => 'fa-spinner'],
-        'completed'  => ['label' => 'Refunded',          'class' => 'refund-completed',  'icon' => 'fa-check-double'],
-        'rejected'   => ['label' => 'Refund Rejected',   'class' => 'refund-rejected',   'icon' => 'fa-times-circle'],
-        'failed'     => ['label' => 'Refund Failed',     'class' => 'refund-failed',     'icon' => 'fa-exclamation-circle'],
-    ];
-    $rs = $refund_status_map[$effective_refund_status] ?? ['label' => ucfirst($effective_refund_status), 'class' => 'refund-pending', 'icon' => 'fa-circle'];
-    
-    // ✅ FIXED: Compute display amount
-    $display_refund_amount = 0;
-    if (!empty($res['refund_amount']) && (float)$res['refund_amount'] > 0) {
-        $display_refund_amount = (float)$res['refund_amount'];
-    } elseif (!empty($res['refund_amount_actual']) && (float)$res['refund_amount_actual'] > 0) {
-        $display_refund_amount = (float)$res['refund_amount_actual'];
-    } elseif (!empty($res['eligible_refund_amount']) && (float)$res['eligible_refund_amount'] > 0) {
-        $display_refund_amount = (float)$res['eligible_refund_amount'];
-    } else {
-        $display_refund_amount = (float)$res['total_amount'];
-    }
-    
-    // ✅ Compute percentage
-    $display_refund_percent = 0;
-    if ((float)$res['total_amount'] > 0) {
-        $display_refund_percent = round(($display_refund_amount / (float)$res['total_amount']) * 100);
-    }
-?>
-<div class="refund-section">
-    <!-- Header -->
-    <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
-        <div style="display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700;">
-            <i class="fas fa-undo" style="color: var(--danger);"></i>
-            <span>Return / Refund</span>
-        </div>
-        <span class="refund-badge <?php echo $rs['class']; ?>">
-            <i class="fas <?php echo $rs['icon']; ?>"></i>
-            <?php echo $rs['label']; ?>
-        </span>
-    </div>
-    
-    <!-- Reason -->
-    <?php if (!empty($res['cancelled_reason'])): ?>
-    <div class="refund-reason">
-        <strong>Reason:</strong> <?php echo htmlspecialchars($res['cancelled_reason']); ?>
-    </div>
-    <?php endif; ?>
-
-    <!-- ═══════════════════════════════════════════════════ -->
-    <!-- REFUND COMPLETED — Success Card                     -->
-    <!-- ═══════════════════════════════════════════════════ -->
-    <?php if ($effective_refund_status === 'completed'): ?>
-    <div class="refund-completed-card">
-        <div class="refund-completed-header">
-            <i class="fas fa-check-circle"></i>
-            <span>Refund Completed</span>
-        </div>
-        <div class="refund-completed-details">
-            <div class="refund-completed-row">
-                <span class="lbl">Amount Refunded:</span>
-                <span class="val">₱<?php echo number_format($display_refund_amount, 2); ?> (<?php echo $display_refund_percent; ?>%)</span>
-            </div>
-            <?php if (!empty($res['paymongo_refund_id'])): ?>
-            <div class="refund-completed-row">
-                <span class="lbl">Refund ID:</span>
-                <span class="val" style="font-family:monospace; font-size:11px; word-break:break-all;"><?php echo htmlspecialchars($res['paymongo_refund_id']); ?></span>
-            </div>
-            <?php endif; ?>
-            <?php if (!empty($res['refund_date'])): ?>
-            <div class="refund-completed-row">
-                <span class="lbl">Refunded on:</span>
-                <span class="val"><?php echo date('F j, Y g:i A', strtotime($res['refund_date'])); ?></span>
-            </div>
-            <?php endif; ?>
-            <div class="refund-completed-note">
-                <i class="fas fa-info-circle"></i> Amount will reflect in your account within 3-5 business days.
-            </div>
-        </div>
-    </div>
-    
-    <!-- ═══════════════════════════════════════════════════ -->
-    <!-- PENDING / APPROVED / PROCESSING — Amount + Status    -->
-    <!-- ═══════════════════════════════════════════════════ -->
-    <?php elseif (in_array($effective_refund_status, ['pending', 'approved', 'processing'])): ?>
-    <div style="display: flex; justify-content: space-between; align-items: center;">
-        <span style="font-size: 12px; color: var(--text-muted);">Refund Amount:</span>
-        <span class="refund-amount">₱<?php echo number_format($display_refund_amount, 2); ?></span>
-    </div>
-    
-    <!-- ═══════════════════════════════════════════════════ -->
-    <!-- REJECTED / FAILED — Show requested amount            -->
-    <!-- ═══════════════════════════════════════════════════ -->
-    <?php elseif (in_array($effective_refund_status, ['rejected', 'failed'])): ?>
-    <div style="display: flex; justify-content: space-between; align-items: center;">
-        <span style="font-size: 12px; color: var(--text-muted);">Requested Amount:</span>
-        <span class="refund-amount" style="text-decoration:line-through; opacity:0.6;">₱<?php echo number_format($display_refund_amount, 2); ?></span>
-    </div>
-    <?php endif; ?>
-
-    <!-- ═══════════════════════════════════════════════════ -->
-    <!-- RETURN METHOD DISPLAY                                -->
-    <!-- ═══════════════════════════════════════════════════ -->
-    <?php if (!empty($res['return_method'])): ?>
-    <?php 
-        $rm_info = getReturnMethodInfo($res['return_method']);
-        
-        // ✅ FIXED: Override return_status based on refund_status
-        $effective_return_status = $res['return_status'] ?? 'pending';
-        if ($effective_refund_status === 'completed') {
-            $effective_return_status = 'completed';
-        } elseif ($effective_refund_status === 'rejected') {
-            $effective_return_status = 'rejected';
-        } elseif (in_array($effective_refund_status, ['approved', 'processing'])) {
-            if ($effective_return_status === 'pending') {
-                $effective_return_status = 'scheduled';
-            }
-        }
-        
-        $ret_status_info = getReturnStatusInfo($effective_return_status);
-    ?>
-    <div class="return-method-section" style="margin-top: 4px;">
-        <div class="return-method-header">
-            <i class="fas <?php echo $rm_info['icon']; ?>"></i>
-            <span><?php echo $rm_info['label']; ?></span>
-        </div>
-        <div class="return-method-details">
-            <?php if (!empty($res['return_scheduled_date'])): ?>
-            <div class="row">
-                <span class="lbl">Schedule:</span>
-                <span class="val">
-                    <?php echo date('M d, Y', strtotime($res['return_scheduled_date'])); ?>
-                    <?php if (!empty($res['return_scheduled_time'])): ?>
-                        at <?php echo date('g:i A', strtotime($res['return_scheduled_time'])); ?>
-                    <?php endif; ?>
-                </span>
-            </div>
-            <?php endif; ?>
-            
-            <?php if ($res['return_method'] === 'pickup' && !empty($res['return_address'])): ?>
-            <div class="row">
-                <span class="lbl">Pickup Address:</span>
-                <span class="val" style="font-weight: 400; font-size: 11px;"><?php echo htmlspecialchars($res['return_address']); ?></span>
-            </div>
-            <?php endif; ?>
-
-            <div class="row">
-                <span class="lbl">Status:</span>
-                <span class="val">
-                    <span class="refund-badge <?php echo $ret_status_info['class']; ?>" style="font-size: 10px; padding: 2px 8px;">
-                        <i class="fas <?php echo $ret_status_info['icon']; ?>"></i>
-                        <?php echo $ret_status_info['label']; ?>
-                    </span>
-                </span>
-            </div>
-        </div>
-    </div>
-    <?php endif; ?>
-</div>
-<?php endif; ?>
-<!-- ═══════════════════════════════════════════════════════ -->
-<!-- END Refund & Return Section                           -->
-<!-- ═══════════════════════════════════════════════════════ -->
-                            
+                            <!-- ═══════════════════════════════════════════════════════ -->
+                            <!-- ✅ PRIMARY CTA + MORE MENU                             -->
+                            <!-- ═══════════════════════════════════════════════════════ -->
                             <div class="card-actions">
-                                <?php if ($res['status'] === 'pending'): ?>
-                                    <?php if ($res['payment_status'] == 'unpaid'): ?>
-                                        <a href="payment.php?reservation_id=<?php echo $res['id']; ?>" class="btn btn-warning">
-                                            <i class="fas fa-credit-card"></i> Pay Now
-                                        </a>
-                                    <?php endif; ?>
-                                    <button class="btn btn-danger" onclick="cancelReservation(<?php echo $res['id']; ?>, '<?php echo addslashes($res['product_name']); ?>', '<?php echo addslashes($res['color_name'] ?? ''); ?>')">
-                                        <i class="fas fa-times"></i> Cancel
-                                    </button>
-                                    <a href="3d-view.php?id=<?php echo $res['product_id']; ?>" class="btn btn-primary">
-                                        <i class="fas fa-cube"></i> View 3D
-                                    </a>
-                                <?php elseif ($res['status'] === 'confirmed'): ?>
-                                    <button class="btn btn-danger" onclick="cancelReservation(<?php echo $res['id']; ?>, '<?php echo addslashes($res['product_name']); ?>', '<?php echo addslashes($res['color_name'] ?? ''); ?>')">
-                                        <i class="fas fa-times"></i> Cancel
-                                    </button>
-                                    <a href="book-appointment.php?clinic_id=<?php echo $res['clinic_id']; ?>&item_id=<?php echo $res['product_id']; ?>&type=product" class="btn btn-primary">
-                                        <i class="fas fa-calendar-plus"></i> Book Now
-                                    </a>
-                                <?php elseif ($res['status'] === 'ready_for_pickup'): ?>
-                                    <a href="clinic-details.php?id=<?php echo $res['clinic_id']; ?>" class="btn btn-primary">
-                                        <i class="fas fa-map-marker-alt"></i> Clinic Details
-                                    </a>
-                                    <a href="3d-view.php?id=<?php echo $res['product_id']; ?>" class="btn btn-outline">
-                                        <i class="fas fa-cube"></i> View 3D
-                                    </a>
-<?php elseif ($res['status'] === 'delivered'): ?>
-    <?php 
-        $within_window = false;
-        if (!empty($res['delivered_at'])) {
-            $delivered_time = strtotime($res['delivered_at']);
-            $window_end = $delivered_time + (7 * 24 * 60 * 60);
-            $within_window = time() < $window_end;
-        }
-        
-        // ✅ FIXED: Check BOTH reservation refund_status AND refund_requests status
-        $has_refund = false;
-        
-        // Priority 1: Check reservations.refund_status
-        if (!empty($res['refund_status']) && $res['refund_status'] !== 'none') {
-            $has_refund = true;
-        }
-        
-        // Priority 2: Check refund_requests (rr_*) — from JOIN
-        if (!empty($res['rr_status']) && in_array($res['rr_status'], ['pending', 'approved', 'processing', 'completed'])) {
-            $has_refund = true;
-        }
-        
-        // Priority 3: Check refund_requests refund_status (rr_refund_status)
-        if (!empty($res['rr_refund_status']) && $res['rr_refund_status'] !== 'none') {
-            $has_refund = true;
-        }
-    ?>
+                                <?php 
+                                // ✅ Primary CTA
+                                $primary_cta = null;
+                                
+                                if ($res['status'] === 'pending') {
+                                    if ($res['payment_status'] == 'unpaid') {
+                                        $primary_cta = ['type' => 'link', 'href' => 'payment.php?reservation_id=' . $res['id'], 'class' => 'btn-warning', 'icon' => 'fa-credit-card', 'label' => 'Pay Now'];
+                                    } else {
+                                        $primary_cta = ['type' => 'link', 'href' => '3d-view.php?id=' . $res['product_id'], 'class' => 'btn-primary', 'icon' => 'fa-cube', 'label' => 'View 3D'];
+                                    }
+                                } elseif ($res['status'] === 'confirmed') {
+                                    $primary_cta = ['type' => 'link', 'href' => 'book-appointment.php?clinic_id=' . $res['clinic_id'] . '&item_id=' . $res['product_id'] . '&type=product', 'class' => 'btn-primary', 'icon' => 'fa-calendar-plus', 'label' => 'Book Now'];
+                                } elseif ($res['status'] === 'ready_for_pickup') {
+                                    $primary_cta = ['type' => 'link', 'href' => 'clinic-details.php?id=' . $res['clinic_id'], 'class' => 'btn-primary', 'icon' => 'fa-map-marker-alt', 'label' => 'Clinic Details'];
+                                } elseif ($res['status'] === 'delivered') {
+                                    $has_refund_now = false;
+                                    if (!empty($res['refund_status']) && $res['refund_status'] !== 'none') $has_refund_now = true;
+                                    if (!empty($res['rr_status']) && in_array($res['rr_status'], ['pending','approved','processing','completed'])) $has_refund_now = true;
+                                    if (!empty($res['rr_refund_status']) && $res['rr_refund_status'] !== 'none') $has_refund_now = true;
                                     
-    <?php if ($has_refund): ?>
-        <!-- ✅ Refund Request Approved — Show status card -->
-        <?php 
-            // Determine the current refund status
-            $refund_display_status = null;
-            
-            if (!empty($res['rr_refund_status']) && $res['rr_refund_status'] !== 'none') {
-                $refund_display_status = $res['rr_refund_status'];
-            } elseif (!empty($res['refund_status']) && $res['refund_status'] !== 'none') {
-                $refund_display_status = $res['refund_status'];
-            } elseif (!empty($res['rr_status'])) {
-                $refund_display_status = $res['rr_status'];
-            }
-            
-            // Status message map
-            $refund_messages = [
-                'pending'    => [
-                    'icon'  => 'fa-hourglass-half',
-                    'color' => 'warning',
-                    'title' => 'Refund Request Pending',
-                    'text'  => 'Your refund request is awaiting clinic approval.'
-                ],
-                'approved'   => [
-                    'icon'  => 'fa-check-circle',
-                    'color' => 'info',
-                    'title' => 'Refund Request Approved',
-                    'text'  => 'Please return the item using the return method you selected. Refund will be processed after we receive the item.'
-                ],
-                'processing' => [
-                    'icon'  => 'fa-spinner',
-                    'color' => 'info',
-                    'title' => 'Refund Processing',
-                    'text'  => 'We have received your item. Your refund is being processed.'
-                ],
-                'completed'  => [
-                    'icon'  => 'fa-check-double',
-                    'color' => 'success',
-                    'title' => 'Refund Completed',
-                    'text'  => 'Your refund has been completed.'
-                ],
-                'rejected'   => [
-                    'icon'  => 'fa-times-circle',
-                    'color' => 'danger',
-                    'title' => 'Refund Rejected',
-                    'text'  => 'Your refund request was not approved.'
-                ],
-            ];
-            
-            $msg = $refund_messages[$refund_display_status] ?? $refund_messages['pending'];
-        ?>
-        
-        <div style="
-            background: var(--bg-primary);
-            border-left: 4px solid var(--<?php echo $msg['color']; ?>);
-            border-radius: var(--radius-md);
-            padding: 12px 14px;
-            margin-bottom: 8px;
-            display: flex;
-            gap: 10px;
-            align-items: flex-start;
-        ">
-            <i class="fas <?php echo $msg['icon']; ?>" 
-               style="color: var(--<?php echo $msg['color']; ?>); font-size: 18px; margin-top: 2px;"></i>
-            <div>
-                <strong style="color: var(--text-primary); display: block; font-size: 13px; margin-bottom: 2px;">
-                    <?php echo $msg['title']; ?>
-                </strong>
-                <span style="color: var(--text-secondary); font-size: 12px;">
-                    <?php echo $msg['text']; ?>
-                </span>
-            </div>
-        </div>
-        
-        <a href="product-view.php?id=<?php echo $res['product_id']; ?>" class="btn btn-outline">
-            <i class="fas fa-eye"></i> View Product
-        </a>
-    <?php else: ?>
-                                        <button class="btn btn-primary" onclick="markReceived(<?php echo $res['id']; ?>)">
-                                            <i class="fas fa-check-circle"></i> Order Received
-                                        </button>
-                                        <?php if ($within_window): ?>
-                                        <button class="btn btn-danger" onclick="openRefundModal(<?php echo $res['id']; ?>, '<?php echo addslashes($res['product_name']); ?>', '<?php echo addslashes($res['reservation_code'] ?? 'ORD-'.str_pad($res['id'], 6, '0', STR_PAD_LEFT)); ?>', <?php echo (float)$res['total_amount']; ?>)">
-                                            <i class="fas fa-undo"></i> Return / Refund
-                                        </button>
-                                        <?php endif; ?>
-                                    <?php endif; ?>
-                                <?php elseif ($res['status'] === 'completed'): ?>
-                                    <a href="product-view.php?id=<?php echo $res['product_id']; ?>" class="btn btn-primary">
-                                        <i class="fas fa-eye"></i> View Product
-                                    </a>
-                                    <a href="clinic-details.php?id=<?php echo $res['clinic_id']; ?>" class="btn btn-outline">
-                                        <i class="fas fa-clinic-medical"></i> Visit Clinic
+                                    if ($has_refund_now) {
+                                        $primary_cta = ['type' => 'link', 'href' => 'product-view.php?id=' . $res['product_id'], 'class' => 'btn-outline', 'icon' => 'fa-eye', 'label' => 'View Product'];
+                                    } else {
+                                        $primary_cta = ['type' => 'button', 'onclick' => 'markReceived(' . $res['id'] . ')', 'class' => 'btn-primary', 'icon' => 'fa-check-circle', 'label' => 'Mark as Received'];
+                                    }
+                                } elseif ($res['status'] === 'completed') {
+                                    $primary_cta = ['type' => 'link', 'href' => 'product-view.php?id=' . $res['product_id'], 'class' => 'btn-primary', 'icon' => 'fa-eye', 'label' => 'View Product'];
+                                } else {
+                                    $primary_cta = ['type' => 'link', 'href' => 'product-view.php?id=' . $res['product_id'], 'class' => 'btn-outline', 'icon' => 'fa-eye', 'label' => 'View Product'];
+                                }
+                                ?>
+                                
+                                <?php if ($primary_cta['type'] === 'link'): ?>
+                                    <a href="<?php echo $primary_cta['href']; ?>" class="btn <?php echo $primary_cta['class']; ?>">
+                                        <i class="fas <?php echo $primary_cta['icon']; ?>"></i> <?php echo $primary_cta['label']; ?>
                                     </a>
                                 <?php else: ?>
-                                    <a href="product-view.php?id=<?php echo $res['product_id']; ?>" class="btn btn-outline">
-                                        <i class="fas fa-eye"></i> View Product
-                                    </a>
+                                    <button class="btn <?php echo $primary_cta['class']; ?>" onclick="<?php echo $primary_cta['onclick']; ?>">
+                                        <i class="fas <?php echo $primary_cta['icon']; ?>"></i> <?php echo $primary_cta['label']; ?>
+                                    </button>
+                                <?php endif; ?>
+                                
+                                <?php 
+                                // ✅ Secondary actions list
+                                $secondary_actions = [];
+                                
+                                if (in_array($res['status'], ['pending', 'confirmed'])) {
+                                    $secondary_actions[] = [
+                                        'type' => 'button',
+                                        'onclick' => "cancelReservation({$res['id']}, '" . addslashes($res['product_name']) . "', '" . addslashes($res['color_name'] ?? '') . "')",
+                                        'icon' => 'fa-times',
+                                        'label' => 'Cancel Order',
+                                        'class' => 'danger'
+                                    ];
+                                }
+                                
+                                if ($res['status'] !== 'pending' && !empty($res['product_id'])) {
+                                    $secondary_actions[] = [
+                                        'type' => 'link',
+                                        'href' => '3d-view.php?id=' . $res['product_id'],
+                                        'icon' => 'fa-cube',
+                                        'label' => 'View 3D Model',
+                                        'class' => ''
+                                    ];
+                                }
+                                
+                                if ($res['status'] === 'delivered') {
+                                    $within_window_more = false;
+                                    if (!empty($res['delivered_at'])) {
+                                        $within_window_more = time() < (strtotime($res['delivered_at']) + (7 * 24 * 60 * 60));
+                                    }
+                                    $has_refund_more = false;
+                                    if (!empty($res['refund_status']) && $res['refund_status'] !== 'none') $has_refund_more = true;
+                                    if (!empty($res['rr_status']) && in_array($res['rr_status'], ['pending','approved','processing','completed'])) $has_refund_more = true;
+                                    if (!empty($res['rr_refund_status']) && $res['rr_refund_status'] !== 'none') $has_refund_more = true;
+                                    
+                                    if ($within_window_more && !$has_refund_more) {
+                                        $secondary_actions[] = [
+                                            'type' => 'button',
+                                            'onclick' => "openRefundModal({$res['id']}, '" . addslashes($res['product_name']) . "', '" . addslashes($res['reservation_code'] ?? 'ORD-'.str_pad($res['id'], 6, '0', STR_PAD_LEFT)) . "', " . (float)$res['total_amount'] . ")",
+                                            'icon' => 'fa-undo',
+                                            'label' => 'Return / Refund',
+                                            'class' => 'danger'
+                                        ];
+                                    }
+                                }
+                                
+                                if ($res['status'] === 'completed') {
+                                    $secondary_actions[] = [
+                                        'type' => 'link',
+                                        'href' => 'clinic-details.php?id=' . $res['clinic_id'],
+                                        'icon' => 'fa-clinic-medical',
+                                        'label' => 'Visit Clinic',
+                                        'class' => ''
+                                    ];
+                                }
+                                
+                                if ($res['status'] !== 'completed') {
+                                    $secondary_actions[] = [
+                                        'type' => 'link',
+                                        'href' => 'product-view.php?id=' . $res['product_id'],
+                                        'icon' => 'fa-eye',
+                                        'label' => 'View Product',
+                                        'class' => ''
+                                    ];
+                                }
+                                ?>
+                                
+                                <?php if (!empty($secondary_actions)): ?>
+                                <div class="more-menu-wrap">
+                                    <button type="button" class="more-menu-btn" onclick="toggleMoreMenu(this, event)">
+                                        <i class="fas fa-ellipsis-h"></i> More
+                                    </button>
+                                    <div class="more-menu-list">
+                                        <?php foreach ($secondary_actions as $act): ?>
+                                            <?php if ($act['type'] === 'link'): ?>
+                                                <a href="<?php echo $act['href']; ?>" class="more-menu-item <?php echo $act['class']; ?>">
+                                                    <i class="fas <?php echo $act['icon']; ?>"></i>
+                                                    <?php echo $act['label']; ?>
+                                                </a>
+                                            <?php else: ?>
+                                                <button type="button" class="more-menu-item <?php echo $act['class']; ?>" onclick="<?php echo $act['onclick']; ?>">
+                                                    <i class="fas <?php echo $act['icon']; ?>"></i>
+                                                    <?php echo $act['label']; ?>
+                                                </button>
+                                            <?php endif; ?>
+                                        <?php endforeach; ?>
+                                    </div>
+                                </div>
                                 <?php endif; ?>
                             </div>
                         </div>
@@ -2235,7 +2906,7 @@ if (!empty($effective_refund_status) && $effective_refund_status !== 'none'):
         </div>
     </div>
 
-    <!-- ✅ Refund Request Modal with Return Method -->
+    <!-- Refund Request Modal with Return Method -->
     <div class="modal fade" id="refundModal" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content" style="border-radius: var(--radius-lg);">
@@ -2244,7 +2915,6 @@ if (!empty($effective_refund_status) && $effective_refund_status !== 'none'):
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
                 </div>
                 <div class="modal-body" style="padding: 20px; max-height: 75vh; overflow-y: auto;">
-                    <!-- Order Info -->
                     <div style="background: var(--bg-primary); border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 16px;">
                         <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 4px;">Order</div>
                         <div style="font-weight: 700; color: var(--text-primary); font-size: 14px;" id="refundOrderCode"></div>
@@ -2252,7 +2922,6 @@ if (!empty($effective_refund_status) && $effective_refund_status !== 'none'):
                         <div style="font-size: 14px; font-weight: 700; color: var(--primary); margin-top: 8px;" id="refundOrderTotal"></div>
                     </div>
 
-                    <!-- Reason -->
                     <label class="form-label" style="font-weight: 600; font-size: 13px;">Reason for Return <span style="color: var(--danger);">*</span></label>
                     <div class="refund-modal-reasons" id="refundReasons">
                         <div class="refund-reason-option" onclick="selectRefundReason(this, 'damaged')">
@@ -2265,16 +2934,6 @@ if (!empty($effective_refund_status) && $effective_refund_status !== 'none'):
                             <i class="fas fa-exchange-alt"></i>
                             <label>Wrong item received</label>
                         </div>
-                        <div class="refund-reason-option" onclick="selectRefundReason(this, 'not_as_described')">
-                            <input type="radio" name="refund_reason" value="not_as_described">
-                            <i class="fas fa-times-circle"></i>
-                            <label>Item not as described</label>
-                        </div>
-                        <div class="refund-reason-option" onclick="selectRefundReason(this, 'missing_parts')">
-                            <input type="radio" name="refund_reason" value="missing_parts">
-                            <i class="fas fa-puzzle-piece"></i>
-                            <label>Missing parts / accessories</label>
-                        </div>
                         <div class="refund-reason-option" onclick="selectRefundReason(this, 'other')">
                             <input type="radio" name="refund_reason" value="other">
                             <i class="fas fa-ellipsis-h"></i>
@@ -2282,16 +2941,13 @@ if (!empty($effective_refund_status) && $effective_refund_status !== 'none'):
                         </div>
                     </div>
 
-                    <!-- Details -->
                     <label class="form-label" style="font-weight: 600; font-size: 13px;">Details <span style="color: var(--text-muted);">(optional)</span></label>
                     <textarea id="refundDetails" class="form-control" rows="2" placeholder="Describe the issue..." style="border-radius: var(--radius-md); font-size: 13px;"></textarea>
 
-                    <!-- Evidence -->
                     <label class="form-label mt-3" style="font-weight: 600; font-size: 13px;">Evidence Photo <span style="color: var(--text-muted);">(optional)</span></label>
                     <input type="file" id="refundEvidence" class="form-control" accept="image/*" style="border-radius: var(--radius-md); font-size: 13px;">
                     <small style="color: var(--text-muted); font-size: 11px;">JPG, PNG, WebP. Max 5MB.</small>
 
-                    <!-- ✅ NEW: Return Method -->
                     <label class="form-label mt-3" style="font-weight: 600; font-size: 13px;">Return Method <span style="color: var(--danger);">*</span></label>
                     <div class="return-method-toggle" id="returnMethodToggle">
                         <div class="return-method-option selected" onclick="selectReturnMethod(this, 'dropoff')">
@@ -2326,9 +2982,7 @@ if (!empty($effective_refund_status) && $effective_refund_status !== 'none'):
                         </div>
                     </div>
 
-                    <!-- ✅ NEW: Return Method Details (conditional) -->
                     <div class="conditional-fields" id="returnDetailsFields">
-                        <!-- Pickup Address (for pickup method) -->
                         <div id="pickupAddressWrap" style="display: none;">
                             <label class="form-label" style="font-weight: 600; font-size: 12px;">
                                 <i class="fas fa-map-marker-alt" style="color: var(--primary);"></i>
@@ -2339,7 +2993,6 @@ if (!empty($effective_refund_status) && $effective_refund_status !== 'none'):
                                       style="border-radius: var(--radius-md); font-size: 13px;"></textarea>
                         </div>
 
-                        <!-- Courier Info (for courier method) -->
                         <div id="courierInfoWrap" style="display: none;">
                             <div style="background: #DBEAFE; border-radius: var(--radius-md); padding: 10px 12px; font-size: 12px; color: #1E40AF;">
                                 <i class="fas fa-info-circle"></i>
@@ -2347,7 +3000,6 @@ if (!empty($effective_refund_status) && $effective_refund_status !== 'none'):
                             </div>
                         </div>
 
-                        <!-- Scheduled Date/Time (for dropoff and pickup) -->
                         <div id="scheduleWrap">
                             <label class="form-label mt-3" style="font-weight: 600; font-size: 12px;">
                                 <i class="fas fa-calendar-alt" style="color: var(--primary);"></i>
@@ -2366,7 +3018,6 @@ if (!empty($effective_refund_status) && $effective_refund_status !== 'none'):
                             </div>
                         </div>
 
-                        <!-- Contact Info -->
                         <label class="form-label mt-3" style="font-weight: 600; font-size: 12px;">
                             <i class="fas fa-user" style="color: var(--primary);"></i>
                             Contact Person
@@ -2384,7 +3035,6 @@ if (!empty($effective_refund_status) && $effective_refund_status !== 'none'):
                             </div>
                         </div>
 
-                        <!-- Return Notes -->
                         <label class="form-label mt-3" style="font-weight: 600; font-size: 12px;">
                             <i class="fas fa-comment" style="color: var(--primary);"></i>
                             Additional Notes <span style="color: var(--text-muted);">(optional)</span>
@@ -2394,7 +3044,6 @@ if (!empty($effective_refund_status) && $effective_refund_status !== 'none'):
                                   style="border-radius: var(--radius-md); font-size: 13px;"></textarea>
                     </div>
 
-                    <!-- Refund Type -->
                     <label class="form-label mt-3" style="font-weight: 600; font-size: 13px;">Refund Type</label>
                     <div class="refund-type-toggle">
                         <div class="refund-type-option selected" onclick="selectRefundType(this, 'full')">
@@ -2409,7 +3058,6 @@ if (!empty($effective_refund_status) && $effective_refund_status !== 'none'):
                         </div>
                     </div>
 
-                    <!-- Partial Amount -->
                     <div id="partialAmountWrap" style="display: none;">
                         <label class="form-label" style="font-weight: 600; font-size: 13px;">Partial Amount (₱)</label>
                         <input type="number" id="refundPartialAmount" class="form-control" step="0.01" min="0" placeholder="0.00" style="border-radius: var(--radius-md);">
@@ -2480,8 +3128,6 @@ function cancelReservation(reservationId, productName, colorName) {
             })
             .then(response => response.json())
             .then(data => {
-                // Debug log removed
-                
                 if (data.success) {
                     let title = 'Cancelled!';
                     let icon = 'success';
@@ -2621,7 +3267,7 @@ function cancelReservation(reservationId, productName, colorName) {
                 }
             }
             
-            fetch('ajax/warranty-claim.php', { method: 'POST', body: formData })
+            fetch('/api/warranty-claim.php', { method: 'POST', body: formData })
             .then(r => r.json())
             .then(data => {
                 Swal.close();
@@ -2698,24 +3344,20 @@ function cancelReservation(reservationId, productName, colorName) {
         function openRefundModal(reservationId, productName, orderCode, totalAmount) {
             currentRefundReservationId = reservationId;
             
-            // Set info
             document.getElementById('refundOrderCode').textContent = orderCode;
             document.getElementById('refundProductName').textContent = productName;
             document.getElementById('refundOrderTotal').textContent = '₱' + parseFloat(totalAmount).toFixed(2);
             document.getElementById('refundFullAmount').textContent = '₱' + parseFloat(totalAmount).toFixed(2);
             
-            // Reset reason
             document.querySelectorAll('#refundReasons .refund-reason-option').forEach(opt => {
                 opt.classList.remove('selected');
                 opt.querySelector('input').checked = false;
             });
             
-            // ✅ Reset return method
             document.querySelectorAll('.return-method-option').forEach(opt => opt.classList.remove('selected'));
             document.querySelector('.return-method-option:first-child').classList.add('selected');
             document.querySelector('input[name="return_method"][value="dropoff"]').checked = true;
             
-            // ✅ Reset return details
             document.getElementById('returnDetailsFields').classList.remove('show');
             document.getElementById('pickupAddressWrap').style.display = 'none';
             document.getElementById('courierInfoWrap').style.display = 'none';
@@ -2726,18 +3368,15 @@ function cancelReservation(reservationId, productName, colorName) {
             document.getElementById('returnContactPhone').value = '';
             document.getElementById('returnNotes').value = '';
             
-            // Reset details & evidence
             document.getElementById('refundDetails').value = '';
             document.getElementById('refundEvidence').value = '';
             document.getElementById('refundPartialAmount').value = '';
             
-            // Reset type
             document.querySelectorAll('.refund-type-option').forEach(opt => opt.classList.remove('selected'));
             document.querySelector('.refund-type-option:first-child').classList.add('selected');
             document.querySelector('input[name="refund_type"][value="full"]').checked = true;
             document.getElementById('partialAmountWrap').style.display = 'none';
             
-            // Show modal
             if (!refundModalInstance) {
                 refundModalInstance = new bootstrap.Modal(document.getElementById('refundModal'));
             }
@@ -2758,35 +3397,24 @@ function cancelReservation(reservationId, productName, colorName) {
             document.getElementById('partialAmountWrap').style.display = (type === 'partial') ? 'block' : 'none';
         }
 
-        // ✅ NEW: Select Return Method
         function selectReturnMethod(el, method) {
             document.querySelectorAll('.return-method-option').forEach(opt => opt.classList.remove('selected'));
             el.classList.add('selected');
             el.querySelector('input').checked = true;
             
-            // Show/hide conditional fields
             document.getElementById('returnDetailsFields').classList.add('show');
-            
-            // Pickup address
             document.getElementById('pickupAddressWrap').style.display = (method === 'pickup') ? 'block' : 'none';
-            
-            // Courier info
             document.getElementById('courierInfoWrap').style.display = (method === 'courier') ? 'block' : 'none';
-            
-            // Schedule - hide for courier
             document.getElementById('scheduleWrap').style.display = (method === 'courier') ? 'none' : 'block';
         }
 
-        // ✅ NEW: Validate + Submit Refund
         function submitRefund() {
-            // Validate reason
             const reasonInput = document.querySelector('input[name="refund_reason"]:checked');
             if (!reasonInput) {
                 Swal.fire('Missing Reason', 'Please select a reason for your refund request.', 'warning');
                 return;
             }
             
-            // Validate return method
             const returnMethodInput = document.querySelector('input[name="return_method"]:checked');
             if (!returnMethodInput) {
                 Swal.fire('Missing Return Method', 'Please select how you want to return the item.', 'warning');
@@ -2794,14 +3422,12 @@ function cancelReservation(reservationId, productName, colorName) {
             }
             const returnMethod = returnMethodInput.value;
             
-            // Validate pickup address
             const returnAddress = document.getElementById('returnAddress').value.trim();
             if (returnMethod === 'pickup' && !returnAddress) {
                 Swal.fire('Missing Address', 'Please enter your pickup address.', 'warning');
                 return;
             }
             
-            // Validate refund type
             const refundType = document.querySelector('input[name="refund_type"]:checked').value;
             const partialAmount = parseFloat(document.getElementById('refundPartialAmount').value || 0);
             
@@ -2810,7 +3436,6 @@ function cancelReservation(reservationId, productName, colorName) {
                 return;
             }
             
-            // Build form data
             const formData = new FormData();
             formData.append('action', 'request_refund');
             formData.append('reservation_id', currentRefundReservationId);
@@ -2821,7 +3446,6 @@ function cancelReservation(reservationId, productName, colorName) {
                 formData.append('partial_amount', partialAmount);
             }
             
-            // ✅ Return method fields
             formData.append('return_method', returnMethod);
             formData.append('return_address', returnAddress);
             formData.append('return_scheduled_date', document.getElementById('returnScheduledDate').value);
@@ -2830,7 +3454,6 @@ function cancelReservation(reservationId, productName, colorName) {
             formData.append('return_contact_phone', document.getElementById('returnContactPhone').value.trim());
             formData.append('return_notes', document.getElementById('returnNotes').value.trim());
             
-            // Evidence
             const evidenceFile = document.getElementById('refundEvidence').files[0];
             if (evidenceFile) {
                 formData.append('evidence', evidenceFile);
@@ -2863,6 +3486,142 @@ function cancelReservation(reservationId, productName, colorName) {
                 Swal.fire('Error', 'Network error. Please try again.', 'error');
             });
         }
+
+        // ═══════════════════════════════════════════════════════════
+        // ✅ FILTER TABS (presentation only)
+        // ═══════════════════════════════════════════════════════════
+        document.addEventListener('DOMContentLoaded', function() {
+            const tabs = document.querySelectorAll('#orderFilterTabs .filter-tab');
+            const cards = document.querySelectorAll('.reservation-card');
+            const grid = document.querySelector('.reservations-grid');
+
+            if (!tabs.length || !grid) return;
+
+            tabs.forEach(tab => {
+                tab.addEventListener('click', function() {
+                    const filter = this.dataset.filter;
+                    
+                    tabs.forEach(t => t.classList.remove('active'));
+                    this.classList.add('active');
+                    
+                    applyOrderFilters();
+                });
+            });
+        });
+
+        // ═══════════════════════════════════════════════════════════
+        // ✅ CARD ACCORDION
+        // ═══════════════════════════════════════════════════════════
+        function toggleCardDetails(btn) {
+            const body = btn.nextElementSibling;
+            if (!body) return;
+            
+            const isOpen = body.classList.contains('open');
+            
+            if (isOpen) {
+                body.classList.remove('open');
+                btn.classList.remove('open');
+                btn.querySelector('span').innerHTML = '<i class="fas fa-info-circle"></i> View more details';
+            } else {
+                body.classList.add('open');
+                btn.classList.add('open');
+                btn.querySelector('span').innerHTML = '<i class="fas fa-info-circle"></i> Hide details';
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════
+        // ✅ MORE MENU (secondary actions dropdown)
+        // ═══════════════════════════════════════════════════════════
+        function toggleMoreMenu(btn, event) {
+            if (event) event.stopPropagation();
+            
+            const menu = btn.nextElementSibling;
+            if (!menu) return;
+            
+            document.querySelectorAll('.more-menu-list.open').forEach(m => {
+                if (m !== menu) m.classList.remove('open');
+            });
+            
+            menu.classList.toggle('open');
+        }
+
+        document.addEventListener('click', function(e) {
+            if (!e.target.closest('.more-menu-wrap')) {
+                document.querySelectorAll('.more-menu-list.open').forEach(m => {
+                    m.classList.remove('open');
+                });
+            }
+        });
+
+        // ═══════════════════════════════════════════════════════════
+        // ✅ SEARCH BAR (filter cards by text)
+        // ═══════════════════════════════════════════════════════════
+        function clearOrderSearch() {
+            const input = document.getElementById('ordersSearchInput');
+            const clearBtn = document.getElementById('searchClearBtn');
+            if (input) input.value = '';
+            if (clearBtn) clearBtn.style.display = 'none';
+            applyOrderFilters();
+        }
+
+        function applyOrderFilters() {
+            const searchInput = document.getElementById('ordersSearchInput');
+            const clearBtn = document.getElementById('searchClearBtn');
+            if (!searchInput) return;
+
+            const search = searchInput.value.toLowerCase().trim();
+            const activeTab = document.querySelector('#orderFilterTabs .filter-tab.active');
+            const filter = activeTab ? activeTab.dataset.filter : 'all';
+
+            // Toggle clear button
+            if (clearBtn) clearBtn.style.display = search ? 'flex' : 'none';
+
+            const cards = document.querySelectorAll('.reservation-card');
+            let visibleCount = 0;
+
+            cards.forEach(card => {
+                const group = card.dataset.filterGroup;
+                const matchesFilter = (filter === 'all') || (group === filter);
+
+                // Search sa text content ng card
+                const cardText = card.textContent.toLowerCase();
+                const matchesSearch = !search || cardText.includes(search);
+
+                const show = matchesFilter && matchesSearch;
+                card.style.display = show ? '' : 'none';
+                if (show) visibleCount++;
+            });
+
+            // Empty message
+            let emptyMsg = document.getElementById('filterEmptyMsg');
+            if (visibleCount === 0) {
+                if (!emptyMsg) {
+                    emptyMsg = document.createElement('div');
+                    emptyMsg.id = 'filterEmptyMsg';
+                    emptyMsg.className = 'empty-state-reservations';
+                    emptyMsg.style.gridColumn = '1 / -1';
+                    document.querySelector('.reservations-grid').appendChild(emptyMsg);
+                }
+                emptyMsg.innerHTML = search
+                    ? `<div class="empty-icon-wrap"><i class="fas fa-search"></i></div>
+                       <h2>No results for "${search.replace(/"/g, '&quot;')}"</h2>
+                       <p>Try a different keyword or filter tab.</p>`
+                    : `<div class="empty-icon-wrap"><i class="fas fa-inbox"></i></div>
+                       <h2>No orders in this filter</h2>
+                       <p>Try a different filter tab.</p>`;
+                emptyMsg.style.display = 'block';
+            } else if (emptyMsg) {
+                emptyMsg.style.display = 'none';
+            }
+        }
+
+        // Hook up search input + filter tabs sa bagong combined function
+        document.addEventListener('DOMContentLoaded', function() {
+            const searchInput = document.getElementById('ordersSearchInput');
+            if (searchInput) {
+                searchInput.addEventListener('input', applyOrderFilters);
+            }
+        });
     </script>
 </body>
 </html>

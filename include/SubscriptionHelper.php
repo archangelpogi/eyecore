@@ -24,23 +24,31 @@ class SubscriptionHelper {
      */
     private function loadSubscription() {
         try {
+            // Kunin ang LATEST subscription record (kahit expired)
             $stmt = $this->pdo->prepare("
                 SELECT cs.*, sp.plan_code, sp.plan_name, sp.features, sp.price_monthly, 
                        sp.max_users, sp.max_storage_mb, sp.has_trial, sp.trial_days
                 FROM clinic_subscriptions cs
                 JOIN subscription_plans sp ON cs.plan_id = sp.id
-                WHERE cs.clinic_id = ? 
-                AND cs.status IN ('active', 'trial')
-                AND cs.end_date >= CURDATE()
-                ORDER BY cs.id DESC 
+                WHERE cs.clinic_id = ?
+                  AND cs.id = (
+                      SELECT MAX(id) FROM clinic_subscriptions 
+                      WHERE clinic_id = ?
+                  )
                 LIMIT 1
             ");
-            $stmt->execute([$this->clinic_id]);
-            $this->subscription = $stmt->fetch(PDO::FETCH_ASSOC);
-            
-            // Cache modules if may subscription
-            if ($this->subscription) {
-                $this->cached_modules = json_decode($this->subscription['features'], true);
+            $stmt->execute([$this->clinic_id, $this->clinic_id]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            // Kung expired na ang latest subscription, ituring na WALANG active subscription
+            if ($row && !empty($row['end_date']) && strtotime($row['end_date']) < time()) {
+                $this->subscription   = null;
+                $this->cached_modules = null;
+            } else {
+                $this->subscription = $row ?: null;
+                if ($this->subscription) {
+                    $this->cached_modules = json_decode($this->subscription['features'], true);
+                }
             }
         } catch (PDOException $e) {
             error_log("SubscriptionHelper load error: " . $e->getMessage());
@@ -91,18 +99,21 @@ class SubscriptionHelper {
         return $this->subscription['start_date'] ?? null;
     }
     
-    /**
-     * Get remaining trial days
-     */
-    public function getTrialDaysLeft() {
-        if (!$this->subscription || $this->subscription['status'] !== 'trial') {
-            return 0;
-        }
-        $end_date = new DateTime($this->subscription['end_date']);
-        $now = new DateTime();
-        $diff = $now->diff($end_date);
-        return (int)$diff->days;
+public function getTrialDaysLeft() {
+    if (!$this->subscription || $this->subscription['status'] !== 'trial') {
+        return 0;
     }
+    
+    $end_date = new DateTime($this->subscription['end_date']);
+    $now = new DateTime();
+    
+    if ($end_date <= $now) {
+        return 0;  // Expired or expiring exactly now
+    }
+    
+    $totalSeconds = $end_date->getTimestamp() - $now->getTimestamp();
+    return (int)ceil($totalSeconds / 86400);
+}
     
     /**
      * Check if subscription is in trial period
@@ -119,6 +130,113 @@ class SubscriptionHelper {
         $end_date = new DateTime($this->subscription['end_date']);
         $now = new DateTime();
         return $end_date < $now;
+    }
+
+    /**
+     * Kunin ang current basic trial days (dynamic, admin-controlled)
+     */
+    public function getBasicTrialDays() {
+        try {
+            $stmt = $this->pdo->prepare(
+                "SELECT setting_value FROM subscription_settings 
+                 WHERE setting_key = 'basic_trial_days'"
+            );
+            $stmt->execute();
+            $val = $stmt->fetchColumn();
+            return $val !== false ? (int)$val : 3;
+        } catch (PDOException $e) {
+            error_log("getBasicTrialDays error: " . $e->getMessage());
+            return 3;
+        }
+    }
+
+    /**
+     * Update basic trial days (superadmin only)
+     */
+    public function setBasicTrialDays($days, $adminId) {
+        $days = (int)$days;
+        if ($days < 1 || $days > 365) return false;
+
+        try {
+            $this->pdo->beginTransaction();
+
+            $oldStmt = $this->pdo->prepare(
+                "SELECT setting_value FROM subscription_settings WHERE setting_key = 'basic_trial_days'"
+            );
+            $oldStmt->execute();
+            $old = $oldStmt->fetchColumn() ?: '0';
+
+            $stmt = $this->pdo->prepare(
+                "UPDATE subscription_settings 
+                 SET setting_value = ?, updated_by = ? 
+                 WHERE setting_key = 'basic_trial_days'"
+            );
+            $stmt->execute([(string)$days, (int)$adminId]);
+
+            $stmt = $this->pdo->prepare(
+                "INSERT INTO subscription_settings_audit 
+                 (setting_key, old_value, new_value, changed_by) 
+                 VALUES ('basic_trial_days', ?, ?, ?)"
+            );
+            $stmt->execute([$old, (string)$days, (int)$adminId]);
+
+            $this->pdo->commit();
+            return true;
+        } catch (Exception $e) {
+            $this->pdo->rollBack();
+            error_log("setBasicTrialDays error: " . $e->getMessage());
+            return false;
+        }
+    }
+
+        /**
+     * Get detailed expiry info para sa grace period logic.
+     * Returns: expired, days_expired, grace_status, end_date
+     */
+    public function getExpiryInfo() {
+        $result = [
+            'expired'      => false,
+            'days_expired' => 0,
+            'grace_status' => 'ok',    // ok | warning | grace | blocked
+            'end_date'     => null,
+        ];
+
+        if (!$this->clinic_id) return $result;
+
+        try {
+            $stmt = $this->pdo->prepare("
+                SELECT end_date, status
+                FROM clinic_subscriptions
+                WHERE clinic_id = ?
+                ORDER BY id DESC
+                LIMIT 1
+            ");
+            $stmt->execute([$this->clinic_id]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$row || empty($row['end_date'])) return $result;
+
+            $result['end_date'] = $row['end_date'];
+            $endTs = strtotime($row['end_date']);
+            $nowTs = time();
+
+            if ($endTs < $nowTs) {
+                $result['expired']      = true;
+                $result['days_expired'] = (int) floor(($nowTs - $endTs) / 86400);
+
+                if ($result['days_expired'] <= 3) {
+                    $result['grace_status'] = 'warning';   // 0-3 days
+                } elseif ($result['days_expired'] <= 7) {
+                    $result['grace_status'] = 'grace';     // 4-7 days
+                } else {
+                    $result['grace_status'] = 'blocked';   // 8+ days
+                }
+            }
+        } catch (PDOException $e) {
+            error_log("getExpiryInfo error: " . $e->getMessage());
+        }
+
+        return $result;
     }
     
     /**
@@ -422,16 +540,20 @@ public function getMaxUsers() {
                 return ['success' => false, 'error' => 'Invalid plan'];
             }
             
-            // Basic plan: 10 years validity (libre forever)
+            // ✅ DYNAMIC TRIAL DAYS — snapshot per registration
+            // Kunin ang current admin-controlled trial days value.
+            // Ito ang magiging permanent na value ng clinic na ito,
+            // kahit magbago pa ang setting later.
+            $trialDays = $this->getBasicTrialDays();
             $start_date = date('Y-m-d');
-            $end_date = date('Y-m-d', strtotime('+10 years'));
+            $end_date = date('Y-m-d', strtotime("+{$trialDays} days"));
             
             $stmt = $this->pdo->prepare("
                 INSERT INTO clinic_subscriptions 
-                (clinic_id, plan_id, subscription_type, start_date, end_date, status, created_at)
-                VALUES (?, ?, 'monthly', ?, ?, 'active', NOW())
+                (clinic_id, plan_id, trial_days_snapshot, subscription_type, start_date, end_date, status, created_at)
+                VALUES (?, ?, ?, 'trial', ?, ?, 'trial', NOW())
             ");
-            $stmt->execute([$this->clinic_id, $plan_id, $start_date, $end_date]);
+            $stmt->execute([$this->clinic_id, $plan_id, $trialDays, $start_date, $end_date]);
             
             $subscription_id = $this->pdo->lastInsertId();
             
@@ -443,8 +565,10 @@ public function getMaxUsers() {
             
             return [
                 'success' => true,
-                'message' => 'Basic plan activated successfully!',
-                'subscription_id' => $subscription_id
+                'message' => "Basic plan activated! You have {$trialDays} day(s) of access.",
+                'subscription_id' => $subscription_id,
+                'trial_days' => $trialDays,
+                'end_date' => $end_date
             ];
             
         } catch (Exception $e) {

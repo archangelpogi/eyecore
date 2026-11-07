@@ -333,7 +333,7 @@ i.fas,i.far,i.fab,i.fal {
                 <?php if($pending>0):?><span class="badge"><?php echo $pending;?></span><?php endif;?>
             </a>
             <a href="my-reservations.php" class="nav-link<?php echo navActive('reservations',$active_nav);?>">
-                <i class="fas fa-bookmark"></i><span>Reservations</span>
+                <i class="fas fa-shopping-bag"></i><span>Orders</span>
                 <?php if($reservation_count>0):?><span class="badge"><?php echo $reservation_count;?></span><?php endif;?>
             </a>
             <div class="nav-dropdown">
@@ -466,7 +466,7 @@ i.fas,i.far,i.fab,i.fal {
             <?php if($pending>0):?><span class="badge"><?php echo $pending;?></span><?php endif;?>
         </a>
         <a href="my-reservations.php" class="mobile-nav-item<?php echo navActive('reservations',$active_nav);?>">
-            <i class="fas fa-bookmark"></i><span>Reserved</span>
+            <i class="fas fa-shopping-bag"></i><span>Orders</span>
             <?php if($reservation_count>0):?><span class="badge"><?php echo $reservation_count;?></span><?php endif;?>
         </a>
         <a href="#" class="mobile-nav-item" onclick="navToggleMobMenu()"><i class="fas fa-bars"></i><span>Menu</span></a>

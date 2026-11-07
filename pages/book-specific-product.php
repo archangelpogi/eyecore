@@ -87,13 +87,11 @@ $total_bookings = $bookings_row['total'] ?: 0;
 // Set active navigation for this page
 $active_nav = 'discover';
 
-// ============================================
-// PRESCRIPTION DATA FROM product-view redirect
-// ============================================
 $rx_knowledge = isset($_GET['rx_knowledge']) ? $_GET['rx_knowledge'] : '';
 $from_lens    = isset($_GET['lens'])         ? $_GET['lens']         : '';
-$from_lens_index = isset($_GET['lens_index']) ? $_GET['lens_index']  : ''; // ✅ BAGO
+$from_lens_index = isset($_GET['lens_index']) ? $_GET['lens_index']  : '';
 $from_color   = isset($_GET['color'])        ? $_GET['color']        : '';
+$from_features = isset($_GET['features'])    ? explode(',', $_GET['features']) : [];  // ✅ IDAGDAG
 
 // ✅ LENS PRICES - Base prices (hindi kasama ang index add-on)
 $lens_prices = [
@@ -124,8 +122,39 @@ if (!empty($from_lens_index)) {
     }
 }
 
-// ✅ Total lens price = base + index add-on
-$lens_price = $base_lens_price + $lens_index_price;
+// ✅ IDAGDAG: Features price (from lens_options table)
+$features_total = 0;
+$features_names = [];
+$features_details = [];  // Para sa items JSON
+if (!empty($from_features)) {
+    foreach ($from_features as $feature_code) {
+        $feature_code = trim($feature_code);
+        if (empty($feature_code)) continue;
+        
+        $feature_row = @mysqli_fetch_assoc(mysqli_query($conn, "
+            SELECT option_name, price 
+            FROM lens_options 
+            WHERE clinic_id = $clinic_id 
+              AND option_type = 'feature' 
+              AND option_code = '" . mysqli_real_escape_string($conn, $feature_code) . "'
+              AND is_active = 1
+            LIMIT 1
+        "));
+        
+        if ($feature_row) {
+            $features_total += (float)$feature_row['price'];
+            $features_names[] = $feature_row['option_name'];
+            $features_details[] = [
+                'code' => $feature_code,
+                'name' => $feature_row['option_name'],
+                'price' => (float)$feature_row['price']
+            ];
+        }
+    }
+}
+
+// ✅ Total lens price = base + index add-on + features
+$lens_price = $base_lens_price + $lens_index_price + $features_total;
 $total_product_price = $product['price'] + $lens_price;
 
 $from_od_sph  = isset($_GET['od_sph'])       ? $_GET['od_sph']       : '';
@@ -343,39 +372,46 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['confirm'])) {
             
             $ref_no = 'APP-' . time() . '-' . rand(1000, 9999);
             
-            // ============================================
-            // 🆕 STEP 4: BUILD ITEMS ARRAY (DAPAT MAY LENS + INDEX)
-            // ============================================
-            $items_array = [];
+$items_array = [];
 
-            // 1. Frame (product)
-            $items_array[] = [
-                'name' => $product['name'] . ' (Frame)',
-                'price' => (float)$product['price'],
-                'quantity' => 1,
-                'type' => 'product',
-                'product_id' => $product_id
-            ];
+// 1. Frame (product)
+$items_array[] = [
+    'name' => $product['name'] . ' (Frame)',
+    'price' => (float)$product['price'],
+    'quantity' => 1,
+    'type' => 'product',
+    'product_id' => $product_id
+];
 
-            // 2. Lens (kung may lens at hindi frame_only)
-            if ($from_lens && $from_lens !== 'frame_only') {
-                $lens_name = ucwords(str_replace('_', ' ', $from_lens));
-                // ✅ Include lens index sa item name
-                $lens_display_name = $lens_name . ' Lens';
-                if (!empty($from_lens_index)) {
-                    $lens_display_name .= ' (' . $from_lens_index . ')';
-                }
-                $items_array[] = [
-                    'name' => $lens_display_name,
-                    'price' => (float)$lens_price,
-                    'quantity' => 1,
-                    'type' => 'service',
-                    'lens_type' => $from_lens,
-                    'lens_index' => $from_lens_index
-                ];
-            }
+// 2. Lens Design (kung may lens at hindi frame_only)
+if ($from_lens && $from_lens !== 'frame_only') {
+    $lens_name = ucwords(str_replace('_', ' ', $from_lens));
+    $lens_display_name = $lens_name . ' Lens';
+    if (!empty($from_lens_index)) {
+        $lens_display_name .= ' (' . $from_lens_index . ')';
+    }
+    $items_array[] = [
+        'name' => $lens_display_name,
+        'price' => (float)($base_lens_price + $lens_index_price),  // ✅ Base + index lang
+        'quantity' => 1,
+        'type' => 'service',
+        'lens_type' => $from_lens,
+        'lens_index' => $from_lens_index
+    ];
+}
 
-            $items_json = json_encode($items_array);
+// 3. ✅ IDAGDAG: Features (Blue Cut, AR, etc.)
+foreach ($features_details as $feature) {
+    $items_array[] = [
+        'name' => $feature['name'],
+        'price' => (float)$feature['price'],
+        'quantity' => 1,
+        'type' => 'service',
+        'feature_code' => $feature['code']
+    ];
+}
+
+$items_json = json_encode($items_array);
 
             // ============================================
             // 🆕 STEP 5: CHECK USER PWD/SENIOR STATUS
@@ -2231,22 +2267,31 @@ while ($row = mysqli_fetch_assoc($booked_slots_query)) {
                                 The doctor will conduct an <strong>eye exam</strong> during your appointment before fitting your <em><?php echo htmlspecialchars($product['name']); ?></em>.
                             </div>
                         <?php else: ?>
-                            <?php if ($from_lens): ?>
-                            <div style="margin-bottom: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                                <span style="font-size: 13px; color: var(--text-secondary);">Lens Type:</span>
-                                <span style="background: var(--primary-light); color: var(--primary); padding: 4px 12px; border-radius: var(--radius-full); font-size: 13px; font-weight: 600;">
-                                    <?php echo htmlspecialchars(ucwords(str_replace('_', ' ', $from_lens))); ?>
-                                    <?php if ($from_lens_index): ?>
-                                        — <?php echo htmlspecialchars($from_lens_index); ?>
-                                    <?php endif; ?>
-                                </span>
-                                <?php if ($lens_index_price > 0): ?>
-                                <span style="background: var(--primary-light); color: var(--primary); padding: 4px 12px; border-radius: var(--radius-full); font-size: 13px; font-weight: 600;">
-                                    +₱<?php echo number_format($lens_index_price, 2); ?>
-                                </span>
-                                <?php endif; ?>
-                            </div>
-                            <?php endif; ?>
+<?php if ($from_lens): ?>
+<div style="margin-bottom: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+    <span style="font-size: 13px; color: var(--text-secondary);">Lens Type:</span>
+    <span style="background: var(--primary-light); color: var(--primary); padding: 4px 12px; border-radius: var(--radius-full); font-size: 13px; font-weight: 600;">
+        <?php echo htmlspecialchars(ucwords(str_replace('_', ' ', $from_lens))); ?>
+        <?php if ($from_lens_index): ?>
+            — <?php echo htmlspecialchars($from_lens_index); ?>
+        <?php endif; ?>
+    </span>
+    <?php if ($lens_index_price > 0): ?>
+    <span style="background: var(--primary-light); color: var(--primary); padding: 4px 12px; border-radius: var(--radius-full); font-size: 13px; font-weight: 600;">
+        +₱<?php echo number_format($lens_index_price, 2); ?>
+    </span>
+    <?php endif; ?>
+    
+    <!-- ✅ IDAGDAG: Features display -->
+    <?php if (!empty($features_names)): ?>
+        <?php foreach ($features_names as $fname): ?>
+        <span style="background: #DBEAFE; color: #1E40AF; padding: 4px 12px; border-radius: var(--radius-full); font-size: 13px; font-weight: 600;">
+            <i class="fas fa-check"></i> <?php echo htmlspecialchars($fname); ?>
+        </span>
+        <?php endforeach; ?>
+    <?php endif; ?>
+</div>
+<?php endif; ?>
                             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
                                 <div style="background: var(--bg-secondary); border-radius: var(--radius-md); padding: 14px; border: 1px solid var(--border-light);">
                                     <div style="font-weight: 600; margin-bottom: 10px; font-size: 13px; color: var(--primary);">
@@ -2594,10 +2639,9 @@ while ($row = mysqli_fetch_assoc($booked_slots_query)) {
 
 <!-- Booking Summary -->
 <?php
-// ✅ Compute VAT breakdown for display
-$summary_subtotal = $total_product_price; // Frame + Lens (walang VAT)
-$summary_vat = $summary_subtotal * 0.12;  // 12% VAT
-$summary_total = $summary_subtotal + $summary_vat;
+// ✅ VAT-INCLUSIVE — walang add-on
+$summary_subtotal = $total_product_price;
+$summary_total = $summary_subtotal;
 ?>
 <div class="summary-card">
     <h4><i class="fas fa-receipt"></i> Booking Summary</h4>
@@ -2613,23 +2657,26 @@ $summary_total = $summary_subtotal + $summary_vat;
     <?php if ($from_lens && $from_lens != 'frame_only'): ?>
     <div class="summary-item">
         <span class="summary-label">
-            Lens (<?php echo ucwords(str_replace('_', ' ', $from_lens)); ?>
+            Lens Design (<?php echo ucwords(str_replace('_', ' ', $from_lens)); ?>
             <?php if ($from_lens_index): ?>
                 — <?php echo htmlspecialchars($from_lens_index); ?>
             <?php endif; ?>):
         </span>
-        <span class="summary-value">+₱<?php echo number_format($lens_price, 2); ?></span>
+        <span class="summary-value">+₱<?php echo number_format($base_lens_price + $lens_index_price, 2); ?></span>
     </div>
     <?php endif; ?>
     
-    <!-- ✅ BAGO: Ipakita ang Subtotal, VAT, at Total -->
-    <div class="summary-item" style="border-top: 1px solid var(--border-light); padding-top: 10px; margin-top: 5px;">
-        <span class="summary-label" style="font-weight: 500;">Subtotal:</span>
-        <span class="summary-value">₱<?php echo number_format($summary_subtotal, 2); ?></span>
-    </div>
+    <?php if ($features_total > 0): ?>
     <div class="summary-item">
-        <span class="summary-label" style="font-weight: 500; color: var(--info);">VAT (12%):</span>
-        <span class="summary-value" style="color: var(--info);">+₱<?php echo number_format($summary_vat, 2); ?></span>
+        <span class="summary-label">Features (<?php echo implode(', ', $features_names); ?>):</span>
+        <span class="summary-value">+₱<?php echo number_format($features_total, 2); ?></span>
+    </div>
+    <?php endif; ?>
+    
+    <!-- ✅ Subtotal lang (VAT-inclusive na) -->
+    <div class="summary-item" style="border-top: 1px solid var(--border-light); padding-top: 10px; margin-top: 5px;">
+        <span class="summary-label" style="font-weight: 600;">Subtotal:</span>
+        <span class="summary-value" style="font-weight: 700;">₱<?php echo number_format($summary_total, 2); ?></span>
     </div>
     
     <div class="summary-item">
@@ -2648,6 +2695,8 @@ $summary_total = $summary_subtotal + $summary_vat;
         <span class="summary-label">Contact:</span>
         <span class="summary-value" id="summaryContact">—</span>
     </div>
+    
+    <!-- ✅ Final Total = Subtotal (walang VAT) -->
     <div class="total-price" id="totalPrice">
         ₱<?php echo number_format($summary_total, 2); ?>
     </div>

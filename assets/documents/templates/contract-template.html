@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>EyeCore Service Agreement</title>
+<style>
+    @page { size: A4; margin: 20mm; }
+    * { box-sizing: border-box; }
+    body {
+        font-family: 'Times New Roman', Times, serif;
+        font-size: 11pt;
+        line-height: 1.5;
+        color: #000;
+        margin: 0;
+        padding: 0;
+    }
+    .container { max-width: 800px; margin: 0 auto; padding: 20px; }
+    .header {
+        text-align: center;
+        border-bottom: 3px double #000;
+        padding-bottom: 15px;
+        margin-bottom: 25px;
+    }
+    .header h1 {
+        font-size: 22pt;
+        font-weight: bold;
+        letter-spacing: 2px;
+        margin: 0 0 5px 0;
+        text-transform: uppercase;
+    }
+    .header .subtitle {
+        font-size: 10pt;
+        color: #555;
+        font-style: italic;
+    }
+    .contract-meta {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 25px;
+        font-size: 10.5pt;
+    }
+    .contract-meta .field {
+        display: flex;
+        gap: 10px;
+    }
+    .contract-meta .label { font-weight: bold; min-width: 100px; }
+    .contract-meta .value {
+        border-bottom: 1px solid #000;
+        min-width: 180px;
+        display: inline-block;
+    }
+    h2 {
+        font-size: 12pt;
+        font-weight: bold;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin: 25px 0 12px 0;
+        border-bottom: 1px solid #000;
+        padding-bottom: 4px;
+    }
+    .section { margin-bottom: 15px; text-align: justify; }
+    .section p { margin: 6px 0; }
+    .field-line {
+        display: flex;
+        gap: 10px;
+        margin: 8px 0;
+        align-items: baseline;
+    }
+    .field-line .label {
+        font-weight: bold;
+        min-width: 130px;
+        font-size: 10.5pt;
+    }
+    .field-line .value {
+        flex: 1;
+        border-bottom: 1px solid #000;
+        min-height: 18px;
+        display: inline-block;
+    }
+    .signature-block {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 50px;
+        gap: 40px;
+    }
+    .signature-block .sig-box {
+        flex: 1;
+        text-align: center;
+    }
+    .signature-block .sig-line {
+        border-top: 1px solid #000;
+        margin-top: 60px;
+        padding-top: 5px;
+        font-size: 10pt;
+    }
+    .signature-block .sig-label {
+        font-size: 10pt;
+        font-weight: bold;
+        margin-bottom: 3px;
+    }
+    .signature-block .sig-sublabel {
+        font-size: 9pt;
+        color: #555;
+    }
+    .footer {
+        margin-top: 40px;
+        text-align: center;
+        font-size: 9pt;
+        color: #666;
+        border-top: 1px solid #ccc;
+        padding-top: 12px;
+    }
+    .no-print { text-align: center; margin: 20px 0; }
+    .no-print button {
+        padding: 10px 24px;
+        background: #0d9488;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-size: 12pt;
+        cursor: pointer;
+        font-weight: bold;
+    }
+    @media print {
+        .no-print { display: none; }
+        body { font-size: 10.5pt; }
+    }
+</style>
+</head>
+<body>
+<div class="container">
+
+    <div class="no-print">
+        <button onclick="window.print()">🖨️ Print / Save as PDF</button>
+        <p style="font-size: 10pt; color: #666; margin-top: 8px;">
+            I-click ang button, tapos piliin ang "Save as PDF" sa printer options.
+        </p>
+    </div>
+
+    <div class="header">
+        <h1>EyeCore Service Agreement</h1>
+        <div class="subtitle">Clinic Management System — Subscription Contract</div>
+    </div>
+
+    <div class="contract-meta">
+        <div class="field">
+            <span class="label">Contract No:</span>
+            <span class="value"></span>
+        </div>
+        <div class="field">
+            <span class="label">Date:</span>
+            <span class="value"></span>
+        </div>
+    </div>
+
+    <div class="section">
+        <p>This Service Agreement ("Agreement") is entered into by and between:</p>
+    </div>
+
+    <h2>1. Parties</h2>
+
+    <div class="section">
+        <p><strong>PROVIDER:</strong></p>
+        <div class="field-line">
+            <span class="label">Company Name:</span>
+            <span class="value">EyeCore Solutions Inc.</span>
+        </div>
+        <div class="field-line">
+            <span class="label">Address:</span>
+            <span class="value"></span>
+        </div>
+        <div class="field-line">
+            <span class="label">Email:</span>
+            <span class="value"></span>
+        </div>
+        <div class="field-line">
+            <span class="label">Contact:</span>
+            <span class="value"></span>
+        </div>
+    </div>
+
+    <div class="section" style="margin-top: 20px;">
+        <p><strong>CLIENT:</strong></p>
+        <div class="field-line">
+            <span class="label">Clinic Name:</span>
+            <span class="value"></span>
+        </div>
+        <div class="field-line">
+            <span class="label">Owner Name:</span>
+            <span class="value"></span>
+        </div>
+        <div class="field-line">
+            <span class="label">Address:</span>
+            <span class="value"></span>
+        </div>
+        <div class="field-line">
+            <span class="label">Email:</span>
+            <span class="value"></span>
+        </div>
+        <div class="field-line">
+            <span class="label">Contact:</span>
+            <span class="value"></span>
+        </div>
+    </div>
+
+    <h2>2. Services</h2>
+    <div class="section">
+        <p>The Provider agrees to provide the Client access to the EyeCore Clinic Management System under the following subscription plan:</p>
+        <div class="field-line">
+            <span class="label">Plan:</span>
+            <span class="value"></span>
+        </div>
+        <div class="field-line">
+            <span class="label">Monthly Fee:</span>
+            <span class="value">₱</span>
+        </div>
+        <div class="field-line">
+            <span class="label">Start Date:</span>
+            <span class="value"></span>
+        </div>
+        <div class="field-line">
+            <span class="label">End Date:</span>
+            <span class="value"></span>
+        </div>
+    </div>
+
+    <h2>3. Payment Terms</h2>
+    <div class="section">
+        <p>The Client agrees to pay the monthly subscription fee through the payment methods provided by the Provider, which may include PayMongo (GCash, PayMaya, or Credit Card). Payment is due on or before the start of each billing cycle.</p>
+    </div>
+
+    <h2>4. Term & Renewal</h2>
+    <div class="section">
+        <p>This Agreement shall be valid for the period stated in Section 2. It will automatically renew unless either party provides at least thirty (30) days written notice of non-renewal prior to the expiration date.</p>
+    </div>
+
+    <h2>5. Data Ownership</h2>
+    <div class="section">
+        <p>All clinic data including but not limited to patient records, prescriptions, appointment history, and financial records shall remain the exclusive property of the Client. The Provider shall not use or disclose such data without the Client's consent, except as required by law.</p>
+    </div>
+
+    <h2>6. Confidentiality</h2>
+    <div class="section">
+        <p>Both parties agree to maintain strict confidentiality of all information shared under this Agreement and shall not disclose such information to any third party without prior written consent.</p>
+    </div>
+
+    <h2>7. Termination</h2>
+    <div class="section">
+        <p>Either party may terminate this Agreement by providing thirty (30) days written notice to the other party. Upon termination, the Client shall be given reasonable time to export their data.</p>
+    </div>
+
+    <h2>8. Support</h2>
+    <div class="section">
+        <p>The Provider shall provide technical support within twenty-four (24) hours of any reported issue during regular business days.</p>
+    </div>
+
+    <h2>9. Entire Agreement</h2>
+    <div class="section">
+        <p>This Agreement constitutes the entire understanding between the parties and supersedes all prior agreements, whether written or oral, relating to the subject matter herein.</p>
+    </div>
+
+    <div class="section" style="margin-top: 30px;">
+        <p>IN WITNESS WHEREOF, the parties have executed this Agreement as of the date first written above.</p>
+    </div>
+
+    <div class="signature-block">
+        <div class="sig-box">
+            <div class="sig-label">FOR THE PROVIDER</div>
+            <div class="sig-line">Signature over Printed Name</div>
+            <div class="sig-sublabel" style="margin-top: 8px;">Date: ________________</div>
+        </div>
+        <div class="sig-box">
+            <div class="sig-label">FOR THE CLIENT</div>
+            <div class="sig-line">Signature over Printed Name</div>
+            <div class="sig-sublabel" style="margin-top: 8px;">Date: ________________</div>
+        </div>
+    </div>
+
+    <div class="signature-block" style="margin-top: 30px;">
+        <div class="sig-box">
+            <div class="sig-label">WITNESSED BY</div>
+            <div class="sig-line">Signature over Printed Name</div>
+        </div>
+        <div class="sig-box">
+            <div class="sig-label">WITNESSED BY</div>
+            <div class="sig-line">Signature over Printed Name</div>
+        </div>
+    </div>
+
+    <div class="footer">
+        EyeCore Solutions Inc. — Clinic Management System<br>
+        This is a legally binding agreement. Please read carefully before signing.
+    </div>
+
+</div>
+</body>
+</html>

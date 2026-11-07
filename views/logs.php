@@ -45,9 +45,9 @@ $user_role = $_SESSION['role'] ?? '';
 $is_clinic_admin = ($user_role === 'ClinicAdmin');
 ?>
 
-<div class="p-3">
+<div class="p-3 logs-page">
     <!-- Header -->
-    <div class="d-flex justify-content-between align-items-center mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-4 logs-header">
         <div>
             <h5 class="fw-bold mb-0" style="color: #0d9488;">
                 <i class="bi bi-journal-bookmark-fill me-2"></i>Activity Logs
@@ -57,18 +57,18 @@ $is_clinic_admin = ($user_role === 'ClinicAdmin');
     </div>
 
     <!-- Date Range Filter -->
-    <div class="card mb-3" style="border-top: 3px solid #0d9488;">
+    <div class="card mb-3 logs-filter-card" style="border-top: 3px solid #0d9488;">
         <div class="card-body py-2">
-            <div class="row g-2 align-items-end">
-                <div class="col-auto">
+            <div class="row g-2 align-items-end logs-filter-row">
+                <div class="col-auto logs-filter-col">
                     <label class="form-label small mb-0">From</label>
                     <input type="date" class="form-control form-control-sm" id="startDate" value="<?php echo date('Y-m-d', strtotime('-30 days')); ?>" style="width: 130px;">
                 </div>
-                <div class="col-auto">
+                <div class="col-auto logs-filter-col">
                     <label class="form-label small mb-0">To</label>
                     <input type="date" class="form-control form-control-sm" id="endDate" value="<?php echo date('Y-m-d'); ?>" style="width: 130px;">
                 </div>
-                <div class="col-auto">
+                <div class="col-auto logs-filter-col">
                     <label class="form-label small mb-0">Type</label>
                     <select class="form-select form-select-sm" id="logType" style="width: 140px;">
                         <option value="all">All Logs</option>
@@ -77,8 +77,8 @@ $is_clinic_admin = ($user_role === 'ClinicAdmin');
                         <option value="security">Security Events</option>
                     </select>
                 </div>
-                <div class="col-auto">
-                    <button class="btn btn-sm btn-primary" onclick="loadLogs()" style="background: #0d9488; border-color: #0d9488;">
+                <div class="col-auto logs-filter-col">
+                    <button class="btn btn-sm btn-primary logs-apply-btn" onclick="loadLogs()" style="background: #0d9488; border-color: #0d9488;">
                         <i class="bi bi-search"></i> Apply
                     </button>
                 </div>
@@ -88,54 +88,54 @@ $is_clinic_admin = ($user_role === 'ClinicAdmin');
 
     <!-- Statistics Cards - Teal Theme -->
     <div class="row g-2 mb-3" id="statsCards">
-        <div class="col-md-3">
-            <div class="card border-0 shadow-sm" style="border-left: 4px solid #0d9488;">
+        <div class="col-6 col-md-3">
+            <div class="card border-0 shadow-sm logs-stat-card" style="border-left: 4px solid #0d9488;">
                 <div class="card-body py-2 px-3">
                     <div class="d-flex justify-content-between align-items-center">
-                        <div>
+                        <div class="logs-stat-content">
                             <small class="text-muted">Total Events</small>
                             <h6 class="mb-0 fw-bold" id="statTotal">-</h6>
                         </div>
-                        <i class="bi bi-journal-text fs-4" style="color: #0d9488;"></i>
+                        <i class="bi bi-journal-text fs-4 logs-stat-icon" style="color: #0d9488;"></i>
                     </div>
                 </div>
             </div>
         </div>
-        <div class="col-md-3">
-            <div class="card border-0 shadow-sm" style="border-left: 4px solid #10b981;">
+        <div class="col-6 col-md-3">
+            <div class="card border-0 shadow-sm logs-stat-card" style="border-left: 4px solid #10b981;">
                 <div class="card-body py-2 px-3">
                     <div class="d-flex justify-content-between align-items-center">
-                        <div>
+                        <div class="logs-stat-content">
                             <small class="text-muted">Login Events</small>
                             <h6 class="mb-0 fw-bold" id="statLogin">-</h6>
                         </div>
-                        <i class="bi bi-box-arrow-in-right fs-4" style="color: #10b981;"></i>
+                        <i class="bi bi-box-arrow-in-right fs-4 logs-stat-icon" style="color: #10b981;"></i>
                     </div>
                 </div>
             </div>
         </div>
-        <div class="col-md-3">
-            <div class="card border-0 shadow-sm" style="border-left: 4px solid #ef4444;">
+        <div class="col-6 col-md-3">
+            <div class="card border-0 shadow-sm logs-stat-card" style="border-left: 4px solid #ef4444;">
                 <div class="card-body py-2 px-3">
                     <div class="d-flex justify-content-between align-items-center">
-                        <div>
+                        <div class="logs-stat-content">
                             <small class="text-muted">Failed Logins</small>
                             <h6 class="mb-0 fw-bold" id="statFailed">-</h6>
                         </div>
-                        <i class="bi bi-exclamation-triangle fs-4" style="color: #ef4444;"></i>
+                        <i class="bi bi-exclamation-triangle fs-4 logs-stat-icon" style="color: #ef4444;"></i>
                     </div>
                 </div>
             </div>
         </div>
-        <div class="col-md-3">
-            <div class="card border-0 shadow-sm" style="border-left: 4px solid #f59e0b;">
+        <div class="col-6 col-md-3">
+            <div class="card border-0 shadow-sm logs-stat-card" style="border-left: 4px solid #f59e0b;">
                 <div class="card-body py-2 px-3">
                     <div class="d-flex justify-content-between align-items-center">
-                        <div>
+                        <div class="logs-stat-content">
                             <small class="text-muted">CRUD Actions</small>
                             <h6 class="mb-0 fw-bold" id="statCrud">-</h6>
                         </div>
-                        <i class="bi bi-pencil-square fs-4" style="color: #f59e0b;"></i>
+                        <i class="bi bi-pencil-square fs-4 logs-stat-icon" style="color: #f59e0b;"></i>
                     </div>
                 </div>
             </div>
@@ -144,20 +144,20 @@ $is_clinic_admin = ($user_role === 'ClinicAdmin');
 
     <!-- Logs Table -->
     <div class="card shadow-sm">
-        <div class="card-header bg-white py-2 d-flex justify-content-between align-items-center" style="border-bottom: 2px solid #0d9488;">
+        <div class="card-header bg-white py-2 d-flex justify-content-between align-items-center logs-table-header" style="border-bottom: 2px solid #0d9488;">
             <h6 class="mb-0 fw-bold" style="color: #0d9488;">
                 <i class="bi bi-list-ul me-2"></i>Activity Logs
             </h6>
-            <div class="d-flex gap-2">
-                <div class="input-group input-group-sm" style="width: 250px;">
+            <div class="d-flex gap-2 logs-search-group">
+                <div class="input-group input-group-sm logs-search-input" style="width: 250px;">
                     <span class="input-group-text bg-white"><i class="bi bi-search"></i></span>
                     <input type="text" class="form-control" id="searchInput" placeholder="Search logs..." onkeyup="searchLogs()">
                 </div>
             </div>
         </div>
         <div class="card-body p-0">
-            <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
-                <table class="table table-hover mb-0">
+            <div class="table-responsive logs-table-wrap" style="max-height: 500px; overflow-y: auto;">
+                <table class="table table-hover mb-0 logs-table">
                     <thead class="table-light sticky-top">
                         <tr>
                             <th width="80">ID</th>
@@ -167,20 +167,22 @@ $is_clinic_admin = ($user_role === 'ClinicAdmin');
                             <th width="150">Module/Table</th>
                             <th>Details</th>
                             <th width="130">IP Address</th>
-                        </thead>
+                        </tr>
+                    </thead>
                     <tbody id="logsTable">
-                         <tr>
+                        <tr>
                             <td colspan="7" class="text-center py-4 text-muted">
                                 <div class="spinner-border text-teal" style="color: #0d9488; width: 1.5rem; height: 1.5rem;"></div>
                                 <p class="mt-2 mb-0">Loading logs...</p>
-                             </tr>
+                            </td>
+                        </tr>
                     </tbody>
-                 </table>
+                </table>
             </div>
         </div>
-        <div class="card-footer bg-white py-2 d-flex justify-content-between align-items-center">
+        <div class="card-footer bg-white py-2 d-flex justify-content-between align-items-center logs-footer">
             <small class="text-muted" id="logCountInfo">Loading...</small>
-            <div id="pagination" class="btn-group btn-group-sm">
+            <div id="pagination" class="btn-group btn-group-sm logs-pagination">
                 <!-- Pagination will be loaded -->
             </div>
         </div>
@@ -189,7 +191,7 @@ $is_clinic_admin = ($user_role === 'ClinicAdmin');
 
 <!-- Permission badge for view-only mode -->
 <?php if (!$canExport && !$canDelete): ?>
-<div class="position-fixed bottom-0 end-0 m-3">
+<div class="position-fixed bottom-0 end-0 m-3 logs-viewonly-badge">
     <div class="badge bg-secondary p-2">
         <i class="bi bi-eye me-1"></i> View Only Mode
     </div>
@@ -219,6 +221,242 @@ $is_clinic_admin = ($user_role === 'ClinicAdmin');
     table th { font-size: 12px; font-weight: 600; }
     table td { font-size: 13px; vertical-align: middle; }
     .card-header { background-color: white !important; }
+
+    /* ============================================================
+       📱 MOBILE RESPONSIVE FIX (Perfect Fit)
+       ============================================================ */
+    @media (max-width: 767.98px) {
+
+        /* 1. I-lock ang container */
+        .logs-page { 
+            padding: 0.5rem !important; 
+            width: 100% !important;
+            max-width: 100% !important;
+            overflow-x: hidden !important;
+        }
+        
+        .logs-page > * {
+            max-width: 100% !important;
+            box-sizing: border-box !important;
+        }
+
+        /* HEADER */
+        .logs-header {
+            flex-direction: column !important;
+            align-items: flex-start !important;
+            gap: 0.4rem;
+            margin-bottom: 1rem !important;
+        }
+        .logs-header h5 { font-size: 1rem; }
+        .logs-header small { font-size: 0.7rem; }
+
+        /* FILTER ROW (Gawing 2 columns, walang fixed width) */
+        .logs-filter-card .card-body { padding: 0.6rem !important; }
+        .logs-filter-row {
+            display: flex !important;
+            flex-wrap: wrap !important;
+            gap: 0.5rem !important;
+            margin: 0 !important;
+        }
+        .logs-filter-col {
+            flex: 0 0 calc(50% - 0.25rem) !important;
+            max-width: calc(50% - 0.25rem) !important;
+            padding: 0 !important;
+        }
+        /* Pangatlong column (Type) - full width */
+        .logs-filter-col:nth-child(3) {
+            flex: 0 0 100% !important;
+            max-width: 100% !important;
+        }
+        /* Apply button - full width */
+        .logs-filter-col:last-child {
+            flex: 0 0 100% !important;
+            max-width: 100% !important;
+        }
+        
+        /* Override fixed widths */
+        .logs-filter-col .form-control,
+        .logs-filter-col .form-select,
+        .logs-filter-col input[type="date"] {
+            width: 100% !important;
+            max-width: 100% !important;
+            font-size: 0.75rem !important;
+            padding: 0.35rem 0.5rem !important;
+        }
+        .logs-filter-col label {
+            font-size: 0.68rem !important;
+            margin-bottom: 0.2rem !important;
+        }
+        .logs-apply-btn {
+            width: 100%;
+            font-size: 0.78rem !important;
+            padding: 0.45rem !important;
+        }
+
+        /* STAT CARDS (2 per row) */
+        .logs-stat-card {
+            border-radius: 10px !important;
+        }
+        .logs-stat-card .card-body {
+            padding: 0.6rem 0.7rem !important;
+        }
+        .logs-stat-content small {
+            font-size: 0.62rem !important;
+            display: block;
+            line-height: 1.15;
+        }
+        .logs-stat-content h6 {
+            font-size: 0.95rem !important;
+            margin-top: 0.15rem !important;
+        }
+        .logs-stat-icon {
+            font-size: 1.1rem !important;
+        }
+
+        /* TABLE HEADER (Title + Search) */
+        .logs-table-header {
+            flex-direction: column !important;
+            align-items: stretch !important;
+            gap: 0.5rem;
+            padding: 0.6rem 0.7rem !important;
+        }
+        .logs-table-header h6 { font-size: 0.85rem; }
+        .logs-search-group { width: 100% !important; }
+        .logs-search-input { width: 100% !important; }
+        .logs-search-input .form-control,
+        .logs-search-input .input-group-text {
+            font-size: 0.75rem !important;
+        }
+
+        /* 🔑 TABLE → CARD VIEW */
+        .logs-table-wrap {
+            overflow: visible !important;
+            max-height: none !important;
+            width: 100% !important;
+        }
+        .logs-table {
+            display: block;
+            width: 100% !important;
+            max-width: 100% !important;
+            border-collapse: separate;
+            border-spacing: 0;
+        }
+        .logs-table thead { display: none !important; }
+        
+        .logs-table tbody,
+        .logs-table tr,
+        .logs-table td {
+            display: block;
+            width: 100% !important;
+            max-width: 100% !important;
+        }
+        
+        .logs-table tbody tr {
+            background: #fff;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 0.6rem 0.75rem;
+            margin: 0.5rem 0; /* Inalis ang left/right margin para hindi tumulo */
+            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+        }
+        .logs-table tbody tr:hover { background: #fff; }
+        
+        .logs-table tbody td {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.3rem 0 !important;
+            border: none !important;
+            font-size: 0.75rem !important;
+            text-align: right;
+            line-height: 1.3;
+            white-space: normal !important;
+            word-break: break-word !important;
+            min-height: 22px;
+        }
+        
+        /* Data Labels */
+        .logs-table tbody td::before {
+            content: attr(data-label);
+            font-weight: 700;
+            color: #64748b;
+            font-size: 0.6rem;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            text-align: left;
+            flex-shrink: 0;
+        }
+        
+        /* First row (ID) */
+        .logs-table tbody td:first-child {
+            border-bottom: 1px dashed #e2e8f0 !important;
+            padding-bottom: 0.45rem !important;
+            margin-bottom: 0.3rem;
+        }
+        .logs-table tbody td:first-child::before {
+            color: #0d9488;
+            font-size: 0.7rem;
+        }
+        
+        /* Empty / Colspan state */
+        .logs-table tbody td[colspan] {
+            display: block;
+            text-align: center;
+            padding: 1.5rem 0 !important;
+        }
+        .logs-table tbody td[colspan]::before { display: none; }
+
+        .logs-table .badge {
+            font-size: 0.62rem !important;
+            padding: 0.25em 0.5em !important;
+        }
+        .logs-table .badge i { font-size: 0.65rem; }
+        .logs-table code { 
+            font-size: 0.68rem !important; 
+            word-break: break-all; 
+        }
+
+        /* FOOTER (Count + Pagination) */
+        .logs-footer {
+            flex-direction: column !important;
+            align-items: stretch !important;
+            gap: 0.5rem;
+            padding: 0.6rem 0.7rem !important;
+        }
+        .logs-footer small {
+            font-size: 0.7rem !important;
+            text-align: center;
+        }
+        .logs-pagination {
+            display: flex !important;
+            flex-wrap: wrap !important;
+            justify-content: center !important;
+            gap: 3px !important;
+            overflow-x: auto;
+        }
+        .logs-pagination .btn {
+            font-size: 0.7rem !important;
+            padding: 0.25rem 0.5rem !important;
+            min-width: 30px;
+        }
+
+        /* View-only badge */
+        .logs-viewonly-badge .badge {
+            font-size: 0.68rem;
+            padding: 0.35rem 0.6rem !important;
+        }
+    }
+
+    /* Extra small phones */
+    @media (max-width: 374.98px) {
+        .logs-stat-content h6 { font-size: 0.85rem !important; }
+        .logs-stat-content small { font-size: 0.58rem !important; }
+        .logs-stat-icon { font-size: 1rem !important; }
+        .logs-filter-col { flex: 0 0 100% !important; max-width: 100% !important; }
+        .logs-table tbody td { font-size: 0.7rem !important; }
+        .logs-table tbody td::before { font-size: 0.55rem; }
+    }
 </style>
 
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
@@ -238,7 +476,7 @@ let totalPages = 1;
 document.addEventListener('DOMContentLoaded', function() {
     if (logsPermissions.canView) {
         loadLogs();
-        
+
         // Auto-refresh every 30 seconds
         setInterval(() => {
             loadLogs();
@@ -258,22 +496,22 @@ document.addEventListener('DOMContentLoaded', function() {
 
 function loadLogs() {
     if (!logsPermissions.canView) return;
-    
+
     const startDate = document.getElementById('startDate').value;
     const endDate = document.getElementById('endDate').value;
     const logType = document.getElementById('logType').value;
     const search = document.getElementById('searchInput').value;
-    
+
     // Show loading state
     document.getElementById('logsTable').innerHTML = `
-         <tr>
+        <tr>
             <td colspan="7" class="text-center py-4">
                 <div class="spinner-border text-teal" style="color: #0d9488; width: 1.5rem; height: 1.5rem;"></div>
                 <p class="mt-2 mb-0">Loading logs...</p>
-             </td>
-         </tr>
+            </td>
+        </tr>
     `;
-    
+
     fetch(`api/logs.php?action=get_logs&clinic_id=<?php echo $clinic_id; ?>&start_date=${startDate}&end_date=${endDate}&type=${logType}&search=${encodeURIComponent(search)}&page=${currentPage}`)
         .then(async response => {
             const text = await response.text();
@@ -296,23 +534,22 @@ function loadLogs() {
         .catch(error => {
             console.error('Error:', error);
             document.getElementById('logsTable').innerHTML = `<tr><td colspan="7" class="text-center py-4 text-danger"><i class="bi bi-exclamation-triangle me-2"></i>Failed to load logs. Please check if the API is working.</td></tr>`;
-            // Update stats to show zeros
             updateStatistics({ total: 0, login: 0, failed: 0, crud: 0 });
         });
 }
 
 function renderLogsTable(logs) {
     const tbody = document.getElementById('logsTable');
-    
+
     if(!logs || logs.length === 0) {
         tbody.innerHTML = `<tr><td colspan="7" class="text-center py-4 text-muted"><i class="bi bi-journal-x me-2"></i>No activity logs found</td></tr>`;
         return;
     }
-    
+
     tbody.innerHTML = logs.map(log => {
         let badgeClass = 'secondary';
         let badgeIcon = 'bi-info-circle';
-        
+
         // Determine badge style based on action
         const actionLower = (log.action || '').toLowerCase();
         if(actionLower.includes('create') || actionLower.includes('insert')) {
@@ -337,30 +574,31 @@ function renderLogsTable(logs) {
             badgeClass = 'info';
             badgeIcon = 'bi-eye';
         }
-        
+
         // Format timestamp
         let timestamp = log.created_at || log.timestamp;
         if(timestamp) {
             const date = new Date(timestamp);
             timestamp = date.toLocaleString();
         }
-        
+
         // Truncate details if too long
         let details = log.details || log.description || '-';
         if(details.length > 80) details = details.substring(0, 80) + '...';
-        
+
         // Get user name
         const userName = log.user_name || log.user || 'System';
-        
+
+        // data-label for mobile card view
         return `
             <tr>
-                <td class="text-muted small">${log.id}</td>
-                <td class="small">${timestamp}</td>
-                <td><span class="fw-medium">${escapeHtml(userName)}</span><br><small class="text-muted">${log.role || ''}</small></td>
-                <td><span class="badge bg-${badgeClass}"><i class="bi ${badgeIcon} me-1"></i>${log.action || 'N/A'}</span></td>
-                <td><span class="badge bg-light text-dark">${log.table_name || log.module || 'N/A'}</span></td>
-                <td class="small text-muted" title="${escapeHtml(log.details || '')}">${escapeHtml(details)}</td>
-                <td><code class="small">${log.ip_address || '-'}</code></td>
+                <td class="text-muted small" data-label="ID">${log.id}</td>
+                <td class="small" data-label="Timestamp">${timestamp}</td>
+                <td data-label="User"><span class="fw-medium">${escapeHtml(userName)}</span><br><small class="text-muted">${log.role || ''}</small></td>
+                <td data-label="Action"><span class="badge bg-${badgeClass}"><i class="bi ${badgeIcon} me-1"></i>${log.action || 'N/A'}</span></td>
+                <td data-label="Module"><span class="badge bg-light text-dark">${log.table_name || log.module || 'N/A'}</span></td>
+                <td class="small text-muted" title="${escapeHtml(log.details || '')}" data-label="Details">${escapeHtml(details)}</td>
+                <td data-label="IP"><code class="small">${log.ip_address || '-'}</code></td>
             </tr>
         `;
     }).join('');
@@ -378,37 +616,37 @@ function updateStatistics(stats) {
 
 function updatePagination(pagination) {
     if(!pagination) return;
-    
+
     totalPages = pagination.total_pages || 1;
     currentPage = pagination.current_page || 1;
-    
+
     const container = document.getElementById('pagination');
     let html = '';
-    
+
     // Previous button
     html += `<button class="btn btn-sm btn-outline-secondary" onclick="goToPage(${currentPage - 1})" ${currentPage <= 1 ? 'disabled' : ''}><i class="bi bi-chevron-left"></i></button>`;
-    
+
     // Page numbers
     let startPage = Math.max(1, currentPage - 2);
     let endPage = Math.min(totalPages, currentPage + 2);
-    
+
     if(startPage > 1) {
         html += `<button class="btn btn-sm btn-outline-secondary" onclick="goToPage(1)">1</button>`;
         if(startPage > 2) html += `<button class="btn btn-sm btn-outline-secondary disabled">...</button>`;
     }
-    
+
     for(let i = startPage; i <= endPage; i++) {
         html += `<button class="btn btn-sm ${i === currentPage ? 'btn-primary' : 'btn-outline-secondary'}" onclick="goToPage(${i})" style="${i === currentPage ? 'background: #0d9488; border-color: #0d9488;' : ''}">${i}</button>`;
     }
-    
+
     if(endPage < totalPages) {
         if(endPage < totalPages - 1) html += `<button class="btn btn-sm btn-outline-secondary disabled">...</button>`;
         html += `<button class="btn btn-sm btn-outline-secondary" onclick="goToPage(${totalPages})">${totalPages}</button>`;
     }
-    
+
     // Next button
     html += `<button class="btn btn-sm btn-outline-secondary" onclick="goToPage(${currentPage + 1})" ${currentPage >= totalPages ? 'disabled' : ''}><i class="bi bi-chevron-right"></i></button>`;
-    
+
     container.innerHTML = html;
 }
 
@@ -429,18 +667,18 @@ function exportLogs() {
         Swal.fire('Access Denied', 'You don\'t have permission to export logs.', 'warning');
         return;
     }
-    
+
     const startDate = document.getElementById('startDate').value;
     const endDate = document.getElementById('endDate').value;
     const logType = document.getElementById('logType').value;
-    
+
     Swal.fire({
         title: 'Exporting Logs...',
         text: `Exporting ${logType} logs from ${startDate} to ${endDate}`,
         allowOutsideClick: false,
         didOpen: () => Swal.showLoading()
     });
-    
+
     fetch(`api/logs.php?action=export&clinic_id=<?php echo $clinic_id; ?>&start_date=${startDate}&end_date=${endDate}&type=${logType}`)
         .then(res => res.blob())
         .then(blob => {
@@ -452,7 +690,7 @@ function exportLogs() {
             a.click();
             URL.revokeObjectURL(url);
             document.body.removeChild(a);
-            
+
             Swal.fire({
                 icon: 'success',
                 title: 'Export Complete',

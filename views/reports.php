@@ -38,7 +38,6 @@ $start_date = isset($_GET['start_date']) ? $_GET['start_date'] : date('Y-m-d', s
 $end_date   = isset($_GET['end_date'])   ? $_GET['end_date']   : date('Y-m-d');
 ?>
 
-<!-- ───────────────────────────── STYLES ───────────────────────────── -->
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 
@@ -59,14 +58,27 @@ $end_date   = isset($_GET['end_date'])   ? $_GET['end_date']   : date('Y-m-d');
     --shadow-md:  0 4px 24px rgba(0,0,0,.08);
   }
 
-  #rpt-wrapper * { box-sizing: border-box; font-family: 'Plus Jakarta Sans', sans-serif; }
+  /* =======================================================
+     🔑 SUPER CRITICAL FIX: RESET LAHAT NG POSSIBLE OVERFLOW
+     ======================================================= */
+  #rpt-wrapper, 
+  #rpt-wrapper * { 
+    box-sizing: border-box !important; 
+    font-family: 'Plus Jakarta Sans', sans-serif; 
+  }
 
-  /* ── PAGE ── */
-  #rpt-wrapper { background: var(--bg); min-height: 100vh; padding: 24px 28px 48px; }
+  #rpt-wrapper { 
+    background: var(--bg); 
+    min-height: 100vh; 
+    padding: 24px 28px 48px; 
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow-x: hidden; 
+  }
 
   /* ── HEADER ── */
   .rpt-hero { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:24px; }
-  .rpt-hero-left { display:flex; align-items:center; gap:14px; }
+  .rpt-hero-left { display:flex; align-items:center; gap:14px; min-width: 0; flex: 1 1 auto; }
   .rpt-icon-wrap { width:52px; height:52px; border-radius:14px;
     background:linear-gradient(135deg, var(--teal) 0%, var(--teal-dark) 100%);
     display:flex; align-items:center; justify-content:center;
@@ -81,93 +93,190 @@ $end_date   = isset($_GET['end_date'])   ? $_GET['end_date']   : date('Y-m-d');
     border-radius:var(--radius-sm); font-size:12.5px; font-weight:600; cursor:pointer;
     border:1.5px solid; transition:all .2s; text-decoration:none; }
   .btn-export-pdf  { color:#dc2626; border-color:#fca5a5; background:#fff5f5; }
-  .btn-export-pdf:hover  { background:#dc2626; color:#fff; border-color:#dc2626; }
   .btn-export-xlsx { color:#16a34a; border-color:#86efac; background:#f0fdf4; }
-  .btn-export-xlsx:hover { background:#16a34a; color:#fff; border-color:#16a34a; }
 
   /* ── FILTER CARD ── */
   .rpt-filter-card { background:var(--surface); border:1.5px solid var(--border); border-radius:var(--radius);
-    padding:16px 20px; margin-bottom:20px; box-shadow:var(--shadow); }
+    padding:16px 20px; margin-bottom:20px; box-shadow:var(--shadow); width: 100%; min-width: 0; }
   .rpt-filter-grid { display:grid; grid-template-columns:1fr 1fr 1fr auto; gap:12px; align-items:end; }
   .rpt-filter-label { font-size:11.5px; font-weight:600; color:var(--muted); margin-bottom:5px; display:block; }
   .rpt-input { width:100%; padding:8px 12px; border:1.5px solid var(--border); border-radius:var(--radius-sm);
-    font-size:13px; color:var(--ink); font-family:inherit; transition:border-color .2s; background:var(--surface); }
-  .rpt-input:focus { outline:none; border-color:var(--teal); box-shadow:0 0 0 3px rgba(13,148,136,.1); }
+    font-size:13px; color:var(--ink); font-family:inherit; transition:border-color .2s; background:var(--surface); min-width: 0; }
   .btn-apply { display:inline-flex; align-items:center; gap:7px; padding:8px 20px;
     background:var(--teal); color:#fff; border:none; border-radius:var(--radius-sm);
-    font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap; transition:background .2s;
-    font-family:inherit; width:100%; justify-content:center; }
-  .btn-apply:hover { background:var(--teal-dark); }
+    font-size:13px; font-weight:600; cursor:pointer; white-space:nowrap; width:100%; justify-content:center; }
 
   /* ── TABS ── */
-  .rpt-tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:20px; }
+  .rpt-tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:20px; width: 100%; }
   .rpt-tab { display:inline-flex; align-items:center; gap:7px; padding:9px 18px;
     border-radius:var(--radius-sm); font-size:13px; font-weight:600; cursor:pointer;
-    border:none; background:#f1f5f9; color:var(--muted); transition:all .2s; font-family:inherit; }
-  .rpt-tab:hover { background:var(--teal-mid); color:var(--teal-dark); }
+    border:none; background:#f1f5f9; color:var(--muted); transition:all .2s; }
   .rpt-tab.active { background:var(--teal); color:#fff; box-shadow:0 2px 8px rgba(13,148,136,.3); }
 
   /* ── STAT CARDS ── */
-  .rpt-stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px,1fr)); gap:14px; margin-bottom:20px; }
+  .rpt-stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px,1fr)); gap:14px; margin-bottom:20px; width: 100%; }
   .stat-card { background:var(--surface); border:1.5px solid var(--border); border-radius:var(--radius);
-    padding:18px 20px; box-shadow:var(--shadow); display:flex; justify-content:space-between; align-items:flex-start;
-    transition:transform .2s, box-shadow .2s; }
-  .stat-card:hover { transform:translateY(-2px); box-shadow:var(--shadow-md); }
-  .stat-val  { font-size:26px; font-weight:800; color:var(--ink); line-height:1; margin:4px 0; font-family:'JetBrains Mono',monospace; }
+    padding:18px 20px; box-shadow:var(--shadow); display:flex; justify-content:space-between; align-items:flex-start; min-width: 0; }
+  .stat-card > div:first-child { flex:1 1 auto; min-width: 0; }
+  .stat-val  { font-size:26px; font-weight:800; color:var(--ink); line-height:1; margin:4px 0; font-family:'JetBrains Mono',monospace; word-break:break-word; }
   .stat-lbl  { font-size:12px; font-weight:600; color:var(--muted); }
   .stat-sub  { font-size:11px; color:var(--muted); margin-top:3px; }
   .stat-ico  { width:42px; height:42px; border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:18px; flex-shrink:0; }
 
   /* ── CHART CARDS ── */
-  .rpt-row  { display:grid; gap:14px; margin-bottom:14px; }
+  .rpt-row  { display:grid; gap:14px; margin-bottom:14px; width: 100%; min-width: 0; }
   .rpt-row-2 { grid-template-columns:1fr 1fr; }
   .rpt-row-1 { grid-template-columns:1fr; }
   .chart-card { background:var(--surface); border:1.5px solid var(--border); border-radius:var(--radius);
-    box-shadow:var(--shadow); overflow:hidden; }
+    box-shadow:var(--shadow); overflow:hidden; width: 100%; max-width: 100%; min-width: 0; }
   .chart-card-head { padding:14px 18px 10px; border-bottom:1.5px solid var(--border); display:flex; align-items:center; gap:8px; }
   .chart-card-head h6 { margin:0; font-size:13.5px; font-weight:700; color:var(--ink); }
-  .chart-card-body { padding:16px; }
-  .chart-wrap { position:relative; }
+  .chart-card-body { padding:16px; width: 100%; min-width: 0; }
+  .chart-wrap { position:relative; width:100%; height:100%; min-width: 0; }
+  
+  .chart-wrap canvas { max-width: 100% !important; min-width: 0 !important; }
 
-  /* ── TABLE ── */
-  .rpt-table-wrap { overflow:auto; max-height:280px; }
-  .rpt-table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  /* ── TABLE (Base) ── */
+  .rpt-table-wrap { overflow:auto; max-height:280px; width: 100%; max-width: 100%; min-width: 0; }
+  .rpt-table { width:100%; border-collapse:collapse; font-size:12.5px; min-width: 0; }
   .rpt-table thead th { background:var(--teal-light); color:var(--teal-dark); font-size:11px;
-    font-weight:700; text-transform:uppercase; letter-spacing:.05em; padding:10px 14px;
-    border-bottom:1.5px solid var(--teal-mid); position:sticky; top:0; white-space:nowrap; }
-  .rpt-table tbody tr { border-bottom:1px solid var(--border); transition:background .15s; }
-  .rpt-table tbody tr:hover { background:#f8fdfd; }
+    font-weight:700; text-transform:uppercase; padding:10px 14px; border-bottom:1.5px solid var(--teal-mid); white-space:nowrap; }
   .rpt-table tbody td { padding:10px 14px; vertical-align:middle; color:var(--ink-soft); }
   .rpt-table .fw { font-weight:600; color:var(--ink); }
   .rpt-table .money { font-weight:700; color:#10b981; font-family:'JetBrains Mono',monospace; }
   .rpt-badge { display:inline-block; padding:2px 8px; border-radius:20px; font-size:10px; font-weight:700; }
-  .rpt-badge-teal  { background:var(--teal-mid); color:var(--teal-dark); }
   .rpt-badge-blue  { background:#dbeafe; color:#1d4ed8; }
   .rpt-badge-green { background:#dcfce7; color:#15803d; }
   .rpt-badge-red   { background:#fee2e2; color:#dc2626; }
   .rpt-badge-amber { background:#fef3c7; color:#b45309; }
   .rpt-badge-gray  { background:#f1f5f9; color:#475569; }
 
-  /* ── LOADING ── */
-  #rpt-loading { display:none; position:fixed; inset:0; background:rgba(255,255,255,.85);
-    z-index:9999; align-items:center; justify-content:center; flex-direction:column; gap:12px; }
-  .rpt-spinner { width:40px; height:40px; border:4px solid var(--teal-mid); border-top-color:var(--teal);
-    border-radius:50%; animation:rpt-spin .7s linear infinite; }
+  /* ── LOADING & EMPTY ── */
+  #rpt-loading { display:none; position:fixed; inset:0; background:rgba(255,255,255,.85); z-index:9999; align-items:center; justify-content:center; flex-direction:column; gap:12px; }
+  .rpt-spinner { width:40px; height:40px; border:4px solid var(--teal-mid); border-top-color:var(--teal); border-radius:50%; animation:rpt-spin .7s linear infinite; }
   @keyframes rpt-spin { to { transform:rotate(360deg); } }
-
-  /* ── EMPTY ── */
   .rpt-empty { padding:60px 20px; text-align:center; color:var(--muted); }
-  .rpt-empty i { font-size:40px; opacity:.35; display:block; margin-bottom:12px; }
 
-  @media (max-width:768px) {
-    #rpt-wrapper { padding:14px; }
-    .rpt-filter-grid { grid-template-columns:1fr 1fr; }
-    .rpt-row-2 { grid-template-columns:1fr; }
-    .rpt-stats { grid-template-columns:1fr 1fr; }
+  /* ============================================================
+     📱 MOBILE RESPONSIVE (Fix na tugma sa Dashboard)
+     ============================================================ */
+  @media (max-width: 767.98px) {
+    
+    /* 1. I-lock ang container sa exact viewport width */
+    #rpt-wrapper {
+      padding: 12px; 
+      width: 100vw !important; 
+      max-width: 100vw !important; 
+      overflow-x: hidden !important;
+    }
+
+    /* 2. I-force lahat ng direct children na sumunod */
+    #rpt-wrapper > * { 
+      max-width: 100% !important; 
+      box-sizing: border-box !important; 
+    }
+
+    /* Header */
+    .rpt-hero { flex-direction: column; align-items: flex-start; gap: 10px; margin-bottom: 16px; }
+    .rpt-title { font-size: 1.15rem; }
+    .rpt-subtitle { font-size: 0.75rem; }
+    
+    /* Export Buttons (Gawing 2 columns) */
+    .rpt-export-group { 
+      width: 100%; 
+      display: grid; 
+      grid-template-columns: 1fr 1fr; 
+      gap: 8px; 
+    }
+    .btn-export { width: 100%; justify-content: center; font-size: 11px; padding: 8px; }
+
+    /* Filter (Gawing 2 columns) */
+    .rpt-filter-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+    .rpt-filter-card { padding: 12px; }
+    .btn-apply { grid-column: 1 / -1; margin-top: 4px; }
+
+    /* Tabs (Horizontal Scroll) */
+    .rpt-tabs { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 5px; -webkit-overflow-scrolling: touch; }
+    .rpt-tabs::-webkit-scrollbar { display: none; }
+    .rpt-tab { flex: 0 0 auto; padding: 7px 12px; font-size: 11px; }
+
+    /* Stats (Gawing 2 columns) */
+    .rpt-stats { grid-template-columns: 1fr 1fr; gap: 10px; }
+    .stat-card { padding: 10px; }
+    .stat-val { font-size: 15px; word-break: break-all; }
+    .stat-lbl, .stat-sub { font-size: 0.65rem; white-space: normal; line-height: 1.2; }
+    .stat-ico { width: 30px; height: 30px; font-size: 14px; }
+
+    /* Charts (Stack Vertically) */
+    .rpt-row-2 { grid-template-columns: 1fr; }
+    .chart-card-body { padding: 10px; }
+    .chart-wrap canvas { max-height: 200px !important; }
+
+    /* 🔑 TABLES -> CARD VIEW */
+    .rpt-table-wrap { max-height: none; overflow: visible; width: 100% !important; }
+    .rpt-table, .rpt-table tbody, .rpt-table tr, .rpt-table td { 
+      display: block !important; 
+      width: 100% !important; 
+      max-width: 100% !important;
+    }
+    .rpt-table thead { display: none !important; }
+    
+    /* Card Style */
+    .rpt-table tbody tr {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    
+    /* Flex rows (Label + Value) */
+    .rpt-table tbody td {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 5px 0 !important;
+      border: none !important;
+      font-size: 11.5px;
+      text-align: right;
+      word-break: break-word;
+    }
+    
+    /* Data Labels */
+    .rpt-table tbody td::before {
+      content: attr(data-label);
+      font-weight: 700;
+      color: var(--muted);
+      font-size: 9.5px;
+      text-transform: uppercase;
+      text-align: left;
+      margin-right: 10px;
+      flex-shrink: 0;
+    }
+    
+    /* First Row (Title) */
+    .rpt-table tbody td:first-child {
+      border-bottom: 1px dashed var(--border) !important;
+      padding-bottom: 8px !important;
+      margin-bottom: 4px;
+      justify-content: flex-start;
+    }
+    .rpt-table tbody td:first-child::before { display: none; }
+    .rpt-table tbody td:first-child .fw { font-size: 13px; text-align: left; }
+    
+    /* Colspan (Empty state) */
+    .rpt-table tbody td[colspan] { justify-content: center; }
+    .rpt-table tbody td[colspan]::before { display: none; }
   }
-  @media (max-width:480px) {
-    .rpt-filter-grid { grid-template-columns:1fr; }
-    .rpt-stats { grid-template-columns:1fr; }
+
+  @media (max-width: 360px) {
+    .stat-val { font-size: 13px; }
+    .stat-lbl { font-size: 0.6rem; }
+    .rpt-tab { font-size: 10px; padding: 6px 10px; }
+    .chart-wrap canvas { max-height: 160px !important; }
   }
 </style>
 
@@ -185,7 +294,7 @@ $end_date   = isset($_GET['end_date'])   ? $_GET['end_date']   : date('Y-m-d');
     <div class="rpt-hero-left">
       <div class="rpt-icon-wrap"><i class="bi bi-bar-chart-steps"></i></div>
       <div>
-        <div class="rpt-title">Reports & Analytics</div>
+        <div class="rpt-title">Reports & Analyticsss</div>
         <div class="rpt-subtitle">Comprehensive business insights and performance metrics</div>
       </div>
     </div>
@@ -244,23 +353,18 @@ $end_date   = isset($_GET['end_date'])   ? $_GET['end_date']   : date('Y-m-d');
 </div>
 
 <!-- ──────────────────────── SCRIPTS ──────────────────────── -->
-<!-- Chart.js -->
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
-<!-- jsPDF + autoTable for PDF export -->
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/dist/jspdf.plugin.autotable.min.js"></script>
-<!-- SheetJS for Excel export -->
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-<!-- SweetAlert2 -->
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.all.min.js"></script>
 
 <script>
 const rptPerms = { canView: <?= json_encode($canView) ?>, canCreate: <?= json_encode($canCreate) ?> };
 let currentReport = 'sales';
 let charts = {};
-let lastData  = null; // store last fetched data for export
+let lastData  = null;
 
-// ── INIT ────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   if (!rptPerms.canView) {
     document.getElementById('reportContent').innerHTML = `
@@ -318,7 +422,6 @@ function showError(msg) {
     </div>`;
 }
 
-// ── CHART HELPERS ────────────────────────────────────────────
 Chart.defaults.font.family = "'Plus Jakarta Sans', sans-serif";
 Chart.defaults.font.size   = 11;
 Chart.defaults.color       = '#64748b';
@@ -369,7 +472,6 @@ function mkChart(id, cfg) {
   return charts[id];
 }
 
-// ── RENDER ROUTER ────────────────────────────────────────────
 function renderReport(type, data) {
   const c = document.getElementById('reportContent');
   ({ sales:renderSales, patients:renderPatients,
@@ -407,10 +509,10 @@ function renderSales(c, data) {
           <table class="rpt-table">
             <thead><tr><th>Item</th><th>Type</th><th>Qty</th><th>Revenue</th></tr></thead>
             <tbody>${ti.map(r=>`<tr>
-              <td class="fw">${esc(r.item_name)}</td>
-              <td><span class="rpt-badge ${r.item_type==='product'?'rpt-badge-blue':'rpt-badge-green'}">${r.item_type}</span></td>
-              <td>${r.total_quantity}</td>
-              <td class="money">₱${fmt(r.total_revenue)}</td>
+              <td class="fw" data-label="Item">${esc(r.item_name)}</td>
+              <td data-label="Type"><span class="rpt-badge ${r.item_type==='product'?'rpt-badge-blue':'rpt-badge-green'}">${r.item_type}</span></td>
+              <td data-label="Qty">${r.total_quantity}</td>
+              <td class="money" data-label="Revenue">₱${fmt(r.total_revenue)}</td>
             </tr>`).join('')||emptyRow(4)}</tbody>
           </table>
         </div>
@@ -474,7 +576,11 @@ function renderPatients(c, data) {
         <div class="rpt-table-wrap">
           <table class="rpt-table">
             <thead><tr><th>Patient</th><th>Visits</th><th>Total Spent</th></tr></thead>
-            <tbody>${tp.map(r=>`<tr><td class="fw">${esc(r.patient_name)}</td><td>${r.total_visits}</td><td class="money">₱${fmt(r.total_spent)}</td></tr>`).join('')||emptyRow(3)}</tbody>
+            <tbody>${tp.map(r=>`<tr>
+              <td class="fw" data-label="Patient">${esc(r.patient_name)}</td>
+              <td data-label="Visits">${r.total_visits}</td>
+              <td class="money" data-label="Total Spent">₱${fmt(r.total_spent)}</td>
+            </tr>`).join('')||emptyRow(3)}</tbody>
           </table>
         </div>
       </div>
@@ -518,7 +624,12 @@ function renderAppointments(c, data) {
         <div class="rpt-table-wrap">
           <table class="rpt-table">
             <thead><tr><th>Doctor</th><th>Appts</th><th>Completed</th><th>Revenue</th></tr></thead>
-            <tbody>${dr.map(r=>`<tr><td class="fw">${esc(r.doctor_name)}</td><td>${r.total_appointments}</td><td>${r.completed||0}</td><td class="money">₱${fmt(r.revenue_generated||0)}</td></tr>`).join('')||emptyRow(4)}</tbody>
+            <tbody>${dr.map(r=>`<tr>
+              <td class="fw" data-label="Doctor">${esc(r.doctor_name)}</td>
+              <td data-label="Appts">${r.total_appointments}</td>
+              <td data-label="Completed">${r.completed||0}</td>
+              <td class="money" data-label="Revenue">₱${fmt(r.revenue_generated||0)}</td>
+            </tr>`).join('')||emptyRow(4)}</tbody>
           </table>
         </div>
       </div>
@@ -529,7 +640,12 @@ function renderAppointments(c, data) {
         <div class="rpt-table-wrap">
           <table class="rpt-table">
             <thead><tr><th>Item</th><th>Type</th><th>Bookings</th><th>Revenue</th></tr></thead>
-            <tbody>${sv.map(r=>`<tr><td class="fw">${esc(r.item_name)}</td><td><span class="rpt-badge ${r.item_type==='product'?'rpt-badge-blue':'rpt-badge-green'}">${r.item_type}</span></td><td>${r.total_appointments}</td><td class="money">₱${fmt(r.total_payment||0)}</td></tr>`).join('')||emptyRow(4)}</tbody>
+            <tbody>${sv.map(r=>`<tr>
+              <td class="fw" data-label="Item">${esc(r.item_name)}</td>
+              <td data-label="Type"><span class="rpt-badge ${r.item_type==='product'?'rpt-badge-blue':'rpt-badge-green'}">${r.item_type}</span></td>
+              <td data-label="Bookings">${r.total_appointments}</td>
+              <td class="money" data-label="Revenue">₱${fmt(r.total_payment||0)}</td>
+            </tr>`).join('')||emptyRow(4)}</tbody>
           </table>
         </div>
       </div>
@@ -565,7 +681,12 @@ function renderInventory(c, data) {
         <div class="rpt-table-wrap">
           <table class="rpt-table">
             <thead><tr><th>Item</th><th>Category</th><th>Units Sold</th><th>Revenue</th></tr></thead>
-            <tbody>${ts.map(r=>`<tr><td class="fw">${esc(r.name)}</td><td><span class="rpt-badge rpt-badge-gray">${r.category}</span></td><td>${r.units_sold}</td><td class="money">₱${fmt(r.revenue)}</td></tr>`).join('')||emptyRow(4)}</tbody>
+            <tbody>${ts.map(r=>`<tr>
+              <td class="fw" data-label="Item">${esc(r.name)}</td>
+              <td data-label="Category"><span class="rpt-badge rpt-badge-gray">${r.category}</span></td>
+              <td data-label="Units Sold">${r.units_sold}</td>
+              <td class="money" data-label="Revenue">₱${fmt(r.revenue)}</td>
+            </tr>`).join('')||emptyRow(4)}</tbody>
           </table>
         </div>
       </div>
@@ -579,9 +700,12 @@ function renderInventory(c, data) {
           <table class="rpt-table">
             <thead><tr><th>Item Name</th><th>Category</th><th>Stock</th><th>Min</th><th>Status</th><th>Value</th></tr></thead>
             <tbody>${ls.map(r=>`<tr>
-              <td class="fw">${esc(r.name)}</td><td>${r.category}</td><td>${r.stock}</td><td>${r.min_stock}</td>
-              <td><span class="rpt-badge ${r.stock<=0?'rpt-badge-red':'rpt-badge-amber'}">${r.stock<=0?'Out of Stock':'Low Stock'}</span></td>
-              <td class="money">₱${fmt(r.stock*r.selling_price)}</td>
+              <td class="fw" data-label="Item Name">${esc(r.name)}</td>
+              <td data-label="Category">${r.category}</td>
+              <td data-label="Stock">${r.stock}</td>
+              <td data-label="Min">${r.min_stock}</td>
+              <td data-label="Status"><span class="rpt-badge ${r.stock<=0?'rpt-badge-red':'rpt-badge-amber'}">${r.stock<=0?'Out of Stock':'Low Stock'}</span></td>
+              <td class="money" data-label="Value">₱${fmt(r.stock*r.selling_price)}</td>
             </tr>`).join('')||emptyRow(6,'No low stock items')}</tbody>
           </table>
         </div>
@@ -615,7 +739,12 @@ function renderServices(c, data) {
         <div class="rpt-table-wrap">
           <table class="rpt-table">
             <thead><tr><th>Service</th><th>Category</th><th>Rendered</th><th>Revenue</th></tr></thead>
-            <tbody>${ts.map(r=>`<tr><td class="fw">${esc(r.name)}</td><td><span class="rpt-badge rpt-badge-gray">${r.category}</span></td><td>${r.times_rendered}</td><td class="money">₱${fmt(r.revenue)}</td></tr>`).join('')||emptyRow(4)}</tbody>
+            <tbody>${ts.map(r=>`<tr>
+              <td class="fw" data-label="Service">${esc(r.name)}</td>
+              <td data-label="Category"><span class="rpt-badge rpt-badge-gray">${r.category}</span></td>
+              <td data-label="Rendered">${r.times_rendered}</td>
+              <td class="money" data-label="Revenue">₱${fmt(r.revenue)}</td>
+            </tr>`).join('')||emptyRow(4)}</tbody>
           </table>
         </div>
       </div>
@@ -666,14 +795,12 @@ function exportReport(type) {
   }
 }
 
-// ── PDF Export ────────────────────────────────────────────────
 function exportPDF(title, startDate, endDate) {
   Swal.fire({ title:'Generating PDF…', allowOutsideClick:false, didOpen:()=>Swal.showLoading() });
 
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation:'portrait', unit:'mm', format:'a4' });
 
-  // Header
   doc.setFillColor(13, 148, 136);
   doc.rect(0, 0, 210, 28, 'F');
   doc.setTextColor(255, 255, 255);
@@ -707,7 +834,6 @@ function exportPDF(title, startDate, endDate) {
   const d = lastData;
   const s = d.summary || {};
 
-  // Summary section
   const summaryRows = buildSummaryRows(s);
   writeSection('Summary', summaryRows, ['Metric','Value']);
 
@@ -735,7 +861,6 @@ function exportPDF(title, startDate, endDate) {
       break;
   }
 
-  // Footer
   const pages = doc.internal.getNumberOfPages();
   for (let i=1;i<=pages;i++){
     doc.setPage(i);
@@ -748,7 +873,6 @@ function exportPDF(title, startDate, endDate) {
   Swal.fire({ icon:'success', title:'PDF Downloaded!', timer:2000, showConfirmButton:false });
 }
 
-// ── Excel Export ───────────────────────────────────────────────
 function exportExcel(title, startDate, endDate) {
   Swal.fire({ title:'Generating Excel…', allowOutsideClick:false, didOpen:()=>Swal.showLoading() });
 
@@ -756,7 +880,6 @@ function exportExcel(title, startDate, endDate) {
   const d  = lastData;
   const s  = d.summary || {};
 
-  // Sheet 1 — Summary
   const summaryData = [
     ['EyeCore PH — ' + title],
     ['Period: ' + startDate + ' to ' + endDate],
@@ -769,7 +892,6 @@ function exportExcel(title, startDate, endDate) {
   wsSummary['!cols'] = [{ wch:30 },{ wch:20 }];
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Summary');
 
-  // Report-specific sheets
   switch (currentReport) {
     case 'sales':
       appendSheet(wb, 'Top Items',       ['Item','Type','Quantity','Revenue'],
@@ -818,7 +940,6 @@ function appendSheet(wb, name, headers, rows) {
   const data = [headers, ...rows];
   const ws   = XLSX.utils.aoa_to_sheet(data);
   ws['!cols'] = headers.map(() => ({ wch:20 }));
-  // Bold header row styling (SheetJS CE doesn't support full styling, but sets col widths)
   XLSX.utils.book_append_sheet(wb, ws, name.substring(0,31));
 }
 

@@ -6,18 +6,15 @@ if (session_status() === PHP_SESSION_NONE) {
 
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../include/RBACHelper.php';
-require_once __DIR__ . '/../include/SubscriptionHelper.php';  // ✅ IDAGDAG ITO!
+require_once __DIR__ . '/../include/SubscriptionHelper.php';
 
-// ✅ Initialize RBACHelper
 RBACHelper::init($pdo);
 
-// ✅ SUBSCRIPTION CHECK - Supply Chain module (Professional or Enterprise plan required)
 $subHelper = new SubscriptionHelper($pdo, $_SESSION['clinic_id']);
 if (!$subHelper->canAccessModule('supply_chain')) {
     header('Location: ../views/subscription.php');
     exit;
 }
-
 
 if (isset($_SESSION['user_id']) && isset($_SESSION['clinic_id']) && !isset($_SESSION['permissions'])) {
     RBACHelper::loadPermissionsToSession($_SESSION['user_id'], $_SESSION['clinic_id']);
@@ -59,7 +56,6 @@ $categories = [];
 $suppliers  = [];
 
 try {
-    // GLOBAL stats — no clinic_id filter
     $statsQuery = $pdo->query("
         SELECT 
             COUNT(*) as total,
@@ -70,7 +66,6 @@ try {
     $statsRow = $statsQuery->fetch(PDO::FETCH_ASSOC);
     $stats    = array_merge($stats, $statsRow);
 
-    // GLOBAL categories — no clinic_id filter
     $catQuery = $pdo->query("
         SELECT DISTINCT category FROM supplier_products 
         WHERE category IS NOT NULL AND category != ''
@@ -82,7 +77,6 @@ try {
     ");
     $categories = $catQuery->fetchAll(PDO::FETCH_COLUMN);
 
-    // GLOBAL suppliers — no clinic_id filter
     $supplierQuery = $pdo->query("
         SELECT s.*,
                (SELECT COUNT(*) FROM supplier_products WHERE supplier_id = s.id) as product_count
@@ -95,12 +89,32 @@ try {
     $categories = ['Frames', 'Lenses', 'Contact Lenses', 'Accessories', 'Others'];
     $suppliers  = [];
 }
+
+// Helper function — lahat ng supplier "Open now" para sa demo
+function isSupplierOpen($supplier) {
+    // Static: lahat ng suppliers ay "Open" for demo purposes
+    // TODO: Gawing dynamic sa production base sa business hours
+    return true;
+}
+
+// Helper function para sa random image (placeholder)
+function getSupplierImage($supplierId) {
+    $images = [
+        'https://images.unsplash.com/photo-1580281658223-9b93f18ae9ae?w=600&h=400&fit=crop',
+        'https://images.unsplash.com/photo-1574258495973-f010dfbb5371?w=600&h=400&fit=crop',
+        'https://images.unsplash.com/photo-1577803645773-f96470509666?w=600&h=400&fit=crop',
+        'https://images.unsplash.com/photo-1509695507497-903c140c43b0?w=600&h=400&fit=crop',
+        'https://images.unsplash.com/photo-1591076482161-42ce6da69f67?w=600&h=400&fit=crop',
+        'https://images.unsplash.com/photo-1556306535-0f09a537f0a3?w=600&h=400&fit=crop',
+    ];
+    return $images[$supplierId % count($images)];
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
     <title>Supplier Directory - EyeCore</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
@@ -109,18 +123,27 @@ try {
             --primary: #008080;
             --primary-dark: #006666;
             --primary-light: #e6f3f3;
+            --success: #10b981;
+            --danger: #ef4444;
+            --warning: #f59e0b;
         }
+
+        * { box-sizing: border-box; }
 
         body {
             background: #f8fafc;
             font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            -webkit-font-smoothing: antialiased;
         }
 
+        /* ============================================
+           HERO SECTION
+        ============================================ */
         .hero-section {
             background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
-            border-radius: 32px;
-            padding: 48px 40px;
-            margin-bottom: 40px;
+            border-radius: 20px;
+            padding: 32px 24px;
+            margin-bottom: 24px;
             position: relative;
             overflow: hidden;
         }
@@ -132,7 +155,7 @@ try {
             right: -20%;
             width: 300px;
             height: 300px;
-            background: rgba(255,255,255,0.1);
+            background: rgba(255,255,255,0.08);
             border-radius: 50%;
         }
 
@@ -143,45 +166,94 @@ try {
             left: -10%;
             width: 200px;
             height: 200px;
-            background: rgba(255,255,255,0.1);
+            background: rgba(255,255,255,0.08);
             border-radius: 50%;
         }
 
         .hero-title {
-            font-size: 2.5rem;
+            font-size: 1.75rem;
             font-weight: 700;
             color: white;
-            margin-bottom: 12px;
+            margin-bottom: 6px;
             position: relative;
             z-index: 1;
         }
 
         .hero-subtitle {
-            font-size: 1rem;
-            color: rgba(255,255,255,0.9);
+            font-size: 0.95rem;
+            color: rgba(255,255,255,0.85);
             margin-bottom: 0;
             position: relative;
             z-index: 1;
         }
 
-        .search-wrapper {
-            max-width: 500px;
+        .hero-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
             position: relative;
             z-index: 1;
+            margin-top: 20px;
+        }
+
+        .hero-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: white;
+            color: var(--primary);
+            padding: 11px 22px;
+            border-radius: 50px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            text-decoration: none;
+            border: none;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .hero-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.15);
+            color: var(--primary);
+        }
+
+        .hero-btn-outline {
+            background: transparent;
+            color: white;
+            border: 2px solid rgba(255,255,255,0.4);
+            box-shadow: none;
+        }
+
+        .hero-btn-outline:hover {
+            background: rgba(255,255,255,0.15);
+            color: white;
+            border-color: white;
+        }
+
+        /* ============================================
+           SEARCH BAR
+        ============================================ */
+        .search-wrapper {
+            position: relative;
+            margin-bottom: 20px;
         }
 
         .search-input {
+            width: 100%;
             border-radius: 50px;
-            border: none;
+            border: 1.5px solid #e2e8f0;
             padding: 14px 20px 14px 48px;
             font-size: 0.95rem;
-            width: 100%;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            background: white;
+            transition: all 0.2s;
         }
 
         .search-input:focus {
             outline: none;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            border-color: var(--primary);
+            box-shadow: 0 0 0 4px rgba(0,128,128,0.1);
         }
 
         .search-icon {
@@ -191,154 +263,23 @@ try {
             transform: translateY(-50%);
             color: #94a3b8;
             font-size: 1.1rem;
+            pointer-events: none;
         }
 
-        .categories-wrapper {
-            margin-bottom: 32px;
-            overflow-x: auto;
-            white-space: nowrap;
-            padding-bottom: 8px;
-            scrollbar-width: thin;
-        }
-
-        .categories-wrapper::-webkit-scrollbar { height: 4px; }
-        .categories-wrapper::-webkit-scrollbar-track { background: #e2e8f0; border-radius: 10px; }
-        .categories-wrapper::-webkit-scrollbar-thumb { background: var(--primary); border-radius: 10px; }
-
-        .category-pill {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            background: white;
-            border: 1px solid #e2e8f0;
-            padding: 10px 24px;
-            border-radius: 50px;
-            cursor: pointer;
-            transition: all 0.2s;
-            font-size: 0.9rem;
-            font-weight: 500;
-            color: #475569;
-            margin-right: 12px;
-        }
-
-        .category-pill i { font-size: 1rem; }
-
-        .category-pill:hover {
-            border-color: var(--primary);
-            color: var(--primary);
-            transform: translateY(-2px);
-        }
-
-        .category-pill.active {
-            background: var(--primary);
-            border-color: var(--primary);
-            color: white;
-        }
-
-        .supplier-card {
-            background: white;
-            border-radius: 24px;
-            border: 1px solid #eef2f6;
-            overflow: hidden;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-            cursor: pointer;
-            height: 100%;
-        }
-
-        .supplier-card:hover {
-            transform: translateY(-8px);
-            box-shadow: 0 20px 40px rgba(0,0,0,0.08);
-            border-color: transparent;
-        }
-
-        .supplier-image {
-            background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-            height: 160px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            position: relative;
-        }
-
-        .supplier-logo {
-            width: 80px;
-            height: 80px;
-            background: white;
-            border-radius: 20px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            box-shadow: 0 8px 20px rgba(0,0,0,0.05);
-        }
-
-        .supplier-logo i { font-size: 40px; color: var(--primary); }
-
-        .supplier-badge {
-            position: absolute;
-            top: 12px;
-            right: 12px;
-            background: rgba(255,255,255,0.95);
-            backdrop-filter: blur(4px);
-            padding: 4px 12px;
-            border-radius: 30px;
-            font-size: 0.7rem;
-            font-weight: 600;
-            color: #10b981;
-        }
-
-        .supplier-content { padding: 20px; }
-
-        .supplier-name {
-            font-size: 1.1rem;
-            font-weight: 700;
-            margin-bottom: 6px;
-            color: #0f172a;
-        }
-
-        .supplier-category {
-            display: inline-block;
-            padding: 4px 12px;
-            background: var(--primary-light);
-            color: var(--primary);
-            border-radius: 30px;
-            font-size: 0.7rem;
-            font-weight: 600;
-            margin-bottom: 12px;
-        }
-
-        .rating-stars {
-            color: #fbbf24;
-            font-size: 0.85rem;
-            letter-spacing: 2px;
-            margin-bottom: 12px;
-        }
-
-        .rating-text { font-size: 0.7rem; color: #64748b; margin-left: 6px; }
-
-        .info-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 8px;
-            font-size: 0.75rem;
-            color: #475569;
-        }
-
-        .info-item i { width: 18px; color: var(--primary); font-size: 0.8rem; }
-
-        .product-count {
-            margin-top: 12px;
-            padding-top: 12px;
-            border-top: 1px solid #eef2f6;
-            font-size: 0.7rem;
-            color: var(--primary);
-            font-weight: 500;
+        /* ============================================
+           STATS CARDS
+        ============================================ */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            margin-bottom: 24px;
         }
 
         .stat-card {
             background: white;
-            border-radius: 20px;
-            padding: 20px;
+            border-radius: 16px;
+            padding: 18px 20px;
             border: 1px solid #eef2f6;
             transition: all 0.2s;
         }
@@ -348,10 +289,316 @@ try {
             box-shadow: 0 8px 20px rgba(0,0,0,0.04);
         }
 
-        .stat-value { font-size: 28px; font-weight: 700; color: #0f172a; }
-        .stat-label { font-size: 13px; color: #64748b; font-weight: 500; }
+        .stat-value {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: #0f172a;
+            line-height: 1;
+            margin-bottom: 6px;
+        }
 
-        .modal-content-custom { border-radius: 24px; overflow: hidden; }
+        .stat-label {
+            font-size: 0.8rem;
+            color: #64748b;
+            font-weight: 500;
+        }
+
+        /* ============================================
+           CATEGORY PILLS (Shopee-style)
+        ============================================ */
+        .categories-wrapper {
+            margin-bottom: 20px;
+            overflow-x: auto;
+            white-space: nowrap;
+            padding-bottom: 8px;
+            scrollbar-width: thin;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .categories-wrapper::-webkit-scrollbar { height: 4px; }
+        .categories-wrapper::-webkit-scrollbar-track { background: #e2e8f0; border-radius: 10px; }
+        .categories-wrapper::-webkit-scrollbar-thumb { background: var(--primary); border-radius: 10px; }
+
+        .category-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: white;
+            border: 1.5px solid #e2e8f0;
+            padding: 9px 18px;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: #475569;
+            margin-right: 8px;
+            white-space: nowrap;
+        }
+
+        .category-pill:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+        }
+
+        .category-pill.active {
+            background: var(--primary);
+            border-color: var(--primary);
+            color: white;
+        }
+
+        /* ============================================
+           SUPPLIER CARDS (Shopee-style)
+        ============================================ */
+        .suppliers-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 20px;
+        }
+
+        .supplier-card {
+            background: white;
+            border-radius: 16px;
+            overflow: hidden;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+            transition: all 0.3s;
+            cursor: pointer;
+            border: 1px solid #eef2f6;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+
+        .supplier-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 12px 28px rgba(0,0,0,0.1);
+            border-color: transparent;
+        }
+
+        /* Supplier Image */
+        .supplier-img-wrap {
+            position: relative;
+            width: 100%;
+            height: 160px;
+            overflow: hidden;
+            background: #f1f5f9;
+        }
+
+        .supplier-img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transition: transform 0.4s;
+        }
+
+        .supplier-card:hover .supplier-img {
+            transform: scale(1.05);
+        }
+
+        /* Status Badge (top-left) */
+        .status-badge {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            padding: 5px 12px;
+            border-radius: 50px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            color: white;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        }
+
+        .status-badge.open {
+            background: var(--success);
+        }
+
+        .status-badge.closed {
+            background: var(--danger);
+        }
+
+        .status-badge::before {
+            content: '';
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: white;
+        }
+
+        /* Rating Badge (top-right) */
+        .rating-badge {
+            position: absolute;
+            top: 12px;
+            right: 12px;
+            background: white;
+            padding: 5px 10px;
+            border-radius: 50px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            color: #0f172a;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }
+
+        .rating-badge i {
+            color: var(--warning);
+            font-size: 0.85rem;
+        }
+
+        /* Card Body */
+        .supplier-body {
+            padding: 16px;
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .supplier-name {
+            font-size: 1rem;
+            font-weight: 700;
+            color: #0f172a;
+            margin-bottom: 10px;
+            line-height: 1.3;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+
+        .supplier-info {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .info-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.82rem;
+            color: #64748b;
+        }
+
+        .info-row i {
+            color: var(--primary);
+            font-size: 0.9rem;
+            flex-shrink: 0;
+            width: 16px;
+        }
+
+        .info-row-text {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .info-row.highlight {
+            color: #0f172a;
+            font-weight: 500;
+        }
+
+        .hours-open { color: var(--success); }
+        .hours-closed { color: var(--danger); }
+
+        /* Product count */
+        .product-count {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.78rem;
+            color: var(--primary);
+            font-weight: 600;
+            padding: 8px 0;
+            border-top: 1px solid #f1f5f9;
+            margin-top: auto;
+        }
+
+        /* Card Actions */
+        .supplier-actions {
+            padding: 12px 16px;
+            background: #fafbfc;
+            border-top: 1px solid #f1f5f9;
+            display: flex;
+            gap: 8px;
+        }
+
+        .btn-action {
+            flex: 1;
+            padding: 10px 12px;
+            border-radius: 50px;
+            font-size: 0.82rem;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            transition: all 0.2s;
+            text-decoration: none;
+        }
+
+        .btn-view {
+            background: var(--primary);
+            color: white;
+        }
+
+        .btn-view:hover {
+            background: var(--primary-dark);
+            color: white;
+            transform: translateY(-1px);
+        }
+
+        .btn-contact {
+            background: white;
+            color: #475569;
+            border: 1.5px solid #e2e8f0;
+        }
+
+        .btn-contact:hover {
+            border-color: var(--primary);
+            color: var(--primary);
+            transform: translateY(-1px);
+        }
+
+        /* ============================================
+           EMPTY STATE
+        ============================================ */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            grid-column: 1 / -1;
+        }
+
+        .empty-state i {
+            font-size: 64px;
+            color: #cbd5e1;
+            margin-bottom: 20px;
+            display: block;
+        }
+
+        .empty-state h5 {
+            color: #475569;
+            margin-bottom: 8px;
+        }
+
+        .empty-state p {
+            color: #94a3b8;
+        }
+
+        /* ============================================
+           MODAL (Shopee-style)
+        ============================================ */
+        .modal-content-custom {
+            border-radius: 20px;
+            overflow: hidden;
+            border: none;
+        }
 
         .modal-header-custom {
             background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
@@ -368,93 +615,160 @@ try {
             display: flex;
             align-items: center;
             justify-content: center;
+            flex-shrink: 0;
         }
 
-        .modal-supplier-logo i { font-size: 30px; color: var(--primary); }
+        .modal-supplier-logo i {
+            font-size: 30px;
+            color: var(--primary);
+        }
 
-        .empty-state { text-align: center; padding: 60px 20px; }
-        .empty-state i { font-size: 64px; color: #cbd5e1; margin-bottom: 20px; display: block; }
-        .empty-state h5 { color: #475569; margin-bottom: 8px; }
-        .empty-state p { color: #94a3b8; }
+        /* ============================================
+           RESPONSIVE (Mobile-first)
+        ============================================ */
+        @media (max-width: 992px) {
+            .suppliers-grid {
+                grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+                gap: 16px;
+            }
+        }
 
+        @media (max-width: 768px) {
+            .hero-section {
+                padding: 24px 20px;
+                border-radius: 16px;
+            }
+
+            .hero-title {
+                font-size: 1.4rem;
+            }
+
+            .hero-subtitle {
+                font-size: 0.85rem;
+            }
+
+            .hero-actions {
+                flex-direction: column;
+            }
+
+            .hero-btn {
+                width: 100%;
+                justify-content: center;
+            }
+
+            .stats-row {
+                grid-template-columns: 1fr;
+                gap: 10px;
+            }
+
+            .stat-card {
+                padding: 14px 16px;
+            }
+
+            .stat-value {
+                font-size: 1.4rem;
+            }
+
+            .suppliers-grid {
+                grid-template-columns: 1fr;
+                gap: 14px;
+            }
+
+            .supplier-img-wrap {
+                height: 140px;
+            }
+
+            .category-pill {
+                padding: 8px 14px;
+                font-size: 0.8rem;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .supplier-card {
+                border-radius: 12px;
+            }
+
+            .supplier-name {
+                font-size: 0.95rem;
+            }
+
+            .info-row {
+                font-size: 0.78rem;
+            }
+
+            .btn-action {
+                font-size: 0.75rem;
+                padding: 9px 10px;
+            }
+
+            .status-badge, .rating-badge {
+                font-size: 0.65rem;
+                padding: 4px 9px;
+            }
+        }
+
+        /* Permission Badge */
         .permission-badge {
             position: fixed;
             bottom: 20px;
             right: 20px;
             background: var(--primary);
             color: white;
-            padding: 5px 12px;
-            border-radius: 20px;
+            padding: 6px 14px;
+            border-radius: 50px;
             font-size: 11px;
+            font-weight: 600;
             z-index: 9999;
-            opacity: 0.7;
-        }
-
-        @media (max-width: 768px) {
-            .hero-section { padding: 32px 24px; }
-            .hero-title { font-size: 1.75rem; }
+            opacity: 0.85;
+            box-shadow: 0 4px 12px rgba(0,128,128,0.3);
         }
     </style>
 </head>
 <body>
 
-<div class="container px-4 py-4">
+<div class="container px-3 px-md-4 py-4">
 
-    <!-- Hero Section -->
+    <!-- HERO SECTION -->
     <div class="hero-section">
-        <div class="row align-items-center">
-            <div class="col-lg-7 mb-4 mb-lg-0">
-                <h1 class="hero-title">Find Your Perfect Supplier</h1>
-                <p class="hero-subtitle">Discover trusted partners for frames, lenses, and more</p>
-            </div>
-            <div class="col-lg-5">
-                <div class="search-wrapper">
-                    <i class="bi bi-search search-icon"></i>
-                    <input type="text" id="searchInput" class="search-input"
-                           placeholder="Search suppliers by name or location...">
-                </div>
-            </div>
+        <h1 class="hero-title">Find Your Perfect Supplier</h1>
+        <p class="hero-subtitle">Discover trusted partners for frames, lenses, and more</p>
+
+        <!-- Actions -->
+        <div class="hero-actions">
+            <a href="main.php?view=purchase_orders" class="hero-btn">
+                <i class="bi bi-box-seam"></i> My Orders
+            </a>
+            <a href="main.php?view=select_products" class="hero-btn hero-btn-outline">
+                <i class="bi bi-grid-3x3-gap"></i> Browse All Products
+            </a>
         </div>
     </div>
 
-    <!-- Stats Cards -->
-    <div class="row g-3 mb-4">
-        <div class="col-md-4">
-            <div class="stat-card">
-                <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <div class="stat-value"><?php echo (int)$stats['total']; ?></div>
-                        <div class="stat-label">Total Suppliers</div>
-                    </div>
-                    <i class="bi bi-shop fs-2 text-muted opacity-50"></i>
-                </div>
-            </div>
+    <!-- SEARCH BAR -->
+    <div class="search-wrapper">
+        <i class="bi bi-search search-icon"></i>
+        <input type="text" id="searchInput" class="search-input"
+               placeholder="Search suppliers by name or location...">
+    </div>
+
+    <!-- STATS CARDS -->
+    <div class="stats-row">
+        <div class="stat-card">
+            <div class="stat-value"><?php echo (int)$stats['total']; ?></div>
+            <div class="stat-label"><i class="bi bi-shop me-1"></i>Total Suppliers</div>
         </div>
-        <div class="col-md-4">
-            <div class="stat-card">
-                <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <div class="stat-value text-success"><?php echo (int)$stats['active']; ?></div>
-                        <div class="stat-label">Active Partners</div>
-                    </div>
-                    <i class="bi bi-check-circle-fill fs-2 text-success opacity-50"></i>
-                </div>
-            </div>
+        <div class="stat-card">
+            <div class="stat-value" style="color: var(--success);"><?php echo (int)$stats['active']; ?></div>
+            <div class="stat-label"><i class="bi bi-check-circle me-1"></i>Active Partners</div>
         </div>
-        <div class="col-md-4">
-            <div class="stat-card">
-                <div class="d-flex justify-content-between align-items-center">
-                    <div>
-                        <div class="stat-value text-warning"><?php echo (int)$stats['top_rated']; ?></div>
-                        <div class="stat-label">Top Rated</div>
-                    </div>
-                    <i class="bi bi-star-fill fs-2 text-warning opacity-50"></i>
-                </div>
-            </div>
+        <div class="stat-card">
+            <div class="stat-value" style="color: var(--warning);"><?php echo (int)$stats['top_rated']; ?></div>
+            <div class="stat-label"><i class="bi bi-star me-1"></i>Top Rated</div>
         </div>
     </div>
 
-    <!-- Category Pills -->
+    <!-- CATEGORY PILLS -->
     <div class="categories-wrapper">
         <div class="category-pill active" data-category="all">
             <i class="bi bi-grid-3x3-gap-fill"></i> All
@@ -467,115 +781,137 @@ try {
         <?php endforeach; ?>
     </div>
 
-    <!-- Supplier Grid -->
-    <div class="row g-4" id="suppliersGrid">
+    <!-- SUPPLIER GRID -->
+    <div class="suppliers-grid" id="suppliersGrid">
         <?php if (empty($suppliers)): ?>
-            <div class="col-12">
-                <div class="empty-state">
-                    <i class="bi bi-shop"></i>
-                    <h5>No Suppliers Found</h5>
-                    <p>Check back later for new partners</p>
-                </div>
+            <div class="empty-state">
+                <i class="bi bi-shop"></i>
+                <h5>No Suppliers Found</h5>
+                <p>Check back later for new partners</p>
             </div>
         <?php else: ?>
             <?php foreach ($suppliers as $supplier):
                 $ratingRaw    = !empty($supplier['average_rating']) ? (float)$supplier['average_rating']
                               : (!empty($supplier['rating'])        ? (float)$supplier['rating'] : 3);
                 $rating       = max(0, min(5, $ratingRaw));
-                $fullStars    = (int)floor($rating);
-                $halfStar     = ($rating - $fullStars) >= 0.5;
-                $emptyStars   = 5 - $fullStars - ($halfStar ? 1 : 0);
                 $cardCategory = strtolower($supplier['category'] ?? 'general');
+                $isOpen       = isSupplierOpen($supplier);
+                $imageUrl     = getSupplierImage($supplier['id']);
+                $productCount = (int)($supplier['product_count'] ?? 0);
             ?>
-            <div class="col-md-6 col-lg-4 supplier-item"
+            <div class="supplier-item"
                  data-name="<?php echo strtolower(htmlspecialchars($supplier['supplier_name'])); ?>"
                  data-category="<?php echo htmlspecialchars($cardCategory); ?>"
                  data-city="<?php echo strtolower(htmlspecialchars($supplier['city'] ?? '')); ?>">
-                <div class="supplier-card" onclick="viewSupplierDetails(<?php echo (int)$supplier['id']; ?>)">
-                    <div class="supplier-image">
-                        <div class="supplier-logo">
-                            <i class="bi bi-building"></i>
+                <div class="supplier-card">
+                    
+                    <!-- IMAGE with badges -->
+                    <div class="supplier-img-wrap"
+                         onclick="viewSupplierDetails(<?php echo (int)$supplier['id']; ?>)">
+                        <img src="<?php echo $imageUrl; ?>" 
+                             alt="<?php echo htmlspecialchars($supplier['supplier_name']); ?>"
+                             class="supplier-img"
+                             onerror="this.src='https://via.placeholder.com/600x400/e6f3f3/008080?text=Supplier'">
+                        
+<!-- Status Badge — Always Open for demo -->
+<div class="status-badge open">
+    Open now
+</div>
+                        <!-- Rating Badge -->
+                        <div class="rating-badge">
+                            <i class="bi bi-star-fill"></i>
+                            <?php echo number_format($rating, 1); ?>
+                            <span style="color:#94a3b8;font-weight:500;font-size:0.65rem;">
+                                (<?php echo (int)($supplier['total_reviews'] ?? 0); ?>)
+                            </span>
                         </div>
-                        <?php if (($supplier['status'] ?? '') === 'Active'): ?>
-                            <div class="supplier-badge">
-                                <i class="bi bi-check-circle-fill"></i> Active
-                            </div>
-                        <?php endif; ?>
                     </div>
-                    <div class="supplier-content">
-                        <h3 class="supplier-name"><?php echo htmlspecialchars($supplier['supplier_name']); ?></h3>
 
-                        <?php if (!empty($supplier['category'])): ?>
-                            <div class="supplier-category">
-                                <i class="bi bi-tag"></i> <?php echo htmlspecialchars($supplier['category']); ?>
-                            </div>
-                        <?php endif; ?>
-
-                        <div class="rating-stars">
-                            <?php for ($i = 0; $i < $fullStars; $i++): ?>
-                                <i class="bi bi-star-fill"></i>
-                            <?php endfor; ?>
-                            <?php if ($halfStar): ?>
-                                <i class="bi bi-star-half"></i>
-                            <?php endif; ?>
-                            <?php for ($i = 0; $i < $emptyStars; $i++): ?>
-                                <i class="bi bi-star"></i>
-                            <?php endfor; ?>
-                            <span class="rating-text">(<?php echo number_format($rating, 1); ?>)</span>
+                    <!-- BODY -->
+                    <div class="supplier-body">
+                        <div class="supplier-name"
+                             onclick="viewSupplierDetails(<?php echo (int)$supplier['id']; ?>)">
+                            <?php echo htmlspecialchars($supplier['supplier_name']); ?>
                         </div>
 
-                        <?php if (!empty($supplier['contact_person'])): ?>
-                            <div class="info-item">
-                                <i class="bi bi-person"></i>
-                                <span><?php echo htmlspecialchars($supplier['contact_person']); ?></span>
-                            </div>
-                        <?php endif; ?>
+                        <div class="supplier-info">
+                            <!-- Location -->
+                            <?php if (!empty($supplier['city'])): ?>
+                                <div class="info-row">
+                                    <i class="bi bi-geo-alt-fill"></i>
+                                    <span class="info-row-text">
+                                        <?php echo htmlspecialchars($supplier['city']); ?>
+                                        <?php if (!empty($supplier['state'])): ?>
+                                            , <?php echo htmlspecialchars($supplier['state']); ?>
+                                        <?php endif; ?>
+                                    </span>
+                                </div>
+                            <?php endif; ?>
 
-                        <?php if (!empty($supplier['city'])): ?>
-                            <div class="info-item">
-                                <i class="bi bi-geo-alt"></i>
-                                <span><?php echo htmlspecialchars($supplier['city']); ?></span>
-                            </div>
-                        <?php endif; ?>
+<!-- Business Hours — Static -->
+<div class="info-row">
+    <i class="bi bi-clock-fill"></i>
+    <span class="info-row-text">
+        8:00 AM - 8:00 PM
+        <span class="ms-1 hours-open">• Open</span>
+    </span>
+</div>
 
-                        <?php
-                        $phone = !empty($supplier['phone'])  ? $supplier['phone']
-                               : (!empty($supplier['mobile']) ? $supplier['mobile'] : '');
-                        ?>
-                        <?php if ($phone): ?>
-                            <div class="info-item">
-                                <i class="bi bi-telephone"></i>
-                                <span><?php echo htmlspecialchars($phone); ?></span>
-                            </div>
-                        <?php endif; ?>
+                            <!-- Category -->
+                            <?php if (!empty($supplier['category'])): ?>
+                                <div class="info-row">
+                                    <i class="bi bi-tag-fill"></i>
+                                    <span class="info-row-text"><?php echo htmlspecialchars($supplier['category']); ?></span>
+                                </div>
+                            <?php endif; ?>
+                        </div>
 
-                        <?php if (!empty($supplier['product_count']) && $supplier['product_count'] > 0): ?>
-                            <div class="product-count">
-                                <i class="bi bi-box-seam"></i> <?php echo (int)$supplier['product_count']; ?> products available
-                            </div>
-                        <?php endif; ?>
+                        <!-- Product Count -->
+                        <div class="product-count">
+                            <i class="bi bi-box-seam-fill"></i>
+                            <?php echo $productCount; ?> 
+                            <?php echo $productCount === 1 ? 'product' : 'products'; ?> available
+                        </div>
+                    </div>
+
+                    <!-- ACTIONS -->
+                    <div class="supplier-actions">
+                        <button class="btn-action btn-view"
+                                onclick="event.stopPropagation(); viewSupplierProducts(<?php echo (int)$supplier['id']; ?>)">
+                            <i class="bi bi-grid"></i> View Products
+                        </button>
+                        <button class="btn-action btn-contact"
+                                onclick="event.stopPropagation(); viewSupplierDetails(<?php echo (int)$supplier['id']; ?>)">
+                            <i class="bi bi-telephone"></i> Contact
+                        </button>
                     </div>
                 </div>
             </div>
             <?php endforeach; ?>
         <?php endif; ?>
     </div>
+
+    <!-- Empty state message para sa filter -->
+    <div id="emptyStateMessage" style="display:none;">
+        <div class="empty-state">
+            <i class="bi bi-search"></i>
+            <h5>No suppliers found</h5>
+            <p>Try adjusting your search or category filter</p>
+        </div>
+    </div>
+
 </div>
 
 <!-- Supplier Details Modal -->
 <div class="modal fade" id="supplierDetailsModal" tabindex="-1">
-    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable modal-dialog-centered">
         <div class="modal-content modal-content-custom">
             <div id="supplierModalContent"></div>
         </div>
     </div>
 </div>
 
-<!-- Permission Badge -->
-<div class="permission-badge">
-    <i class="bi bi-shield-check"></i>
-    <?php echo $canView ? 'View Only' : 'No Access'; ?>
-</div>
+
 
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
@@ -613,6 +949,7 @@ $(document).ready(function () {
 
 function filterSuppliers() {
     const searchTerm = $('#searchInput').val().toLowerCase().trim();
+    let visibleCount = 0;
 
     $('.supplier-item').each(function () {
         const $item    = $(this);
@@ -623,25 +960,24 @@ function filterSuppliers() {
         const matchesSearch   = searchTerm === '' || name.includes(searchTerm) || city.includes(searchTerm);
         const matchesCategory = activeCategory === 'all' || category === activeCategory.toLowerCase();
 
-        $item.toggle(matchesSearch && matchesCategory);
+        if (matchesSearch && matchesCategory) {
+            $item.show();
+            visibleCount++;
+        } else {
+            $item.hide();
+        }
     });
 
-    const visibleCount = $('.supplier-item:visible').length;
     if (visibleCount === 0 && $('.supplier-item').length > 0) {
-        if ($('#emptyStateMessage').length === 0) {
-            $('#suppliersGrid').append(`
-                <div class="col-12" id="emptyStateMessage">
-                    <div class="empty-state">
-                        <i class="bi bi-search"></i>
-                        <h5>No suppliers found</h5>
-                        <p>Try adjusting your search or category filter</p>
-                    </div>
-                </div>
-            `);
-        }
+        $('#emptyStateMessage').show();
     } else {
-        $('#emptyStateMessage').remove();
+        $('#emptyStateMessage').hide();
     }
+}
+
+// ✅ NEW: Redirect sa select_products.php with supplier filter
+function viewSupplierProducts(supplierId) {
+    window.location.href = 'views/select_products.php?supplier_id=' + supplierId;
 }
 
 function viewSupplierDetails(supplierId) {
@@ -755,7 +1091,7 @@ function displaySupplierDetails(supplier) {
                     <div class="card border-0 bg-light p-3 rounded-4">
                         <h6 class="fw-bold mb-3"><i class="bi bi-star me-2 text-primary"></i>Rating</h6>
                         <div class="d-flex align-items-center gap-2">
-                            <div class="rating-stars fs-5">${ratingHtml}</div>
+                            <div class="rating-stars fs-5" style="color:#fbbf24;">${ratingHtml}</div>
                             <span class="fw-bold">${rating.toFixed(1)}</span>
                             <span class="text-muted">/ 5</span>
                         </div>
@@ -790,8 +1126,12 @@ function displaySupplierDetails(supplier) {
         </div>
 
         <div class="modal-footer border-0 pb-4">
-            <button type="button" class="btn btn-light px-4" data-bs-dismiss="modal">
+            <button type="button" class="btn btn-light px-4 me-2" data-bs-dismiss="modal">
                 <i class="bi bi-x-lg me-2"></i>Close
+            </button>
+            <button type="button" class="btn px-4" style="background:var(--primary);color:white;" 
+                    onclick="viewSupplierProducts(${supplier.id})">
+                <i class="bi bi-grid me-2"></i>View Products
             </button>
         </div>
     `;

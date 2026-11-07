@@ -132,286 +132,851 @@ foreach ($allDoctors as $doc) {
 </script>
 
 <style>
-/* ── TEAL PALETTE ── */
+/* ════════ PALETTE ════════ */
 :root {
-    --teal:       #0d9488;
-    --teal-dark:  #0f766e;
-    --teal-light: #ccfbf1;
-    --teal-soft:  #f0fdfa;
+    --teal:        #0d9488;
+    --teal-dark:   #0f766e;
+    --teal-soft:   #f0fdfa;
+    --teal-light:  #ccfbf1;
+    --ink:         #0f172a;
+    --ink-2:       #1e293b;
+    --text:        #334155;
+    --muted:       #64748b;
+    --muted-2:     #94a3b8;
+    --line:        #e5e9ef;
+    --line-2:      #eef2f6;
+    --bg:          #f8fafc;
+    --card:        #ffffff;
+    --green:       #16a34a;
+    --amber:       #d97706;
+    --sky:         #0284c7;
 }
+* { box-sizing: border-box; }
+#doctorDashboard {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 13px;
+    color: var(--text);
+    background: var(--bg);
+    line-height: 1.45;
 
-#doctorDashboard { font-size: .875rem; }
-
-/* ── SHELL: queue left, workspace right ── */
-.dd-shell {
-    display: flex;
-    height: calc(100vh - 64px); /* adjust to your topbar height */
-    overflow: hidden;
-    background: #f1f5f9;
-}
-
-/* ── QUEUE PANEL ── */
-.dd-queue {
-    width: 290px;
-    min-width: 290px;
-    background: #fff;
-    border-right: 1px solid #e2e8f0;
+    /* ✅ FIX: kalkulahin base sa viewport, wag asa sa parent height */
+    height: calc(100vh - 64px);   /* 64px = navbar mo + konting allowance */
+    max-height: calc(100vh - 64px);
     display: flex;
     flex-direction: column;
+    overflow: hidden;
+    margin: 0;
 }
-.dd-queue-head   { padding: 12px 12px 8px; border-bottom: 1px solid #f1f5f9; }
-.dd-queue-acts   { padding: 7px 10px; border-bottom: 1px solid #f1f5f9; display: flex; gap: 6px; }
-.dd-queue-scroll { flex: 1; overflow-y: auto; padding: 7px 10px 20px; }
+
+/* SHELL */
+.dd-shell {
+    display: flex;
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
+    flex: 1 1 auto;
+    min-height: 0;      /* ✅ CRITICAL para gumana yung overflow scroll sa loob */
+}
+/* QUEUE PANEL */
+.dd-queue {
+    width: 264px;
+    min-width: 264px;
+    background: #fff;
+    border-right: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    padding: 18px 14px 14px;
+    height: 100%;
+    min-height: 0;         /* ✅ punuin yung buong height ng parent */
+    overflow: hidden;      /* ✅ walang labas */
+}
+.dd-queue-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.dd-queue-head .title { font-size: 16px; font-weight: 800; color: var(--ink); letter-spacing: -.01em; }
+.dd-queue-head i { color: var(--muted-2); font-size: 15px; }
+.dd-queue-date { font-size: 11px; color: var(--muted); margin-bottom: 14px; }
+.dd-stats { display: flex; justify-content: space-between; margin-bottom: 14px; padding: 0 2px; gap: 12px; }
+.dd-stat { text-align: left; flex: 1; }
+.dd-stat .sv { font-size: 22px; font-weight: 800; line-height: 1; color: var(--ink); }
+.dd-stat .sl { font-size: 10.5px; color: var(--muted); margin-top: 4px; }
+.dd-queue-tabs { display: flex; gap: 3px; background: #f1f5f9; padding: 3px; border-radius: 8px; margin-bottom: 14px; }
+.dd-queue-tabs button {
+    flex: 1; border: none; background: transparent; font-size: 11px; font-weight: 600;
+    color: var(--muted); padding: 6px 4px; border-radius: 6px; cursor: pointer; transition: all .12s;
+}
+.dd-queue-tabs button.active { background: #fff; color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+.dd-queue-scroll {
+    flex: 1;
+    min-height: 0;          /* ✅ CRITICAL */
+    overflow-y: auto;
+    padding-right: 2px;
+    margin-right: -4px;
+    margin-bottom: 12px;
+}
 .dd-queue-scroll::-webkit-scrollbar { width: 4px; }
 .dd-queue-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
-
-/* Mini stat chips */
-.dd-stats { display: flex; gap: 5px; }
-.dd-stat  { flex: 1; text-align: center; padding: 5px 2px; border-radius: 8px; border: 1px solid transparent; }
-.dd-stat .sv { font-size: 1.05rem; font-weight: 800; line-height: 1; }
-.dd-stat .sl { font-size: .6rem; margin-top: 1px; }
-.dd-stat.s-wait { background: #fef9e7; border-color: #fde68a; }
-.dd-stat.s-wait .sv { color: #d97706; }
-.dd-stat.s-mine { background: var(--teal-soft); border-color: #99f6e4; }
-.dd-stat.s-mine .sv { color: var(--teal); }
-.dd-stat.s-any  { background: #f0fbff; border-color: #bae6fd; }
-.dd-stat.s-any  .sv { color: #0284c7; }
-.dd-stat.s-done { background: #f0fdf4; border-color: #bbf7d0; }
-.dd-stat.s-done .sv { color: #16a34a; }
-
-/* Queue section labels */
-.q-lbl {
-    font-size: .65rem; font-weight: 800;
-    letter-spacing: .08em; text-transform: uppercase;
-    padding: 9px 4px 3px; color: #94a3b8;
-}
-
-/* Queue items */
+/* Queue item */
 .queue-item {
-    border: 1px solid #e8edf2;
-    border-left: 3px solid transparent;
-    border-radius: 10px;
-    padding: 9px 10px;
-    margin-bottom: 5px;
-    background: #fff;
-    cursor: pointer;
-    transition: box-shadow .15s, transform .15s;
+    border: 1px solid var(--line); border-left: 3px solid transparent; border-radius: 10px;
+    padding: 11px; margin-bottom: 7px; background: #fff; cursor: pointer; transition: all .15s;
 }
-.queue-item:hover           { box-shadow: 0 4px 12px rgba(0,0,0,.07); transform: translateY(-1px); }
-.queue-item.waiting         { border-left-color: #f59e0b; }
-.queue-item.in-progress     { border-left-color: var(--teal); background: var(--teal-soft); }
-.queue-item.completed       { border-left-color: #10b981; opacity: .83; }
-.queue-item.any-doctor      { border-left-color: #0ea5e9; background: #f0fbff; }
-.queue-item .qn             { font-weight: 700; font-size: .83rem; color: #1e293b; }
-.queue-item .qs             { font-size: .72rem; color: #64748b; }
+.queue-item:hover { box-shadow: 0 2px 8px rgba(0,0,0,.05); }
+.queue-item.active { border-color: var(--teal); border-left-color: var(--teal); background: var(--teal-soft); }
+.queue-item.waiting         { border-left-color: #fbbf24; }
+.queue-item.in-progress     { border-left-color: var(--teal); }
+.queue-item.completed       { border-left-color: var(--green); }
+.queue-item.waiting_payment { border-left-color: #0284c7; }
+.queue-item.sent-to-sales { border-left-color: #0284c7; }
+.queue-item.sent-to-sales .qi-avatar { background: #e0f2fe; color: #0284c7; }
+.queue-item.any-doctor      { border-left-color: var(--sky); }
 
-/* ── WORKSPACE ── */
-.dd-ws { flex: 1; overflow-y: auto; padding: 14px 18px 30px; }
-.dd-ws::-webkit-scrollbar { width: 5px; }
+/* Badge for sent to sales */
+.status-badge.sent-to-sales { background: #e0f2fe; color: #0284c7; }
+.queue-item.any-doctor      { border-left-color: var(--sky); }
+.queue-item .qi-top { display: flex; align-items: center; gap: 9px; margin-bottom: 6px; }
+.queue-item .qi-avatar {
+    width: 28px; height: 28px; border-radius: 50%; background: #e0f2f1; color: var(--teal-dark);
+    display: flex; align-items: center; justify-content: center; font-size: 10.5px;
+    font-weight: 800; flex-shrink: 0; letter-spacing: .02em;
+}
+.queue-item.in-progress .qi-avatar { background: var(--teal-light); }
+.queue-item.waiting .qi-avatar { background: #fef3c7; color: var(--amber); }
+.queue-item.completed .qi-avatar { background: #dcfce7; color: var(--green); }
+.queue-item .qi-body { flex: 1; min-width: 0; }
+.queue-item .qi-name {
+    font-weight: 700; font-size: 12.5px; color: var(--ink); line-height: 1.2;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.queue-item .qi-sub { font-size: 11px; color: var(--muted); margin-top: 3px; }
+.queue-item .qi-status-line {
+    display: flex; align-items: center; justify-content: space-between;
+    font-size: 11px; margin-top: 7px; font-weight: 600;
+}
+.queue-item .qi-status-line .status-txt { display: inline-flex; align-items: center; gap: 5px; }
+.queue-item .qi-status-line.waiting         { color: var(--amber); }
+.queue-item .qi-status-line.in-progress     { color: var(--teal-dark); }
+.queue-item .qi-status-line.completed       { color: var(--green); }
+.queue-item .qi-status-line.waiting_payment { color: #0284c7; }
+.queue-item .qi-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; background: currentColor; }
+.queue-item .qi-current { font-size: 10.5px; font-weight: 600; color: var(--muted-2); }
+.queue-item.filtered-out { display: none !important; }
+.q-lbl { font-size: 9.5px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; padding: 8px 4px 4px; color: var(--muted-2); }
+/* Queue bottom */
+.dd-queue-bottom { border-top: 1px solid var(--line-2); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.dd-queue-bottom .btn-queue {
+    background: #fff; border: 1px solid var(--line); color: var(--ink-2);
+    font-size: 12.5px; font-weight: 600; padding: 11px 12px; border-radius: 9px;
+    text-align: center; cursor: pointer; transition: all .12s;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+}
+.dd-queue-bottom .btn-queue:hover { background: #f8fafc; border-color: #cbd5e1; }
+.dd-queue-bottom .btn-queue i { font-size: 13px; }
+.queue-count-note { text-align: center; font-size: 10.5px; color: var(--muted-2); padding: 4px 0 0; }
+/* WORKSPACE */
+.dd-ws {
+    flex: 1;
+    overflow-y: auto;
+    padding: 18px 24px 24px;
+    background: var(--bg);
+    height: 100%;
+    min-height: 0;          /* ✅ CRITICAL */
+    min-width: 0;
+}
+.dd-ws::-webkit-scrollbar { width: 6px; }
 .dd-ws::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
-
-.dd-empty { height: 100%; display: flex; align-items: center; justify-content: center; }
-
-/* ── PATIENT CARD ── */
-.pt-card { border-radius: 14px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 2px 10px rgba(0,0,0,.06); }
-
-.pt-hdr {
-    background: linear-gradient(135deg, var(--teal) 0%, var(--teal-dark) 100%);
-    padding: 16px 20px 14px; color: #fff;
+.dd-empty { display: flex; align-items: center; justify-content: center; min-height: 70vh; }
+/* PATIENT HEADER */
+.pt-header-card { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 20px 22px 16px; margin-bottom: 16px; }
+.pt-header-top { display: flex; align-items: flex-start; gap: 15px; }
+.pt-avatar-lg {
+    width: 52px; height: 52px; border-radius: 50%; background: var(--teal-light); color: var(--teal-dark);
+    display: flex; align-items: center; justify-content: center; font-size: 17px; font-weight: 800;
+    flex-shrink: 0; letter-spacing: .03em;
 }
-.pt-name  { font-size: 1.3rem; font-weight: 800; line-height: 1.1; }
-.pt-timer {
-    font-family: 'Courier New', monospace;
-    font-size: 1.45rem; font-weight: 700;
-    background: rgba(255,255,255,.18);
-    border-radius: 8px; padding: 2px 11px;
+.pt-name-lg {
+    font-size: 22px; font-weight: 800; color: var(--ink); display: flex; align-items: center;
+    gap: 10px; line-height: 1.15; letter-spacing: -.01em;
 }
-.pt-pill {
-    background: rgba(255,255,255,.18);
-    border-radius: 20px; padding: 2px 9px;
-    font-size: .73rem; display: inline-block;
+.pt-name-lg .status-badge {
+    font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 20px;
+    background: var(--teal-light); color: var(--teal-dark);
+    display: inline-flex; align-items: center; gap: 5px; letter-spacing: 0;
 }
-.pt-detail-row {
+.pt-name-lg .status-badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.pt-name-lg .status-badge.waiting { background: #fef3c7; color: var(--amber); }
+.pt-name-lg .status-badge.completed { background: #dcfce7; color: var(--green); }
+.pt-name-lg .status-badge.waiting-payment { background: #fef3c7; color: var(--amber); }
+.pt-meta-line { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+.pt-meta-line .dot { margin: 0 7px; color: var(--muted-2); }
+.pt-header-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.pt-header-actions .btn-ghost {
+    background: #fff; border: 1px solid var(--line); color: var(--ink-2);
+    font-size: 12.5px; font-weight: 600; padding: 8px 14px; border-radius: 8px;
+    display: inline-flex; align-items: center; gap: 7px; cursor: pointer; transition: all .12s;
+}
+.pt-header-actions .btn-ghost:hover { background: #f8fafc; }
+.pt-header-actions .btn-ghost.icon-only { padding: 8px 10px; }
+.pt-info-strip { display: flex; gap: 60px; padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--line-2); }
+.pt-info-strip .pi-label { font-size: 11px; color: var(--muted); margin-bottom: 5px; font-weight: 500; }
+.pt-info-strip .pi-value { font-size: 14px; font-weight: 700; color: var(--ink); line-height: 1.2; }
+#timerWrap { display: none !important; }
+/* TABS */
+.pt-tabs-bar {
+    display: flex; gap: 28px; border-bottom: 1px solid var(--line);
+    margin-bottom: 20px; padding: 0 2px; background: transparent;
+}
+.pt-tabs-bar .tab-link {
+    font-size: 13.5px; font-weight: 500; color: var(--muted); padding: 12px 0 13px;
+    border: none; border-bottom: 2px solid transparent; background: none; cursor: pointer;
+    margin-bottom: -1px; white-space: nowrap; transition: color .12s;
+}
+.pt-tabs-bar .tab-link.active { color: var(--teal-dark); border-bottom-color: var(--teal-dark); font-weight: 600; }
+.pt-tabs-bar .tab-link:hover { color: var(--teal-dark); }
+/* BODY GRID */
+.pt-body-grid { display: grid; grid-template-columns: 1fr 296px; gap: 20px; align-items: start; }
+/* SECTION CARDS */
+.section-card {
+    background: #fff; border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px 20px 20px; margin-bottom: 14px;
+}
+.section-card .sec-title {
+    font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 16px;
+    display: flex; justify-content: space-between; align-items: center;
+}
+.section-card .sec-title .note { font-size: 11.5px; font-weight: 500; color: var(--muted-2); text-transform: none; letter-spacing: 0; }
+/* FORM FIELDS */
+.pt-body-grid .form-label { font-size: 12px; font-weight: 500; color: var(--muted); margin-bottom: 6px; display: block; }
+.pt-body-grid .form-control-sm,
+.pt-body-grid .form-select-sm {
+    font-size: 13px; font-weight: 500; border: 1px solid var(--line); border-radius: 8px;
+    padding: 9px 12px; color: var(--ink); background: #fff;
+    transition: border-color .12s, box-shadow .12s; height: auto;
+}
+.pt-body-grid .form-control-sm:focus,
+.pt-body-grid .form-select-sm:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgba(13,148,136,.10); outline: none; }
+.pt-body-grid textarea.form-control-sm { resize: vertical; }
+.field-grid { display: grid; gap: 14px 16px; }
+.field-grid.cols-2 { grid-template-columns: 1fr 1fr; }
+.field-grid.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+/* VA TABLE */
+.va-table { width: 100%; border-collapse: collapse; }
+.va-table thead th {
+    font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--muted); text-align: left; padding: 10px 0; border-bottom: 1px solid var(--line-2);
+}
+.va-table thead th:first-child { width: 130px; }
+.va-table tbody td { padding: 14px 0; border-bottom: 1px solid var(--line-2); }
+.va-table tbody tr:last-child td { border-bottom: none; }
+.va-table tbody td:first-child { font-size: 12.5px; color: var(--muted); }
+.va-table tbody td input {
+    width: 100%; border: none; background: transparent;
+    font-size: 14px; font-weight: 700; color: var(--ink); padding: 0;
+}
+.va-table tbody td input:focus { outline: none; }
+/* REFRACTION TABLE */
+.refr-table { width: 100%; border-collapse: collapse; }
+.refr-table thead th { font-size: 12px; font-weight: 500; color: var(--muted); text-align: left; padding: 0 0 10px 0; }
+.refr-table thead th:first-child { width: 130px; }
+.refr-table tbody td { padding: 8px 6px 8px 0; vertical-align: middle; }
+.refr-table tbody td:first-child { font-size: 13px; font-weight: 700; color: var(--ink); padding-left: 0; }
+.refr-table tbody td input {
+    width: 100%; font-size: 13.5px; font-weight: 700; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; background: #fff;
+}
+.refr-table tbody td input:focus { outline: none; border-color: var(--teal); box-shadow: 0 0 0 3px rgba(13,148,136,.10); }
+/* CLINICAL SUMMARY */
+.summary-card { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 20px; position: sticky; top: 12px; }
+.summary-card .sum-title { font-size: 15px; font-weight: 800; color: var(--ink); margin-bottom: 16px; }
+.summary-row {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    padding: 9px 0; font-size: 12.5px; border-bottom: 1px solid var(--line-2);
+}
+.summary-row:last-of-type { border-bottom: none; }
+.summary-row .sum-label { color: var(--muted); font-size: 12.5px; }
+.summary-row .sum-value { font-weight: 700; color: var(--ink); text-align: right; max-width: 62%; font-size: 13px; }
+.summary-subhead {
+    font-size: 11px; font-weight: 500; color: var(--muted);
+    margin: 14px 0 6px; padding-top: 14px; border-top: 1px solid var(--line-2);
+}
+.summary-va-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 4px 0 8px; }
+.summary-va-cell { text-align: left; }
+.summary-va-cell.ta-r { text-align: right; }
+.summary-va-cell .lbl { font-size: 11px; color: var(--muted-2); font-weight: 500; }
+.summary-va-cell .val { font-size: 15px; font-weight: 800; color: var(--ink); line-height: 1.3; margin-top: 2px; }
+.summary-cta {
+    width: 100%; margin-top: 18px; background: var(--teal); color: #fff; border: none;
+    border-radius: 8px; padding: 11px 14px; font-size: 13px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; transition: background .15s;
+}
+.summary-cta:hover { background: var(--teal-dark); color: #fff; }
+.summary-cta-note { font-size: 11px; color: var(--muted-2); text-align: center; margin-top: 7px; line-height: 1.45; }
+.summary-save-link {
+    display: block; text-align: center; font-size: 12px; color: var(--teal-dark);
+    font-weight: 600; margin-top: 10px; text-decoration: none;
+    background: none; border: none; width: 100%; padding: 4px; cursor: pointer;
+}
+.summary-save-link:hover { text-decoration: underline; }
+/* ═══════════════════════════════════════════════════════
+   ✅ LENS RECOMMENDATION CARD — REDESIGNED
+   ═══════════════════════════════════════════════════════ */
+.lens-rec-card {
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 20px;
+}
+
+.lens-rec-card .sec-title {
     display: flex;
-    border-top: 1px solid rgba(255,255,255,.15);
-    margin-top: 11px; padding-top: 11px;
-}
-.pt-di { flex: 1; }
-.pt-di + .pt-di { border-left: 1px solid rgba(255,255,255,.18); padding-left: 14px; }
-.pt-di .dl { font-size: .62rem; opacity: .62; text-transform: uppercase; letter-spacing: .06em; }
-.pt-di .dv { font-size: .86rem; font-weight: 700; }
-
-.pt-alert {
-    background: rgba(255,255,255,.14);
-    border: 1px solid rgba(255,255,255,.28);
-    border-radius: 8px; padding: 7px 11px;
-    margin-top: 9px; display: flex;
-    align-items: center; gap: 9px; font-size: .79rem;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--line-2);
 }
 
-/* ── BODY ── */
-.pt-body { background: #fff; }
-.exam-pane { padding: 14px; border-right: 1px solid #f1f5f9; }
-.form-label { font-weight: 600; font-size: .77rem; color: #475569; margin-bottom: 3px; }
-.form-control-sm, .form-select-sm { border-color: #e2e8f0; border-radius: 7px; font-size: .79rem; }
-.form-control-sm:focus, .form-select-sm:focus {
+.lens-rec-card .sec-title span:first-child {
+    font-size: 14px;
+    font-weight: 800;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+    text-transform: none;
+}
+
+.lens-rec-card .sec-title i {
+    color: var(--teal);
+}
+
+/* ─── Groups ─── */
+.lr-group {
+    margin-bottom: 22px;
+}
+.lr-group:last-of-type {
+    margin-bottom: 16px;
+}
+
+.lr-label {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--ink);
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.lr-label i {
+    color: var(--teal);
+    font-size: 14px;
+}
+
+.lr-hint {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--muted-2);
+    text-transform: none;
+    letter-spacing: 0;
+    margin-left: 2px;
+}
+
+/* ─── Option Grid (Lens Design & Index) ─── */
+.lr-option-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+.lr-index-grid {
+    grid-template-columns: repeat(4, 1fr);
+}
+
+@media (max-width: 900px) {
+    .lr-index-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+@media (max-width: 600px) {
+    .lr-option-grid,
+    .lr-index-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.lr-option {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 14px;
+    background: #fff;
+    border: 2px solid var(--line);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    text-align: left;
+    font-family: inherit;
+}
+
+.lr-option:hover {
     border-color: var(--teal);
-    box-shadow: 0 0 0 3px rgba(13,148,136,.12);
+    background: var(--teal-soft);
 }
 
-/* Tabs */
-.pt-tabs { border-bottom: 2px solid #f1f5f9; background: #fafbfc; padding: 0 10px; }
-.pt-tabs .nav-link {
-    font-size: .78rem; font-weight: 600; color: #64748b;
-    border: none; border-bottom: 2px solid transparent;
-    padding: 8px 11px; margin-bottom: -2px; border-radius: 0;
+.lr-option.selected {
+    border-color: var(--teal);
+    background: var(--teal-soft);
+    box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.12);
 }
-.pt-tabs .nav-link.active { color: var(--teal); border-bottom-color: var(--teal); background: transparent; }
-.pt-tabs .nav-link:hover  { color: var(--teal); }
 
-/* History */
-.hist-item { border: 1px solid #f1f5f9; border-radius: 8px; padding: 8px 10px; margin-bottom: 5px; transition: background .15s; }
-.hist-item:hover { background: #f8fafc; }
-.hist-scroll { max-height: 240px; overflow-y: auto; }
-.hist-scroll::-webkit-scrollbar { width: 3px; }
-.hist-scroll::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+/* Radio circle */
+.lr-radio {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 2px solid var(--muted-2);
+    flex-shrink: 0;
+    position: relative;
+    transition: all 0.15s ease;
+}
 
-/* Rx eye boxes */
-.rx-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 9px; padding: 9px 10px; }
-.rx-lbl { font-size: .68rem; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; color: var(--teal); margin-bottom: 7px; }
+.lr-option.selected .lr-radio {
+    border-color: var(--teal);
+}
 
-/* Teal buttons */
-.btn-teal { background: var(--teal); color: #fff; border: none; border-radius: 8px; font-weight: 600; }
+.lr-option.selected .lr-radio::after {
+    content: '';
+    position: absolute;
+    inset: 3px;
+    border-radius: 50%;
+    background: var(--teal);
+}
+
+/* Info */
+.lr-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.lr-title {
+    font-size: 13.5px;
+    font-weight: 700;
+    color: var(--ink);
+    line-height: 1.2;
+}
+
+.lr-option.selected .lr-title {
+    color: var(--teal-dark);
+}
+
+.lr-desc {
+    font-size: 11.5px;
+    color: var(--muted);
+    font-weight: 500;
+    line-height: 1.3;
+}
+
+/* Recommended badge */
+.lr-badge-rec {
+    position: absolute;
+    top: -8px;
+    right: 10px;
+    background: linear-gradient(135deg, #10b981, #059669);
+    color: #fff;
+    font-size: 9px;
+    font-weight: 800;
+    padding: 3px 8px;
+    border-radius: 20px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    box-shadow: 0 2px 6px rgba(16, 185, 129, 0.35);
+    animation: pulseRec 2s ease-in-out infinite;
+}
+
+@keyframes pulseRec {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+}
+
+/* Index option (narrower) */
+.lr-index .lr-info {
+    align-items: center;
+    text-align: center;
+}
+
+.lr-index .lr-radio {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    width: 14px;
+    height: 14px;
+}
+
+.lr-index .lr-radio::after {
+    inset: 2px;
+}
+
+.lr-index .lr-title {
+    font-size: 15px;
+    font-weight: 800;
+}
+
+.lr-index .lr-desc {
+    font-size: 10.5px;
+}
+
+/* ─── Features (Checkboxes) ─── */
+.lr-features-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.lr-feature {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 13px 15px;
+    background: #fff;
+    border: 2px solid var(--line);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    position: relative;
+    user-select: none;
+}
+
+.lr-feature:hover {
+    border-color: var(--teal);
+    background: var(--teal-soft);
+}
+
+.lr-feature input[type="checkbox"] {
+    display: none;
+}
+
+/* Custom checkbox */
+.lr-check {
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
+    border: 2px solid var(--muted-2);
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+    background: #fff;
+    position: relative;
+}
+
+.lr-feature input:checked ~ .lr-check {
+    background: var(--teal);
+    border-color: var(--teal);
+}
+
+.lr-feature input:checked ~ .lr-check::after {
+    content: '';
+    width: 5px;
+    height: 10px;
+    border: solid #fff;
+    border-width: 0 2.5px 2.5px 0;
+    transform: rotate(45deg) translate(-1px, -1px);
+}
+
+.lr-feature:has(input:checked) {
+    border-color: var(--teal);
+    background: var(--teal-soft);
+}
+
+.lr-feature-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.lr-feature-title {
+    font-size: 13.5px;
+    font-weight: 700;
+    color: var(--ink);
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.lr-feature-title i {
+    font-size: 13px;
+}
+
+.lr-feature:has(input:checked) .lr-feature-title {
+    color: var(--teal-dark);
+}
+
+.lr-feature-desc {
+    font-size: 11.5px;
+    color: var(--muted);
+    font-weight: 500;
+    line-height: 1.3;
+}
+
+/* Feature count */
+.lr-feature-count {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    padding: 8px 12px;
+    background: var(--teal-soft);
+    border: 1px solid var(--teal-light);
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--teal-dark);
+}
+
+.lr-feature-count i {
+    color: var(--teal);
+}
+
+/* ─── Info Note ─── */
+.lr-info-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 14px;
+    background: #f0f9ff;
+    border: 1px solid #bae6fd;
+    border-radius: 10px;
+    margin-top: 16px;
+}
+
+.lr-info-note i {
+    color: #0284c7;
+    font-size: 16px;
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+
+.lr-info-note span {
+    font-size: 12px;
+    color: #0c4a6e;
+    line-height: 1.5;
+}
+
+.lr-info-note strong {
+    color: #0284c7;
+}
+/* LEGACY BUTTONS */
+.btn-teal { background: var(--teal); color: #fff; border: none; border-radius: 8px; font-weight: 600; font-size: 13px; padding: 9px 16px; }
 .btn-teal:hover { background: var(--teal-dark); color: #fff; }
-.btn-outline-teal { border: 1px solid var(--teal); color: var(--teal); background: transparent; border-radius: 8px; font-weight: 600; }
+.btn-outline-teal { border: 1px solid var(--teal); color: var(--teal); background: transparent; border-radius: 8px; font-weight: 600; font-size: 13px; padding: 9px 16px; }
 .btn-outline-teal:hover { background: var(--teal-soft); color: var(--teal-dark); }
-
-/* Upcoming appointments styling */
-.upcoming-date-group {
-    margin-bottom: 1rem;
+/* RX TAB */
+.rx-page-title { font-size: 20px; font-weight: 800; color: var(--ink); margin-bottom: 5px; letter-spacing: -.01em; }
+.rx-page-sub { font-size: 12.5px; color: var(--muted); margin-bottom: 20px; }
+.rx-header-row { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+.rx-header-actions { display: flex; gap: 10px; align-items: center; }
+.rx-draft-badge { font-size: 11.5px; font-weight: 600; color: var(--muted); background: #f1f5f9; padding: 5px 11px; border-radius: 6px; }
+.rx-print-btn {
+    background: #fff; border: 1px solid var(--line); color: var(--ink-2);
+    font-size: 12.5px; font-weight: 600; padding: 8px 14px; border-radius: 8px;
+    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+}
+.rx-print-btn:hover { background: #f8fafc; }
+.rx-eye-card { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; margin-bottom: 12px; }
+.rx-eye-title { font-size: 14px; font-weight: 700; color: var(--ink); margin-bottom: 14px; }
+.rx-eye-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 12px; }
+.rx-eye-grid .form-label { font-size: 12px; font-weight: 500; color: var(--muted); margin-bottom: 6px; }
+.rx-eye-grid input {
+    font-size: 13px; font-weight: 600; color: var(--ink);
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 12px; width: 100%;
+}
+.rx-eye-grid input:focus { outline: none; border-color: var(--teal); box-shadow: 0 0 0 3px rgba(13,148,136,.10); }
+.rx-eye-footer { font-size: 11.5px; color: var(--muted); margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line-2); }
+.rx-save-bar {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line);
+}
+.rx-save-bar .who { font-size: 13px; color: var(--ink); font-weight: 700; }
+.rx-save-bar .who-sub { font-size: 11.5px; color: var(--muted); margin-top: 3px; font-weight: 500; }
+.rx-save-btn {
+    background: var(--teal); color: #fff; border: none; border-radius: 8px;
+    padding: 11px 22px; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.rx-save-btn:hover { background: var(--teal-dark); }
+/* HISTORY */
+.hist-item { border: 1px solid var(--line-2); border-radius: 9px; padding: 10px 12px; margin-bottom: 6px; transition: background .15s; }
+.hist-item:hover { background: #f8fafc; }
+.hist-scroll { max-height: 300px; overflow-y: auto; }
+/* RESPONSIVE */
+@media (max-width: 1100px) {
+    .pt-body-grid { grid-template-columns: 1fr; }
+    .summary-card { position: static; }
+    .rx-eye-grid { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 768px) {
+    .dd-shell { flex-direction: column; height: auto; }
+    .dd-queue { width: 100%; min-width: unset; border-right: none; border-bottom: 1px solid var(--line); max-height: 320px; }
+    .pt-info-strip { flex-wrap: wrap; gap: 20px; }
+    .rx-eye-grid { grid-template-columns: 1fr 1fr; }
 }
 
-.upcoming-date-group .date-header {
-    font-size: 0.7rem;
-    font-weight: 600;
-    color: #334155;
-    padding-left: 4px;
-    margin-bottom: 8px;
-}
-
-.upcoming-item {
-    border-left: 3px solid #cbd5e1 !important;
-    background: #ffffff;
+/* ═══════════════════════════════════════════════════════
+   ✅ Complete Consultation — PRIMARY BUTTON
+   ═══════════════════════════════════════════════════════ */
+.summary-cta-primary {
+    background: linear-gradient(135deg, #0284c7, #0369a1) !important;
+    padding: 14px 18px !important;
+    font-size: 14px !important;
+    font-weight: 800 !important;
+    box-shadow: 0 4px 12px rgba(2, 132, 199, 0.25);
     transition: all 0.2s ease;
 }
 
-.upcoming-item:hover {
-    background: #f8fafc;
-    transform: translateX(2px);
+.summary-cta-primary:hover {
+    background: linear-gradient(135deg, #0369a1, #075985) !important;
+    box-shadow: 0 6px 16px rgba(2, 132, 199, 0.35);
+    transform: translateY(-1px);
 }
 
-.queue-section .section-header {
-    border-bottom: 2px solid #e2e8f0;
-}
-
-.bg-teal-light {
-    background-color: #ccfbf1;
-    color: #0d9488;
-}
-
-.sub-section .sub-header {
-    font-size: 0.68rem;
+/* ═══════════════════════════════════════════════════════
+   ✅ AUTO-SAVE INDICATOR
+   ═══════════════════════════════════════════════════════ */
+.autosave-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    margin-top: 12px;
+    padding: 8px 12px;
+    background: #f0fdfa;
+    border: 1px solid var(--teal-light);
+    border-radius: 8px;
+    font-size: 11.5px;
     font-weight: 600;
-    letter-spacing: 0.03em;
-    color: #64748b;
-    margin-bottom: 6px;
+    color: var(--teal-dark);
+    transition: all 0.3s ease;
 }
 
-@media (max-width: 768px) {
-    .dd-shell { flex-direction: column; height: auto; }
-    .dd-queue { width: 100%; min-width: unset; height: 250px; border-right: none; border-bottom: 1px solid #e2e8f0; }
+.autosave-indicator.saving {
+    background: #fffbeb;
+    border-color: #fde68a;
+    color: var(--amber);
+}
+
+.autosave-indicator.saved {
+    background: #f0fdfa;
+    border-color: var(--teal-light);
+    color: var(--teal-dark);
+}
+
+.autosave-indicator.unsaved {
+    background: #fef3c7;
+    border-color: #fcd34d;
+    color: #92400e;
+}
+
+.autosave-indicator i {
+    font-size: 14px;
+}
+
+.autosave-indicator.saving i {
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
 }
 </style>
 
-<!-- ═══════════════════════════════════════
-     DASHBOARD ROOT
-═══════════════════════════════════════ -->
 <div id="doctorDashboard">
+
+
+
 <div class="dd-shell">
 
+    <!-- ══════ LEFT: PATIENT QUEUE ══════ -->
     <aside class="dd-queue">
         <div class="dd-queue-head">
-            <div class="d-flex align-items-center justify-content-between mb-2">
-                <span class="fw-700" style="font-size:.88rem;color:#1e293b;">Today's Queue</span>
-                <button class="btn btn-sm btn-teal px-3 py-1" style="font-size:.73rem;" onclick="refreshQueue()">
-                    <i class="bi bi-arrow-repeat me-1"></i>Refresh
-                </button>
-            </div>
-<div class="dd-stats">
-    <div class="dd-stat s-wait">
-        <div class="sv" id="statWaiting">0</div>
-        <div class="sl">Waiting</div>
-    </div>
-    <div class="dd-stat s-mine">
-        <div class="sv" id="statProgress">0</div>
-        <div class="sl">In Progress</div>
-    </div>
-    <div class="dd-stat s-payment">
-        <div class="sv" id="statWaitingPayment">0</div>
-        <div class="sl">Need Payment</div>
-    </div>
-    <div class="dd-stat s-any">
-        <div class="sv" id="statUpcoming">0</div>
-        <div class="sl">Upcoming</div>
-    </div>
-    <div class="dd-stat s-done">
-        <div class="sv" id="statCompleted">0</div>
-        <div class="sl">Completed</div>
-    </div>
-</div>
+            <div class="title">Patient Queue</div>
+            <i class="bi bi-chevron-left"></i>
         </div>
 
-        <div class="dd-queue-acts">
-            <?php if ($canCreateAppointments): ?>
-            <button class="btn btn-sm btn-success flex-fill fw-600" style="border-radius:8px;" onclick="showWalkInModal()">
-                <i class="bi bi-person-walking me-1"></i>Walk-in
-            </button>
-            <?php endif; ?>
-            <button class="btn btn-sm btn-outline-secondary flex-fill fw-600" style="border-radius:8px;" onclick="showSearchModal()">
-                <i class="bi bi-search me-1"></i>Find
-            </button>
+        <div class="dd-queue-date"><?= date('l, d M Y') ?></div>
+
+        <div class="dd-stats">
+            <div class="dd-stat s-wait">
+                <div class="sv" id="statWaiting">0</div>
+                <div class="sl">Waiting</div>
+            </div>
+            <div class="dd-stat s-mine">
+                <div class="sv" id="statProgress">0</div>
+                <div class="sl">In Progress</div>
+            </div>
+            <div class="dd-stat s-done">
+                <div class="sv" id="statCompleted">0</div>
+                <div class="sl">Completed</div>
+            </div>
+        </div>
+
+        <!-- Hidden stats — JS logic preserves -->
+        <div style="display:none;">
+            <span id="statWaitingPayment">0</span>
+            <span id="statUpcoming">0</span>
+        </div>
+
+        <div class="dd-queue-tabs" id="queueTabs">
+            <button class="active" data-filter="all" onclick="filterQueueTab(this,'all')">All</button>
+            <button data-filter="waiting" onclick="filterQueueTab(this,'waiting')">Waiting</button>
+            <button data-filter="in_progress" onclick="filterQueueTab(this,'in_progress')">In Progress</button>
         </div>
 
         <div class="dd-queue-scroll" id="queueContainer">
             <div class="text-center py-5">
-                <div class="spinner-border mb-2" style="width:1.3rem;height:1.3rem;color:var(--teal);"></div>
-                <p class="text-muted small mb-0">Loading queue…</p>
+                <div class="spinner-border mb-2" style="width:1.1rem;height:1.1rem;color:var(--teal);"></div>
+                <p class="text-muted small mb-0" style="font-size:11px;">Loading queue…</p>
             </div>
+        </div>
+
+        <div class="queue-count-note" id="queueCountNote">Showing 0 of 0 patients</div>
+
+        <div class="dd-queue-bottom">
+            <?php if ($canCreateAppointments): ?>
+            <button class="btn-queue" onclick="showWalkInModal()">
+                <i class="bi bi-plus-lg"></i> Walk-in Patient
+            </button>
+            <?php endif; ?>
+            <button class="btn-queue" onclick="showSearchModal()">
+                <i class="bi bi-search"></i> Find Patient
+            </button>
         </div>
     </aside>
 
-    <!-- ══ RIGHT: WORKSPACE ══ -->
+    <!-- ══════ RIGHT: WORKSPACE ══════ -->
     <div class="dd-ws">
 
         <div class="dd-empty" id="noPatientPlaceholder">
             <div class="text-center">
-                <div style="width:64px;height:64px;background:var(--teal-light);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 14px;">
-                    <i class="bi bi-person-bounding-box" style="font-size:1.6rem;color:var(--teal);"></i>
+                <div style="width:56px;height:56px;background:var(--teal-light);border-radius:50%;display:flex;align-items:center;justify-content:center;margin:0 auto 14px;">
+                    <i class="bi bi-person-bounding-box" style="font-size:1.4rem;color:var(--teal-dark);"></i>
                 </div>
-                <h5 class="fw-700" style="color:#1e293b;">No Patient Selected</h5>
-                <p class="text-muted small mb-4">Select from the queue, or add a walk-in patient</p>
+                <h5 class="fw-bold" style="color:var(--ink);font-size:15px;">No Patient Selected</h5>
+                <p class="text-muted small mb-4" style="font-size:12px;">Select from the queue, or add a walk-in patient</p>
                 <?php if ($canCreateAppointments): ?>
-                <button class="btn btn-teal px-4" onclick="showWalkInModal()">
-                    <i class="bi bi-person-walking me-2"></i>Add Walk-in
+                <button class="btn btn-teal" onclick="showWalkInModal()">
+                    <i class="bi bi-person-plus me-2"></i>Add Walk-in
                 </button>
                 <?php endif; ?>
             </div>
         </div>
 
-        <!-- Patient card -->
         <div id="patientCard" style="display:none;">
 
-            <!-- Hidden form inputs -->
             <form id="examForm" style="display:none;">
                 <input type="hidden" id="currentAppointmentId">
                 <input type="hidden" id="currentPatientId">
@@ -420,280 +985,840 @@ foreach ($allDoctors as $doc) {
                 <input type="hidden" id="isAnyDoctor" value="0">
             </form>
 
-            <div class="pt-card">
+            <!-- ══════ PATIENT HEADER ══════ -->
+            <div class="pt-header-card">
+                <div class="pt-header-top">
+                    <div class="pt-avatar-lg" id="patientInitials">??</div>
+                    <div>
+                        <div class="pt-name-lg">
+                            <span id="patientName">—</span>
+                            <span class="status-badge" id="patientStatusBadge">Waiting</span>
+                        </div>
+                        <div class="pt-meta-line">
+                            <span id="patientGender">—</span>
+                            <span class="dot">·</span>
+                            <span><span id="patientAge">—</span> years old</span>
+                            <span class="dot">·</span>
+                            <span>Patient ID: <span id="patientCode">—</span></span>
+                        </div>
+                    </div>
+                    <div class="pt-header-actions">
+                        <?php if ($canViewHistory): ?>
+                        <button class="btn-ghost" onclick="viewFullHistory(currentPatientId)" id="viewFullHistoryBtn">
+                            <i class="bi bi-clock-history"></i> Patient History
+                        </button>
+                        <?php endif; ?>
+                        <button class="btn-ghost icon-only" data-bs-toggle="dropdown" aria-expanded="false">
+                            <i class="bi bi-three-dots"></i>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end" style="font-size:12.5px;">
+                            <li><a class="dropdown-item" href="#" onclick="showSavePatientModal();return false;"><i class="bi bi-pencil me-2"></i>Edit Patient</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="exportPatientData(currentPatientId);return false;"><i class="bi bi-download me-2"></i>Export Data</a></li>
+                        </ul>
+                    </div>
+                </div>
 
-                <!-- Header -->
-<div class="pt-hdr">
-    <div class="d-flex justify-content-between align-items-start">
-        <div>
-            <div class="pt-name" id="patientName">—</div>
-            <div class="d-flex flex-wrap gap-2 mt-2">
-                <span class="pt-pill"><i class="bi bi-calendar me-1"></i><span id="patientAge">—</span> yrs</span>
-                <span class="pt-pill"><i class="bi bi-gender-ambiguous me-1"></i><span id="patientGender">—</span></span>
-                <span class="pt-pill" id="patientType">Regular</span>
-                <span class="badge bg-success ms-1" id="newPatientBadge" style="display:none;">New Patient</span>
+<div class="pt-info-strip">
+    <div>
+        <div class="pi-label">Appointment</div>
+        <div class="pi-value" id="appointmentTime">—</div>
+    </div>
+    <div>
+        <div class="pi-label">Doctor</div>
+        <div class="pi-value" id="doctorName">—</div>
+    </div>
+    <div>
+        <div class="pi-label">Visit</div>
+        <div class="pi-value" id="serviceName">—</div>
+    </div>
+    <div>
+        <div class="pi-label">Selected Frame</div>
+        <div class="pi-value" id="frameName">—</div>
+    </div>
+    <div>
+        <div class="pi-label">Source</div>
+        <div class="pi-value" id="orderSource">—</div>
+    </div>
+    <div id="timerWrap">
+        <div class="pi-label">Timer</div>
+        <div class="pi-value" id="timer">00:00</div>
+    </div>
+</div>
+
+                <div id="anyDoctorAlert" style="display:none;" class="mt-3">
+                    <div class="alert alert-info d-flex align-items-center gap-2 mb-0 py-2">
+                        <i class="bi bi-people-fill"></i>
+                        <div class="flex-grow-1 small"><strong>Any Doctor</strong> — Claim to begin</div>
+                        <button class="btn btn-sm btn-teal" onclick="claimAppointment()">Claim</button>
+                    </div>
+                </div>
+                <div id="newPatientAlert" style="display:none;" class="mt-3">
+                    <div class="alert alert-warning d-flex align-items-center gap-2 mb-0 py-2">
+                        <i class="bi bi-person-plus-fill"></i>
+                        <div class="flex-grow-1 small"><strong>New Patient</strong> — Save after consultation</div>
+                        <button class="btn btn-sm btn-teal" onclick="showSavePatientModal()">Save</button>
+                    </div>
+                </div>
+
+                <div id="startConsultationBtnContainer" class="mt-3" style="display:none;">
+                    <button class="btn btn-teal w-100 fw-bold" onclick="startConsultation()" style="padding:11px;font-size:13px;">
+                        <i class="bi bi-play-fill me-2"></i> Start Visit
+                    </button>
+                    <div class="summary-cta-note">Opens the service-specific workflow for this patient</div>
+                </div>
+            </div>
+
+<!-- ══════ TABS ══════ -->
+<ul class="nav pt-tabs-bar" id="patientTabsBar" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="tab-link active" id="examTabLink" data-bs-toggle="tab" data-bs-target="#examTab" type="button" role="tab">Examination</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="tab-link" id="prescriptionTabLink" data-bs-toggle="tab" data-bs-target="#prescriptionTab" type="button" role="tab">Prescription</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="tab-link" id="historyTabLink" data-bs-toggle="tab" data-bs-target="#historyTab" type="button" role="tab">History</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="tab-link" id="decisionTabLink" data-bs-toggle="tab" data-bs-target="#decisionTab" type="button" role="tab">AI Analysis</button>
+    </li>
+</ul>
+
+            <div class="tab-content">
+
+                <!-- ═══════ EXAMINATION TAB ═══════ -->
+                <div class="tab-pane fade show active" id="examTab">
+                    <div class="pt-body-grid">
+
+    <div class="exam-pane">
+
+        <!-- ═══ PATIENT VITALS — ALWAYS VISIBLE ═══ -->
+        <div class="section-card" data-form-section="vitals">
+            <div class="sec-title">Patient Vitals</div>
+            <div class="field-grid cols-3">
+                <div>
+                    <label class="form-label">Blood Pressure</label>
+                    <input type="text" class="form-control form-control-sm" id="vitalBP" placeholder="112 / 74">
+                </div>
+                <div>
+                    <label class="form-label">Pulse</label>
+                    <input type="text" class="form-control form-control-sm" id="vitalPulse" placeholder="72">
+                </div>
+                <div>
+                    <label class="form-label">Temperature</label>
+                    <input type="text" class="form-control form-control-sm" id="vitalTemp" placeholder="36.6">
+                </div>
             </div>
         </div>
-        <div class="text-end">
-            <div class="pt-timer" id="timer">00:00</div>
-            <div style="font-size:.62rem;opacity:.6;margin-top:2px;">consultation</div>
-        </div>
-    </div>
 
-    <!-- ✅ ADD THIS START CONSULTATION BUTTON HERE -->
-    <div id="startConsultationBtnContainer" class="mt-3" style="display: none;">
-        <button class="btn btn-light w-100 fw-600" onclick="startConsultation()" 
-                style="background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3);">
-            <i class="bi bi-play-fill me-2"></i> Start Consultation
+        <!-- ═══ CHIEF COMPLAINT — ALWAYS VISIBLE ═══ -->
+        <div class="section-card" id="chiefComplaintCard" data-form-section="chief_complaint">
+            <div class="sec-title">
+                <span>Chief Complaint</span>
+                <span class="note">Patient's main concern</span>
+            </div>
+            <textarea class="form-control form-control-sm" id="chiefComplaint" rows="2" placeholder="Patient's main concern…"></textarea>
+        </div>
+
+        <!-- ═══ VISUAL ACUITY — DYNAMIC ═══ -->
+        <div class="section-card" data-form-section="visual_acuity">
+            <div class="sec-title">
+                <span>Visual Acuity</span>
+                <span class="note">With correction</span>
+            </div>
+            <table class="va-table">
+                <thead>
+                    <tr>
+                        <th>Measurement</th>
+                        <th>RIGHT EYE (OD)</th>
+                        <th>LEFT EYE (OS)</th>
+                        <th>BOTH EYES (OU)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Distance</td>
+                        <td><input type="text" id="vaRight" placeholder="20/20"></td>
+                        <td><input type="text" id="vaLeft" placeholder="20/25"></td>
+                        <td><input type="text" id="vaBoth" placeholder="20/20"></td>
+                    </tr>
+                    <tr>
+                        <td>Near</td>
+                        <td><input type="text" id="vaNearRight" placeholder="J1"></td>
+                        <td><input type="text" id="vaNearLeft" placeholder="J2"></td>
+                        <td><input type="text" id="vaNearBoth" placeholder="J1"></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- ═══ REFRACTION — DYNAMIC ═══ -->
+        <div class="section-card" data-form-section="refraction">
+            <div class="sec-title">
+                <span>Refraction</span>
+                <span class="note">Diopters (D)</span>
+            </div>
+            <table class="refr-table">
+                <thead>
+                    <tr>
+                        <th>Eye</th>
+                        <th>Sphere</th>
+                        <th>Cylinder</th>
+                        <th>Axis</th>
+                        <th>Add</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Right eye (OD)</td>
+                        <td><input type="text" id="rxSphR" placeholder="-1.25"></td>
+                        <td><input type="text" id="rxCylR" placeholder="-0.50"></td>
+                        <td><input type="text" id="rxAxisR" placeholder="180°"></td>
+                        <td><input type="text" id="rxAddR" placeholder="+0.00"></td>
+                    </tr>
+                    <tr>
+                        <td>Left eye (OS)</td>
+                        <td><input type="text" id="rxSphL" placeholder="-1.50"></td>
+                        <td><input type="text" id="rxCylL" placeholder="-0.50"></td>
+                        <td><input type="text" id="rxAxisL" placeholder="175°"></td>
+                        <td><input type="text" id="rxAddL" placeholder="+0.00"></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- ═══ EYE EXAMINATION — DYNAMIC ═══ -->
+        <div class="section-card" data-form-section="external_exam">
+            <div class="sec-title">
+                <span>Eye Examination</span>
+                <span class="note">Bilateral findings unless noted</span>
+            </div>
+            <div class="field-grid cols-2">
+                <div>
+                    <label class="form-label">External Examination</label>
+                    <select class="form-select form-select-sm" id="examExternal">
+                        <option>Normal</option><option>Abnormal</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Pupil</label>
+                    <select class="form-select form-select-sm" id="examPupils">
+                        <option>PERRL, no RAPD</option><option>Abnormal</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">EOM</label>
+                    <select class="form-select form-select-sm" id="examEom">
+                        <option>Full, both eyes</option><option>Abnormal</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Conjunctiva</label>
+                    <select class="form-select form-select-sm" id="examConj">
+                        <option>Quiet, both eyes</option><option>Abnormal</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Cornea</label>
+                    <select class="form-select form-select-sm" id="examCornea">
+                        <option>Clear, both eyes</option><option>Abnormal</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Anterior Chamber</label>
+                    <select class="form-select form-select-sm" id="examAC">
+                        <option>Deep and quiet</option><option>Shallow</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Lens</label>
+                    <select class="form-select form-select-sm" id="examLens">
+                        <option>Clear, both eyes</option><option>Cataract</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Fundus</label>
+                    <select class="form-select form-select-sm" id="examFundus">
+                        <option>Normal, both eyes</option><option>Abnormal</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ CONTACT LENS ASSESSMENT — DYNAMIC ═══ -->
+        <div class="section-card" data-form-section="contact_lens_assessment">
+            <div class="sec-title">
+                <span>Contact Lens Assessment</span>
+                <span class="note">Fitting & base curve</span>
+            </div>
+            <div class="field-grid cols-3">
+                <div>
+                    <label class="form-label">Base Curve (BC)</label>
+                    <input type="text" class="form-control form-control-sm" id="clBaseCurve" placeholder="e.g., 8.6">
+                </div>
+                <div>
+                    <label class="form-label">Diameter (DIA)</label>
+                    <input type="text" class="form-control form-control-sm" id="clDiameter" placeholder="e.g., 14.2">
+                </div>
+                <div>
+                    <label class="form-label">Power (SPH)</label>
+                    <input type="text" class="form-control form-control-sm" id="clPower" placeholder="e.g., -1.25">
+                </div>
+                <div>
+                    <label class="form-label">Cylinder (CYL)</label>
+                    <input type="text" class="form-control form-control-sm" id="clCylinder" placeholder="e.g., -0.50">
+                </div>
+                <div>
+                    <label class="form-label">Axis</label>
+                    <input type="text" class="form-control form-control-sm" id="clAxis" placeholder="e.g., 180">
+                </div>
+                <div>
+                    <label class="form-label">Lens Type</label>
+                    <select class="form-select form-select-sm" id="clLensType">
+                        <option value="">Select</option>
+                        <option value="daily">Daily Disposable</option>
+                        <option value="monthly">Monthly Wear</option>
+                        <option value="toric">Toric</option>
+                    </select>
+                </div>
+            </div>
+            <div style="margin-top:14px;">
+                <label class="form-label">Fit Assessment</label>
+                <textarea class="form-control form-control-sm" id="clFitAssessment" rows="2" placeholder="Centration, movement, coverage..."></textarea>
+            </div>
+            <div style="margin-top:14px;">
+                <label class="form-label">Trial Lens Used</label>
+                <input type="text" class="form-control form-control-sm" id="clTrialLens" placeholder="Brand and model">
+            </div>
+        </div>
+
+        <!-- ═══ GLAUCOMA SCREENING — DYNAMIC ═══ -->
+        <div class="section-card" data-form-section="glaucoma_screening">
+            <div class="sec-title">
+                <span>Glaucoma Screening</span>
+                <span class="note">IOP & optic nerve</span>
+            </div>
+            <div class="field-grid cols-2">
+                <div>
+                    <label class="form-label">IOP — Right Eye (mmHg)</label>
+                    <input type="text" class="form-control form-control-sm" id="iopRight" placeholder="e.g., 16">
+                </div>
+                <div>
+                    <label class="form-label">IOP — Left Eye (mmHg)</label>
+                    <input type="text" class="form-control form-control-sm" id="iopLeft" placeholder="e.g., 17">
+                </div>
+                <div>
+                    <label class="form-label">Cup-to-Disc Ratio — OD</label>
+                    <input type="text" class="form-control form-control-sm" id="cdRatioRight" placeholder="e.g., 0.3">
+                </div>
+                <div>
+                    <label class="form-label">Cup-to-Disc Ratio — OS</label>
+                    <input type="text" class="form-control form-control-sm" id="cdRatioLeft" placeholder="e.g., 0.3">
+                </div>
+            </div>
+            <div class="field-grid cols-2" style="margin-top:14px;">
+                <div>
+                    <label class="form-label">Visual Field Test</label>
+                    <select class="form-select form-select-sm" id="visualField">
+                        <option value="normal">Normal</option>
+                        <option value="abnormal">Abnormal</option>
+                        <option value="not_performed">Not Performed</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Risk Assessment</label>
+                    <select class="form-select form-select-sm" id="glaucomaRisk">
+                        <option value="low">Low Risk</option>
+                        <option value="moderate">Moderate Risk</option>
+                        <option value="high">High Risk</option>
+                        <option value="suspected">Suspected Glaucoma</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- ═══ RETINA SCREENING — DYNAMIC ═══ -->
+        <div class="section-card" data-form-section="retina_screening">
+            <div class="sec-title">
+                <span>Retina Screening</span>
+                <span class="note">Fundus examination</span>
+            </div>
+            <div class="field-grid cols-2">
+                <div>
+                    <label class="form-label">Fundus — Right Eye</label>
+                    <select class="form-select form-select-sm" id="fundusRight">
+                        <option value="normal">Normal</option>
+                        <option value="abnormal">Abnormal</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Fundus — Left Eye</label>
+                    <select class="form-select form-select-sm" id="fundusLeft">
+                        <option value="normal">Normal</option>
+                        <option value="abnormal">Abnormal</option>
+                    </select>
+                </div>
+            </div>
+            <div style="margin-top:14px;">
+                <label class="form-label">Findings</label>
+                <textarea class="form-control form-control-sm" id="retinaFindings" rows="2"></textarea>
+            </div>
+        </div>
+
+        <!-- ═══ CATARACT EVALUATION — DYNAMIC ═══ -->
+        <div class="section-card" data-form-section="cataract_evaluation">
+            <div class="sec-title">
+                <span>Cataract Evaluation</span>
+                <span class="note">Lens opacity grading</span>
+            </div>
+            <div class="field-grid cols-2">
+                <div>
+                    <label class="form-label">Lens Opacity — Right Eye</label>
+                    <select class="form-select form-select-sm" id="cataractRight">
+                        <option value="none">None</option>
+                        <option value="mild">Mild</option>
+                        <option value="moderate">Moderate</option>
+                        <option value="severe">Severe</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="form-label">Lens Opacity — Left Eye</label>
+                    <select class="form-select form-select-sm" id="cataractLeft">
+                        <option value="none">None</option>
+                        <option value="mild">Mild</option>
+                        <option value="moderate">Moderate</option>
+                        <option value="severe">Severe</option>
+                    </select>
+                </div>
+            </div>
+            <div style="margin-top:14px;">
+                <label class="form-label">Recommendation</label>
+                <textarea class="form-control form-control-sm" id="cataractRecommendation" rows="2"></textarea>
+            </div>
+        </div>
+
+        <!-- ═══ TREATMENT NOTES — DYNAMIC ═══ -->
+        <div class="section-card" data-form-section="treatment_notes">
+            <div class="sec-title">
+                <span>Treatment Notes</span>
+                <span class="note">Medication & instructions</span>
+            </div>
+            <div style="margin-bottom:14px;">
+                <label class="form-label">Treatment Given</label>
+                <textarea class="form-control form-control-sm" id="treatmentGiven" rows="3"></textarea>
+            </div>
+            <div>
+                <label class="form-label">Follow-up Instructions</label>
+                <textarea class="form-control form-control-sm" id="followupInstructions" rows="2"></textarea>
+            </div>
+        </div>
+
+        <!-- ═══ ASSESSMENT — ALWAYS VISIBLE ═══ -->
+        <div class="section-card" data-form-section="assessment">
+            <div class="sec-title">Assessment</div>
+            <div style="margin-bottom:14px;">
+                <label class="form-label">Clinical findings / diagnosis</label>
+                <textarea class="form-control form-control-sm" id="findings" rows="3" placeholder="Enter clinical findings…"></textarea>
+            </div>
+            <div style="margin-bottom:14px;">
+                <label class="form-label">Diagnosis</label>
+                <input type="text" class="form-control form-control-sm" id="diagnosis" placeholder="e.g., Myopia, bilateral">
+            </div>
+            <div style="margin-bottom:14px;">
+                <label class="form-label">Treatment Plan</label>
+                <input type="text" class="form-control form-control-sm" id="treatmentPlan" placeholder="e.g., Prescribe glasses">
+            </div>
+            <div>
+                <label class="form-label">Notes</label>
+                <textarea class="form-control form-control-sm" id="notes" rows="3" placeholder="Additional remarks…"></textarea>
+            </div>
+        </div>
+
+        <!-- ═══ LENS RECOMMENDATION — DYNAMIC ═══ -->
+        <div class="section-card lens-rec-card" id="lensRecommendationCard" data-form-section="lens_recommendation">
+            <div class="sec-title">
+                <span><i class="bi bi-eyeglasses me-2"></i>Lens Recommendation</span>
+                <span class="note">Clinical recommendation for Sales/Optical</span>
+            </div>
+
+            <!-- Lens Design -->
+            <div class="lr-group">
+                <label class="lr-label">
+                    <i class="bi bi-rulers"></i> Lens Design
+                </label>
+                <div class="lr-option-grid" id="recLensDesignGrid">
+                    <button type="button" class="lr-option" data-value="Single Vision" onclick="selectRecDesign(this)">
+                        <div class="lr-radio"></div>
+                        <div class="lr-info">
+                            <span class="lr-title">Single Vision</span>
+                            <span class="lr-desc">For near OR far vision</span>
+                        </div>
+                    </button>
+                    <button type="button" class="lr-option" data-value="Progressive" onclick="selectRecDesign(this)">
+                        <div class="lr-radio"></div>
+                        <div class="lr-info">
+                            <span class="lr-title">Progressive</span>
+                            <span class="lr-desc">Near, mid & far vision</span>
+                        </div>
+                        <span class="lr-badge-rec">Recommended</span>
+                    </button>
+                    <button type="button" class="lr-option" data-value="Bifocal" onclick="selectRecDesign(this)">
+                        <div class="lr-radio"></div>
+                        <div class="lr-info">
+                            <span class="lr-title">Bifocal</span>
+                            <span class="lr-desc">Two-zone vision</span>
+                        </div>
+                    </button>
+                    <button type="button" class="lr-option" data-value="Reading" onclick="selectRecDesign(this)">
+                        <div class="lr-radio"></div>
+                        <div class="lr-info">
+                            <span class="lr-title">Reading</span>
+                            <span class="lr-desc">Near vision only</span>
+                        </div>
+                    </button>
+                </div>
+                <input type="hidden" id="recLensDesign" value="">
+            </div>
+
+            <!-- Lens Index -->
+            <div class="lr-group">
+                <label class="lr-label">
+                    <i class="bi bi-layers"></i> Lens Index <span class="lr-hint">(Thickness)</span>
+                </label>
+                <div class="lr-option-grid lr-index-grid" id="recLensIndexGrid">
+                    <button type="button" class="lr-option lr-index" data-value="1.56 Standard" onclick="selectRecIndex(this)">
+                        <div class="lr-radio"></div>
+                        <div class="lr-info">
+                            <span class="lr-title">1.56</span>
+                            <span class="lr-desc">Standard</span>
+                        </div>
+                    </button>
+                    <button type="button" class="lr-option lr-index" data-value="1.60 Thin" onclick="selectRecIndex(this)">
+                        <div class="lr-radio"></div>
+                        <div class="lr-info">
+                            <span class="lr-title">1.60</span>
+                            <span class="lr-desc">Thin</span>
+                        </div>
+                        <span class="lr-badge-rec">Recommended</span>
+                    </button>
+                    <button type="button" class="lr-option lr-index" data-value="1.67 Ultra Thin" onclick="selectRecIndex(this)">
+                        <div class="lr-radio"></div>
+                        <div class="lr-info">
+                            <span class="lr-title">1.67</span>
+                            <span class="lr-desc">Ultra Thin</span>
+                        </div>
+                    </button>
+                    <button type="button" class="lr-option lr-index" data-value="1.74 High Index" onclick="selectRecIndex(this)">
+                        <div class="lr-radio"></div>
+                        <div class="lr-info">
+                            <span class="lr-title">1.74</span>
+                            <span class="lr-desc">High Index</span>
+                        </div>
+                    </button>
+                </div>
+                <input type="hidden" id="recLensIndex" value="">
+            </div>
+
+            <!-- Features -->
+            <div class="lr-group">
+                <label class="lr-label">
+                    <i class="bi bi-stars"></i> Features <span class="lr-hint">(Optional — multi-select)</span>
+                </label>
+                <div class="lr-features-list" id="recLensFeaturesList">
+                    <div class="lr-feature" onclick="toggleRecFeature(this, event)">
+                        <input type="checkbox" value="Blue Cut">
+                        <div class="lr-check"></div>
+                        <div class="lr-feature-info">
+                            <span class="lr-feature-title">
+                                <i class="bi bi-shield-fill" style="color:#3b82f6;"></i> Blue Cut
+                            </span>
+                            <span class="lr-feature-desc">Reduces screen glare & eye strain</span>
+                        </div>
+                    </div>
+                    <div class="lr-feature" onclick="toggleRecFeature(this, event)">
+                        <input type="checkbox" value="Anti-Reflective (AR)">
+                        <div class="lr-check"></div>
+                        <div class="lr-feature-info">
+                            <span class="lr-feature-title">
+                                <i class="bi bi-eye-fill" style="color:#8b5cf6;"></i> Anti-Reflective (AR)
+                            </span>
+                            <span class="lr-feature-desc">Reduces reflections & improves clarity</span>
+                        </div>
+                    </div>
+                    <div class="lr-feature" onclick="toggleRecFeature(this, event)">
+                        <input type="checkbox" value="Photochromic">
+                        <div class="lr-check"></div>
+                        <div class="lr-feature-info">
+                            <span class="lr-feature-title">
+                                <i class="bi bi-brightness-high-fill" style="color:#f59e0b;"></i> Photochromic
+                            </span>
+                            <span class="lr-feature-desc">Darkens automatically in sunlight</span>
+                        </div>
+                    </div>
+                    <div class="lr-feature" onclick="toggleRecFeature(this, event)">
+                        <input type="checkbox" value="Scratch Resistant">
+                        <div class="lr-check"></div>
+                        <div class="lr-feature-info">
+                            <span class="lr-feature-title">
+                                <i class="bi bi-shield-check" style="color:#10b981;"></i> Scratch Resistant
+                            </span>
+                            <span class="lr-feature-desc">Durable protective coating</span>
+                        </div>
+                    </div>
+                    <div class="lr-feature" onclick="toggleRecFeature(this, event)">
+                        <input type="checkbox" value="UV Protection">
+                        <div class="lr-check"></div>
+                        <div class="lr-feature-info">
+                            <span class="lr-feature-title">
+                                <i class="bi bi-sun-fill" style="color:#ef4444;"></i> UV Protection
+                            </span>
+                            <span class="lr-feature-desc">Blocks harmful UV rays</span>
+                        </div>
+                    </div>
+                </div>
+                <input type="hidden" id="recLensFeature" value="">
+                <div class="lr-feature-count" id="recFeatureCount" style="display:none;">
+                    <i class="bi bi-check-circle-fill"></i> <span id="recFeatureCountText">0 features selected</span>
+                </div>
+            </div>
+
+            <!-- Clinical Notes -->
+            <div class="lr-group">
+                <label class="lr-label">
+                    <i class="bi bi-chat-left-text"></i> Clinical Notes for Sales
+                </label>
+                <textarea class="form-control form-control-sm" id="recLensNotes" rows="2"
+                          placeholder="e.g., Patient needs blue light protection for computer work…"></textarea>
+            </div>
+
+            <!-- Info Note -->
+            <div class="lr-info-note">
+                <i class="bi bi-info-circle-fill"></i>
+                <span>Ito ang baseline recommendation. Ang <strong>Sales/Optical</strong> ang mag-fi-finalize ng price at order.</span>
+            </div>
+        </div>
+
+    </div><!-- ✅ CLOSE exam-pane -->
+
+    <!-- ═══ CLINICAL SUMMARY — SA LABAS ng exam-pane ═══ -->
+    <aside class="summary-card">
+        <div class="sum-title">Clinical Summary</div>
+
+        <div class="summary-row">
+            <span class="sum-label">Patient</span>
+            <span class="sum-value" id="csPatientName">—</span>
+        </div>
+        <div class="summary-row">
+            <span class="sum-label">Age</span>
+            <span class="sum-value" id="csAgeGender">—</span>
+        </div>
+        <div class="summary-row">
+            <span class="sum-label">Visit</span>
+            <span class="sum-value" id="csVisit">—</span>
+        </div>
+
+        <div class="summary-subhead">Visual Acuity</div>
+        <div class="summary-va-grid">
+            <div class="summary-va-cell">
+                <div class="lbl">OD</div>
+                <div class="val" id="csVaOd">—</div>
+            </div>
+            <div class="summary-va-cell ta-r">
+                <div class="lbl">OS</div>
+                <div class="val" id="csVaOs">—</div>
+            </div>
+        </div>
+
+        <div class="summary-subhead">Assessment</div>
+        <div class="summary-row" style="border:none;padding-top:0;">
+            <span class="sum-value" id="csAssessment" style="text-align:left;max-width:100%;">—</span>
+        </div>
+
+        <div class="summary-subhead">Status</div>
+        <div class="summary-row" style="border:none;padding-top:0;">
+            <span class="sum-value" id="csStatus" style="text-align:left;max-width:100%;display:inline-flex;align-items:center;gap:6px;color:var(--teal-dark);">
+                <span style="width:6px;height:6px;border-radius:50%;background:var(--teal);display:inline-block;"></span>
+                In Examination
+            </span>
+        </div>
+
+        <!-- ═══ PRIMARY: Complete Consultation ═══ -->
+        <button type="button" class="summary-cta summary-cta-primary" onclick="sendToSales()" id="sendToSalesBtn">
+            <i class="bi bi-arrow-right-circle-fill"></i> Complete Consultation
         </button>
-    </div>
+        <div class="summary-cta-note">
+            <i class="bi bi-info-circle me-1"></i>
+            Save all data & Complete Consultation/Optical for final pricing.
+        </div>
 
-    <div class="pt-detail-row">
-<!-- Sa header area ng patient card -->
-<div class="pt-di">
-    <div class="dl">Services</div>
-    <div class="dv" id="serviceName">—</div>
-    <div id="billItemsList" class="mt-1" style="font-size:.75rem; display:none;"></div>
-    <div id="billTotal" class="mt-1 fw-700" style="font-size:.8rem; display:none;">
-        Total: <span id="billTotalAmount">₱0.00</span>
-    </div>
-</div>
-        <div class="pt-di">
-            <div class="dl">Doctor</div>
-            <div class="dv" id="doctorName">—</div>
-        </div>
-        <div class="pt-di">
-            <div class="dl">Time</div>
-            <div class="dv" id="appointmentTime">—</div>
-        </div>
-    </div>
+        <!-- ═══ SECONDARY: Pause & Save ═══ -->
+        <button type="button" class="summary-save-link" onclick="pauseAndSave()">
+            <i class="bi bi-pause-circle me-1"></i>Pause & Save
+        </button>
 
-    <div id="anyDoctorAlert" style="display:none;">
-        <div class="pt-alert">
-            <i class="bi bi-people-fill fs-5"></i>
-            <div class="flex-grow-1"><strong>Any Doctor</strong> — Claim to begin</div>
-            <button class="btn btn-sm btn-light fw-600" onclick="claimAppointment()">Claim</button>
+        <!-- ═══ AUTO-SAVE INDICATOR ═══ -->
+        <div class="autosave-indicator" id="autosaveIndicator" style="display:none;">
+            <i class="bi bi-cloud-check"></i>
+            <span id="autosaveText">Saved</span>
         </div>
-    </div>
-    <div id="newPatientAlert" style="display:none;">
-        <div class="pt-alert">
-            <i class="bi bi-person-plus-fill fs-5"></i>
-            <div class="flex-grow-1"><strong>New Patient</strong> — Save after consultation</div>
-            <button class="btn btn-sm btn-light fw-600" onclick="showSavePatientModal()">Save</button>
-        </div>
-    </div>
+    </aside>
+
+</div><!-- ✅ CLOSE pt-body-grid -->
+
 </div>
 
-                <!-- Body -->
-                <div class="pt-body">
-                    <div class="row g-0">
+                <!-- ═══════ PRESCRIPTION TAB ═══════ -->
+                <div class="tab-pane fade" id="prescriptionTab">
+                    <form id="rxForm">
 
-                        <!-- Exam form -->
-                        <div class="col-md-5 exam-pane">
-                            <div class="d-flex align-items-center gap-2 mb-3">
-                                <i class="bi bi-eyeglasses" style="color:var(--teal);font-size:1rem;"></i>
-                                <span class="fw-700" style="color:#1e293b;font-size:.85rem;">Examination</span>
+                        <div class="rx-header-row">
+                            <div>
+                                <div class="rx-page-title">Prescription</div>
+                                <div class="rx-page-sub">Medication and optical correction · <?= date('d M Y') ?></div>
                             </div>
-
-                            <div class="mb-2">
-                                <label class="form-label">Chief Complaint</label>
-                                <textarea class="form-control form-control-sm" id="chiefComplaint" rows="2" placeholder="Patient's main concern…"></textarea>
-                            </div>
-                            <div class="row g-2 mb-2">
-                                <div class="col-6">
-                                    <label class="form-label">VA Left</label>
-                                    <input type="text" class="form-control form-control-sm" id="vaLeft" placeholder="20/20">
-                                </div>
-                                <div class="col-6">
-                                    <label class="form-label">VA Right</label>
-                                    <input type="text" class="form-control form-control-sm" id="vaRight" placeholder="20/25">
-                                </div>
-                            </div>
-                            <div class="mb-2">
-                                <label class="form-label">Findings</label>
-                                <textarea class="form-control form-control-sm" id="findings" rows="2" placeholder="Examination findings…"></textarea>
-                            </div>
-                            <div class="row g-2 mb-2">
-                                <div class="col-6">
-                                    <label class="form-label">Diagnosis</label>
-                                    <input type="text" class="form-control form-control-sm" id="diagnosis" placeholder="e.g. Myopia">
-                                </div>
-                                <div class="col-6">
-                                    <label class="form-label">Treatment</label>
-                                    <input type="text" class="form-control form-control-sm" id="treatmentPlan" placeholder="e.g. Prescribe glasses">
-                                </div>
-                            </div>
-                            <div class="mb-3">
-                                <label class="form-label">Notes</label>
-                                <textarea class="form-control form-control-sm" id="notes" rows="2" placeholder="Additional remarks…"></textarea>
-                            </div>
-
-                            <div class="d-flex gap-2">
-                                <?php if ($canCreateClinicalNotes || $canEditClinicalNotes): ?>
-                                <button type="button" class="btn btn-success btn-sm flex-fill fw-600" style="border-radius:8px;" onclick="saveAndComplete()">
-                                    <i class="bi bi-check-lg me-1"></i>Save & Complete
+                            <div class="rx-header-actions">
+                                <span class="rx-draft-badge">Draft</span>
+                                <button type="button" class="rx-print-btn" onclick="printPrescription()">
+                                    <i class="bi bi-printer"></i> Print
                                 </button>
-                                <button type="button" class="btn btn-outline-secondary btn-sm px-3" style="border-radius:8px;" onclick="saveOnly()" title="Save only">
-                                    <i class="bi bi-save"></i>
+                            </div>
+                        </div>
+
+                        <!-- Spectacle prescription (existing Rx inputs) -->
+                        <div style="margin: 4px 0 14px;">
+                            <div style="display:flex;justify-content:space-between;align-items:baseline;">
+                                <div style="font-size:15px;font-weight:800;color:var(--ink);">Spectacle prescription</div>
+                                <div style="font-size:11.5px;color:var(--muted-2);">Sphere / Cylinder in D · PD in mm</div>
+                            </div>
+                        </div>
+
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <div class="rx-eye-card">
+                                    <div class="rx-eye-title">OD Prescription · Right eye</div>
+                                    <div class="rx-eye-grid">
+                                        <div>
+                                            <label class="form-label">Sphere</label>
+                                            <input type="text" id="rxSphR_p" placeholder="-2.00">
+                                        </div>
+                                        <div>
+                                            <label class="form-label">Cylinder</label>
+                                            <input type="text" id="rxCylR_p" placeholder="-0.50">
+                                        </div>
+                                        <div>
+                                            <label class="form-label">Axis</label>
+                                            <input type="text" id="rxAxisR_p" placeholder="180">
+                                        </div>
+                                        <div>
+                                            <label class="form-label">Add</label>
+                                            <input type="text" id="rxAddR_p" placeholder="+2.00">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="rx-eye-card">
+                                    <div class="rx-eye-title">OS Prescription · Left eye</div>
+                                    <div class="rx-eye-grid">
+                                        <div>
+                                            <label class="form-label">Sphere</label>
+                                            <input type="text" id="rxSphL_p" placeholder="-1.75">
+                                        </div>
+                                        <div>
+                                            <label class="form-label">Cylinder</label>
+                                            <input type="text" id="rxCylL_p" placeholder="-0.25">
+                                        </div>
+                                        <div>
+                                            <label class="form-label">Axis</label>
+                                            <input type="text" id="rxAxisL_p" placeholder="175">
+                                        </div>
+                                        <div>
+                                            <label class="form-label">Add</label>
+                                            <input type="text" id="rxAddL_p" placeholder="+2.00">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- PD + PD Type (existing) -->
+                        <div class="field-grid cols-2" style="margin-top:8px;">
+                            <div>
+                                <label class="form-label">PD</label>
+                                <input type="text" class="form-control form-control-sm" id="rxPd" placeholder="62mm">
+                            </div>
+                            <div>
+                                <label class="form-label">PD Type</label>
+                                <select class="form-select form-select-sm" id="rxPdType">
+                                    <option value="Binocular">Binocular</option>
+                                    <option value="Monocular">Monocular</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div style="margin-top:14px;">
+                            <label class="form-label">Rx Notes</label>
+                            <textarea class="form-control form-control-sm" id="rxNotes" rows="2" placeholder="Lens type, coating…"></textarea>
+                        </div>
+
+                        <!-- Save bar -->
+                        <div class="rx-save-bar">
+                            <div>
+                                <div class="who" id="rxPrescribingDoctor">Dr. —</div>
+                                <div class="who-sub">Prescribing doctor · <?= date('d M Y') ?> · <span id="rxPatientCode">PT-000000</span></div>
+                            </div>
+                            <div class="d-flex gap-2">
+                                <?php if ($canCreatePrescriptions || $canEditPrescriptions): ?>
+                                <button type="button" class="rx-save-btn" onclick="savePrescriptionOnly()">
+                                    <i class="bi bi-check-lg me-1"></i> Save Prescription
                                 </button>
                                 <?php endif; ?>
                             </div>
                         </div>
 
-                        <!-- Tabs -->
-                        <div class="col-md-7">
-                            <ul class="nav pt-tabs" id="patientTabs" role="tablist">
-                                <li class="nav-item">
-                                    <a class="nav-link" data-bs-toggle="tab" href="#prescriptionTab" id="prescriptionTabLink">
-                                        <i class="bi bi-prescription2 me-1"></i>Rx
-                                    </a>
-                                </li>
-                                <li class="nav-item">
-                                    <a class="nav-link active" data-bs-toggle="tab" href="#historyTab">
-                                        <i class="bi bi-clock-history me-1"></i>History
-                                    </a>
-                                </li>
-                                <li class="nav-item">
-                                    <a class="nav-link" data-bs-toggle="tab" href="#decisionTab">
-                                        <i class="bi bi-graph-up me-1"></i>AI Analysis
-                                    </a>
-                                </li>
-                            </ul>
+                    </form>
+                </div>
 
-                            <div class="tab-content p-3">
+                <!-- ═══════ HISTORY TAB ═══════ -->
+                <div class="tab-pane fade" id="historyTab">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <span class="fw-bold" style="color:var(--ink);font-size:13.5px;">
+                            <i class="bi bi-clock-history me-1" style="color:var(--teal);"></i>Visit History
+                        </span>
+                        <?php if ($canViewHistory): ?>
+                        <button class="btn btn-sm btn-outline-teal px-3 py-1" style="font-size:12px;" onclick="viewFullHistory(currentPatientId)">
+                            View All <i class="bi bi-arrow-right ms-1"></i>
+                        </button>
+                        <?php endif; ?>
+                    </div>
 
-                                <!-- PRESCRIPTION TAB -->
-                                <div class="tab-pane fade" id="prescriptionTab">
-                                    <form id="rxForm">
-                                        <div class="row g-2 mb-2">
-                                            <div class="col-6">
-                                                <div class="rx-box">
-                                                    <div class="rx-lbl">Right Eye (OD)</div>
-                                                    <div class="row g-1 mb-1">
-                                                        <div class="col-6">
-                                                            <label class="form-label">Sphere</label>
-                                                            <input type="text" class="form-control form-control-sm" id="rxSphR" placeholder="-2.00">
-                                                        </div>
-                                                        <div class="col-6">
-                                                            <label class="form-label">Cylinder</label>
-                                                            <input type="text" class="form-control form-control-sm" id="rxCylR" placeholder="-0.50">
-                                                        </div>
-                                                    </div>
-                                                    <div class="row g-1">
-                                                        <div class="col-6">
-                                                            <label class="form-label">Axis</label>
-                                                            <input type="text" class="form-control form-control-sm" id="rxAxisR" placeholder="180">
-                                                        </div>
-                                                        <div class="col-6">
-                                                            <label class="form-label">Add</label>
-                                                            <input type="text" class="form-control form-control-sm" id="rxAddR" placeholder="+2.00">
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            <div class="col-6">
-                                                <div class="rx-box">
-                                                    <div class="rx-lbl">Left Eye (OS)</div>
-                                                    <div class="row g-1 mb-1">
-                                                        <div class="col-6">
-                                                            <label class="form-label">Sphere</label>
-                                                            <input type="text" class="form-control form-control-sm" id="rxSphL" placeholder="-1.75">
-                                                        </div>
-                                                        <div class="col-6">
-                                                            <label class="form-label">Cylinder</label>
-                                                            <input type="text" class="form-control form-control-sm" id="rxCylL" placeholder="-0.25">
-                                                        </div>
-                                                    </div>
-                                                    <div class="row g-1">
-                                                        <div class="col-6">
-                                                            <label class="form-label">Axis</label>
-                                                            <input type="text" class="form-control form-control-sm" id="rxAxisL" placeholder="175">
-                                                        </div>
-                                                        <div class="col-6">
-                                                            <label class="form-label">Add</label>
-                                                            <input type="text" class="form-control form-control-sm" id="rxAddL" placeholder="+2.00">
-                                                        </div>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
+                    <div id="historySidebar" class="hist-scroll">
+                        <div class="text-center py-4 text-muted">
+                            <i class="bi bi-arrow-left-circle d-block mb-1 opacity-30" style="font-size:1.5rem;"></i>
+                            <small style="font-size:12px;">Select a patient to view history</small>
+                        </div>
+                    </div>
 
-                                        <div class="row g-2 mb-2">
-                                            <div class="col-6">
-                                                <label class="form-label">PD</label>
-                                                <input type="text" class="form-control form-control-sm" id="rxPd" placeholder="62mm">
-                                            </div>
-                                            <div class="col-6">
-                                                <label class="form-label">PD Type</label>
-                                                <select class="form-select form-select-sm" id="rxPdType">
-                                                    <option value="Binocular">Binocular</option>
-                                                    <option value="Monocular">Monocular</option>
-                                                </select>
-                                            </div>
-                                        </div>
+                    <div class="mt-3 pt-2 border-top">
+                        <div style="font-size:10.5px;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:var(--muted-2);" class="mb-1">Last Prescription</div>
+                        <div id="lastRxSummary" class="small text-muted" style="font-size:12px;">No previous prescription</div>
+                    </div>
+                </div>
 
-                                        <div class="mb-3">
-                                            <label class="form-label">Rx Notes</label>
-                                            <textarea class="form-control form-control-sm" id="rxNotes" rows="2" placeholder="Lens type, coating…"></textarea>
-                                        </div>
+                <!-- ═══════ AI ANALYSIS TAB ═══════ -->
+                <div class="tab-pane fade" id="decisionTab">
+                    <div id="decisionContent">
+                        <div class="text-center py-4">
+                            <div class="spinner-border mb-2" id="decisionLoader" style="display:none;width:1.2rem;height:1.2rem;color:var(--teal);"></div>
+                            <div id="decisionResults">
+                                <i class="bi bi-graph-up-arrow d-block mb-2 opacity-25" style="font-size:1.6rem;color:var(--teal);"></i>
+                                <p class="text-muted small" style="font-size:12.5px;">Select a patient to see AI analysis</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
 
-                                    <div class="d-flex gap-2 flex-wrap">
-                                        <?php if ($canCreatePrescriptions || $canEditPrescriptions): ?>
-                                        <button type="button" class="btn btn-teal btn-sm flex-fill" onclick="savePrescriptionOnly()">
-                                            <i class="bi bi-save me-1"></i>Save Rx
-                                        </button>
-                                        <?php endif; ?>
-                                        <button type="button" class="btn btn-outline-teal btn-sm w-100 mt-1" onclick="printPrescription()">
-                                            <i class="bi bi-printer me-1"></i>Print Prescription
-                                        </button>
-                                    </div>
-                                    </form>
-                                </div>
-
-                                <!-- HISTORY TAB -->
-                                <div class="tab-pane fade show active" id="historyTab">
-                                    <div class="d-flex justify-content-between align-items-center mb-2">
-                                        <span class="fw-700" style="font-size:.81rem;color:#1e293b;">
-                                            <i class="bi bi-clock-history me-1" style="color:var(--teal);"></i>Visit History
-                                        </span>
-                                        <?php if ($canViewHistory): ?>
-                                        <button class="btn btn-sm btn-outline-teal px-2 py-1" style="font-size:.73rem;" onclick="viewFullHistory(currentPatientId)" id="viewFullHistoryBtn">
-                                            View All <i class="bi bi-arrow-right ms-1"></i>
-                                        </button>
-                                        <?php endif; ?>
-                                    </div>
-
-                                    <div id="historySidebar" class="hist-scroll">
-                                        <div class="text-center py-4 text-muted">
-                                            <i class="bi bi-arrow-left-circle d-block mb-1 opacity-30" style="font-size:1.5rem;"></i>
-                                            <small>Select a patient to view history</small>
-                                        </div>
-                                    </div>
-
-                                    <div class="mt-3 pt-2 border-top">
-                                        <div style="font-size:.63rem;font-weight:800;text-transform:uppercase;letter-spacing:.07em;color:#94a3b8;" class="mb-1">Last Prescription</div>
-                                        <div id="lastRxSummary" class="small text-muted">No previous prescription</div>
-                                    </div>
-                                </div>
-
-                                <!-- AI ANALYSIS TAB -->
-                                <div class="tab-pane fade" id="decisionTab">
-                                    <div id="decisionContent">
-                                        <div class="text-center py-4">
-                                            <div class="spinner-border mb-2" id="decisionLoader" style="display:none;width:1.3rem;height:1.3rem;color:var(--teal);"></div>
-                                            <div id="decisionResults">
-                                                <i class="bi bi-graph-up-arrow d-block mb-2 opacity-25" style="font-size:1.8rem;color:var(--teal);"></i>
-                                                <p class="text-muted small">Select a patient to see AI analysis</p>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
-
-                            </div><!-- /tab-content -->
-                        </div><!-- /col tabs -->
-                    </div><!-- /row -->
-                </div><!-- /pt-body -->
-            </div><!-- /pt-card -->
+            </div><!-- /tab-content -->
         </div><!-- /patientCard -->
     </div><!-- /dd-ws -->
 </div><!-- /dd-shell -->
@@ -998,6 +2123,107 @@ foreach ($allDoctors as $doc) {
     </div>
 </div>
 
+<!-- ═══════════════════════════════════════
+     QUICK PRESCRIPTION VALIDATION MODAL
+═══════════════════════════════════════ -->
+<div class="modal fade" id="quickRxModal" tabindex="-1">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content border-0 shadow">
+            <div class="modal-header" style="background:#0284c7;color:#fff;">
+                <h5 class="modal-title fw-700">
+                    <i class="bi bi-file-medical me-2"></i>Validate Existing Prescription
+                </h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="alert alert-info small">
+                    <i class="bi bi-info-circle me-1"></i>
+                    Customer provided an existing prescription. I-validate lang — hindi na kailangan ng full eye exam.
+                </div>
+                <form id="quickRxForm">
+                    <input type="hidden" id="quickRxAppointmentId">
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label class="form-label fw-600 small">Prescription Date</label>
+                            <input type="date" class="form-control form-control-sm" id="quickRxDate">
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label fw-600 small">Prescribing Doctor</label>
+                            <input type="text" class="form-control form-control-sm" id="quickRxDoctor" 
+                                   placeholder="Dr. Name">
+                        </div>
+                        <div class="col-12">
+                            <hr class="my-2">
+                            <div class="fw-700 small mb-2" style="color:var(--teal);">
+                                <i class="bi bi-eye me-1"></i>RIGHT EYE (OD)
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-600 small">Sphere</label>
+                            <input type="text" class="form-control form-control-sm" id="quickRxSphR" placeholder="-2.00">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-600 small">Cylinder</label>
+                            <input type="text" class="form-control form-control-sm" id="quickRxCylR" placeholder="-0.50">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-600 small">Axis</label>
+                            <input type="text" class="form-control form-control-sm" id="quickRxAxisR" placeholder="180">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-600 small">Add</label>
+                            <input type="text" class="form-control form-control-sm" id="quickRxAddR" placeholder="+2.00">
+                        </div>
+                        <div class="col-12">
+                            <div class="fw-700 small mb-2" style="color:var(--teal);">
+                                <i class="bi bi-eye me-1"></i>LEFT EYE (OS)
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-600 small">Sphere</label>
+                            <input type="text" class="form-control form-control-sm" id="quickRxSphL" placeholder="-1.75">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-600 small">Cylinder</label>
+                            <input type="text" class="form-control form-control-sm" id="quickRxCylL" placeholder="-0.25">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-600 small">Axis</label>
+                            <input type="text" class="form-control form-control-sm" id="quickRxAxisL" placeholder="175">
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label fw-600 small">Add</label>
+                            <input type="text" class="form-control form-control-sm" id="quickRxAddL" placeholder="+2.00">
+                        </div>
+                        <div class="col-12">
+                            <hr class="my-2">
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label fw-600 small">Validation Notes</label>
+                            <textarea class="form-control form-control-sm" id="quickRxNotes" rows="2"
+                                      placeholder="e.g., Prescription is valid, within 1 year…"></textarea>
+                        </div>
+                        <div class="col-12">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" id="quickRxValid" checked>
+                                <label class="form-check-label small fw-600" for="quickRxValid">
+                                    I confirm this prescription is valid and can proceed to Sales
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer border-0">
+                <button type="button" class="btn btn-light btn-sm" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary fw-600" onclick="submitQuickRxValidation()">
+                    <i class="bi bi-check-lg me-1"></i> Validate & Complete Consultation
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 <script>
@@ -1006,6 +2232,107 @@ let currentPatientId     = null;
 let currentUserId        = null;
 let timerInterval        = null;
 let seconds              = 0;
+
+// ✅ BAGO: Flag para malaman kung may product ang appointment
+let currentAppointmentHasProduct = false;/* ═══════════════════════════════════════════════════════
+   ✅ LENS RECOMMENDATION — REDESIGNED HANDLERS
+   ═══════════════════════════════════════════════════════ */
+
+// Select Lens Design
+function selectRecDesign(btn) {
+    document.querySelectorAll('#recLensDesignGrid .lr-option').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+    const value = btn.dataset.value;
+    document.getElementById('recLensDesign').value = value;
+    console.log('Lens Design selected:', value);
+}
+
+// Select Lens Index
+function selectRecIndex(btn) {
+    document.querySelectorAll('#recLensIndexGrid .lr-option').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+    const value = btn.dataset.value;
+    document.getElementById('recLensIndex').value = value;
+    console.log('Lens Index selected:', value);
+}
+
+// Toggle feature checkbox
+function toggleRecFeature(el, event) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
+    const checkbox = el.querySelector('input[type="checkbox"]');
+    if (!checkbox) return;
+    checkbox.checked = !checkbox.checked;
+    updateRecFeatures();
+    console.log('Toggled feature:', checkbox.value, '→', checkbox.checked);
+}
+
+function updateRecFeatures() {
+    const checked = [];
+    document.querySelectorAll('#recLensFeaturesList input[type="checkbox"]:checked').forEach(cb => {
+        checked.push(cb.value);
+    });
+    
+    // Update hidden input (for backward compatibility)
+    document.getElementById('recLensFeature').value = JSON.stringify(checked);
+    
+    // Update count display
+    const countEl = document.getElementById('recFeatureCount');
+    const countText = document.getElementById('recFeatureCountText');
+    if (checked.length > 0) {
+        countEl.style.display = 'flex';
+        countText.textContent = checked.length + ' feature' + (checked.length > 1 ? 's' : '') + ' selected';
+    } else {
+        countEl.style.display = 'none';
+    }
+    
+    console.log('Features selected:', checked);
+}
+// Helper: Load saved values
+function loadLensRecommendation(notes) {
+    if (!notes) return;
+    
+    // Reset
+    document.querySelectorAll('#recLensDesignGrid .lr-option').forEach(b => b.classList.remove('selected'));
+    document.querySelectorAll('#recLensIndexGrid .lr-option').forEach(b => b.classList.remove('selected'));
+    document.querySelectorAll('#recLensFeaturesList input[type="checkbox"]').forEach(cb => cb.checked = false);
+    
+    // Load Lens Design
+    if (notes.rec_lens_design) {
+        const designBtn = document.querySelector(`#recLensDesignGrid .lr-option[data-value="${notes.rec_lens_design}"]`);
+        if (designBtn) {
+            designBtn.classList.add('selected');
+            document.getElementById('recLensDesign').value = notes.rec_lens_design;
+        }
+    }
+    
+    // Load Lens Index
+    if (notes.rec_lens_index) {
+        const indexBtn = document.querySelector(`#recLensIndexGrid .lr-option[data-value="${notes.rec_lens_index}"]`);
+        if (indexBtn) {
+            indexBtn.classList.add('selected');
+            document.getElementById('recLensIndex').value = notes.rec_lens_index;
+        }
+    }
+    
+    // Load Features
+    if (notes.rec_lens_features) {
+        let features = notes.rec_lens_features;
+        if (typeof features === 'string') {
+            try { features = JSON.parse(features); } catch(e) { features = []; }
+        }
+        if (Array.isArray(features)) {
+            features.forEach(f => {
+                const cb = document.querySelector(`#recLensFeaturesList input[value="${f}"]`);
+                if (cb) cb.checked = true;
+            });
+        }
+    }
+    
+    updateRecFeatures();
+}
 
 // ✅ Permission check for buttons visibility
 function canEditExam() {
@@ -1209,6 +2536,8 @@ function renderQueueGrouped(data) {
         window.completedVisible = false;
     }
 }
+
+
 // Helper function to toggle completed appointments
 function toggleCompleted() {
     window.completedVisible = !window.completedVisible;
@@ -1245,26 +2574,44 @@ function renderQueueItem(appt, statusClass) {
     let statusText='Waiting', badgeColor='warning';
     if (statusClass==='in-progress') { statusText='In Progress'; badgeColor='primary'; }
     else if (statusClass==='completed') { statusText='Done'; badgeColor='success'; }
-    else if (statusClass==='waiting_payment') { statusText='Need Payment'; badgeColor='warning'; }
+    else if (statusClass==='waiting_payment') { statusText='Sent to Sales'; badgeColor='info'; }
     else if (statusClass==='any-doctor') { statusText='Any Dr.'; badgeColor='info'; }
     
     const appointmentStatus = appt.appointment_status || appt.status || '';
+    
+    // ✅ USE items_display (server-parsed) kung available
+    let frameDisplay = appt.items_display || 'Check-up';
+    let itemsList = appt.items_parsed || [];
+    
+    // Fallback: kung walang items_display at walang items_parsed
+    if (!frameDisplay || frameDisplay === '') {
+        frameDisplay = appt.frame_name || appt.product_name || 'Check-up';
+    }
+    
+    const sourceBadge = appt.order_source === 'online' 
+        ? '<span class="badge bg-info ms-1" style="font-size:.58rem;">Online</span>' 
+        : '';
+    
+    // ✅ Gamitin 'yung items_display (server-parsed) — hindi na kailangan JSON
+    const itemsDisplay = escapeString(appt.items_display || '');
     
     return `<div class="queue-item ${statusClass}"
                  onclick="selectPatient(${appt.id},${appt.patient_id||'null'},${appt.user_id||'null'},
                      '${escapeString(appt.patient_name)}',${appt.age||0},'${escapeString(appt.gender)}',
                      '${escapeString(appt.patient_type||'Regular')}','${escapeString(appt.product_name)}',
                      '${escapeString(appt.doctor_name)}','${escapeString(appt.appointment_time)}',
-                     ${appt.is_new_patient?1:0},${appt.doctor_id?1:0},'${appointmentStatus}')">
+                     ${appt.is_new_patient?1:0},${appt.doctor_id?1:0},'${appointmentStatus}',
+                     '${escapeString(appt.frame_name||'')}','${escapeString(appt.order_source||'walk_in')}',
+                     '${itemsDisplay}')">
                 <div class="d-flex justify-content-between align-items-center mb-1">
                     <span class="badge bg-light text-dark" style="font-size:.65rem;"><i class="bi bi-clock me-1"></i>${time}</span>
                     <span class="badge bg-${badgeColor}" style="font-size:.64rem;">${statusText}</span>
                 </div>
-                <div class="qn">${appt.patient_name||'Unknown'}${appt.is_new_patient?'<span class="badge bg-success ms-1" style="font-size:.58rem;">New</span>':''}</div>
-                <div class="qs">${appt.age||'?'} yrs · ${appt.gender||'?'} · ${appt.product_name||'Check-up'}</div>
+                <div class="qn">${appt.patient_name||'Unknown'}${appt.is_new_patient?'<span class="badge bg-success ms-1" style="font-size:.58rem;">New</span>':''}${sourceBadge}</div>
+                <div class="qs">${appt.age||'?'} yrs · ${appt.gender||'?'} · ${frameDisplay}</div>
             </div>`;
 }
-function selectPatient(appointmentId, patientId, userId, name, age, gender, type, service, doctor, time, isNew, hasDoctor, status) {
+function selectPatient(appointmentId, patientId, userId, name, age, gender, type, service, doctor, time, isNew, hasDoctor, status, frame, source, itemsJson) {
     currentAppointmentId = appointmentId;
     currentPatientId     = patientId;
     currentUserId        = userId;
@@ -1277,9 +2624,57 @@ function selectPatient(appointmentId, patientId, userId, name, age, gender, type
     $('#patientAge').text(age||'?'); 
     $('#patientGender').text(gender||'?'); 
     $('#patientType').text(type||'Regular');
-    $('#serviceName').text(service||'—'); 
     $('#doctorName').text(doctor?'Dr. '+doctor:'—');
     $('#appointmentTime').text(time?time.substr(0,5):'—');
+    
+    // ✅ itemsJson ay plain string na ("Service A • Service B")
+    // Hindi na kailangan i-JSON.parse
+    
+    if (itemsJson && itemsJson.trim() !== '' && itemsJson !== 'null') {
+        // ✅ Display 'yung buong string
+        $('#serviceName').text(itemsJson);
+        $('#frameName').text(itemsJson);
+        
+        // ✅ Store as array para sa sendToSales routing
+        const serviceNames = itemsJson.split(' • ').map(s => s.trim()).filter(Boolean);
+        window.currentAppointmentItems = serviceNames.map(name => ({
+            name: name,
+            type: 'service',
+            price: 0,
+            quantity: 1
+        }));
+        window.currentAppointmentHasProduct = false;
+        window.currentAppointmentServiceCount = serviceNames.length;
+        
+        console.log('[selectPatient] Items:', itemsJson, '| Count:', serviceNames.length);
+    } else {
+        // Fallback: gamitin 'yung service parameter
+        $('#serviceName').text(service || '—');
+        $('#frameName').text(frame && frame !== 'null' && frame !== '' ? frame : '—');
+        
+        window.currentAppointmentItems = [];
+        window.currentAppointmentHasProduct = false;
+        window.currentAppointmentServiceCount = 0;
+    }
+    
+    // ✅ FLAGS: Kunin mula sa appt data (para sa sendToSales routing)
+    // NOTE: Hindi na kailangan i-parse, server na ang nag-parse
+    // Pero kailangan pa rin i-store para sa sendToSales()
+    // Use the currentAppointmentId to fetch from a cached map
+    if (window.appointmentCache && window.appointmentCache[appointmentId]) {
+        const cachedAppt = window.appointmentCache[appointmentId];
+        window.currentAppointmentItems = cachedAppt.items_parsed || [];
+        window.currentAppointmentHasProduct = (cachedAppt.items_parsed || []).some(i => i.type === 'product');
+        window.currentAppointmentIsServiceOnly = !window.currentAppointmentHasProduct && 
+            (cachedAppt.items_parsed || []).filter(i => i.type === 'service').length > 0;
+    } else {
+        // Fallback: walang cache, i-reset
+        window.currentAppointmentItems = [];
+        window.currentAppointmentHasProduct = false;
+        window.currentAppointmentIsServiceOnly = false;
+    }
+    
+
 
     $('#currentAppointmentId').val(appointmentId); 
     $('#currentPatientId').val(patientId);
@@ -1304,10 +2699,25 @@ function selectPatient(appointmentId, patientId, userId, name, age, gender, type
         $('#anyDoctorAlert').hide();
         $('#newPatientAlert').hide();
         
+        // ✅ Subtle success banner
+        $('.status-alert').remove();
         $('#patientCard').prepend(`
-            <div class="alert alert-success status-alert m-2">
-                <i class="bi bi-check-circle me-1"></i> 
-                <strong>Completed</strong> - This consultation has been fully paid and completed. View only.
+            <div class="status-alert m-2" style="
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                padding: 12px 16px;
+                background: #f0fdf4;
+                border: 1px solid #bbf7d0;
+                border-radius: 10px;
+                font-size: 12.5px;
+                color: #166534;
+            ">
+                <i class="bi bi-check-circle-fill" style="color: #16a34a; font-size: 18px; flex-shrink: 0;"></i>
+                <div style="flex: 1; line-height: 1.5;">
+                    <strong style="color: #16a34a;">Completed</strong> — 
+                    This consultation has been fully paid and completed. View only.
+                </div>
             </div>
         `);
         return;
@@ -1319,13 +2729,25 @@ function selectPatient(appointmentId, patientId, userId, name, age, gender, type
         $('#anyDoctorAlert').hide();
         $('#newPatientAlert').hide();
         
+        // ✅ Subtle info banner — hindi na alert
+        $('.status-alert').remove();
         $('#patientCard').prepend(`
-            <div class="alert alert-warning status-alert m-2">
-                <i class="bi bi-credit-card me-1"></i> 
-                <strong>Payment Required</strong> - Consultation completed. Please process payment in Sales & Billing.
-                <button class="btn btn-sm btn-teal ms-2" onclick="goToSalesBilling(${appointmentId})">
-                    Go to Payment
-                </button>
+            <div class="status-alert m-2" style="
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                padding: 12px 16px;
+                background: #f0f9ff;
+                border: 1px solid #bae6fd;
+                border-radius: 10px;
+                font-size: 12.5px;
+                color: #0c4a6e;
+            ">
+                <i class="bi bi-arrow-right-circle-fill" style="color: #0284c7; font-size: 18px; flex-shrink: 0;"></i>
+                <div style="flex: 1; line-height: 1.5;">
+                    <strong style="color: #0284c7;">Sent to Sales</strong> — 
+                    Prescription & recommendation naipasa na. Waiting for Sales/Optical to finalize order.
+                </div>
             </div>
         `);
         return;
@@ -1337,10 +2759,25 @@ function selectPatient(appointmentId, patientId, userId, name, age, gender, type
         $('#anyDoctorAlert').hide();
         $('#newPatientAlert').hide();
         
+        // ✅ Subtle upcoming banner
+        $('.status-alert').remove();
         $('#patientCard').prepend(`
-            <div class="alert alert-info status-alert m-2">
-                <i class="bi bi-calendar me-1"></i> 
-                <strong>Upcoming Appointment</strong> - Scheduled for ${time}. This is view only.
+            <div class="status-alert m-2" style="
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                padding: 12px 16px;
+                background: #eff6ff;
+                border: 1px solid #bfdbfe;
+                border-radius: 10px;
+                font-size: 12.5px;
+                color: #1e40af;
+            ">
+                <i class="bi bi-calendar-event-fill" style="color: #2563eb; font-size: 18px; flex-shrink: 0;"></i>
+                <div style="flex: 1; line-height: 1.5;">
+                    <strong style="color: #2563eb;">Upcoming Appointment</strong> — 
+                    Scheduled for ${time}. This is view only.
+                </div>
             </div>
         `);
         return;
@@ -1384,15 +2821,86 @@ function selectPatient(appointmentId, patientId, userId, name, age, gender, type
         }
     }
 
+    // ✅ I-reset ang product flag bago mag-load ng bagong patient
+    currentAppointmentHasProduct = false;
+    
     resetTimer();
     clearForms(); 
     loadPatientData(patientId, appointmentId);
+    
+    // ✅ Stop auto-save kung hindi active
+    // NOTE: Gamitin ang existing `isInProgress` at `consultationStarted` 
+    // na naka-declare na sa itaas ng function — HUWAG i-declare ulit
+    
+    if (isInProgress || consultationStarted) {
+        // Auto-save mag-uumpisa pagkatapos ng load
+        setTimeout(() => {
+            startAutoSave();
+        }, 1500);
+    } else {
+        stopAutoSave();
+        const indicator = document.getElementById('autosaveIndicator');
+        if (indicator) indicator.style.display = 'none';
+    }
 }
 // Go to Sales & Billing for payment
 function goToSalesBilling(appointmentId) {
     window.location.href = `main.php?view=sales&appointment_id=${appointmentId}`;
 }
 
+function applyDynamicForm(requiredSections) {
+    const ALWAYS_VISIBLE = ['vitals', 'chief_complaint', 'assessment'];
+    
+    document.querySelectorAll('[data-form-section]').forEach(section => {
+        const key = section.dataset.formSection;
+        if (ALWAYS_VISIBLE.includes(key)) {
+            section.style.display = '';
+            return;
+        }
+        section.style.display = 'none';
+    });
+    
+    (requiredSections || []).forEach(sectionKey => {
+        const section = document.querySelector(`[data-form-section="${sectionKey}"]`);
+        if (section) {
+            section.style.display = '';
+        }
+    });
+    
+    const hasLensRec   = (requiredSections || []).includes('lens_recommendation');
+    const hasCLAssess  = (requiredSections || []).includes('contact_lens_assessment');
+    
+    const isContactLensFlow = hasCLAssess && !hasLensRec;
+    const isEyeglassFlow = hasLensRec;
+    
+    // ✅ I-set ang flags — ITO ANG PINAKA-RELIABLE
+    window.currentAppointmentIsServiceOnly = !isEyeglassFlow && !isContactLensFlow;
+    window.currentAppointmentIsEyeglass = isEyeglassFlow;
+    window.currentAppointmentIsContactLens = isContactLensFlow;
+    currentAppointmentHasProduct = isEyeglassFlow || isContactLensFlow;
+    
+    // ✅ Button text
+    const sendToSalesBtn = document.getElementById('sendToSalesBtn');
+    if (sendToSalesBtn) {
+        if (isEyeglassFlow) {
+            sendToSalesBtn.innerHTML = '<i class="bi bi-arrow-right-circle-fill"></i> Forward to Optical';
+            sendToSalesBtn.style.background = 'linear-gradient(135deg, #0284c7, #0369a1)';
+        } else if (isContactLensFlow) {
+            sendToSalesBtn.innerHTML = '<i class="bi bi-cart-check-fill"></i> Complete & Forward to Sales';
+            sendToSalesBtn.style.background = 'linear-gradient(135deg, #0284c7, #0369a1)';
+        } else {
+            sendToSalesBtn.innerHTML = '<i class="bi bi-check-circle-fill"></i> Complete Consultation';
+            sendToSalesBtn.style.background = 'linear-gradient(135deg, #10b981, #059669)';
+        }
+    }
+    
+    console.log('[DynamicForm] Applied sections:', requiredSections);
+    console.log('[DynamicForm] Flags:', {
+        isServiceOnly: window.currentAppointmentIsServiceOnly,
+        isEyeglass: window.currentAppointmentIsEyeglass,
+        isContactLens: window.currentAppointmentIsContactLens
+    });
+}
 function loadPatientData(patientId, appointmentId) {
     if (!patientId) return;
     
@@ -1403,59 +2911,73 @@ function loadPatientData(patientId, appointmentId) {
         success: function(r) {
             if (!r.success) return;
             
-            // ✅ Check if appointment has multiple services
-            if (r.appointment_services && r.appointment_services.length > 0) {
-                // Build service list
-                let serviceList = r.appointment_services.map(s => s.name).join(', ');
-                
-                // ✅ Display ALL services in the service name field
-                $('#serviceName').html(`
-                    <span class="fw-700">${serviceList}</span>
-                    <span class="badge bg-info ms-1" style="font-size:.6rem;">${r.appointment_services.length} services</span>
-                `);
-                
-                // ✅ Also show in the items list if we have a bill preview area
-                if ($('#billItemsList').length) {
-                    let itemsHtml = '';
-                    r.appointment_services.forEach((s, index) => {
-                        itemsHtml += `
-                            <div class="d-flex justify-content-between align-items-center small py-1 ${index > 0 ? 'border-top' : ''}">
-                                <span><i class="bi bi-dot me-1"></i>${s.name}</span>
-                                <span class="fw-600">₱${parseFloat(s.price || 0).toLocaleString('en-PH', {minimumFractionDigits:2})}</span>
-                            </div>
-                        `;
-                    });
-                    $('#billItemsList').html(itemsHtml);
-                    $('#billTotalAmount').text('₱' + parseFloat(r.total_amount || 0).toLocaleString('en-PH', {minimumFractionDigits:2}));
-                }
-            } else {
-                // Fallback to single service
-                $('#serviceName').text(r.service_name || '—');
-            }
+            // ... existing code ...
             
-            if (r.latest_notes) {
-                const n=r.latest_notes;
-                $('#chiefComplaint').val(n.chief_complaint||''); $('#vaLeft').val(n.va_left||'');
-                $('#vaRight').val(n.va_right||''); $('#findings').val(n.findings||'');
-                $('#diagnosis').val(n.diagnosis||''); $('#treatmentPlan').val(n.treatment_plan||'');
-                $('#notes').val(n.notes||'');
-            }
-            if (r.latest_rx) {
-                const rx=r.latest_rx;
-                $('#rxSphR').val(rx.sph_r||''); $('#rxCylR').val(rx.cyl_r||''); $('#rxAxisR').val(rx.axis_r||''); $('#rxAddR').val(rx.add_r||'');
-                $('#rxSphL').val(rx.sph_l||''); $('#rxCylL').val(rx.cyl_l||''); $('#rxAxisL').val(rx.axis_l||''); $('#rxAddL').val(rx.add_l||'');
-                $('#rxPd').val(rx.pd||''); $('#rxPdType').val(rx.pd_type||'Binocular'); $('#rxNotes').val(rx.notes||'');
-                const rxSummary = (rx.sph_r||rx.sph_l)
-                    ? `OD: ${rx.sph_r||'0'} ${rx.cyl_r?'/'+rx.cyl_r:''} | OS: ${rx.sph_l||'0'} ${rx.cyl_l?'/'+rx.cyl_l:''}`
-                    : 'No previous prescription';
-                $('#lastRxSummary').html(`<span class="fw-700">${rxSummary}</span>`);
-            }
             renderHistorySidebar(r.history||[]);
             if (currentPatientId) loadDecisionSupport(currentPatientId, r.latest_notes?.diagnosis||'');
+            
+            // ✅ PHASE 6: Apply dynamic form based on booked services
+            if (r.required_sections) {
+                applyDynamicForm(r.required_sections);
+            }
+            
+            // ✅ I-set ang category flags
+            window.currentAppointmentIsContactLens = r.is_contact_lens || false;
+            window.currentAppointmentIsEyeglass = r.is_eyeglass || false;
+            window.currentAppointmentIsService = r.is_service || false;
+            
+            // ✅ BAGO: I-load ang existing values mula sa latest_notes
+            if (r.latest_notes) {
+                const n = r.latest_notes;
+                
+                // Visual Acuity extras
+                if (n.va_both)       $('#vaBoth').val(n.va_both);
+                if (n.va_near_right) $('#vaNearRight').val(n.va_near_right);
+                if (n.va_near_left)  $('#vaNearLeft').val(n.va_near_left);
+                if (n.va_near_both)  $('#vaNearBoth').val(n.va_near_both);
+                
+                // ✅ Contact Lens Assessment
+                if (n.cl_base_curve)     $('#clBaseCurve').val(n.cl_base_curve);
+                if (n.cl_diameter)       $('#clDiameter').val(n.cl_diameter);
+                if (n.cl_power)          $('#clPower').val(n.cl_power);
+                if (n.cl_cylinder)       $('#clCylinder').val(n.cl_cylinder);
+                if (n.cl_axis)           $('#clAxis').val(n.cl_axis);
+                if (n.cl_lens_type)      $('#clLensType').val(n.cl_lens_type);
+                if (n.cl_fit_assessment) $('#clFitAssessment').val(n.cl_fit_assessment);
+                if (n.cl_trial_lens)     $('#clTrialLens').val(n.cl_trial_lens);
+                
+                // Glaucoma
+                if (n.iop_right)     $('#iopRight').val(n.iop_right);
+                if (n.iop_left)      $('#iopLeft').val(n.iop_left);
+                if (n.cd_ratio_right) $('#cdRatioRight').val(n.cd_ratio_right);
+                if (n.cd_ratio_left)  $('#cdRatioLeft').val(n.cd_ratio_left);
+                if (n.visual_field)  $('#visualField').val(n.visual_field);
+                if (n.glaucoma_risk) $('#glaucomaRisk').val(n.glaucoma_risk);
+                
+                // Retina
+                if (n.fundus_right)    $('#fundusRight').val(n.fundus_right);
+                if (n.fundus_left)     $('#fundusLeft').val(n.fundus_left);
+                if (n.retina_findings) $('#retinaFindings').val(n.retina_findings);
+                
+                // Cataract
+                if (n.cataract_right)          $('#cataractRight').val(n.cataract_right);
+                if (n.cataract_left)           $('#cataractLeft').val(n.cataract_left);
+                if (n.cataract_recommendation) $('#cataractRecommendation').val(n.cataract_recommendation);
+                
+                // Treatment Notes
+                if (n.treatment_given)        $('#treatmentGiven').val(n.treatment_given);
+                if (n.followup_instructions)  $('#followupInstructions').val(n.followup_instructions);
+            }
+            
+            console.log('[loadPatientData] Category flags:', {
+                is_contact_lens: r.is_contact_lens,
+                is_eyeglass: r.is_eyeglass,
+                is_service: r.is_service
+            });
         }
     });
 }
-// ==================== HISTORY SIDEBAR ====================
+
 function renderHistorySidebar(history) {
     if (!history||history.length===0) {
         $('#historySidebar').html(`<div class="text-center py-4 text-muted"><i class="bi bi-journal-medical d-block mb-1 opacity-25" style="font-size:1.5rem;"></i><small>No previous records</small></div>`);
@@ -1599,7 +3121,23 @@ function loadUserDetails(userId) {
 function resetTimer() { seconds=0; updateTimerDisplay(); if(timerInterval) clearInterval(timerInterval); }
 function startTimer() { timerInterval=setInterval(()=>{ seconds++; updateTimerDisplay(); },1000); }
 function updateTimerDisplay() { const m=Math.floor(seconds/60),s=seconds%60; $('#timer').text(String(m).padStart(2,'0')+':'+String(s).padStart(2,'0')); }
-function clearForms()  { $('#examForm')[0].reset(); $('#rxForm')[0].reset(); }
+function clearForms()  { 
+    $('#examForm')[0].reset(); 
+    $('#rxForm')[0].reset(); 
+    
+    // ✅ BAGO: Clear CL fields explicitly
+    $('#clBaseCurve, #clDiameter, #clPower, #clCylinder, #clAxis').val('');
+    $('#clLensType').val('');
+    $('#clFitAssessment, #clTrialLens').val('');
+    
+    // ✅ BAGO: Clear iba pang dynamic sections
+    $('#vaBoth, #vaNearRight, #vaNearLeft, #vaNearBoth').val('');
+    $('#iopRight, #iopLeft, #cdRatioRight, #cdRatioLeft').val('');
+    $('#visualField, #glaucomaRisk').val('');
+    $('#fundusRight, #fundusLeft, #retinaFindings').val('');
+    $('#cataractRight, #cataractLeft, #cataractRecommendation').val('');
+    $('#treatmentGiven, #followupInstructions').val('');
+}
 function refreshQueue(){ loadQueue(); }
 
 function saveClinicalNotes(callback) {
@@ -1628,7 +3166,57 @@ function saveClinicalNotes(callback) {
         findings: $('#findings').val(),
         diagnosis: $('#diagnosis').val(), 
         treatment_plan: $('#treatmentPlan').val(), 
-        notes: $('#notes').val() 
+        notes: $('#notes').val(),
+        
+        // ✅ Lens Recommendation (redesigned)
+        rec_lens_design: $('#recLensDesign').val() || null,
+        rec_lens_index: $('#recLensIndex').val() || null,
+        rec_lens_features: (() => {
+            const checked = [];
+            document.querySelectorAll('#recLensFeaturesList input[type="checkbox"]:checked').forEach(cb => {
+                checked.push(cb.value);
+            });
+            return checked;
+        })(),
+        rec_lens_notes: $('#recLensNotes').val() || null,
+        
+        // ✅ BAGO: Visual Acuity extras
+        va_both: $('#vaBoth').val() || null,
+        va_near_right: $('#vaNearRight').val() || null,
+        va_near_left: $('#vaNearLeft').val() || null,
+        va_near_both: $('#vaNearBoth').val() || null,
+        
+        // ✅ BAGO: CONTACT LENS ASSESSMENT (ito ang kulang!)
+        cl_base_curve: $('#clBaseCurve').val() || null,
+        cl_diameter: $('#clDiameter').val() || null,
+        cl_power: $('#clPower').val() || null,
+        cl_cylinder: $('#clCylinder').val() || null,
+        cl_axis: $('#clAxis').val() || null,
+        cl_lens_type: $('#clLensType').val() || null,
+        cl_fit_assessment: $('#clFitAssessment').val() || null,
+        cl_trial_lens: $('#clTrialLens').val() || null,
+        
+        // ✅ BAGO: Glaucoma Screening
+        iop_right: $('#iopRight').val() || null,
+        iop_left: $('#iopLeft').val() || null,
+        cd_ratio_right: $('#cdRatioRight').val() || null,
+        cd_ratio_left: $('#cdRatioLeft').val() || null,
+        visual_field: $('#visualField').val() || null,
+        glaucoma_risk: $('#glaucomaRisk').val() || null,
+        
+        // ✅ BAGO: Retina Screening
+        fundus_right: $('#fundusRight').val() || null,
+        fundus_left: $('#fundusLeft').val() || null,
+        retina_findings: $('#retinaFindings').val() || null,
+        
+        // ✅ BAGO: Cataract Evaluation
+        cataract_right: $('#cataractRight').val() || null,
+        cataract_left: $('#cataractLeft').val() || null,
+        cataract_recommendation: $('#cataractRecommendation').val() || null,
+        
+        // ✅ BAGO: Treatment Notes
+        treatment_given: $('#treatmentGiven').val() || null,
+        followup_instructions: $('#followupInstructions').val() || null
     };
     
     Swal.fire({
@@ -1693,7 +3281,6 @@ function saveClinicalNotes(callback) {
         } 
     });
 }
-
 // ✅ Function to setup doctor profile for ClinicAdmin
 function setupDoctorProfile() {
     Swal.fire({
@@ -1829,7 +3416,49 @@ function completeAppointment() {
     });
 }
 
-function saveOnly() { saveClinicalNotes(function(){ updatePatientDataAfterSave(); Swal.fire({icon:'success',title:'Saved!',timer:1500,showConfirmButton:false}); }); }
+/* ═══════════════════════════════════════════════════════════════
+   ★ PAUSE & SAVE — Save lang, hindi pa i-send sa Sales
+   ═══════════════════════════════════════════════════════════════ */
+function pauseAndSave() {
+    if (!currentAppointmentId) {
+        Swal.fire('Warning', 'No patient selected', 'warning');
+        return;
+    }
+    
+    Swal.fire({
+        title: 'Pause & Save?',
+        html: `
+            <p style="font-size: 13.5px; color: #1e293b; margin-bottom: 8px;">
+                Save the current progress and continue later.
+            </p>
+            <p style="font-size: 12px; color: #64748b;">
+                The consultation will remain <strong>in progress</strong>. 
+                You can resume anytime.
+            </p>
+        `,
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonColor: '#0d9488',
+        confirmButtonText: '<i class="bi bi-save me-1"></i> Yes, Save',
+        cancelButtonText: 'Cancel'
+    }).then(result => {
+        if (result.isConfirmed) {
+            saveClinicalNotes(function() {
+                updatePatientDataAfterSave();
+                lastSavedData = getFormData();
+                lastSaveTime = Date.now();
+                showAutoSaveIndicator('saved', 'Saved just now');
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Saved!',
+                    text: 'Progress saved. You can continue later.',
+                    timer: 1500,
+                    showConfirmButton: false
+                });
+            });
+        }
+    });
+}
 function saveAndPrescribe() { saveClinicalNotes(function(){ updatePatientDataAfterSave(); $('#prescriptionTabLink').tab('show'); Swal.fire({icon:'success',title:'Notes Saved',timer:1500,showConfirmButton:false}); }); }
 
 function saveAndComplete() {
@@ -3123,10 +4752,13 @@ function startConsultation() {
                         // Start timer
                         startTimer();
                         
+                        // ✅ Start auto-save
+                        startAutoSave();
+                        
                         Swal.fire({
                             icon: 'success',
                             title: 'Consultation Started',
-                            text: 'Timer has started. You can now record examination details.',
+                            text: 'Timer & auto-save are now active. You can record examination details.',
                             timer: 2000,
                             showConfirmButton: false
                         });
@@ -3146,4 +4778,934 @@ function startConsultation() {
     });
 }
 
+
+/* ═══════════════════════════════════════════════════════════════
+   ★ AUTO-SAVE — Save every 30 seconds habang nag-e-exam
+   ═══════════════════════════════════════════════════════════════ */
+let autoSaveInterval = null;
+let lastSavedData = null;
+let lastSaveTime = null;
+let autoSaveEnabled = false;
+
+// Start auto-save
+function startAutoSave() {
+    if (autoSaveInterval) clearInterval(autoSaveInterval);
+    
+    autoSaveEnabled = true;
+    lastSavedData = getFormData(); // Initialize snapshot
+    lastSaveTime = Date.now();
+    showAutoSaveIndicator('saved', 'Auto-save active');
+    
+    // Check every 30 seconds
+    autoSaveInterval = setInterval(() => {
+        if (!autoSaveEnabled) return;
+        if (!currentAppointmentId) return;
+        
+        // Check kung may changes
+        const currentData = getFormData();
+        if (JSON.stringify(currentData) === JSON.stringify(lastSavedData)) {
+            return; // Walang changes, skip
+        }
+        
+        // May changes, i-save
+        autoSaveDraft(currentData);
+    }, 30000); // 30 seconds
+}
+
+// Stop auto-save
+function stopAutoSave() {
+    autoSaveEnabled = false;
+    if (autoSaveInterval) {
+        clearInterval(autoSaveInterval);
+        autoSaveInterval = null;
+    }
+}
+
+// Get current form data (for change detection)
+function getFormData() {
+    const features = [];
+    document.querySelectorAll('#recLensFeaturesList input[type="checkbox"]:checked').forEach(cb => {
+        features.push(cb.value);
+    });
+    
+    return {
+        chief_complaint: $('#chiefComplaint').val() || '',
+        va_left: $('#vaLeft').val() || '',
+        va_right: $('#vaRight').val() || '',
+        findings: $('#findings').val() || '',
+        diagnosis: $('#diagnosis').val() || '',
+        treatment_plan: $('#treatmentPlan').val() || '',
+        notes: $('#notes').val() || '',
+        rec_lens_design: $('#recLensDesign').val() || '',
+        rec_lens_index: $('#recLensIndex').val() || '',
+        rec_lens_features: features,
+        rec_lens_notes: $('#recLensNotes').val() || '',
+        
+        // ✅ BAGO: Visual Acuity extras
+        va_both: $('#vaBoth').val() || '',
+        va_near_right: $('#vaNearRight').val() || '',
+        va_near_left: $('#vaNearLeft').val() || '',
+        va_near_both: $('#vaNearBoth').val() || '',
+        
+        // ✅ BAGO: Contact Lens Assessment
+        cl_base_curve: $('#clBaseCurve').val() || '',
+        cl_diameter: $('#clDiameter').val() || '',
+        cl_power: $('#clPower').val() || '',
+        cl_cylinder: $('#clCylinder').val() || '',
+        cl_axis: $('#clAxis').val() || '',
+        cl_lens_type: $('#clLensType').val() || '',
+        cl_fit_assessment: $('#clFitAssessment').val() || '',
+        cl_trial_lens: $('#clTrialLens').val() || '',
+        
+        // ✅ BAGO: Glaucoma Screening
+        iop_right: $('#iopRight').val() || '',
+        iop_left: $('#iopLeft').val() || '',
+        cd_ratio_right: $('#cdRatioRight').val() || '',
+        cd_ratio_left: $('#cdRatioLeft').val() || '',
+        visual_field: $('#visualField').val() || '',
+        glaucoma_risk: $('#glaucomaRisk').val() || '',
+        
+        // ✅ BAGO: Retina Screening
+        fundus_right: $('#fundusRight').val() || '',
+        fundus_left: $('#fundusLeft').val() || '',
+        retina_findings: $('#retinaFindings').val() || '',
+        
+        // ✅ BAGO: Cataract Evaluation
+        cataract_right: $('#cataractRight').val() || '',
+        cataract_left: $('#cataractLeft').val() || '',
+        cataract_recommendation: $('#cataractRecommendation').val() || '',
+        
+        // ✅ BAGO: Treatment Notes
+        treatment_given: $('#treatmentGiven').val() || '',
+        followup_instructions: $('#followupInstructions').val() || ''
+    };
+}
+
+// Auto-save draft
+function autoSaveDraft(data) {
+    showAutoSaveIndicator('saving', 'Saving...');
+    
+    $.ajax({
+        url: 'api/doctor_dashboard.php?action=save_notes',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify({
+            appointment_id: currentAppointmentId,
+            patient_id: currentPatientId,
+            ...data
+        }),
+        success: function(r) {
+            if (r.success) {
+                lastSavedData = data;
+                lastSaveTime = Date.now();
+                showAutoSaveIndicator('saved', 'Saved just now');
+                console.log('✅ Auto-saved at', new Date().toLocaleTimeString());
+            } else {
+                showAutoSaveIndicator('unsaved', 'Save failed');
+            }
+        },
+        error: function() {
+            showAutoSaveIndicator('unsaved', 'Connection error');
+        }
+    });
+}
+
+// Show auto-save indicator
+function showAutoSaveIndicator(state, text) {
+    const el = document.getElementById('autosaveIndicator');
+    const textEl = document.getElementById('autosaveText');
+    if (!el || !textEl) return;
+    
+    el.style.display = 'flex';
+    el.className = 'autosave-indicator ' + state;
+    
+    const icons = {
+        'saving': 'bi-arrow-clockwise',
+        'saved': 'bi-cloud-check',
+        'unsaved': 'bi-exclamation-circle'
+    };
+    
+    const icon = el.querySelector('i');
+    if (icon) icon.className = 'bi ' + (icons[state] || 'bi-cloud-check');
+    
+    textEl.textContent = text;
+}
+
+// Update "time ago" every 10 seconds
+setInterval(() => {
+    if (!lastSaveTime || !autoSaveEnabled) return;
+    const el = document.getElementById('autosaveIndicator');
+    if (!el || !el.classList.contains('saved')) return;
+    
+    const seconds = Math.floor((Date.now() - lastSaveTime) / 1000);
+    const textEl = document.getElementById('autosaveText');
+    if (!textEl) return;
+    
+    if (seconds < 5) textEl.textContent = 'Saved just now';
+    else if (seconds < 60) textEl.textContent = `Saved ${seconds}s ago`;
+    else textEl.textContent = `Saved ${Math.floor(seconds / 60)}m ago`;
+}, 10000);
+
+// ✅ Track changes para sa unsaved indicator
+$(document).on('input change', '.exam-pane input, .exam-pane textarea, .exam-pane select, #recLensNotes', function() {
+    if (!autoSaveEnabled) return;
+    const currentData = getFormData();
+    if (JSON.stringify(currentData) !== JSON.stringify(lastSavedData)) {
+        showAutoSaveIndicator('unsaved', 'Unsaved changes');
+    }
+});
+// ═══════════════════════════════════════════════════
+// UI-ONLY HELPERS — cosmetic lang, walang effect sa logic
+// ═══════════════════════════════════════════════════
+
+/* 1) Queue tab filter */
+function filterQueueTab(btn, filter) {
+    document.querySelectorAll('#queueTabs button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    let visible = 0, total = 0;
+    document.querySelectorAll('#queueContainer .queue-item').forEach(item => {
+        total++;
+        if (filter === 'all') {
+            item.classList.remove('filtered-out');
+            visible++;
+        } else {
+            const matches = item.classList.contains(filter) || item.classList.contains(filter.replace('_','-'));
+            item.classList.toggle('filtered-out', !matches);
+            if (matches) visible++;
+        }
+    });
+    const note = document.getElementById('queueCountNote');
+    if (note) note.textContent = `Showing ${visible} of ${total} patients`;
+}
+
+/* 2) Sync header values after selectPatient */
+const _origSelectPatientUI = window.selectPatient;
+window.selectPatient = function(appointmentId, patientId, userId, name, age, gender, type, service, doctor, time, isNew, hasDoctor, status, frame, source) {
+    if (typeof _origSelectPatientUI === 'function') _origSelectPatientUI.apply(this, arguments);
+
+    const initials = (() => {
+        if (!name || name === 'null' || name === 'Unknown') return '??';
+        const parts = name.trim().split(/\s+/);
+        return parts.length === 1 ? parts[0].substring(0,2).toUpperCase()
+                                  : (parts[0][0] + parts[parts.length-1][0]).toUpperCase();
+    })();
+    const elInit = document.getElementById('patientInitials');
+    if (elInit) elInit.textContent = initials;
+
+    const code = patientId ? `PT-${String(patientId).padStart(6,'0')}` : '—';
+    const elCode = document.getElementById('patientCode');
+    if (elCode) elCode.textContent = code;
+    const elRxCode = document.getElementById('rxPatientCode');
+    if (elRxCode) elRxCode.textContent = code;
+
+    const badge = document.getElementById('patientStatusBadge');
+    if (badge) {
+        const s = (status || 'waiting').toLowerCase();
+        let label = 'Waiting';
+        if (s === 'in_progress') label = 'In Examination';
+        else if (s === 'completed') label = 'Completed';
+        else if (s === 'waiting_payment') label = 'Sent to Sales';
+        else if (s === 'arrived') label = 'Waiting';
+        else if (s === 'confirmed' || s === 'paid') label = 'Upcoming';
+        badge.textContent = label;
+        badge.className = 'status-badge ' + s.replace('_','-');
+        const csStatus = document.getElementById('csStatus');
+        if (csStatus) {
+            const color = (s === 'in_progress') ? 'var(--teal)'
+                        : (s === 'completed') ? 'var(--green)'
+                        : (s === 'waiting_payment') ? '#0284c7'
+                        : 'var(--amber)';
+            const textColor = (s === 'in_progress') ? 'var(--teal-dark)'
+                            : (s === 'completed') ? 'var(--green)'
+                            : (s === 'waiting_payment') ? '#0284c7'
+                            : 'var(--amber)';
+            csStatus.innerHTML = '<span style="width:6px;height:6px;border-radius:50%;background:' + color + ';display:inline-block;"></span> ' + label;
+            csStatus.style.color = textColor;
+        }
+    }
+
+    const dName = document.getElementById('doctorName')?.textContent || '—';
+    const elRxDoc = document.getElementById('rxPrescribingDoctor');
+    if (elRxDoc) elRxDoc.textContent = dName;
+
+    const setText = (tid, val) => { const el = document.getElementById(tid); if (el) el.textContent = val || '—'; };
+    setText('csPatientName', document.getElementById('patientName')?.textContent);
+    setText('csAgeGender', document.getElementById('patientAge')?.textContent);
+    setText('csVisit', document.getElementById('serviceName')?.textContent);
+};
+
+/* 3) Live summary update habang nagta-type */
+document.addEventListener('input', function(e) {
+    const id = e.target && e.target.id;
+    if (!id) return;
+    const setText = (tid, val) => { const el = document.getElementById(tid); if (el) el.textContent = val || '—'; };
+    if (id === 'vaRight') setText('csVaOd', e.target.value);
+    if (id === 'vaLeft')  setText('csVaOs', e.target.value);
+    if (id === 'diagnosis') setText('csAssessment', e.target.value);
+});
+
+/* 4) Sync refraction fields papunta sa Prescription tab */
+function syncRxToPrescriptionTab() {
+    const map = {
+        rxSphR:'rxSphR_p', rxCylR:'rxCylR_p', rxAxisR:'rxAxisR_p', rxAddR:'rxAddR_p',
+        rxSphL:'rxSphL_p', rxCylL:'rxCylL_p', rxAxisL:'rxAxisL_p', rxAddL:'rxAddL_p'
+    };
+    Object.keys(map).forEach(src => {
+        const s = document.getElementById(src);
+        const d = document.getElementById(map[src]);
+        if (s && d && s.value && !d.value) d.value = s.value;
+    });
+}
+document.addEventListener('input', function(e) {
+    if (e.target && e.target.id && e.target.id.startsWith('rx') && !e.target.id.endsWith('_p')) {
+        syncRxToPrescriptionTab();
+    }
+});
+
+/* 5) Sync Prescription tab → Refraction (pabalik) */
+document.addEventListener('input', function(e) {
+    if (!e.target || !e.target.id || !e.target.id.endsWith('_p')) return;
+    const reverse = {
+        rxSphR_p:'rxSphR', rxCylR_p:'rxCylR', rxAxisR_p:'rxAxisR', rxAddR_p:'rxAddR',
+        rxSphL_p:'rxSphL', rxCylL_p:'rxCylL', rxAxisL_p:'rxAxisL', rxAddL_p:'rxAddL'
+    };
+    const src = reverse[e.target.id];
+    if (src) {
+        const el = document.getElementById(src);
+        if (el) el.value = e.target.value;
+    }
+});
+
+/* 6) Update queue count after render */
+const _origRenderQueueGroupedUI = window.renderQueueGrouped;
+window.renderQueueGrouped = function(data) {
+    if (typeof _origRenderQueueGroupedUI === 'function') _origRenderQueueGroupedUI.apply(this, arguments);
+    setTimeout(function() {
+        const items = document.querySelectorAll('#queueContainer .queue-item:not(.filtered-out)');
+        const all = document.querySelectorAll('#queueContainer .queue-item');
+        const note = document.getElementById('queueCountNote');
+        if (note) note.textContent = `Showing ${items.length} of ${all.length} patients`;
+    }, 60);
+};
+
+function sendToSales() {
+    if (!currentAppointmentId) {
+        Swal.fire('Warning', 'No patient selected', 'warning');
+        return;
+    }
+    
+    // ✅ PRIMARY: Gamitin ang flags na sine-set ng applyDynamicForm()
+    // Ito ang pinaka-reliable — naka-base sa required_sections mula sa API
+    const isServiceOnly = window.currentAppointmentIsServiceOnly === true;
+    const isContactLens = window.currentAppointmentIsContactLens === true;
+    const isEyeglass    = window.currentAppointmentIsEyeglass === true;
+    
+    console.log('[sendToSales] Flags from applyDynamicForm:', {
+        isServiceOnly,
+        isContactLens,
+        isEyeglass
+    });
+    
+    // ✅ FALLBACK: Kung hindi pa naka-set ang flags (e.g., page refresh),
+    // i-derive mula sa required_sections o sa visible sections
+    let derivedServiceOnly = isServiceOnly;
+    let derivedContactLens = isContactLens;
+    let derivedEyeglass = isEyeglass;
+    
+    if (!isServiceOnly && !isContactLens && !isEyeglass) {
+        // Check kung anong sections ang visible sa DOM
+        const lensRecCard = document.getElementById('lensRecommendationCard');
+        const clCard = document.querySelector('[data-form-section="contact_lens_assessment"]');
+        
+        const lensRecVisible = lensRecCard && lensRecCard.style.display !== 'none';
+        const clVisible = clCard && clCard.style.display !== 'none';
+        
+        console.log('[sendToSales] DOM check:', { lensRecVisible, clVisible });
+        
+        if (clVisible && !lensRecVisible) {
+            derivedContactLens = true;
+        } else if (lensRecVisible) {
+            derivedEyeglass = true;
+        } else {
+            // ✅ WALANG product section = SERVICE ONLY
+            derivedServiceOnly = true;
+        }
+        
+        console.log('[sendToSales] Derived flags:', {
+            derivedServiceOnly,
+            derivedContactLens,
+            derivedEyeglass
+        });
+    }
+    
+    // ✅ ROUTING
+    if (derivedServiceOnly) {
+        console.log('[sendToSales] → SERVICES ONLY → completeConsultationOnly()');
+        completeConsultationOnly();
+    } else if (derivedContactLens) {
+        console.log('[sendToSales] → CONTACT LENS → forwardContactLensToSales()');
+        forwardContactLensToSales();
+    } else if (derivedEyeglass) {
+        console.log('[sendToSales] → EYEGLASS → forwardToOptical()');
+        forwardToOptical();
+    } else {
+        // ✅ Last resort: check kung may service names sa display
+        const serviceText = document.getElementById('serviceName')?.textContent || '';
+        if (serviceText && serviceText !== '—' && serviceText.trim() !== '') {
+            console.log('[sendToSales] → fallback (service text found) → completeConsultationOnly()');
+            completeConsultationOnly();
+        } else {
+            Swal.fire({
+                icon: 'warning',
+                title: 'No Items Found',
+                text: 'This appointment has no items. Please check the appointment data.',
+                confirmButtonText: 'OK'
+            });
+        }
+    }
+}
+
+function completeConsultationOnly() {
+    // ✅ Validate: kailangan may diagnosis
+    const hasDiagnosis = $('#diagnosis').val();
+    if (!hasDiagnosis) {
+        Swal.fire({
+            icon: 'warning',
+            title: 'Diagnosis Required',
+            text: 'Please enter a diagnosis before completing.',
+            confirmButtonText: 'OK'
+        }).then(() => {
+            $('#diagnosis').focus();
+            $('#diagnosis').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+        return;
+    }
+    
+    // ✅ Confirmation dialog
+    Swal.fire({
+        title: 'Complete Consultation?',
+        html: `
+            <div style="text-align: left; padding: 12px; background: #f0fdf4; border-radius: 10px; margin: 12px 0;">
+                <div style="font-size: 13px; margin-bottom: 10px; color: #166534; font-weight: 700;">
+                    <i class="bi bi-info-circle me-1"></i>
+                    The following will be saved:
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e293b; padding: 4px 0;">
+                    <i class="bi bi-check-circle-fill" style="color: #10b981;"></i>
+                    <span>Clinical notes & findings</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e293b; padding: 4px 0;">
+                    <i class="bi bi-check-circle-fill" style="color: #10b981;"></i>
+                    <span>Diagnosis & treatment plan</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e293b; padding: 4px 0;">
+                    <i class="bi bi-check-circle-fill" style="color: #10b981;"></i>
+                    <span>Service marked as completed</span>
+                </div>
+            </div>
+            <div style="font-size: 12px; color: #0369a1; padding: 10px; background: #f0f9ff; border-radius: 8px;">
+                <i class="bi bi-info-circle-fill me-1"></i>
+                <strong>No eyewear purchase</strong> for this appointment. Consultation will be marked as <strong>COMPLETED</strong>.
+            </div>
+        `,
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonColor: '#10b981',
+        confirmButtonText: '<i class="bi bi-check-circle me-1"></i> Yes, Complete',
+        cancelButtonText: 'Cancel',
+        width: '480px'
+    }).then(result => {
+        if (result.isConfirmed) {
+            stopAutoSave();
+            
+            Swal.fire({ 
+                title: 'Completing...', 
+                html: 'Please wait.',
+                didOpen: () => Swal.showLoading(), 
+                allowOutsideClick: false 
+            });
+            
+            // ✅ Save notes muna
+            saveClinicalNotes(function() {
+                // ✅ Tapos i-complete ang consultation
+                $.ajax({
+                    url: 'api/doctor_dashboard.php?action=complete_consultation',
+                    method: 'POST',
+                    contentType: 'application/json',
+                    data: JSON.stringify({
+                        appointment_id: currentAppointmentId,
+                        patient_id: currentPatientId
+                    }),
+                    success: function(r) {
+                        Swal.close();
+                        if (r.success) {
+                            Swal.fire({
+                                icon: 'success',
+                                title: 'Consultation Complete! ✅',
+                                html: `
+                                    <div style="text-align: center;">
+                                        <p style="font-size: 14px; color: #1e293b; margin-bottom: 8px;">
+                                            ✅ Consultation marked as <strong>COMPLETED</strong>.
+                                        </p>
+                                        <p style="font-size: 12.5px; color: #64748b;">
+                                            Patient may now leave. No payment required.
+                                        </p>
+                                    </div>
+                                `,
+                                timer: 3000,
+                                showConfirmButton: false
+                            });
+                            
+                            // ✅ Lock UI
+                            $('.exam-pane input, .exam-pane textarea, .exam-pane select, .rx-box input, .rx-box select, #rxNotes, #recLensNotes').prop('disabled', true);
+                            $('#startConsultationBtnContainer').hide();
+                            $('#sendToSalesBtn').hide();
+                            $('.summary-save-link').hide();
+                            $('#autosaveIndicator').hide();
+                            
+                            // ✅ Update status badge
+                            $('#patientStatusBadge').text('Completed').removeClass().addClass('status-badge completed');
+                            
+                            // ✅ Show info alert
+                            $('.status-alert').remove();
+                            $('#patientCard').prepend(
+                                '<div class="alert alert-success status-alert m-2 d-flex align-items-center gap-2">' +
+                                    '<i class="bi bi-check-circle-fill fs-5"></i>' +
+                                    '<div>' +
+                                        '<strong>Consultation Complete</strong> — Patient may leave.<br>' +
+                                        '<small class="text-muted">No payment required (services only).</small>' +
+                                    '</div>' +
+                                '</div>'
+                            );
+                            
+                            // ✅ Clear session storage
+                            sessionStorage.removeItem(`consultation_${currentAppointmentId}_started`);
+                            
+                            // ✅ Reload queue
+                            loadQueue();
+                        } else {
+                            startAutoSave();
+                            Swal.fire('Error', r.message || 'Failed to complete consultation', 'error');
+                        }
+                    },
+                    error: function() {
+                        Swal.close();
+                        startAutoSave();
+                        Swal.fire('Error', 'Connection error. Please try again.', 'error');
+                    }
+                });
+            });
+        }
+    });
+}
+
+function forwardToOptical() {
+    if (!currentAppointmentId) {
+        Swal.fire('Warning', 'No patient selected', 'warning');
+        return;
+    }
+    
+    // ✅ Validate: kailangan may prescription
+    const hasRx = $('#rxSphR').val() || $('#rxSphL').val() || $('#rxCylR').val() || $('#rxCylL').val();
+    if (!hasRx) {
+        Swal.fire({
+            icon: 'warning',
+            title: 'Prescription Required',
+            text: 'Please save a prescription before sending to Sales.',
+            confirmButtonText: 'Go to Prescription',
+            showCancelButton: true,
+            cancelButtonText: 'Cancel'
+        }).then(result => {
+            if (result.isConfirmed) {
+                $('#prescriptionTabLink').tab('show');
+            }
+        });
+        return;
+    }
+    
+    // ✅ Validate: kailangan may diagnosis
+    const hasDiagnosis = $('#diagnosis').val();
+    if (!hasDiagnosis) {
+        Swal.fire({
+            icon: 'warning',
+            title: 'Diagnosis Required',
+            text: 'Please enter a diagnosis before sending to Sales.',
+            confirmButtonText: 'OK'
+        }).then(() => {
+            $('#diagnosis').focus();
+            $('#diagnosis').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+        return;
+    }
+    
+    // ✅ Detailed confirmation dialog
+    Swal.fire({
+        title: 'Complete Consultation?',
+        html: `
+            <div style="text-align: left; padding: 12px; background: #f0f9ff; border-radius: 10px; margin: 12px 0;">
+                <div style="font-size: 13px; margin-bottom: 10px; color: #0369a1; font-weight: 700;">
+                    <i class="bi bi-info-circle me-1"></i>
+                    The following will be saved & sent:
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e293b; padding: 4px 0;">
+                    <i class="bi bi-check-circle-fill" style="color: #10b981;"></i>
+                    <span>Clinical notes & findings</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e293b; padding: 4px 0;">
+                    <i class="bi bi-check-circle-fill" style="color: #10b981;"></i>
+                    <span>Prescription (OD / OS)</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e293b; padding: 4px 0;">
+                    <i class="bi bi-check-circle-fill" style="color: #10b981;"></i>
+                    <span>Lens recommendation</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e293b; padding: 4px 0;">
+                    <i class="bi bi-check-circle-fill" style="color: #10b981;"></i>
+                    <span>Patient will proceed to Sales counter</span>
+                </div>
+            </div>
+            <div style="font-size: 12px; color: #dc2626; padding: 10px; background: #fef2f2; border-radius: 8px;">
+                <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                <strong>This action cannot be undone.</strong>
+            </div>
+        `,
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonColor: '#0284c7',
+        confirmButtonText: '<i class="bi bi-send me-1"></i> Yes, Complete Consultation',
+        cancelButtonText: 'Cancel',
+        width: '480px'
+    }).then(result => {
+        if (result.isConfirmed) {
+            // ✅ Stop auto-save
+            stopAutoSave();
+            
+            Swal.fire({ 
+                title: 'Sending to Sales...', 
+                html: 'Please wait while we save everything.',
+                didOpen: () => Swal.showLoading(), 
+                allowOutsideClick: false 
+            });
+            
+            // ✅ Save clinical notes + prescription, then Complete Consultation
+            saveClinicalNotes(function() {
+                savePrescription(function() {
+                    $.ajax({
+                        url: 'api/doctor_dashboard.php?action=send_to_sales',
+                        method: 'POST',
+                        contentType: 'application/json',
+                        data: JSON.stringify({
+                            appointment_id: currentAppointmentId,
+                            patient_id: currentPatientId
+                        }),
+                        success: function(r) {
+                            Swal.close();
+                            if (r.success) {
+                                Swal.fire({
+                                    icon: 'success',
+                                    title: 'Sent to Sales!',
+                                    html: `
+                                        <div style="text-align: center;">
+                                            <p style="font-size: 14px; color: #1e293b; margin-bottom: 8px;">
+                                                ✅ Naipasa na sa <strong>Sales/Optical</strong>.
+                                            </p>
+                                            <p style="font-size: 12.5px; color: #64748b;">
+                                                Patient will proceed to the counter for final order.
+                                            </p>
+                                        </div>
+                                    `,
+                                    timer: 3000,
+                                    showConfirmButton: false
+                                });
+                                
+                                // ✅ Lock UI as view-only
+                                $('.exam-pane input, .exam-pane textarea, .exam-pane select, .rx-box input, .rx-box select, #rxNotes, #recLensNotes').prop('disabled', true);
+                                $('#startConsultationBtnContainer').hide();
+                                $('#sendToSalesBtn').hide();
+                                $('.summary-save-link').hide();
+                                $('#autosaveIndicator').hide();
+                                
+                                // ✅ Update status badge
+                                $('#patientStatusBadge').text('Sent to Sales').removeClass().addClass('status-badge sent-to-sales');
+                                
+                                // ✅ Show info alert
+                                $('.status-alert').remove();
+                                $('#patientCard').prepend(
+                                    '<div class="alert alert-info status-alert m-2 d-flex align-items-center gap-2">' +
+                                        '<i class="bi bi-arrow-right-circle-fill fs-5"></i>' +
+                                        '<div>' +
+                                            '<strong>Sent to Sales</strong> — Prescription at recommendation naipasa na.<br>' +
+                                            '<small class="text-muted">Waiting for Sales/Optical to finalize order.</small>' +
+                                        '</div>' +
+                                    '</div>'
+                                );
+                                
+                                // ✅ Clear session storage
+                                sessionStorage.removeItem(`consultation_${currentAppointmentId}_started`);
+                                
+                                // ✅ Reload queue
+                                loadQueue();
+                            } else {
+                                // ✅ Re-enable auto-save kung failed
+                                startAutoSave();
+                                Swal.fire('Error', r.message || 'Failed to Complete Consultation', 'error');
+                            }
+                        },
+                        error: function() {
+                            Swal.close();
+                            // ✅ Re-enable auto-save kung failed
+                            startAutoSave();
+                            Swal.fire('Error', 'Connection error. Please try again.', 'error');
+                        }
+                    });
+                });
+            });
+        }
+    });
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ★ NEW: QUICK RX VALIDATION
+   ═══════════════════════════════════════════════════════════════ */
+function forwardContactLensToSales() {
+    if (!currentAppointmentId) {
+        Swal.fire('Warning', 'No patient selected', 'warning');
+        return;
+    }
+    
+    // ✅ Validate: kailangan may CL assessment (BC at Power lang ang required)
+    const clPower = $('#clPower').val();
+    const clBaseCurve = $('#clBaseCurve').val();
+    const clDiameter = $('#clDiameter').val();
+    
+    if (!clPower || !clBaseCurve) {
+        Swal.fire({
+            icon: 'warning',
+            title: 'Contact Lens Assessment Required',
+            html: `
+                <p style="text-align: left; font-size: 13px; color: #1e293b;">
+                    Please fill in the following before completing:
+                </p>
+                <ul style="text-align: left; font-size: 12.5px; color: #64748b; padding-left: 20px;">
+                    <li>${!clBaseCurve ? '<strong>Base Curve (BC)</strong> — required' : '✅ Base Curve'}</li>
+                    <li>${!clPower ? '<strong>Power (SPH)</strong> — required' : '✅ Power'}</li>
+                    <li style="color: #94a3b8;">Diameter (DIA) — optional</li>
+                </ul>
+                <p style="text-align: left; font-size: 11.5px; color: #64748b; margin-top: 8px;">
+                    <i class="bi bi-info-circle"></i> Ang BC at Power lang ang required para makapag-order. Ang DIA at Lens Type ay standard na.
+                </p>
+            `,
+            confirmButtonText: 'OK'
+        }).then(() => {
+            if (!clBaseCurve) $('#clBaseCurve').focus();
+            else if (!clPower) $('#clPower').focus();
+        });
+        return;
+    }
+    
+    // ✅ Validate: kailangan may diagnosis
+    const hasDiagnosis = $('#diagnosis').val();
+    if (!hasDiagnosis) {
+        Swal.fire({
+            icon: 'warning',
+            title: 'Diagnosis Required',
+            text: 'Please enter a diagnosis before completing.',
+            confirmButtonText: 'OK'
+        }).then(() => {
+            $('#diagnosis').focus();
+            $('#diagnosis').scrollIntoView({ behavior: 'smooth', block: 'center' });
+        });
+        return;
+    }
+    
+    // ✅ Confirmation dialog
+    Swal.fire({
+        title: 'Complete Consultation?',
+        html: `
+            <div style="text-align: left; padding: 12px; background: #f0f9ff; border-radius: 10px; margin: 12px 0;">
+                <div style="font-size: 13px; margin-bottom: 10px; color: #0369a1; font-weight: 700;">
+                    <i class="bi bi-info-circle me-1"></i>
+                    Contact Lens Order — The following will be saved:
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e293b; padding: 4px 0;">
+                    <i class="bi bi-check-circle-fill" style="color: #10b981;"></i>
+                    <span>Clinical notes & findings</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e293b; padding: 4px 0;">
+                    <i class="bi bi-check-circle-fill" style="color: #10b981;"></i>
+                    <span>Contact Lens Assessment (BC, DIA, Power)</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e293b; padding: 4px 0;">
+                    <i class="bi bi-check-circle-fill" style="color: #10b981;"></i>
+                    <span>Diagnosis & treatment plan</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: #1e293b; padding: 4px 0;">
+                    <i class="bi bi-check-circle-fill" style="color: #10b981;"></i>
+                    <span>Patient will proceed to Sales for payment</span>
+                </div>
+            </div>
+            <div style="font-size: 12px; color: #dc2626; padding: 10px; background: #fef2f2; border-radius: 8px;">
+                <i class="bi bi-exclamation-triangle-fill me-1"></i>
+                <strong>This action cannot be undone.</strong>
+            </div>
+        `,
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonColor: '#0284c7',
+        confirmButtonText: '<i class="bi bi-send me-1"></i> Yes, Complete & Forward',
+        cancelButtonText: 'Cancel',
+        width: '480px'
+    }).then(result => {
+        if (result.isConfirmed) {
+            stopAutoSave();
+            
+            Swal.fire({ 
+                title: 'Sending to Sales...', 
+                html: 'Please wait while we save everything.',
+                didOpen: () => Swal.showLoading(), 
+                allowOutsideClick: false 
+            });
+            
+            // ✅ Save clinical notes (kasama ang CL assessment)
+            saveClinicalNotes(function() {
+                // ✅ Save prescription (para sa CL power/BC/DIA)
+                savePrescription(function() {
+                    // ✅ Send to sales
+                    $.ajax({
+                        url: 'api/doctor_dashboard.php?action=send_to_sales',
+                        method: 'POST',
+                        contentType: 'application/json',
+                        data: JSON.stringify({
+                            appointment_id: currentAppointmentId,
+                            patient_id: currentPatientId,
+                            order_type: 'contact_lens'
+                        }),
+                        success: function(r) {
+                            Swal.close();
+                            if (r.success) {
+                                Swal.fire({
+                                    icon: 'success',
+                                    title: 'Sent to Sales!',
+                                    html: `
+                                        <div style="text-align: center;">
+                                            <p style="font-size: 14px; color: #1e293b; margin-bottom: 8px;">
+                                                ✅ Contact Lens order naipasa na sa <strong>Sales</strong>.
+                                            </p>
+                                            <p style="font-size: 12.5px; color: #64748b;">
+                                                Patient will proceed to the counter for payment.
+                                            </p>
+                                        </div>
+                                    `,
+                                    timer: 3000,
+                                    showConfirmButton: false
+                                });
+                                
+                                // ✅ Lock UI
+                                $('.exam-pane input, .exam-pane textarea, .exam-pane select, .rx-box input, .rx-box select, #rxNotes, #recLensNotes').prop('disabled', true);
+                                $('#startConsultationBtnContainer').hide();
+                                $('#sendToSalesBtn').hide();
+                                $('.summary-save-link').hide();
+                                $('#autosaveIndicator').hide();
+                                
+                                // ✅ Update status badge
+                                $('#patientStatusBadge').text('Sent to Sales').removeClass().addClass('status-badge sent-to-sales');
+                                
+                                // ✅ Show info alert
+                                $('.status-alert').remove();
+                                $('#patientCard').prepend(
+                                    '<div class="alert alert-info status-alert m-2 d-flex align-items-center gap-2">' +
+                                        '<i class="bi bi-cart-check-fill fs-5"></i>' +
+                                        '<div>' +
+                                            '<strong>Contact Lens Order Sent to Sales</strong> — Waiting for payment.<br>' +
+                                            '<small class="text-muted">Patient will proceed to the counter.</small>' +
+                                        '</div>' +
+                                    '</div>'
+                                );
+                                
+                                sessionStorage.removeItem(`consultation_${currentAppointmentId}_started`);
+                                loadQueue();
+                            } else {
+                                startAutoSave();
+                                Swal.fire('Error', r.message || 'Failed to send to Sales', 'error');
+                            }
+                        },
+                        error: function() {
+                            Swal.close();
+                            startAutoSave();
+                            Swal.fire('Error', 'Connection error. Please try again.', 'error');
+                        }
+                    });
+                });
+            });
+        }
+    });
+}
+
+   function showQuickRxModal(appointmentId) {
+    $('#quickRxForm')[0].reset();
+    $('#quickRxAppointmentId').val(appointmentId || currentAppointmentId);
+    $('#quickRxValid').prop('checked', true);
+    
+    const today = new Date().toISOString().split('T')[0];
+    $('#quickRxDate').val(today);
+    
+    new bootstrap.Modal(document.getElementById('quickRxModal')).show();
+}
+
+function submitQuickRxValidation() {
+    const data = {
+        appointment_id: $('#quickRxAppointmentId').val() || currentAppointmentId,
+        rx_date: $('#quickRxDate').val(),
+        rx_doctor: $('#quickRxDoctor').val(),
+        sph_r: $('#quickRxSphR').val(),
+        sph_l: $('#quickRxSphL').val(),
+        cyl_r: $('#quickRxCylR').val(),
+        cyl_l: $('#quickRxCylL').val(),
+        axis_r: $('#quickRxAxisR').val(),
+        axis_l: $('#quickRxAxisL').val(),
+        add_r: $('#quickRxAddR').val(),
+        add_l: $('#quickRxAddL').val(),
+        notes: $('#quickRxNotes').val(),
+        is_valid: $('#quickRxValid').is(':checked') ? 1 : 0
+    };
+    
+    if (!data.is_valid) {
+        Swal.fire('Warning', 'Please confirm the prescription is valid.', 'warning');
+        return;
+    }
+    
+    if (!data.sph_r && !data.sph_l) {
+        Swal.fire('Warning', 'Please enter at least one prescription value.', 'warning');
+        return;
+    }
+    
+    Swal.fire({ title: 'Validating…', didOpen: () => Swal.showLoading(), allowOutsideClick: false });
+    
+    $.ajax({
+        url: 'api/doctor_dashboard.php?action=validate_existing_rx',
+        method: 'POST',
+        contentType: 'application/json',
+        data: JSON.stringify(data),
+        success: function(r) {
+            Swal.close();
+            if (r.success) {
+                $('#quickRxModal').modal('hide');
+                Swal.fire({
+                    icon: 'success',
+                    title: 'Validated!',
+                    text: 'Prescription validated. Sent to Sales.',
+                    timer: 2000,
+                    showConfirmButton: false
+                });
+                loadQueue();
+            } else {
+                Swal.fire('Error', r.message || 'Validation failed', 'error');
+            }
+        },
+        error: function() {
+            Swal.close();
+            Swal.fire('Error', 'Connection error. Please try again.', 'error');
+        }
+    });
+}
 </script>

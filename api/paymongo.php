@@ -235,9 +235,6 @@ if ($action === 'verify_3d_model_checkout') {
     exit;
 }
 
-// ============================================
-// WEBHOOK FOR PAYMONGO (to auto-update payment status)
-// ============================================
 if ($action === 'webhook' || ($_SERVER['REQUEST_METHOD'] === 'POST' && strpos($_SERVER['REQUEST_URI'], 'webhook') !== false)) {
     $input = file_get_contents('php://input');
     $event = json_decode($input, true);
@@ -245,10 +242,14 @@ if ($action === 'webhook' || ($_SERVER['REQUEST_METHOD'] === 'POST' && strpos($_
     $event_type = $event['data']['attributes']['type'] ?? '';
     $checkout_id = $event['data']['attributes']['data']['id'] ?? '';
     
+    // ✅ Log incoming webhook for debugging
+    error_log("PayMongo Webhook: event={$event_type}, checkout_id={$checkout_id}");
+    
     if ($event_type === 'checkout_session.payment_paid') {
-        // Update payment status for the related request
         try {
-            // 1. Update custom_3d_requests
+            // ═══════════════════════════════════════════════════════
+            // 1. Update custom_3d_requests (existing)
+            // ═══════════════════════════════════════════════════════
             $stmt = $pdo->prepare("
                 UPDATE custom_3d_requests 
                 SET payment_status = 'paid',
@@ -259,7 +260,9 @@ if ($action === 'webhook' || ($_SERVER['REQUEST_METHOD'] === 'POST' && strpos($_
             ");
             $stmt->execute([$checkout_id]);
             
-            // 2. Update expenses
+            // ═══════════════════════════════════════════════════════
+            // 2. Update expenses (existing)
+            // ═══════════════════════════════════════════════════════
             $stmt2 = $pdo->prepare("
                 UPDATE expenses 
                 SET paymongo_status = 'paid'
@@ -267,7 +270,9 @@ if ($action === 'webhook' || ($_SERVER['REQUEST_METHOD'] === 'POST' && strpos($_
             ");
             $stmt2->execute([$checkout_id]);
             
-            // 3. Update subscription (NEW)
+            // ═══════════════════════════════════════════════════════
+            // 3. Update subscription (existing)
+            // ═══════════════════════════════════════════════════════
             $stmt3 = $pdo->prepare("
                 UPDATE clinic_subscriptions 
                 SET status = 'active',
@@ -278,7 +283,6 @@ if ($action === 'webhook' || ($_SERVER['REQUEST_METHOD'] === 'POST' && strpos($_
             
             // If subscription was updated, log it
             if ($stmt3->rowCount() > 0) {
-                // Get subscription details for logging
                 $stmt4 = $pdo->prepare("
                     SELECT cs.*, sp.plan_name 
                     FROM clinic_subscriptions cs
@@ -293,9 +297,105 @@ if ($action === 'webhook' || ($_SERVER['REQUEST_METHOD'] === 'POST' && strpos($_
                 }
             }
             
+            // ═══════════════════════════════════════════════════════
+            // ✅ NEW: 4. Update COD Remittance
+            // ═══════════════════════════════════════════════════════
+            $remitStmt = $pdo->prepare("
+                SELECT cr.*, r.name AS rider_name, r.user_id AS rider_user_id,
+                       r.wallet_balance, r.wallet_limit
+                FROM cod_remittances cr
+                JOIN riders r ON cr.rider_id = r.id
+                WHERE cr.paymongo_checkout_id = ?
+                  AND cr.status = 'pending'
+                LIMIT 1
+            ");
+            $remitStmt->execute([$checkout_id]);
+            $remittance = $remitStmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($remittance) {
+                error_log("Webhook: Processing COD remittance #{$remittance['id']} for rider #{$remittance['rider_id']}");
+                
+                $riderId = (int)$remittance['rider_id'];
+                $amount  = (float)$remittance['amount'];
+                $oldBalance = (float)$remittance['wallet_balance'];
+                $limit = (float)$remittance['wallet_limit'];
+                if ($limit <= 0) $limit = 5000;
+                
+                $newBalance = max(0, $oldBalance - $amount);
+                
+                // Compute wallet status
+                $newStatus = 'normal';
+                if ($newBalance >= $limit * 1.6) {
+                    $newStatus = 'blocked_all';
+                } elseif ($newBalance >= $limit) {
+                    $newStatus = 'blocked_cod';
+                } elseif ($newBalance >= $limit * 0.8) {
+                    $newStatus = 'warning';
+                }
+                
+                $pdo->beginTransaction();
+                
+                try {
+                    // Update remittance
+                    $pdo->prepare("
+                        UPDATE cod_remittances
+                        SET status = 'completed',
+                            refund_status = 'completed',
+                            completed_at = NOW(),
+                            paymongo_status = 'paid'
+                        WHERE id = ?
+                    ")->execute([$remittance['id']]);
+                    
+                    // Update rider wallet
+                    $pdo->prepare("
+                        UPDATE riders
+                        SET wallet_balance = ?,
+                            wallet_status = ?,
+                            last_remit_at = NOW()
+                        WHERE id = ?
+                    ")->execute([$newBalance, $newStatus, $riderId]);
+                    
+                    // Insert wallet transaction (audit)
+                    $pdo->prepare("
+                        INSERT INTO rider_wallet_transactions 
+                            (rider_id, reservation_id, remittance_id, type, amount, balance_after, notes, created_at)
+                        VALUES (?, NULL, ?, 'remit_online', ?, ?, ?, NOW())
+                    ")->execute([
+                        $riderId,
+                        $remittance['id'],
+                        -$amount,
+                        $newBalance,
+                        'Online remittance via PayMongo — ' . $remittance['remittance_code']
+                    ]);
+                    
+                    $pdo->commit();
+                    
+                    // Notify rider
+                    if (!empty($remittance['rider_user_id'])) {
+                        $title = '✅ COD Remittance Complete';
+                        $message = "Your online remittance of ₱" . number_format($amount, 2) . 
+                                   " has been confirmed. New balance: ₱" . number_format($newBalance, 2) . ".";
+                        
+                        $pdo->prepare("
+                            INSERT INTO notifications (user_id, title, message, type, link, is_read, created_at)
+                            VALUES (?, ?, ?, 'wallet', 'rider_dashboard.php', 0, NOW())
+                        ")->execute([$remittance['rider_user_id'], $title, $message]);
+                    }
+                    
+                    error_log("Webhook: COD remittance #{$remittance['id']} completed. New balance: ₱{$newBalance}");
+                    
+                } catch (Exception $e) {
+                    $pdo->rollBack();
+                    error_log("Webhook: Remittance processing failed for #{$remittance['id']}: " . $e->getMessage());
+                }
+            }
+            
+            // ✅ Respond success
             http_response_code(200);
             echo json_encode(['success' => true]);
+            
         } catch (Exception $e) {
+            error_log("Webhook error: " . $e->getMessage());
             http_response_code(500);
             echo json_encode(['success' => false, 'error' => $e->getMessage()]);
         }

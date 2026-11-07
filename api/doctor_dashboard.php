@@ -216,8 +216,7 @@ if ($action === 'get_queue') {
     $isAdmin = in_array($_SESSION['role'] ?? '', ['ClinicAdmin', 'SuperAdmin']);
     
     try {
-        // ========== TODAY'S QUEUE - ONLY ARRIVED AND IN_PROGRESS ==========
-        // Para sa mga dumating na at nasa consultation
+        // ========== TODAY'S QUEUE - ARRIVED, IN_PROGRESS, WAITING_PAYMENT ==========
         if ($isAdmin) {
             $stmtToday = $pdo->prepare("
                 SELECT a.*,
@@ -228,11 +227,21 @@ if ($action === 'get_queue') {
                        END AS patient_name,
                        p.age, p.gender, p.patient_type,
                        COALESCE(pr.name, srv.name, a.service_type, 'Check-up') AS product_name,
+                       COALESCE(a.frame_name, pr.name) AS frame_name,
+                       COALESCE(a.order_source, 'walk_in') AS order_source,
                        d.name AS doctor_name,
                        a.payment_status,
                        a.status as appointment_status,
                        u.id AS user_id,
                        a.arrived_at,
+                       a.sent_to_sales_at,
+                       (SELECT GROUP_CONCAT(s2.name SEPARATOR ' • ') 
+                        FROM appointment_services aps2 
+                        JOIN services s2 ON s2.id = aps2.service_id 
+                        WHERE aps2.appointment_id = a.id) AS all_service_names,
+                       (SELECT COUNT(*) 
+                        FROM appointment_services aps3 
+                        WHERE aps3.appointment_id = a.id) AS service_count,
                        CASE 
                            WHEN a.patient_id IS NOT NULL AND p.id IS NOT NULL THEN 0
                            WHEN a.patient_id IS NULL AND a.user_id IS NOT NULL AND EXISTS (
@@ -250,7 +259,7 @@ if ($action === 'get_queue') {
                 LEFT JOIN doctors d ON a.doctor_id = d.id
                 WHERE a.clinic_id = ? 
                   AND a.appointment_date = ?
-                  AND a.status IN ('arrived', 'in_progress')  -- ✅ Only these statuses
+                  AND a.status IN ('arrived', 'in_progress', 'waiting_payment')
                 ORDER BY a.arrived_at ASC
             ");
             $stmtToday->execute([$clinicId, $today]);
@@ -264,11 +273,21 @@ if ($action === 'get_queue') {
                        END AS patient_name,
                        p.age, p.gender, p.patient_type,
                        COALESCE(pr.name, srv.name, a.service_type, 'Check-up') AS product_name,
+                       COALESCE(a.frame_name, pr.name) AS frame_name,
+                       COALESCE(a.order_source, 'walk_in') AS order_source,
                        d.name AS doctor_name,
                        a.payment_status,
                        a.status as appointment_status,
                        u.id AS user_id,
                        a.arrived_at,
+                       a.sent_to_sales_at,
+                       (SELECT GROUP_CONCAT(s2.name SEPARATOR ' • ') 
+                        FROM appointment_services aps2 
+                        JOIN services s2 ON s2.id = aps2.service_id 
+                        WHERE aps2.appointment_id = a.id) AS all_service_names,
+                       (SELECT COUNT(*) 
+                        FROM appointment_services aps3 
+                        WHERE aps3.appointment_id = a.id) AS service_count,
                        CASE 
                            WHEN a.patient_id IS NOT NULL AND p.id IS NOT NULL THEN 0
                            WHEN a.patient_id IS NULL AND a.user_id IS NOT NULL AND EXISTS (
@@ -286,7 +305,7 @@ if ($action === 'get_queue') {
                 LEFT JOIN doctors d ON a.doctor_id = d.id
                 WHERE a.clinic_id = ? 
                   AND a.appointment_date = ?
-                  AND a.status IN ('arrived', 'in_progress')
+                  AND a.status IN ('arrived', 'in_progress', 'waiting_payment')
                   AND (a.doctor_id = ? OR a.doctor_id IS NULL)
                 ORDER BY a.arrived_at ASC
             ");
@@ -294,20 +313,67 @@ if ($action === 'get_queue') {
         }
         
         $queueAppointments = $stmtToday->fetchAll(PDO::FETCH_ASSOC);
+$parseItems = function(&$appt) {
+    $appt['items_parsed'] = [];
+    $appt['items_display'] = '';
+    
+    // ✅ Priority 1: all_service_names
+    if (!empty($appt['all_service_names'])) {
+        $appt['items_display'] = $appt['all_service_names'];
+    }
+    // ✅ Priority 2: items JSON
+    elseif (!empty($appt['items'])) {
+        $decoded = json_decode($appt['items'], true);
+        if (is_array($decoded)) {
+            $appt['items_parsed'] = $decoded;
+            $appt['items_display'] = implode(' • ', array_column($decoded, 'name'));
+        }
+    }
+    
+    // ✅ Priority 3: fallback
+    if (empty($appt['items_display'])) {
+        $appt['items_display'] = $appt['frame_name'] 
+            ?? $appt['product_name'] 
+            ?? 'Check-up';
+    }
+    
+    // ✅ IDAGDAG ITO: Determine has_product
+    $appt['has_product'] = !empty($appt['product_id']) 
+                        || !empty($appt['frame_name'])
+                        || (!empty($appt['lens_type']) && $appt['lens_type'] !== 'frame_only');
+    
+    // ✅ Contact lens detection
+    $appt['is_contact_lens'] = false;
+    if (!empty($appt['product_id']) && !empty($appt['product_name'])) {
+        $pname = strtolower($appt['product_name']);
+        $appt['is_contact_lens'] = (strpos($pname, 'contact') !== false);
+    }
+};
         
-        // Separate waiting (arrived) vs in_progress
+        // Apply sa lahat
+        foreach ($queueAppointments as &$a) $parseItems($a);
+        unset($a);
+        
+        // Pero wag kalimutan: yung $waiting, $inProgress, $waitingPayment
+        // ay slices ng $queueAppointments — so automatic na-update na sila.
+        // Kailangan lang i-apply sa $completed at $upcoming.
+        
+        // Separate by status
         $waiting = [];
         $inProgress = [];
+        $waitingPayment = [];
         
         foreach ($queueAppointments as $appt) {
             if ($appt['status'] === 'in_progress') {
                 $inProgress[] = $appt;
+            } elseif ($appt['status'] === 'waiting_payment') {
+                $waitingPayment[] = $appt;
             } else {
                 $waiting[] = $appt;
             }
         }
         
-        // ========== COMPLETED TODAY (View Only) ==========
+        // ========== COMPLETED TODAY ==========
         $stmtCompleted = $pdo->prepare("
             SELECT a.*,
                    CASE 
@@ -317,9 +383,18 @@ if ($action === 'get_queue') {
                    END AS patient_name,
                    p.age, p.gender, p.patient_type,
                    COALESCE(pr.name, srv.name, a.service_type, 'Check-up') AS product_name,
+                   COALESCE(a.frame_name, pr.name) AS frame_name,
+                   COALESCE(a.order_source, 'walk_in') AS order_source,
                    d.name AS doctor_name,
                    a.status as appointment_status,
-                   a.completed_at
+                   a.completed_at,
+                   (SELECT GROUP_CONCAT(s2.name SEPARATOR ' • ') 
+                    FROM appointment_services aps2 
+                    JOIN services s2 ON s2.id = aps2.service_id 
+                    WHERE aps2.appointment_id = a.id) AS all_service_names,
+                   (SELECT COUNT(*) 
+                    FROM appointment_services aps3 
+                    WHERE aps3.appointment_id = a.id) AS service_count
             FROM appointments a
             LEFT JOIN patients p ON a.patient_id = p.id
             LEFT JOIN users u ON a.user_id = u.id
@@ -328,41 +403,15 @@ if ($action === 'get_queue') {
             LEFT JOIN doctors d ON a.doctor_id = d.id
             WHERE a.clinic_id = ? 
               AND a.appointment_date = ?
-              AND a.status = 'completed'  -- ✅ Only fully paid and done
+              AND a.status = 'completed'
             ORDER BY a.completed_at DESC
         ");
         $stmtCompleted->execute([$clinicId, $today]);
         $completed = $stmtCompleted->fetchAll(PDO::FETCH_ASSOC);
+                foreach ($completed as &$c) $parseItems($c);
+        unset($c);
         
-        // ========== WAITING FOR PAYMENT (View Only) ==========
-        $stmtWaitingPayment = $pdo->prepare("
-            SELECT a.*,
-                   CASE 
-                       WHEN p.id IS NOT NULL THEN CONCAT(p.first_name, ' ', p.last_name)
-                       WHEN u.id IS NOT NULL THEN CONCAT(u.first_name, ' ', u.last_name)
-                       ELSE 'Walk-in Patient'
-                   END AS patient_name,
-                   p.age, p.gender, p.patient_type,
-                   COALESCE(pr.name, srv.name, a.service_type, 'Check-up') AS product_name,
-                   d.name AS doctor_name,
-                   a.status as appointment_status,
-                   a.total_amount,
-                   a.consultation_completed_at
-            FROM appointments a
-            LEFT JOIN patients p ON a.patient_id = p.id
-            LEFT JOIN users u ON a.user_id = u.id
-            LEFT JOIN products pr ON a.product_id = pr.id
-            LEFT JOIN services srv ON a.item_id = srv.id AND a.item_type = 'service'
-            LEFT JOIN doctors d ON a.doctor_id = d.id
-            WHERE a.clinic_id = ? 
-              AND a.appointment_date = ?
-              AND a.status = 'waiting_payment'  -- ✅ Consultation done, waiting for payment
-            ORDER BY a.consultation_completed_at DESC
-        ");
-        $stmtWaitingPayment->execute([$clinicId, $today]);
-        $waitingPayment = $stmtWaitingPayment->fetchAll(PDO::FETCH_ASSOC);
-        
-        // ========== UPCOMING APPOINTMENTS (View Only) ==========
+        // ========== UPCOMING APPOINTMENTS ==========
         $stmtUpcoming = $pdo->prepare("
             SELECT a.*,
                    CASE 
@@ -372,10 +421,19 @@ if ($action === 'get_queue') {
                    END AS patient_name,
                    p.age, p.gender, p.patient_type,
                    COALESCE(pr.name, srv.name, a.service_type, 'Check-up') AS product_name,
+                   COALESCE(a.frame_name, pr.name) AS frame_name,
+                   COALESCE(a.order_source, 'walk_in') AS order_source,
                    d.name AS doctor_name,
                    a.payment_status,
                    a.status as appointment_status,
-                   a.appointment_date as future_date
+                   a.appointment_date as future_date,
+                   (SELECT GROUP_CONCAT(s2.name SEPARATOR ' • ') 
+                    FROM appointment_services aps2 
+                    JOIN services s2 ON s2.id = aps2.service_id 
+                    WHERE aps2.appointment_id = a.id) AS all_service_names,
+                   (SELECT COUNT(*) 
+                    FROM appointment_services aps3 
+                    WHERE aps3.appointment_id = a.id) AS service_count
             FROM appointments a
             LEFT JOIN patients p ON a.patient_id = p.id
             LEFT JOIN users u ON a.user_id = u.id
@@ -385,12 +443,13 @@ if ($action === 'get_queue') {
             WHERE a.clinic_id = ? 
               AND a.appointment_date > ?
               AND a.appointment_date <= DATE_ADD(?, INTERVAL 7 DAY)
-              AND a.status IN ('confirmed', 'paid')  -- ✅ Upcoming appointments
+              AND a.status IN ('confirmed', 'paid')
             ORDER BY a.appointment_date ASC, a.appointment_time ASC
         ");
         $stmtUpcoming->execute([$clinicId, $today, $today]);
         $upcomingAppointments = $stmtUpcoming->fetchAll(PDO::FETCH_ASSOC);
-        
+                foreach ($upcomingAppointments as &$u) $parseItems($u);
+        unset($u);
         // Group upcoming by date
         $groupedUpcoming = [];
         foreach ($upcomingAppointments as $appt) {
@@ -404,12 +463,12 @@ if ($action === 'get_queue') {
         echo json_encode([
             'success' => true,
             'today' => [
-                'waiting' => $waiting,           // ARRIVED status - ready for consultation
-                'in_progress' => $inProgress,    // IN_PROGRESS status - currently being examined
-                'waiting_payment' => $waitingPayment, // WAITING_PAYMENT status - consultation done, need payment
-                'completed' => $completed        // COMPLETED status - fully paid and done
+                'waiting' => $waiting,
+                'in_progress' => $inProgress,
+                'waiting_payment' => $waitingPayment,
+                'completed' => $completed
             ],
-            'upcoming' => $groupedUpcoming,       // Future appointments - view only
+            'upcoming' => $groupedUpcoming,
             'doctor_id' => $doctorId,
             'is_admin' => $isAdmin,
             'current_date' => $today
@@ -642,6 +701,92 @@ if ($action === 'get_patient_data') {
             }
         }
         
+        // ✅ BAGO: Check kung may product/frame ang appointment
+        $hasProduct = false;
+        $appointmentRow = null;
+        $isContactLens = false;
+        $isEyeglass = false;
+        $isService = false;
+        
+        if ($appointmentId) {
+            $stmt = $pdo->prepare("
+                SELECT a.id, a.product_id, a.item_id, a.item_type, 
+                       a.frame_name, a.order_source,
+                       a.lens_type, a.lens_index,
+                       pr.name AS product_name,
+                       pr.category AS product_category,
+                       srv.name AS service_name,
+                       srv.category AS service_category,
+                       (SELECT GROUP_CONCAT(s2.name SEPARATOR ' • ') 
+                        FROM appointment_services aps2 
+                        JOIN services s2 ON s2.id = aps2.service_id 
+                        WHERE aps2.appointment_id = a.id) AS all_service_names
+                FROM appointments a
+                LEFT JOIN products pr ON a.product_id = pr.id
+                LEFT JOIN services srv ON a.item_id = srv.id AND a.item_type = 'service'
+                WHERE a.id = ? AND a.clinic_id = ?
+            ");
+            $stmt->execute([$appointmentId, $clinicId]);
+            $appointmentRow = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($appointmentRow) {
+                // ✅ BAGO: Parse items JSON
+                $appointmentItems = [];
+                if (!empty($appointmentRow['items'])) {
+                    $decoded = json_decode($appointmentRow['items'], true);
+                    if (is_array($decoded)) {
+                        $appointmentItems = $decoded;
+                    }
+                }
+                
+                // ✅ Determine flags base sa ITEMS (hindi category)
+                $hasProduct = false;
+                $hasService = false;
+                $serviceCount = 0;
+                $productCount = 0;
+                
+                foreach ($appointmentItems as $item) {
+                    $type = $item['type'] ?? 'service';
+                    if ($type === 'product') {
+                        $hasProduct = true;
+                        $productCount++;
+                    } elseif ($type === 'service') {
+                        $hasService = true;
+                        $serviceCount++;
+                    }
+                }
+                
+                // ✅ Fallback: kung walang items JSON, check product_id
+                if (empty($appointmentItems)) {
+                    $hasProduct = !empty($appointmentRow['product_id']) 
+                               || !empty($appointmentRow['frame_name'])
+                               || !empty($appointmentRow['product_name']);
+                }
+                
+                // ✅ Detect category
+                $rawCategory = strtolower(
+                    $appointmentRow['product_category'] 
+                    ?? $appointmentRow['service_category'] 
+                    ?? ''
+                );
+                
+                // ✅ Contact Lens detection: category OR items name
+                $isContactLens = (strpos($rawCategory, 'contact') !== false);
+                if (!$isContactLens) {
+                    foreach ($appointmentItems as $item) {
+                        $name = strtolower($item['name'] ?? '');
+                        if (strpos($name, 'contact') !== false) {
+                            $isContactLens = true;
+                            break;
+                        }
+                    }
+                }
+                
+                $isEyeglass = in_array($rawCategory, ['frames', 'eyeglasses', 'sunglasses', 'lenses']);
+                $isService  = $hasService && !$hasProduct;  // ✅ SERVICE ONLY = walang product
+            }
+        }
+        
         // Get history from clinical_notes
         $stmt = $pdo->prepare("
             SELECT cn.*, 
@@ -662,8 +807,14 @@ if ($action === 'get_patient_data') {
         $latestNotes = null;
         if ($appointmentId) {
             $stmt = $pdo->prepare("
-                SELECT * FROM clinical_notes 
-                WHERE appointment_id = ? AND clinic_id = ? 
+                SELECT cn.*, 
+                       a.frame_name,
+                       a.order_source,
+                       a.sent_to_sales_at,
+                       a.status AS appointment_status
+                FROM clinical_notes cn
+                LEFT JOIN appointments a ON cn.appointment_id = a.id
+                WHERE cn.appointment_id = ? AND cn.clinic_id = ? 
                 LIMIT 1
             ");
             $stmt->execute([$appointmentId, $clinicId]);
@@ -692,14 +843,88 @@ if ($action === 'get_patient_data') {
             $latestRx = $stmt->fetch(PDO::FETCH_ASSOC);
         }
         
+        // ✅ PHASE 3: Get dynamic form sections
+        $requiredSections = [];
+        
+        // Try to load from helper first
+        $helperPath = __DIR__ . '/../includes/form-sections-helper.php';
+        if (file_exists($helperPath)) {
+            require_once $helperPath;
+            if (function_exists('getAppointmentFormSections') && $appointmentId) {
+                $formSections = getAppointmentFormSections($pdo, $appointmentId);
+                $requiredSections = $formSections['required_sections'] ?? [];
+            }
+        }
+        
+        // ✅ FALLBACK: Kung walang required_sections, i-set ang default + lens kung may product
+        if (empty($requiredSections)) {
+            $baseSections = [
+                'vitals',
+                'chief_complaint',
+                'visual_acuity',
+                'assessment'
+            ];
+            
+            // ✅ DYNAMIC: Base sa category
+            if ($isContactLens) {
+                // ✅ Contact Lens: CL assessment, WALANG lens_recommendation
+                $requiredSections = array_merge($baseSections, [
+                    'contact_lens_assessment',
+                    'external_exam',
+                    'treatment_notes'
+                ]);
+            } elseif ($isEyeglass) {
+                // ✅ Eyeglass: refraction + lens_recommendation
+                $requiredSections = array_merge($baseSections, [
+                    'refraction',
+                    'external_exam',
+                    'lens_recommendation'
+                ]);
+            } elseif ($isService) {
+                // ✅ Service: basic lang
+                $requiredSections = array_merge($baseSections, [
+                    'external_exam',
+                    'treatment_notes'
+                ]);
+            } else {
+                // ✅ Default (existing behavior)
+                $requiredSections = array_merge($baseSections, [
+                    'refraction',
+                    'external_exam'
+                ]);
+            }
+        }
+        
+        // ✅ PINAKA-IMPORTANTE: Kung EYEGLASS lang, i-add ang lens_recommendation
+        // HUWAG idagdag sa Contact Lens (kasi iba ang process)
+        if ($hasProduct && $isEyeglass && !in_array('lens_recommendation', $requiredSections)) {
+            $requiredSections[] = 'lens_recommendation';
+        }
+        
         echo json_encode([
             'success' => true,
             'latest_notes' => $latestNotes,
             'latest_rx' => $latestRx,
             'history' => $history,
-            'appointment_services' => $appointmentServices,  // ✅ Added
-            'service_name' => $serviceName,                  // ✅ Added
-            'total_amount' => $totalAmount                   // ✅ Added
+            'appointment_services' => $appointmentServices,
+            'service_name' => $serviceName,
+            'total_amount' => $totalAmount,
+            'required_sections' => $requiredSections,
+            'has_product' => $hasProduct,
+            'appointment_row' => $appointmentRow,
+            'is_contact_lens' => $isContactLens,
+            'is_eyeglass' => $isEyeglass,
+            'is_service' => $isService,
+            // ✅ BAGO: All service names para sa frontend display
+            'all_service_names' => $appointmentRow['all_service_names'] ?? null,
+            // ✅ BAGO: Items list
+            'items' => $appointmentItems,
+            'items_count' => count($appointmentItems),
+            'service_count' => $serviceCount,
+            'product_count' => $productCount,
+            'has_service' => $hasService,
+            'is_service_only' => $hasService && !$hasProduct,
+            'is_multi_service' => $serviceCount > 1
         ]);
         
     } catch (Exception $e) {
@@ -839,6 +1064,50 @@ if ($action === 'save_notes') {
             exit;
         }
         
+        // ✅ Process lens features (array → JSON)
+        $lensFeatures = $data['rec_lens_features'] ?? [];
+        if (is_array($lensFeatures)) {
+            $lensFeatures = json_encode($lensFeatures);
+        }
+        
+        // ✅ NEW: Prepare all dynamic section data
+        $vaBoth       = $data['va_both'] ?? null;
+        $vaNearRight  = $data['va_near_right'] ?? null;
+        $vaNearLeft   = $data['va_near_left'] ?? null;
+        $vaNearBoth   = $data['va_near_both'] ?? null;
+        
+        // Contact Lens Assessment
+        $clBaseCurve     = $data['cl_base_curve'] ?? null;
+        $clDiameter      = $data['cl_diameter'] ?? null;
+        $clPower         = $data['cl_power'] ?? null;
+        $clCylinder      = $data['cl_cylinder'] ?? null;
+        $clAxis          = $data['cl_axis'] ?? null;
+        $clLensType      = $data['cl_lens_type'] ?? null;
+        $clFitAssessment = $data['cl_fit_assessment'] ?? null;
+        $clTrialLens     = $data['cl_trial_lens'] ?? null;
+        
+        // Glaucoma Screening
+        $iopRight        = $data['iop_right'] ?? null;
+        $iopLeft         = $data['iop_left'] ?? null;
+        $cdRatioRight    = $data['cd_ratio_right'] ?? null;
+        $cdRatioLeft     = $data['cd_ratio_left'] ?? null;
+        $visualField     = $data['visual_field'] ?? null;
+        $glaucomaRisk    = $data['glaucoma_risk'] ?? null;
+        
+        // Retina Screening
+        $fundusRight     = $data['fundus_right'] ?? null;
+        $fundusLeft      = $data['fundus_left'] ?? null;
+        $retinaFindings  = $data['retina_findings'] ?? null;
+        
+        // Cataract Evaluation
+        $cataractRight   = $data['cataract_right'] ?? null;
+        $cataractLeft    = $data['cataract_left'] ?? null;
+        $cataractRecommendation = $data['cataract_recommendation'] ?? null;
+        
+        // Treatment Notes
+        $treatmentGiven  = $data['treatment_given'] ?? null;
+        $followupInstructions = $data['followup_instructions'] ?? null;
+        
         if ($existing) {
             $pdo->prepare("
                 UPDATE clinical_notes SET
@@ -849,6 +1118,36 @@ if ($action === 'save_notes') {
                     diagnosis = ?,
                     treatment_plan = ?,
                     notes = ?,
+                    rec_lens_design = ?,
+                    rec_lens_index = ?,
+                    rec_lens_features = ?,
+                    rec_lens_notes = ?,
+                    va_both = ?,
+                    va_near_right = ?,
+                    va_near_left = ?,
+                    va_near_both = ?,
+                    cl_base_curve = ?,
+                    cl_diameter = ?,
+                    cl_power = ?,
+                    cl_cylinder = ?,
+                    cl_axis = ?,
+                    cl_lens_type = ?,
+                    cl_fit_assessment = ?,
+                    cl_trial_lens = ?,
+                    iop_right = ?,
+                    iop_left = ?,
+                    cd_ratio_right = ?,
+                    cd_ratio_left = ?,
+                    visual_field = ?,
+                    glaucoma_risk = ?,
+                    fundus_right = ?,
+                    fundus_left = ?,
+                    retina_findings = ?,
+                    cataract_right = ?,
+                    cataract_left = ?,
+                    cataract_recommendation = ?,
+                    treatment_given = ?,
+                    followup_instructions = ?,
                     status = 'completed',
                     updated_at = NOW()
                 WHERE appointment_id = ? AND clinic_id = ?
@@ -860,6 +1159,36 @@ if ($action === 'save_notes') {
                 $data['diagnosis'] ?? null,
                 $data['treatment_plan'] ?? null,
                 $data['notes'] ?? null,
+                $data['rec_lens_design'] ?? null,
+                $data['rec_lens_index'] ?? null,
+                $lensFeatures,
+                $data['rec_lens_notes'] ?? null,
+                $vaBoth,
+                $vaNearRight,
+                $vaNearLeft,
+                $vaNearBoth,
+                $clBaseCurve,
+                $clDiameter,
+                $clPower,
+                $clCylinder,
+                $clAxis,
+                $clLensType,
+                $clFitAssessment,
+                $clTrialLens,
+                $iopRight,
+                $iopLeft,
+                $cdRatioRight,
+                $cdRatioLeft,
+                $visualField,
+                $glaucomaRisk,
+                $fundusRight,
+                $fundusLeft,
+                $retinaFindings,
+                $cataractRight,
+                $cataractLeft,
+                $cataractRecommendation,
+                $treatmentGiven,
+                $followupInstructions,
                 $appointmentId,
                 $clinicId
             ]);
@@ -868,8 +1197,26 @@ if ($action === 'save_notes') {
                 INSERT INTO clinical_notes
                     (clinic_id, patient_id, appointment_id, optometrist_id, service_date,
                      chief_complaint, va_left, va_right, findings, diagnosis,
-                     treatment_plan, notes, status)
-                VALUES (?, ?, ?, ?, CURDATE(), ?, ?, ?, ?, ?, ?, ?, 'completed')
+                     treatment_plan, notes,
+                     rec_lens_design, rec_lens_index, rec_lens_features, rec_lens_notes,
+                     va_both, va_near_right, va_near_left, va_near_both,
+                     cl_base_curve, cl_diameter, cl_power, cl_cylinder, cl_axis,
+                     cl_lens_type, cl_fit_assessment, cl_trial_lens,
+                     iop_right, iop_left, cd_ratio_right, cd_ratio_left,
+                     visual_field, glaucoma_risk,
+                     fundus_right, fundus_left, retina_findings,
+                     cataract_right, cataract_left, cataract_recommendation,
+                     treatment_given, followup_instructions,
+                     status)
+                VALUES (?, ?, ?, ?, CURDATE(), 
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?,
+                        ?, ?, ?,
+                        ?, ?,
+                        'completed')
             ")->execute([
                 $clinicId,
                 $patientId,
@@ -881,7 +1228,37 @@ if ($action === 'save_notes') {
                 $data['findings'] ?? null,
                 $data['diagnosis'] ?? null,
                 $data['treatment_plan'] ?? null,
-                $data['notes'] ?? null
+                $data['notes'] ?? null,
+                $data['rec_lens_design'] ?? null,
+                $data['rec_lens_index'] ?? null,
+                $lensFeatures,
+                $data['rec_lens_notes'] ?? null,
+                $vaBoth,
+                $vaNearRight,
+                $vaNearLeft,
+                $vaNearBoth,
+                $clBaseCurve,
+                $clDiameter,
+                $clPower,
+                $clCylinder,
+                $clAxis,
+                $clLensType,
+                $clFitAssessment,
+                $clTrialLens,
+                $iopRight,
+                $iopLeft,
+                $cdRatioRight,
+                $cdRatioLeft,
+                $visualField,
+                $glaucomaRisk,
+                $fundusRight,
+                $fundusLeft,
+                $retinaFindings,
+                $cataractRight,
+                $cataractLeft,
+                $cataractRecommendation,
+                $treatmentGiven,
+                $followupInstructions
             ]);
         }
         
@@ -2057,6 +2434,340 @@ if ($action === 'get_appointments') {
     exit;
 }
 
+// ============= SEND TO SALES =============
+if ($action === 'send_to_sales') {
+    // ✅ Permission check
+    if (!canEditDashboard()) {
+        echo json_encode(['success' => false, 'message' => 'Permission denied: Cannot send to sales']);
+        exit;
+    }
+    
+    $data = json_decode(file_get_contents('php://input'), true);
+    $appointmentId = (int)($data['appointment_id'] ?? 0);
+    $patientId = (int)($data['patient_id'] ?? 0);
+    
+    if (!$appointmentId) {
+        echo json_encode(['success' => false, 'message' => 'Missing appointment ID']);
+        exit;
+    }
+    
+    try {
+        $pdo->beginTransaction();
+        
+        // Verify appointment belongs to clinic
+        $stmt = $pdo->prepare("
+            SELECT a.*, 
+                   p.first_name, p.last_name,
+                   d.name AS doctor_name
+            FROM appointments a
+            LEFT JOIN patients p ON a.patient_id = p.id
+            LEFT JOIN doctors d ON a.doctor_id = d.id
+            WHERE a.id = ? AND a.clinic_id = ?
+        ");
+        $stmt->execute([$appointmentId, $clinicId]);
+        $appointment = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$appointment) {
+            throw new Exception('Appointment not found');
+        }
+        
+        // ✅ Check kung Contact Lens ang appointment
+        $catStmt = $pdo->prepare("
+            SELECT pr.category 
+            FROM appointments a
+            LEFT JOIN products pr ON a.product_id = pr.id
+            WHERE a.id = ? AND a.clinic_id = ?
+        ");
+        $catStmt->execute([$appointmentId, $clinicId]);
+        $catRow = $catStmt->fetch(PDO::FETCH_ASSOC);
+        $rawCategory = strtolower($catRow['category'] ?? '');
+        $isContactLensOrder = (strpos($rawCategory, 'contact') !== false);
+        
+        if ($isContactLensOrder) {
+            // ✅ Contact Lens: kailangan may CL assessment sa clinical_notes
+            $clStmt = $pdo->prepare("
+                SELECT id FROM clinical_notes 
+                WHERE appointment_id = ? 
+                  AND clinic_id = ?
+                  AND (cl_power IS NOT NULL OR cl_base_curve IS NOT NULL)
+                LIMIT 1
+            ");
+            $clStmt->execute([$appointmentId, $clinicId]);
+            $hasCLAssessment = $clStmt->fetch();
+            
+            if (!$hasCLAssessment) {
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'Contact Lens Assessment required before sending to Sales. Please fill in BC, DIA, and Power first.',
+                    'code' => 'NO_CL_ASSESSMENT'
+                ]);
+                exit;
+            }
+        } else {
+            // ✅ Spectacle: kailangan may prescription (existing logic)
+            $rxStmt = $pdo->prepare("
+                SELECT id FROM prescriptions 
+                WHERE appointment_id = ? AND clinic_id = ?
+                LIMIT 1
+            ");
+            $rxStmt->execute([$appointmentId, $clinicId]);
+            $hasRx = $rxStmt->fetch();
+            
+            if (!$hasRx) {
+                echo json_encode([
+                    'success' => false,
+                    'message' => 'Prescription required before sending to Sales. Please save a prescription first.',
+                    'code' => 'NO_PRESCRIPTION'
+                ]);
+                exit;
+            }
+        }
+        
+        // Update appointment status to waiting_payment
+        $pdo->prepare("
+            UPDATE appointments SET 
+                status = 'waiting_payment',
+                sent_to_sales_at = NOW(),
+                sent_to_sales_by = ?,
+                updated_at = NOW()
+            WHERE id = ? AND clinic_id = ?
+        ")->execute([$userId, $appointmentId, $clinicId]);
+        
+        // Log the handoff
+        try {
+            $pdo->prepare("
+                INSERT INTO appointment_status_logs 
+                (appointment_id, status, changed_by, changed_at, notes)
+                VALUES (?, 'waiting_payment', ?, NOW(), 'Sent to Sales by Doctor')
+            ")->execute([$appointmentId, $userId]);
+        } catch (Exception $e) {
+            // Log table might not exist, ignore
+            error_log("Status log error: " . $e->getMessage());
+        }
+        
+        // Notify Sales staff (optional)
+        try {
+            $clinicName = $pdo->query("SELECT name FROM clinics WHERE id = $clinicId")->fetchColumn();
+            $patientName = trim(($appointment['first_name'] ?? '') . ' ' . ($appointment['last_name'] ?? ''));
+            
+            // Get all Sales staff users
+            $salesStmt = $pdo->prepare("
+                SELECT id FROM users 
+                WHERE clinic_id = ? 
+                  AND role IN ('Sales', 'Staff', 'Optical')
+                  AND status = 'Active'
+            ");
+            $salesStmt->execute([$clinicId]);
+            $salesUsers = $salesStmt->fetchAll(PDO::FETCH_ASSOC);
+            
+            foreach ($salesUsers as $salesUser) {
+                $pdo->prepare("
+                    INSERT INTO notifications
+                        (user_id, title, message, type, reference_id, link, created_at)
+                    VALUES (?, ?, ?, 'info', ?, '#', NOW())
+                ")->execute([
+                    $salesUser['id'],
+                    "🛒 New Order from Doctor",
+                    "Patient {$patientName} is ready for Sales/Optical finalization. Prescription and recommendation are available.",
+                    $appointmentId
+                ]);
+            }
+        } catch (Exception $e) {
+            error_log("Notification error: " . $e->getMessage());
+        }
+        
+        $pdo->commit();
+        
+        echo json_encode([
+            'success' => true,
+            'appointment_id' => $appointmentId,
+            'status' => 'waiting_payment',
+            'message' => 'Consultation sent to Sales. Patient is now waiting for order finalization.'
+        ]);
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        error_log("send_to_sales error: " . $e->getMessage());
+        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    }
+    exit;
+}
+
+// ============= VALIDATE EXISTING PRESCRIPTION =============
+if ($action === 'validate_existing_rx') {
+    // ✅ Permission check
+    if (!canCreateDashboard() && !canEditDashboard()) {
+        echo json_encode(['success' => false, 'message' => 'Permission denied: Cannot validate prescriptions']);
+        exit;
+    }
+    
+    $data = json_decode(file_get_contents('php://input'), true);
+    $appointmentId = (int)($data['appointment_id'] ?? 0);
+    
+    if (!$appointmentId) {
+        echo json_encode(['success' => false, 'message' => 'Missing appointment ID']);
+        exit;
+    }
+    
+    $isValid = filter_var($data['is_valid'] ?? false, FILTER_VALIDATE_BOOLEAN);
+    if (!$isValid) {
+        echo json_encode(['success' => false, 'message' => 'Prescription must be validated as valid']);
+        exit;
+    }
+    
+    try {
+        $pdo->beginTransaction();
+        
+        // Verify appointment
+        $stmt = $pdo->prepare("
+            SELECT a.*, p.first_name, p.last_name
+            FROM appointments a
+            LEFT JOIN patients p ON a.patient_id = p.id
+            WHERE a.id = ? AND a.clinic_id = ?
+        ");
+        $stmt->execute([$appointmentId, $clinicId]);
+        $appointment = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if (!$appointment) {
+            throw new Exception('Appointment not found');
+        }
+        
+        // Save to prescriptions table (para makita ng Sales)
+        $patientId = (int)($appointment['patient_id'] ?? 0);
+        $expiryDate = date('Y-m-d', strtotime('+1 year'));
+        
+        // Check if existing prescription
+        $checkRx = $pdo->prepare("
+            SELECT id FROM prescriptions 
+            WHERE appointment_id = ? AND clinic_id = ?
+        ");
+        $checkRx->execute([$appointmentId, $clinicId]);
+        $existingRx = $checkRx->fetch();
+        
+        $rxData = [
+            $data['sph_r'] ?? null,
+            $data['cyl_r'] ?? null,
+            $data['axis_r'] ?? null,
+            $data['add_r'] ?? null,
+            $data['sph_l'] ?? null,
+            $data['cyl_l'] ?? null,
+            $data['axis_l'] ?? null,
+            $data['add_l'] ?? null,
+            null, // pd
+            'Binocular', // pd_type
+            $data['notes'] ?? null,
+            $appointmentId,
+            $clinicId
+        ];
+        
+        if ($existingRx) {
+            $pdo->prepare("
+                UPDATE prescriptions SET
+                    sph_r = ?, cyl_r = ?, axis_r = ?, add_r = ?,
+                    sph_l = ?, cyl_l = ?, axis_l = ?, add_l = ?,
+                    pd = ?, pd_type = ?, notes = ?,
+                    updated_at = NOW()
+                WHERE appointment_id = ? AND clinic_id = ?
+            ")->execute($rxData);
+        } else {
+            $pdo->prepare("
+                INSERT INTO prescriptions
+                    (clinic_id, patient_id, appointment_id, doctor_id, 
+                     prescription_date, expiry_date,
+                     sph_r, cyl_r, axis_r, add_r, 
+                     sph_l, cyl_l, axis_l, add_l,
+                     pd, pd_type, notes, prescription_type)
+                VALUES (?, ?, ?, ?, CURDATE(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'existing')
+            ")->execute([
+                $clinicId,
+                $patientId,
+                $appointmentId,
+                $_SESSION['doctor_id'] ?? null,
+                $expiryDate,
+                $data['sph_r'] ?? null,
+                $data['cyl_r'] ?? null,
+                $data['axis_r'] ?? null,
+                $data['add_r'] ?? null,
+                $data['sph_l'] ?? null,
+                $data['cyl_l'] ?? null,
+                $data['axis_l'] ?? null,
+                $data['add_l'] ?? null,
+                null,
+                'Binocular',
+                $data['notes'] ?? null
+            ]);
+        }
+        
+        // Save validation record (if table exists)
+        try {
+            $pdo->prepare("
+                INSERT INTO prescription_validations 
+                (appointment_id, validated_by, clinic_id, rx_date, rx_doctor, 
+                 sph_r, sph_l, cyl_r, cyl_l, axis_r, axis_l, add_r, add_l, 
+                 notes, is_valid, validated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())
+            ")->execute([
+                $appointmentId,
+                $userId,
+                $clinicId,
+                $data['rx_date'] ?? null,
+                $data['rx_doctor'] ?? null,
+                $data['sph_r'] ?? null,
+                $data['sph_l'] ?? null,
+                $data['cyl_r'] ?? null,
+                $data['cyl_l'] ?? null,
+                $data['axis_r'] ?? null,
+                $data['axis_l'] ?? null,
+                $data['add_r'] ?? null,
+                $data['add_l'] ?? null,
+                $data['notes'] ?? null
+            ]);
+        } catch (Exception $e) {
+            // Table might not exist, log but continue
+            error_log("prescription_validations error: " . $e->getMessage());
+        }
+        
+        // Update appointment status
+        $pdo->prepare("
+            UPDATE appointments SET 
+                status = 'waiting_payment',
+                prescription_source = 'existing',
+                sent_to_sales_at = NOW(),
+                sent_to_sales_by = ?,
+                updated_at = NOW()
+            WHERE id = ? AND clinic_id = ?
+        ")->execute([$userId, $appointmentId, $clinicId]);
+        
+        // Log
+        try {
+            $pdo->prepare("
+                INSERT INTO appointment_status_logs 
+                (appointment_id, status, changed_by, changed_at, notes)
+                VALUES (?, 'waiting_payment', ?, NOW(), 'Existing prescription validated and sent to Sales')
+            ")->execute([$appointmentId, $userId]);
+        } catch (Exception $e) {
+            error_log("Status log error: " . $e->getMessage());
+        }
+        
+        $pdo->commit();
+        
+        echo json_encode([
+            'success' => true,
+            'appointment_id' => $appointmentId,
+            'status' => 'waiting_payment',
+            'message' => 'Existing prescription validated and sent to Sales.'
+        ]);
+        
+    } catch (Exception $e) {
+        $pdo->rollBack();
+        error_log("validate_existing_rx error: " . $e->getMessage());
+        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    }
+    exit;
+}
+
+
+
 if ($action === 'complete_consultation') {
     if (!canEditDashboard()) {
         echo json_encode(['success' => false, 'message' => 'Permission denied']);
@@ -2156,67 +2867,85 @@ if ($action === 'complete_consultation') {
         
         // ✅ If still empty, check product_id and lens_type (for glasses)
         if (empty($items) && !empty($appointment['product_id'])) {
-            $productStmt = $pdo->prepare("SELECT id, name, price FROM products WHERE id = ? AND clinic_id = ?");
+            // ✅ Kunin din ang category
+            $productStmt = $pdo->prepare("
+                SELECT id, name, price, category 
+                FROM products 
+                WHERE id = ? AND clinic_id = ?
+            ");
             $productStmt->execute([$appointment['product_id'], $clinicId]);
             $product = $productStmt->fetch(PDO::FETCH_ASSOC);
             
             if ($product) {
+                // ✅ Detect Contact Lens
+                $productCategory = strtolower($product['category'] ?? '');
+                $isContactLensProduct = (strpos($productCategory, 'contact') !== false);
+                
                 $items[] = [
                     'id' => $product['id'],
-                    'name' => $product['name'] . ' (Frame)',
+                    'name' => $product['name'] . ($isContactLensProduct ? '' : ' (Frame)'),
                     'price' => floatval($product['price']),
                     'type' => 'product',
-                    'quantity' => 1
+                    'quantity' => 1,
+                    'category' => $product['category']  // ✅ IDAGDAG
                 ];
                 $totalAmount += floatval($product['price']);
-            }
-            
-            if (!empty($appointment['lens_type']) && $appointment['lens_type'] !== 'frame_only') {
-                $lensPrice = match($appointment['lens_type']) {
-                    'single_vision' => 500,
-                    'progressive' => 1500,
-                    'blue_cut' => 800,
-                    default => 0
-                };
-                if ($lensPrice > 0) {
-                    $lensName = ucwords(str_replace('_', ' ', $appointment['lens_type'])) . ' Lens';
-                    $items[] = [
-                        'id' => null,
-                        'name' => $lensName,
-                        'price' => $lensPrice,
-                        'type' => 'service',
-                        'quantity' => 1
-                    ];
-                    $totalAmount += $lensPrice;
+                
+                // ✅ CONTACT LENS: Walang lens upgrade
+                if ($isContactLensProduct) {
+                    error_log("Contact Lens detected in complete_consultation: " . $product['name']);
+                    // Wala nang idadagdag — contact lens price lang
+                }
+                // ✅ EYEGLASS: May lens upgrade (existing logic)
+                elseif (!empty($appointment['lens_type']) && $appointment['lens_type'] !== 'frame_only') {
+                    $lensPrice = match($appointment['lens_type']) {
+                        'single_vision' => 500,
+                        'progressive' => 1500,
+                        'blue_cut' => 800,
+                        default => 0
+                    };
+                    
+                    // ✅ IDAGDAG: Lens index price kung meron
+                    if (!empty($appointment['lens_index_price'])) {
+                        $lensPrice += floatval($appointment['lens_index_price']);
+                    }
+                    
+                    // ✅ IDAGDAG: Lens features price kung meron
+                    if (!empty($appointment['lens_features_price'])) {
+                        $lensPrice += floatval($appointment['lens_features_price']);
+                    }
+                    
+                    if ($lensPrice > 0) {
+                        $lensName = ucwords(str_replace('_', ' ', $appointment['lens_type'])) . ' Lens';
+                        $items[] = [
+                            'id' => null,
+                            'name' => $lensName,
+                            'price' => $lensPrice,
+                            'type' => 'service',
+                            'quantity' => 1
+                        ];
+                        $totalAmount += $lensPrice;
+                    }
                 }
             }
         }
         
-        // ✅ Fallback to single item if still empty
-        if (empty($items)) {
-            // Use item_price from appointment or default
-            $itemPrice = floatval($appointment['item_price'] ?? 0);
-            if ($itemPrice <= 0) {
-                $itemPrice = floatval($appointment['appointment_total'] ?? 500.00);
-            }
-            if ($itemPrice <= 0) {
-                $itemPrice = 500.00; // Default consultation fee
-            }
-            
-            $resolvedItemId = $appointment['product_id'] ?? $appointment['item_id'] ?? null;
-            $resolvedItemType = !empty($appointment['product_id']) ? 'product'
-                              : ($appointment['item_type'] ?? 'service');
-            $resolvedItemName = $appointment['item_name'] ?? $appointment['service_type'] ?? 'Consultation';
-            
-            $items[] = [
-                'id' => $resolvedItemId,
-                'name' => $resolvedItemName,
-                'price' => $itemPrice,
-                'type' => $resolvedItemType,
-                'quantity' => 1
-            ];
-            $totalAmount = $itemPrice;
-        }
+if (empty($items)) {
+    $itemPrice = floatval($appointment['item_price'] ?? 0);
+    if ($itemPrice <= 0) {
+        $itemPrice = floatval($appointment['appointment_total'] ?? 0);  // ✅ 0 default
+    }
+    // ❌ TANGGALIN ang 500 default
+    
+    $items[] = [
+        'id' => $resolvedItemId,
+        'name' => $resolvedItemName,
+        'price' => $itemPrice,
+        'type' => $resolvedItemType,
+        'quantity' => 1
+    ];
+    $totalAmount = $itemPrice;
+}
         
         // ✅ STEP 4: GET DISCOUNT INFO (preserve from appointment)
         $discount_type = $appointment['discount_type'] ?? 'none';
@@ -2225,13 +2954,23 @@ if ($action === 'complete_consultation') {
         $vat_percentage = floatval($appointment['vat_percentage'] ?? 0);
         $vat_amount = floatval($appointment['vat_amount'] ?? 0);
         
-        // If no discount amount but has discount type, compute it
-        if ($discount_type !== 'none' && $discount_amount == 0 && $discount_percentage > 0) {
-            $discount_amount = $totalAmount * ($discount_percentage / 100);
-        }
-        
-        // Compute final total
-        $finalTotal = $totalAmount - $discount_amount + $vat_amount;
+// ✅ TAMA — PWD/Senior: VAT-exclusive base
+if ($discount_type === 'senior' || $discount_type === 'pwd') {
+    $vatExclusiveSubtotal = $totalAmount / 1.12;
+    $discount_amount = $vatExclusiveSubtotal * ($discount_percentage / 100);
+    $vat_amount = 0;
+    $finalTotal = $vatExclusiveSubtotal - $discount_amount;
+} elseif ($discount_type !== 'none' && $discount_percentage > 0) {
+    // Manual discount (may VAT)
+    $discount_amount = $totalAmount * ($discount_percentage / 100);
+    $vat_amount = ($totalAmount - $discount_amount) * 0.12;
+    $finalTotal = ($totalAmount - $discount_amount) + $vat_amount;
+} else {
+    // Walang discount
+    $discount_amount = 0;
+    $vat_amount = $totalAmount - ($totalAmount / 1.12);
+    $finalTotal = $totalAmount;
+}
         
         // ✅ STEP 5: GET EXISTING ONLINE PAYMENTS FROM payments TABLE
         $paymentsStmt = $pdo->prepare("
@@ -2315,9 +3054,28 @@ if ($action === 'complete_consultation') {
             }
         }
         
-        // ✅ STEP 6: UPDATE APPOINTMENT
-        $appointmentStatus = $isFullyPaid ? 'completed' : 'waiting_payment';
-        $paymentStatus = $isFullyPaid ? 'paid' : ($totalPaidOnline > 0 ? 'partial' : 'pending');
+$currentStatus = $appointment['status'] ?? '';
+$wasSentToSales = ($currentStatus === 'waiting_payment') || !empty($appointment['sent_to_sales_at']);
+
+// ✅ DETECT: SERVICE ONLY (walang product/frame/lens)
+$hasProductItem = false;
+foreach ($items as $item) {
+    if (($item['type'] ?? '') === 'product') {
+        $hasProductItem = true;
+        break;
+    }
+}
+
+// ✅ SERVICE ONLY = completed agad (walang bayad)
+// May product = waiting_payment (kailangan bayaran)
+if (!$hasProductItem) {
+    $appointmentStatus = 'completed';
+    $paymentStatus = 'paid';  // ✅ Mark as paid para hindi na singilin
+    $saleStatus = 'Paid';
+} else {
+    $appointmentStatus = $isFullyPaid ? 'completed' : 'waiting_payment';
+    $paymentStatus = $isFullyPaid ? 'paid' : ($totalPaidOnline > 0 ? 'partial' : 'pending');
+}
         
         $pdo->prepare("
             UPDATE appointments SET 
@@ -2344,10 +3102,17 @@ if ($action === 'complete_consultation') {
         ]);
         
         // ✅ STEP 7: CREATE/UPDATE SALES RECORD WITH ALL ITEMS
-        $saleStatus = $isFullyPaid ? 'Paid' : ($totalPaidOnline > 0 ? 'Partial' : 'pending_payment');
-        $billNumber = 'BILL-' . date('Ymd') . '-' . str_pad($appointmentId, 5, '0', STR_PAD_LEFT);
+        if (!$hasProductItem) {
+    $saleStatus = 'Paid';  // Service-only = paid na agad
+} else {
+    $saleStatus = $isFullyPaid ? 'Paid' : ($totalPaidOnline > 0 ? 'Partial' : 'pending_payment');
+}        $billNumber = 'BILL-' . date('Ymd') . '-' . str_pad($appointmentId, 5, '0', STR_PAD_LEFT);
         $itemsJson = json_encode($items);
-        $saleAmountPaid = $isFullyPaid ? $finalTotal : $totalPaidOnline;
+        if (!$hasProductItem) {
+    $saleAmountPaid = $finalTotal;  // Service-only = fully paid
+} else {
+    $saleAmountPaid = $isFullyPaid ? $finalTotal : $totalPaidOnline;
+}
         
         // Check if sales already exists
         $checkSale = $pdo->prepare("SELECT id FROM sales WHERE appointment_id = ?");
@@ -2470,13 +3235,52 @@ if ($action === 'complete_consultation') {
         if ($isFullyPaid) {
             foreach ($items as $item) {
                 if ($item['type'] === 'product' && $item['id']) {
-                    $updateStock = $pdo->prepare("
-                        UPDATE inventory 
-                        SET stock = stock - 1,
-                            updated_at = NOW()
-                        WHERE id = ? AND clinic_id = ? AND stock > 0
-                    ");
-                    $updateStock->execute([$item['id'], $clinicId]);
+                    // ✅ Check kung may color inventory (Contact Lens / Frame variants)
+                    $hasColorInventory = false;
+                    
+                    if (!empty($appointment['color_code'])) {
+                        $colorStmt = $pdo->prepare("
+                            SELECT id, quantity 
+                            FROM product_color_inventory 
+                            WHERE product_id = ? 
+                              AND clinic_id = ? 
+                              AND color_code = ?
+                              AND is_available = 1
+                            LIMIT 1
+                        ");
+                        $colorStmt->execute([$item['id'], $clinicId, $appointment['color_code']]);
+                        $colorRow = $colorStmt->fetch(PDO::FETCH_ASSOC);
+                        
+                        if ($colorRow) {
+                            $hasColorInventory = true;
+                            
+                            if ($colorRow['quantity'] > 0) {
+                                $pdo->prepare("
+                                    UPDATE product_color_inventory 
+                                    SET quantity = quantity - 1,
+                                        updated_at = NOW()
+                                    WHERE id = ?
+                                ")->execute([$colorRow['id']]);
+                                
+                                error_log("Stock deducted (color): {$item['name']} - {$appointment['color_code']}");
+                            } else {
+                                error_log("WARNING: Out of stock for {$item['name']} color {$appointment['color_code']}");
+                            }
+                        }
+                    }
+                    
+                    // ✅ Fallback: general inventory (kung walang color inventory)
+                    if (!$hasColorInventory) {
+                        $updateStock = $pdo->prepare("
+                            UPDATE inventory 
+                            SET stock = stock - 1,
+                                updated_at = NOW()
+                            WHERE id = ? AND clinic_id = ? AND stock > 0
+                        ");
+                        $updateStock->execute([$item['id'], $clinicId]);
+                        
+                        error_log("Stock deducted (general): {$item['name']}");
+                    }
                 }
             }
         }

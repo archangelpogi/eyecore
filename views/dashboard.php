@@ -80,7 +80,6 @@ $stmt->execute([$clinicId]);
 $clinicStatus = $stmt->fetchColumn() ?: 'Pending';
 
 
-
 /* ================== BUSINESS DASHBOARD DATA ================== */
 $today = date('Y-m-d');
 $firstDayOfMonth = date('Y-m-01');
@@ -240,110 +239,14 @@ $stmt = $pdo->prepare("
 ");
 $stmt->execute([$clinicId]);
 $recentPatients = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-/* ================== CLINICAL DECISION SUPPORT DATA ================== */
-
-// 17. Today's Queue (appointments for today)
-$stmt = $pdo->prepare("
-    SELECT a.*,
-           CASE 
-               WHEN p.id IS NOT NULL THEN CONCAT(p.first_name, ' ', p.last_name)
-               WHEN u.id IS NOT NULL THEN CONCAT(u.first_name, ' ', u.last_name)
-               ELSE 'Walk-in Patient'
-           END as patient_name,
-           p.age,
-           p.gender,
-           p.patient_type,
-           d.name as doctor_name,
-           COALESCE(pr.name, a.service_type, 'Check-up') as service_name,
-           CASE 
-               WHEN a.patient_id IS NOT NULL AND p.id IS NOT NULL THEN 0
-               WHEN a.patient_id IS NULL AND a.user_id IS NOT NULL AND EXISTS (
-                   SELECT 1 FROM patients p2 
-                   WHERE p2.clinic_id = a.clinic_id 
-                   AND p2.email COLLATE utf8mb4_unicode_ci = (
-                       SELECT email COLLATE utf8mb4_unicode_ci FROM users WHERE id = a.user_id
-                   )
-               ) THEN 0
-               ELSE 1
-           END AS is_new_patient
-    FROM appointments a
-    LEFT JOIN patients p ON a.patient_id = p.id
-    LEFT JOIN users u ON a.user_id = u.id
-    LEFT JOIN doctors d ON a.doctor_id = d.id
-    LEFT JOIN products pr ON a.product_id = pr.id
-    WHERE a.clinic_id = ? AND a.appointment_date = ?
-    AND a.status IN ('paid', 'confirmed', 'pending')
-    ORDER BY a.appointment_time ASC
-    LIMIT 8
-");
-$stmt->execute([$clinicId, $today]);
-$todayQueue = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-// 18. Pending Actions (approvals needed) - Only if user has approve permission
-$pendingApprovals = 0;
-if ($canApprove) {
-    $stmt = $pdo->prepare("
-        SELECT COUNT(*) as pending_approvals
-        FROM appointments
-        WHERE clinic_id = ? AND status = 'pending'
-    ");
-    $stmt->execute([$clinicId]);
-    $pendingApprovals = $stmt->fetchColumn() ?: 0;
-}
-
-// 19. High Risk Patients (based on clinical notes)
-$stmt = $pdo->prepare("
-    SELECT DISTINCT cn.patient_id,
-           CONCAT(p.first_name, ' ', p.last_name) as patient_name,
-           p.age,
-           p.gender,
-           cn.diagnosis,
-           cn.service_date
-    FROM clinical_notes cn
-    INNER JOIN patients p ON cn.patient_id = p.id
-    WHERE cn.clinic_id = ? 
-    AND (cn.diagnosis LIKE '%glaucoma%' 
-         OR cn.diagnosis LIKE '%cataract%' 
-         OR cn.diagnosis LIKE '%diabetic%'
-         OR cn.diagnosis LIKE '%keratoconus%'
-         OR cn.diagnosis LIKE '%macular%')
-    AND p.status = 'Active'
-    ORDER BY cn.service_date DESC
-    LIMIT 5
-");
-$stmt->execute([$clinicId]);
-$highRiskPatients = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-// 20. Decision Support Stats
-$stmt = $pdo->prepare("
-    SELECT COUNT(*) as total_analyzed,
-           SUM(CASE WHEN surgery_recommended = 1 THEN 1 ELSE 0 END) as surgery_recs
-    FROM decision_support_logs
-    WHERE clinic_id = ?
-");
-$stmt->execute([$clinicId]);
-$decisionStats = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['total_analyzed' => 0, 'surgery_recs' => 0];
-
-// 21. Doctor Availability (if attendance table exists)
-$doctorsAvailable = [];
-if ($isDoctor) {
-    $stmt = $pdo->prepare("
-        SELECT id, name, specialty
-        FROM doctors
-        WHERE clinic_id = ? AND is_active = 1
-        LIMIT 5
-    ");
-    $stmt->execute([$clinicId]);
-    $doctorsAvailable = $stmt->fetchAll(PDO::FETCH_ASSOC);
-}
 ?>
 
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0d9488">
     <title><?= htmlspecialchars($clinicName); ?> - Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
@@ -358,9 +261,13 @@ if ($isDoctor) {
             --orange-light: #fed7aa;
         }
         
+        * { -webkit-tap-highlight-color: transparent; }
+        
         body {
             background: #f8fafc;
             font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            padding-bottom: env(safe-area-inset-bottom);
+            overflow-x: hidden;
         }
         
         .stat-card {
@@ -414,6 +321,7 @@ if ($isDoctor) {
             display: flex;
             align-items: center;
             gap: 4px;
+            flex-wrap: wrap;
         }
         
         .trend-up { color: #10b981; }
@@ -427,6 +335,7 @@ if ($isDoctor) {
             align-items: center;
             justify-content: center;
             font-size: 24px;
+            flex-shrink: 0;
         }
         
         .quick-action {
@@ -482,6 +391,7 @@ if ($isDoctor) {
             align-items: center;
             justify-content: center;
             font-size: 16px;
+            flex-shrink: 0;
         }
         
         .badge-teal {
@@ -500,6 +410,7 @@ if ($isDoctor) {
             text-transform: uppercase;
             letter-spacing: 0.5px;
             padding: 12px 16px;
+            white-space: nowrap;
         }
         
         .table-custom td {
@@ -537,81 +448,294 @@ if ($isDoctor) {
             margin: 0;
             color: #0f172a;
         }
-        
-        /* Queue Item Styles */
-        .queue-item {
-            border: 1px solid #e8edf2;
-            border-left: 3px solid transparent;
-            border-radius: 10px;
-            padding: 10px 12px;
-            margin-bottom: 8px;
-            background: #fff;
-            transition: box-shadow .15s;
+
+        /* ============================================================
+           📱 MOBILE RESPONSIVE — COMPLETE FIX
+           ============================================================ */
+
+        .row > [class*="col-"] { min-width: 0; }
+
+        @media (max-width: 767.98px) {
+
+            /* ---------- GLOBAL ---------- */
+            .container-fluid.p-4 { padding: 0.5rem !important; }
+            body { font-size: 13px; }
+
+            /* ---------- WELCOME BANNER ---------- */
+            .welcome-section {
+                border-radius: 12px;
+                padding: 0.8rem 0.9rem;
+            }
+            .welcome-section > .d-flex {
+                flex-direction: column !important;
+                align-items: flex-start !important;
+                gap: 0.4rem;
+            }
+            .welcome-section h4 { font-size: 0.95rem; line-height: 1.25; }
+            .welcome-section p { font-size: 0.72rem; margin-bottom: 0 !important; }
+            .welcome-section .text-end {
+                text-align: left !important;
+                width: 100%;
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.4rem;
+                align-items: center;
+            }
+            .welcome-section .text-end > div { margin-top: 0 !important; }
+            .welcome-section .badge-teal { font-size: 0.65rem; padding: 3px 9px; }
+            .welcome-section .small { font-size: 0.68rem; }
+
+            /* ---------- 🔑 KPI ROW → CSS GRID (BULLETPROOF) ---------- */
+            .row.g-3.mb-4 {
+                display: grid !important;
+                grid-template-columns: 1fr 1fr !important;
+                gap: 0.5rem !important;
+                margin-left: 0 !important;
+                margin-right: 0 !important;
+                --bs-gutter-x: 0 !important;
+            }
+            .row.g-3.mb-4 > [class*="col-"] {
+                flex: none !important;
+                max-width: 100% !important;
+                width: 100% !important;
+                padding: 0 !important;
+                min-width: 0;
+            }
+            .row.g-3.mb-4 > .col-12.col-md-4:last-child {
+                grid-column: 1 / -1;
+            }
+
+            /* ---------- STAT CARD ---------- */
+            .stat-card {
+                padding: 0.7rem 0.75rem;
+                border-radius: 12px;
+                height: auto !important;
+                min-height: 88px;
+                display: flex;
+                flex-direction: column;
+                justify-content: space-between;
+            }
+            .stat-card .d-flex {
+                flex-direction: row !important;
+                align-items: flex-start !important;
+                gap: 0.4rem;
+                width: 100%;
+            }
+            .stat-card .d-flex > div:first-child {
+                flex: 1 1 0;
+                min-width: 0;
+                overflow: hidden;
+            }
+            .stat-card .d-flex > div:last-child { flex: 0 0 auto; }
+            .stat-value {
+                font-size: 1rem !important;
+                line-height: 1.15;
+                font-weight: 700;
+                word-break: break-word;
+                overflow-wrap: anywhere;
+            }
+            .stat-label {
+                font-size: 0.6rem;
+                letter-spacing: 0;
+                white-space: normal;
+                line-height: 1.2;
+                display: block;
+                margin-bottom: 2px;
+            }
+            .stat-trend {
+                font-size: 0.58rem;
+                margin-top: 3px;
+                gap: 2px;
+                line-height: 1.3;
+                display: block;
+                white-space: normal;
+                word-break: break-word;
+            }
+            .stat-trend i { font-size: 0.62rem; }
+            .stat-card .card-icon {
+                width: 30px !important;
+                height: 30px !important;
+                font-size: 13px !important;
+                border-radius: 9px !important;
+                flex-shrink: 0 !important;
+            }
+
+            /* ---------- CARDS ---------- */
+            .card { border-radius: 12px !important; }
+            .card-header-custom {
+                padding: 0.6rem 0.75rem;
+                flex-wrap: wrap;
+                gap: 0.3rem;
+            }
+            .card-header-custom h6 {
+                font-size: 0.78rem;
+                white-space: normal;
+                overflow: visible;
+                text-overflow: unset;
+            }
+            .card-header-custom .badge { font-size: 0.58rem; }
+            .card-header-custom > div { flex-wrap: wrap; gap: 0.25rem; }
+            .card-body { padding: 0.6rem; }
+
+            /* ---------- CHARTS ---------- */
+            .chart-container {
+                height: 200px !important;
+                width: 100%;
+                min-width: 0;
+            }
+
+            /* ---------- QUICK ACTIONS ---------- */
+            .row.g-2 {
+                display: grid !important;
+                grid-template-columns: repeat(3, 1fr) !important;
+                gap: 0.4rem !important;
+                margin-left: 0 !important;
+                margin-right: 0 !important;
+            }
+            .row.g-2 > .col {
+                flex: none !important;
+                max-width: 100% !important;
+                width: 100% !important;
+                padding: 0 !important;
+            }
+            .quick-action { padding: 0.5rem 0.25rem; border-radius: 10px; }
+            .quick-action-icon {
+                width: 32px;
+                height: 32px;
+                font-size: 14px;
+                border-radius: 9px;
+                margin-bottom: 4px;
+            }
+            .quick-action .small {
+                font-size: 0.6rem;
+                line-height: 1.15;
+                white-space: normal;
+            }
+
+            /* ---------- 🔑 TABLES → CARD VIEW ---------- */
+            .table-responsive {
+                overflow: visible !important;
+                border-radius: 0 0 12px 12px;
+            }
+            .table-custom {
+                display: block;
+                width: 100%;
+                border-collapse: separate;
+                border-spacing: 0;
+            }
+            .table-custom thead { display: none !important; }
+            .table-custom tbody,
+            .table-custom tr,
+            .table-custom td {
+                display: block;
+                width: 100% !important;
+            }
+            .table-custom tr {
+                background: #fff;
+                border: 1px solid #e2e8f0;
+                border-radius: 10px;
+                padding: 0.5rem 0.65rem;
+                margin-bottom: 0.5rem;
+                box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+            }
+            .table-custom tr:hover { background: #fff; }
+            .table-custom td {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                gap: 0.5rem;
+                padding: 0.28rem 0 !important;
+                border: none !important;
+                font-size: 0.75rem !important;
+                white-space: normal !important;
+                text-align: right;
+                line-height: 1.3;
+                min-height: 22px;
+            }
+            .table-custom td::before {
+                content: attr(data-label);
+                font-weight: 600;
+                color: #64748b;
+                font-size: 0.62rem;
+                text-transform: uppercase;
+                letter-spacing: 0.3px;
+                text-align: left;
+                flex: 0 0 auto;
+            }
+            .table-custom td:last-child {
+                border-top: 1px dashed #e2e8f0 !important;
+                padding-top: 0.45rem !important;
+                margin-top: 0.25rem;
+            }
+            .table-custom td[data-label="Actions"] {
+                justify-content: flex-end;
+                gap: 0.3rem;
+            }
+            .table-custom td[data-label="Actions"]::before { margin-right: auto; }
+            .table-custom .btn-sm {
+                padding: 3px 7px;
+                font-size: 0.65rem;
+                min-height: 26px;
+                min-width: 26px;
+            }
+            .table-custom code { font-size: 0.65rem; word-break: break-all; }
+
+            /* ---------- ACTIVITY LIST ---------- */
+            .activity-item { padding: 0.55rem 0.65rem !important; }
+            .activity-item .d-flex { gap: 0.5rem !important; }
+            .activity-item .fw-medium { font-size: 0.7rem; }
+            .activity-item .small { font-size: 0.6rem; }
+            .activity-icon {
+                width: 26px !important;
+                height: 26px !important;
+                font-size: 11px !important;
+                border-radius: 7px !important;
+                flex-shrink: 0;
+            }
+
+            /* ---------- BOTTOM ROWS → STACK ---------- */
+            .row.g-3.mt-3,
+            .row.g-3:not(.mb-4):not(.mt-3):not(.g-2) {
+                display: block !important;
+            }
+            .row.g-3.mt-3 > [class*="col-"],
+            .row.g-3:not(.mb-4):not(.mt-3):not(.g-2) > [class*="col-"] {
+                width: 100% !important;
+                max-width: 100% !important;
+                padding-left: 0 !important;
+                padding-right: 0 !important;
+                margin-bottom: 0.75rem;
+            }
+            .row.g-3 > [class*="col-"]:last-child { margin-bottom: 0; }
+
+            /* ---------- MISC ---------- */
+            .swal2-popup {
+                width: 92% !important;
+                font-size: 0.8rem !important;
+                padding: 1rem !important;
+            }
+            .swal2-title { font-size: 0.95rem !important; }
+            .swal2-html-container { font-size: 0.78rem !important; }
         }
-        
-        .queue-item:hover {
-            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+
+        /* Extra small phones */
+        @media (max-width: 374.98px) {
+            .stat-value { font-size: 0.9rem !important; }
+            .stat-label { font-size: 0.56rem; }
+            .stat-card .card-icon { width: 26px !important; height: 26px !important; font-size: 11px !important; }
+            .chart-container { height: 170px !important; }
+            .row.g-2 { grid-template-columns: repeat(2, 1fr) !important; }
+            .quick-action .small { font-size: 0.58rem; }
+            .table-custom td { font-size: 0.7rem !important; }
+            .table-custom td::before { font-size: 0.58rem; }
         }
-        
-        .queue-item.waiting { border-left-color: #f59e0b; }
-        .queue-item.confirmed { border-left-color: #3b82f6; }
-        .queue-item.paid { border-left-color: #10b981; }
-        
-        .queue-time {
-            font-size: 11px;
-            font-weight: 600;
-            color: #64748b;
-        }
-        
-        .queue-name {
-            font-weight: 700;
-            font-size: 14px;
-            color: #1e293b;
-        }
-        
-        .queue-detail {
-            font-size: 11px;
-            color: #94a3b8;
-        }
-        
-        .risk-high {
-            background: #fef2f2;
-            border-left: 3px solid #ef4444;
-        }
-        
-        .risk-medium {
-            background: #fffbeb;
-            border-left: 3px solid #f59e0b;
-        }
-        
-        .doctor-badge {
-            background: #f1f5f9;
-            border-radius: 20px;
-            padding: 4px 12px;
-            font-size: 12px;
-            font-weight: 500;
-        }
-        
-        .pending-badge {
-            background: #fef3c7;
-            color: #d97706;
-            padding: 4px 8px;
-            border-radius: 20px;
-            font-size: 11px;
-            font-weight: 600;
-        }
-        
-        /* Permission Badge */
-        .permission-badge {
-            position: fixed;
-            bottom: 15px;
-            right: 15px;
-            background: rgba(0,0,0,0.7);
-            color: white;
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 11px;
-            z-index: 1000;
+
+        /* Tablet */
+        @media (min-width: 768px) and (max-width: 991.98px) {
+            .stat-value { font-size: 1.35rem; }
+            .stat-card .card-icon { width: 40px; height: 40px; font-size: 18px; }
+            .quick-action .small { font-size: 0.72rem; }
+            .chart-container { height: 240px; }
         }
     </style>
 </head>
@@ -644,7 +768,7 @@ if ($isDoctor) {
     
     <!-- BUSINESS KPI CARDS Row 1 -->
     <div class="row g-3 mb-4">
-        <div class="col-md-3">
+        <div class="col-6 col-md-3">
             <div class="stat-card">
                 <div class="d-flex justify-content-between align-items-start">
                     <div>
@@ -661,7 +785,7 @@ if ($isDoctor) {
                 </div>
             </div>
         </div>
-        <div class="col-md-3">
+        <div class="col-6 col-md-3">
             <div class="stat-card orange">
                 <div class="d-flex justify-content-between align-items-start">
                     <div>
@@ -677,7 +801,7 @@ if ($isDoctor) {
                 </div>
             </div>
         </div>
-        <div class="col-md-3">
+        <div class="col-6 col-md-3">
             <div class="stat-card blue">
                 <div class="d-flex justify-content-between align-items-start">
                     <div>
@@ -693,7 +817,7 @@ if ($isDoctor) {
                 </div>
             </div>
         </div>
-        <div class="col-md-3">
+        <div class="col-6 col-md-3">
             <div class="stat-card red">
                 <div class="d-flex justify-content-between align-items-start">
                     <div>
@@ -714,7 +838,7 @@ if ($isDoctor) {
     
     <!-- BUSINESS KPI CARDS Row 2 -->
     <div class="row g-3 mb-4">
-        <div class="col-md-4">
+        <div class="col-6 col-md-4">
             <div class="stat-card purple">
                 <div class="d-flex justify-content-between align-items-start">
                     <div>
@@ -730,7 +854,7 @@ if ($isDoctor) {
                 </div>
             </div>
         </div>
-        <div class="col-md-4">
+        <div class="col-6 col-md-4">
             <div class="stat-card">
                 <div class="d-flex justify-content-between align-items-start">
                     <div>
@@ -749,7 +873,7 @@ if ($isDoctor) {
                 </div>
             </div>
         </div>
-        <div class="col-md-4">
+        <div class="col-12 col-md-4">
             <div class="stat-card">
                 <div class="d-flex justify-content-between align-items-start">
                     <div>
@@ -771,7 +895,7 @@ if ($isDoctor) {
     
     <!-- BUSINESS CHARTS Row -->
     <div class="row g-3 mb-4">
-        <div class="col-md-7">
+        <div class="col-12 col-md-7">
             <div class="card border-0 shadow-sm">
                 <div class="card-header-custom d-flex justify-content-between align-items-center">
                     <h6 class="mb-0"><i class="bi bi-graph-up me-2" style="color: var(--teal);"></i>Revenue Trend</h6>
@@ -784,7 +908,7 @@ if ($isDoctor) {
                 </div>
             </div>
         </div>
-        <div class="col-md-5">
+        <div class="col-12 col-md-5">
             <div class="card border-0 shadow-sm">
                 <div class="card-header-custom d-flex justify-content-between align-items-center">
                     <h6 class="mb-0"><i class="bi bi-people me-2" style="color: var(--teal);"></i>Patient Growth</h6>
@@ -841,177 +965,41 @@ if ($isDoctor) {
         </div>
     </div>
     <?php endif; ?>
-    
+
     <!-- ═══════════════════════════════════════════════════════════════
-         CLINICAL DECISION SUPPORT SECTION
+         BOTTOM SECTIONS - EQUAL HEIGHT CARDS
     ═══════════════════════════════════════════════════════════════ -->
-    <div class="row g-3 mb-4">
-        <div class="col-12">
-            <div class="card border-0 shadow-sm">
-                <div class="card-header-custom d-flex justify-content-between align-items-center">
-                    <h6 class="mb-0"><i class="bi bi-heart-pulse me-2" style="color: var(--teal);"></i>Clinical Decision Support</h6>
-                    <div class="d-flex gap-2">
-                        <span class="badge bg-primary"><?= $decisionStats['total_analyzed']; ?> Analyzed</span>
-                        <span class="badge bg-danger"><?= $decisionStats['surgery_recs']; ?> Surgery Recs</span>
-                    </div>
-                </div>
-                <div class="card-body">
-                    <div class="row">
-                        <!-- Today's Queue -->
-                        <div class="col-md-4">
-                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                <span class="fw-700 small text-muted"><i class="bi bi-clock-history me-1"></i>Today's Queue</span>
-                                <a href="?view=appointments" class="text-teal small">View All</a>
-                            </div>
-                            <div class="queue-list" style="max-height: 320px; overflow-y: auto;">
-                                <?php if (empty($todayQueue)): ?>
-                                    <div class="text-center text-muted py-3">
-                                        <i class="bi bi-calendar-x fs-4"></i>
-                                        <p class="small mb-0">No appointments today</p>
-                                    </div>
-                                <?php else: ?>
-                                    <?php foreach ($todayQueue as $q): ?>
-                                    <div class="queue-item <?= $q['status']; ?>">
-                                        <div class="d-flex justify-content-between align-items-center mb-1">
-                                            <span class="queue-time"><i class="bi bi-clock me-1"></i><?= date('g:i A', strtotime($q['appointment_time'])); ?></span>
-                                            <?php if ($q['is_new_patient']): ?>
-                                                <span class="badge bg-success" style="font-size: 9px;">New</span>
-                                            <?php endif; ?>
-                                        </div>
-                                        <div class="queue-name"><?= htmlspecialchars($q['patient_name'] ?? 'Walk-in'); ?></div>
-                                        <div class="queue-detail">
-                                            <?= htmlspecialchars($q['service_name']); ?> 
-                                            <?php if ($q['doctor_name']): ?> • Dr. <?= htmlspecialchars($q['doctor_name']); ?><?php endif; ?>
-                                        </div>
-                                        <div class="queue-detail mt-1">
-                                            <?php if ($q['age']): ?><?= $q['age']; ?> yrs • <?= $q['gender']; ?><?php endif; ?>
-                                        </div>
-                                        <?php if ($canApprove && $q['status'] === 'pending'): ?>
-                                        <div class="mt-2">
-                                            <button class="btn btn-sm btn-outline-success me-1" onclick="approveAppointment(<?= $q['id']; ?>)">
-                                                <i class="bi bi-check-lg"></i> Approve
-                                            </button>
-                                            <?php if ($canReject): ?>
-                                            <button class="btn btn-sm btn-outline-danger" onclick="rejectAppointment(<?= $q['id']; ?>)">
-                                                <i class="bi bi-x-lg"></i> Reject
-                                            </button>
-                                            <?php endif; ?>
-                                        </div>
-                                        <?php endif; ?>
-                                    </div>
-                                    <?php endforeach; ?>
-                                <?php endif; ?>
-                            </div>
-                        </div>
-                        
-                        <!-- High Risk Patients -->
-                        <div class="col-md-4">
-                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                <span class="fw-700 small text-muted"><i class="bi bi-exclamation-triangle me-1 text-danger"></i>High Risk / Urgent Cases</span>
-                                <a href="?view=patients&filter=high_risk" class="text-teal small">View All</a>
-                            </div>
-                            <div class="queue-list" style="max-height: 320px; overflow-y: auto;">
-                                <?php if (empty($highRiskPatients)): ?>
-                                    <div class="text-center text-muted py-3">
-                                        <i class="bi bi-shield-check fs-4"></i>
-                                        <p class="small mb-0">No high risk patients</p>
-                                    </div>
-                                <?php else: ?>
-                                    <?php foreach ($highRiskPatients as $risk): ?>
-                                    <div class="queue-item risk-high">
-                                        <div class="d-flex justify-content-between align-items-center mb-1">
-                                            <span class="queue-name"><?= htmlspecialchars($risk['patient_name']); ?></span>
-                                            <span class="badge bg-danger" style="font-size: 9px;"><?= $risk['age']; ?> yrs</span>
-                                        </div>
-                                        <div class="queue-detail text-danger fw-600">⚠️ <?= htmlspecialchars($risk['diagnosis']); ?></div>
-                                        <div class="queue-detail">
-                                            <i class="bi bi-calendar me-1"></i>Last: <?= date('M d, Y', strtotime($risk['service_date'])); ?>
-                                        </div>
-                                        <div class="mt-2">
-                                            <button class="btn btn-sm btn-outline-danger w-100" 
-                                                    onclick="viewPatientRisk(<?= $risk['patient_id']; ?>, '<?= addslashes($risk['patient_name']); ?>', '<?= addslashes($risk['diagnosis']); ?>')">
-                                                <i class="bi bi-hospital me-1"></i>Refer to Surgery
-                                            </button>
-                                        </div>
-                                    </div>
-                                    <?php endforeach; ?>
-                                <?php endif; ?>
-                            </div>
-                        </div>
-                        
-                        <!-- Pending Actions & Doctor Status -->
-                        <div class="col-md-4">
-                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                <span class="fw-700 small text-muted"><i class="bi bi-hourglass-split me-1 text-warning"></i>Pending Actions</span>
-                                <a href="?view=appointments" class="text-teal small">Manage</a>
-                            </div>
-                            <div class="mb-3">
-                                <div class="d-flex justify-content-between align-items-center p-2 bg-light rounded">
-                                    <span><i class="bi bi-check-circle text-info me-2"></i>Pending Approvals</span>
-                                    <span class="pending-badge"><?= $pendingApprovals; ?> appointment(s)</span>
-                                </div>
-                                <div class="d-flex justify-content-between align-items-center p-2 mt-2 bg-light rounded">
-                                    <span><i class="bi bi-credit-card text-warning me-2"></i>Pending Payments</span>
-                                    <span class="pending-badge"><?= $todayAppointments['confirmed'] ?? 0; ?> waiting</span>
-                                </div>
-                                <div class="d-flex justify-content-between align-items-center p-2 mt-2 bg-light rounded">
-                                    <span><i class="bi bi-box-seam text-danger me-2"></i>Low Stock Items</span>
-                                    <span class="pending-badge"><?= $lowStockCount + $outOfStockCount; ?> items</span>
-                                </div>
-                            </div>
-                            
-                            <?php if ($isDoctor && !empty($doctorsAvailable)): ?>
-                            <div class="mt-3">
-                                <span class="fw-700 small text-muted"><i class="bi bi-stethoscope me-1"></i>Doctor Status</span>
-                                <div class="mt-2">
-                                    <?php foreach ($doctorsAvailable as $doc): ?>
-                                    <div class="d-flex justify-content-between align-items-center p-2 border-bottom">
-                                        <div>
-                                            <span class="fw-600">Dr. <?= htmlspecialchars($doc['name']); ?></span>
-                                            <div class="small text-muted"><?= htmlspecialchars($doc['specialty'] ?? 'General'); ?></div>
-                                        </div>
-                                        <span class="badge bg-success">Available</span>
-                                    </div>
-                                    <?php endforeach; ?>
-                                </div>
-                            </div>
-                            <?php endif; ?>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
     
-    <!-- Bottom Sections -->
-    <div class="row g-3">
-        <!-- Recent Patients - Edit/Delete buttons based on permissions -->
-        <div class="col-md-6">
-            <div class="card border-0 shadow-sm">
+    <!-- Row 1: Recent Patients & Top Selling Items -->
+    <div class="row g-3 mb-3">
+        <!-- Recent Patients -->
+        <div class="col-12 col-md-6 d-flex">
+            <div class="card border-0 shadow-sm w-100 d-flex flex-column">
                 <div class="card-header-custom d-flex justify-content-between align-items-center">
                     <h6 class="mb-0"><i class="bi bi-person-lines-fill me-2" style="color: var(--teal);"></i>Recent Patients</h6>
                     <div>
                         <?php if ($canCreate): ?>
-                        <a href="?view=patients&action=add" class="btn btn-sm btn-link text-teal me-2">Add New</a>
+                        <a href="?view=patients&action=add" class="btn btn-sm btn-link text-teal me-2 text-decoration-none">Add New</a>
                         <?php endif; ?>
-                        <a href="?view=patients" class="btn btn-sm btn-link text-teal">View All</a>
+                        <a href="?view=patients" class="btn btn-sm btn-link text-teal text-decoration-none">View All</a>
                     </div>
                 </div>
-                <div class="card-body p-0">
+                <div class="card-body p-0 flex-grow-1 d-flex flex-column">
                     <?php if (!empty($recentPatients)): ?>
-                        <div class="table-responsive">
+                        <div class="table-responsive flex-grow-1">
                             <table class="table table-custom mb-0">
                                 <thead>
-                                    <tr><th>Code</th><th>Name</th><th>Contact</th><th>Added</th><?php if ($canEdit || $canDelete): ?><th>Actions</th><?php endif; ?></thead>
+                                    <tr><th>Code</th><th>Name</th><th>Contact</th><th>Added</th><?php if ($canEdit || $canDelete): ?><th>Actions</th><?php endif; ?></tr>
+                                </thead>
                                 <tbody>
                                     <?php foreach ($recentPatients as $patient): ?>
                                     <tr>
-                                        <td><code><?= htmlspecialchars($patient['patient_code']); ?></code></td>
-                                        <td class="fw-medium"><?= htmlspecialchars($patient['patient_name']); ?></td>
-                                        <td><?= htmlspecialchars($patient['phone'] ?? 'N/A'); ?></td>
-                                        <td class="text-muted small"><?= date('M d', strtotime($patient['created_at'])); ?></td>
+                                        <td data-label="Code"><code><?= htmlspecialchars($patient['patient_code']); ?></code></td>
+                                        <td data-label="Name" class="fw-medium"><?= htmlspecialchars($patient['patient_name']); ?></td>
+                                        <td data-label="Contact"><?= htmlspecialchars($patient['phone'] ?? 'N/A'); ?></td>
+                                        <td data-label="Added" class="text-muted small"><?= date('M d', strtotime($patient['created_at'])); ?></td>
                                         <?php if ($canEdit || $canDelete): ?>
-                                        <td>
+                                        <td data-label="Actions">
                                             <?php if ($canEdit): ?>
                                             <a href="?view=patients&action=edit&id=<?= $patient['id']; ?>" class="btn btn-sm btn-outline-primary me-1">
                                                 <i class="bi bi-pencil"></i>
@@ -1027,14 +1015,14 @@ if ($isDoctor) {
                                     </tr>
                                     <?php endforeach; ?>
                                 </tbody>
-                              </table>
+                            </table>
                         </div>
                     <?php else: ?>
-                        <div class="text-center py-4 text-muted">
+                        <div class="text-center py-4 text-muted d-flex flex-column justify-content-center align-items-center flex-grow-1">
                             <i class="bi bi-people fs-1"></i>
                             <p class="mt-2 mb-0">No patients yet</p>
                             <?php if ($canCreate): ?>
-                            <a href="?view=patients&action=add" class="btn btn-sm btn-teal mt-2">Add First Patient</a>
+                            <a href="?view=patients&action=add" class="btn btn-sm btn-teal mt-2 text-decoration-none">Add First Patient</a>
                             <?php endif; ?>
                         </div>
                     <?php endif; ?>
@@ -1043,15 +1031,15 @@ if ($isDoctor) {
         </div>
         
         <!-- Top Selling Items -->
-        <div class="col-md-6">
-            <div class="card border-0 shadow-sm">
+        <div class="col-12 col-md-6 d-flex">
+            <div class="card border-0 shadow-sm w-100 d-flex flex-column">
                 <div class="card-header-custom d-flex justify-content-between align-items-center">
                     <h6 class="mb-0"><i class="bi bi-trophy me-2" style="color: var(--orange);"></i>Top Selling Items</h6>
-                    <a href="?view=reports&tab=inventory" class="btn btn-sm btn-link text-teal">View All</a>
+                    <a href="?view=reports&tab=inventory" class="btn btn-sm btn-link text-teal text-decoration-none">View All</a>
                 </div>
-                <div class="card-body p-0">
+                <div class="card-body p-0 flex-grow-1 d-flex flex-column">
                     <?php if (!empty($topItems)): ?>
-                        <div class="table-responsive">
+                        <div class="table-responsive flex-grow-1">
                             <table class="table table-custom mb-0">
                                 <thead>
                                     <tr><th>Item</th><th>Sold</th><th>Revenue</th></tr>
@@ -1059,16 +1047,16 @@ if ($isDoctor) {
                                 <tbody>
                                     <?php foreach ($topItems as $item): ?>
                                     <tr>
-                                        <td class="fw-medium"><?= htmlspecialchars($item['item_name']); ?></td>
-                                        <td><?= $item['total_sold']; ?> units</td>
-                                        <td class="text-success fw-semibold">₱<?= number_format($item['revenue'], 0); ?></td>
+                                        <td data-label="Item" class="fw-medium"><?= htmlspecialchars($item['item_name']); ?></td>
+                                        <td data-label="Sold"><?= $item['total_sold']; ?> units</td>
+                                        <td data-label="Revenue" class="text-success fw-semibold">₱<?= number_format($item['revenue'], 0); ?></td>
                                     </tr>
                                     <?php endforeach; ?>
                                 </tbody>
                             </table>
                         </div>
                     <?php else: ?>
-                        <div class="text-center py-4 text-muted">
+                        <div class="text-center py-4 text-muted d-flex flex-column justify-content-center align-items-center flex-grow-1">
                             <i class="bi bi-box-seam fs-1"></i>
                             <p class="mt-2 mb-0">No sales data yet</p>
                         </div>
@@ -1078,23 +1066,23 @@ if ($isDoctor) {
         </div>
     </div>
 
-    <!-- Two Column Layout for Upcoming Appointments and Recent Activity -->
-    <div class="row g-3 mt-3">
-        <!-- Upcoming Appointments - Edit/Approve/Reject buttons based on permissions -->
-        <div class="col-md-6">
-            <div class="card border-0 shadow-sm h-100">
+    <!-- Row 2: Upcoming Appointments & Recent Activity -->
+    <div class="row g-3">
+        <!-- Upcoming Appointments -->
+        <div class="col-12 col-md-6 d-flex">
+            <div class="card border-0 shadow-sm w-100 d-flex flex-column">
                 <div class="card-header-custom d-flex justify-content-between align-items-center">
                     <h6 class="mb-0"><i class="bi bi-calendar-event me-2" style="color: var(--teal);"></i>Upcoming Appointments</h6>
                     <div>
                         <?php if ($canCreate): ?>
-                        <a href="?view=appointments&action=add" class="btn btn-sm btn-link text-teal me-2">Schedule</a>
+                        <a href="?view=appointments&action=add" class="btn btn-sm btn-link text-teal me-2 text-decoration-none">Schedule</a>
                         <?php endif; ?>
-                        <a href="?view=appointments" class="btn btn-sm btn-link text-teal">View Calendar</a>
+                        <a href="?view=appointments" class="btn btn-sm btn-link text-teal text-decoration-none">View Calendar</a>
                     </div>
                 </div>
-                <div class="card-body p-0">
+                <div class="card-body p-0 flex-grow-1 d-flex flex-column">
                     <?php if (!empty($upcomingAppointments)): ?>
-                        <div class="table-responsive">
+                        <div class="table-responsive flex-grow-1">
                             <table class="table table-custom mb-0">
                                 <thead>
                                     <tr>
@@ -1109,20 +1097,20 @@ if ($isDoctor) {
                                 <tbody>
                                     <?php foreach ($upcomingAppointments as $appt): ?>
                                     <tr>
-                                        <td>
+                                        <td data-label="Date & Time">
                                             <div class="fw-medium"><?= date('M d', strtotime($appt['appointment_date'])); ?></div>
                                             <div class="small text-muted"><?= date('h:i A', strtotime($appt['appointment_time'])); ?></div>
                                         </td>
-                                        <td class="fw-medium"><?= htmlspecialchars($appt['patient_name'] ?? 'N/A'); ?></td>
-                                        <td><?= htmlspecialchars($appt['phone'] ?? 'N/A'); ?></td>
-                                        <td>
+                                        <td data-label="Patient" class="fw-medium"><?= htmlspecialchars($appt['patient_name'] ?? 'N/A'); ?></td>
+                                        <td data-label="Contact"><?= htmlspecialchars($appt['phone'] ?? 'N/A'); ?></td>
+                                        <td data-label="Status">
                                             <span class="badge bg-<?= $appt['status'] == 'confirmed' ? 'success' : ($appt['status'] == 'pending' ? 'warning' : 'secondary'); ?>">
                                                 <?= ucfirst($appt['status']); ?>
                                             </span>
                                         </td>
-                                        <td><?= htmlspecialchars($appt['service_name'] ?? 'Check-up'); ?></td>
+                                        <td data-label="Service"><?= htmlspecialchars($appt['service_name'] ?? 'Check-up'); ?></td>
                                         <?php if ($canEdit || $canApprove || $canReject): ?>
-                                        <td>
+                                        <td data-label="Actions">
                                             <?php if ($canEdit): ?>
                                             <a href="?view=appointments&action=edit&id=<?= $appt['id']; ?>" class="btn btn-sm btn-outline-primary me-1">
                                                 <i class="bi bi-pencil"></i>
@@ -1146,11 +1134,11 @@ if ($isDoctor) {
                             </table>
                         </div>
                     <?php else: ?>
-                        <div class="text-center py-4 text-muted">
+                        <div class="text-center py-4 text-muted d-flex flex-column justify-content-center align-items-center flex-grow-1">
                             <i class="bi bi-calendar-x fs-1"></i>
                             <p class="mt-2 mb-0">No upcoming appointments</p>
                             <?php if ($canCreate): ?>
-                            <a href="?view=appointments&action=add" class="btn btn-sm btn-teal mt-2">Schedule Appointment</a>
+                            <a href="?view=appointments&action=add" class="btn btn-sm btn-teal mt-2 text-decoration-none">Schedule Appointment</a>
                             <?php endif; ?>
                         </div>
                     <?php endif; ?>
@@ -1159,47 +1147,49 @@ if ($isDoctor) {
         </div>
 
         <!-- Recent Activity -->
-        <div class="col-md-6">
-            <div class="card border-0 shadow-sm h-100">
+        <div class="col-12 col-md-6 d-flex">
+            <div class="card border-0 shadow-sm w-100 d-flex flex-column">
                 <div class="card-header-custom d-flex justify-content-between align-items-center">
                     <h6 class="mb-0"><i class="bi bi-activity me-2" style="color: var(--teal);"></i>Recent Activity</h6>
-                    <a href="?view=logs" class="btn btn-sm btn-link text-teal">View All</a>
+                    <a href="?view=logs" class="btn btn-sm btn-link text-teal text-decoration-none">View All</a>
                 </div>
-                <div class="card-body p-0">
+                <div class="card-body p-0 flex-grow-1 d-flex flex-column">
                     <?php if (!empty($activities)): ?>
-                        <?php foreach ($activities as $act): ?>
-                        <div class="activity-item px-3">
-                            <div class="d-flex gap-3">
-                                <div class="activity-icon bg-<?= 
-                                    strpos(strtolower($act['action']), 'create') !== false ? 'success' : 
-                                    (strpos(strtolower($act['action']), 'update') !== false ? 'info' : 
-                                    (strpos(strtolower($act['action']), 'delete') !== false ? 'danger' : 'secondary')) 
-                                ?> bg-opacity-10" style="color: <?= 
-                                    strpos(strtolower($act['action']), 'create') !== false ? '#10b981' : 
-                                    (strpos(strtolower($act['action']), 'update') !== false ? '#06b6d4' : 
-                                    (strpos(strtolower($act['action']), 'delete') !== false ? '#ef4444' : '#64748b')) 
-                                ?>;">
-                                    <i class="bi bi-<?= 
-                                        strpos(strtolower($act['action']), 'create') !== false ? 'plus-circle' : 
-                                        (strpos(strtolower($act['action']), 'update') !== false ? 'arrow-repeat' : 
-                                        (strpos(strtolower($act['action']), 'delete') !== false ? 'trash' : 'info-circle')) 
-                                    ?>"></i>
-                                </div>
-                                <div class="flex-grow-1">
-                                    <div class="d-flex justify-content-between">
-                                        <span class="fw-medium small"><?= htmlspecialchars($act['action']); ?></span>
-                                        <span class="text-muted small"><?= date('h:i A', strtotime($act['created_at'])); ?></span>
+                        <div class="flex-grow-1">
+                            <?php foreach ($activities as $act): ?>
+                            <div class="activity-item px-3">
+                                <div class="d-flex gap-3">
+                                    <div class="activity-icon bg-<?= 
+                                        strpos(strtolower($act['action']), 'create') !== false ? 'success' : 
+                                        (strpos(strtolower($act['action']), 'update') !== false ? 'info' : 
+                                        (strpos(strtolower($act['action']), 'delete') !== false ? 'danger' : 'secondary')) 
+                                    ?> bg-opacity-10" style="color: <?= 
+                                        strpos(strtolower($act['action']), 'create') !== false ? '#10b981' : 
+                                        (strpos(strtolower($act['action']), 'update') !== false ? '#06b6d4' : 
+                                        (strpos(strtolower($act['action']), 'delete') !== false ? '#ef4444' : '#64748b')) 
+                                    ?>;">
+                                        <i class="bi bi-<?= 
+                                            strpos(strtolower($act['action']), 'create') !== false ? 'plus-circle' : 
+                                            (strpos(strtolower($act['action']), 'update') !== false ? 'arrow-repeat' : 
+                                            (strpos(strtolower($act['action']), 'delete') !== false ? 'trash' : 'info-circle')) 
+                                        ?>"></i>
                                     </div>
-                                    <div class="small text-muted"><?= $act['user_name'] ?? 'System'; ?> • <?= $act['table_name'] ?? 'N/A'; ?></div>
-                                    <?php if (!empty($act['details'])): ?>
-                                        <div class="text-muted small mt-1"><?= substr(htmlspecialchars($act['details']), 0, 60); ?>...</div>
-                                    <?php endif; ?>
+                                    <div class="flex-grow-1">
+                                        <div class="d-flex justify-content-between">
+                                            <span class="fw-medium small"><?= htmlspecialchars($act['action']); ?></span>
+                                            <span class="text-muted small"><?= date('h:i A', strtotime($act['created_at'])); ?></span>
+                                        </div>
+                                        <div class="small text-muted"><?= $act['user_name'] ?? 'System'; ?> • <?= $act['table_name'] ?? 'N/A'; ?></div>
+                                        <?php if (!empty($act['details'])): ?>
+                                            <div class="text-muted small mt-1"><?= substr(htmlspecialchars($act['details']), 0, 60); ?>...</div>
+                                        <?php endif; ?>
+                                    </div>
                                 </div>
                             </div>
+                            <?php endforeach; ?>
                         </div>
-                        <?php endforeach; ?>
                     <?php else: ?>
-                        <div class="text-center py-4 text-muted">
+                        <div class="text-center py-4 text-muted d-flex flex-column justify-content-center align-items-center flex-grow-1">
                             <i class="bi bi-activity fs-1"></i>
                             <p class="mt-2 mb-0">No recent activities</p>
                         </div>
@@ -1209,8 +1199,6 @@ if ($isDoctor) {
         </div>
     </div>
 </div>
-
-
 
 <script>
 // ✅ Pass permissions to JavaScript
@@ -1436,156 +1424,7 @@ function deletePatient(patientId, patientName) {
         }
     });
 }
-
-function viewPatientRisk(patientId, patientName, diagnosis) {
-    Swal.fire({
-        title: 'Patient: ' + patientName,
-        html: `
-            <div class="text-start">
-                <p><strong>Diagnosis:</strong> ${diagnosis}</p>
-                <p><strong>Recommendation:</strong> This patient may need surgical evaluation.</p>
-                <hr>
-                <p class="text-muted small">Would you like to refer this patient to a surgery center?</p>
-            </div>
-        `,
-        icon: 'warning',
-        showCancelButton: true,
-        confirmButtonText: '<i class="bi bi-hospital me-1"></i> Find Surgery Clinics',
-        cancelButtonText: 'Close'
-    }).then(result => {
-        if (result.isConfirmed) {
-            showSurgeryClinicsModal(patientId, patientName, diagnosis);
-        }
-    });
-}
-
-function showSurgeryClinicsModal(patientId, patientName, diagnosis) {
-    window.currentReferPatient = {
-        id: patientId,
-        name: patientName,
-        diagnosis: diagnosis
-    };
-    
-    Swal.fire({
-        title: 'Loading Surgery Clinics...',
-        didOpen: () => Swal.showLoading(),
-        allowOutsideClick: false
-    });
-    
-    fetch('api/doctor_dashboard.php?action=get_surgery_clinics')
-        .then(res => res.json())
-        .then(data => {
-            Swal.close();
-            
-            if (data.success && data.clinics && data.clinics.length > 0) {
-                let clinicsHtml = '<div style="max-height: 400px; overflow-y: auto;">';
-                data.clinics.forEach(clinic => {
-                    clinicsHtml += `
-                        <div class="border rounded p-3 mb-2" style="border-left: 3px solid #0d9488;">
-                            <div class="fw-bold">${clinic.name}</div>
-                            <div class="text-muted small">${clinic.city || ''} ${clinic.province || ''}</div>
-                            <div class="text-muted small">${clinic.contact || clinic.phone || 'No contact'}</div>
-                            <div class="mt-2">
-                                <button class="btn btn-sm btn-teal" onclick="sendReferral(${clinic.id}, '${clinic.name.replace(/'/g, "\\'")}', '${clinic.clinic_email || ''}')">
-                                    <i class="bi bi-send me-1"></i> Send Referral
-                                </button>
-                            </div>
-                        </div>
-                    `;
-                });
-                clinicsHtml += '</div>';
-                
-                Swal.fire({
-                    title: 'Eye Surgery Centers',
-                    html: clinicsHtml,
-                    width: '500px',
-                    showConfirmButton: false,
-                    showCloseButton: true
-                });
-            } else {
-                Swal.fire({
-                    icon: 'info',
-                    title: 'No Surgery Clinics Found',
-                    text: 'No registered eye surgery clinics found on the platform.',
-                    confirmButtonText: 'OK'
-                });
-            }
-        })
-        .catch(error => {
-            Swal.close();
-            Swal.fire({
-                icon: 'error',
-                title: 'Error',
-                text: 'Failed to load surgery clinics. Please try again.',
-                confirmButtonText: 'OK'
-            });
-        });
-}
-
-function sendReferral(clinicId, clinicName, clinicEmail) {
-    const patient = window.currentReferPatient;
-    if (!patient) return;
-    
-    Swal.fire({
-        title: 'Send Referral?',
-        html: `Refer <strong>${patient.name}</strong> to<br><strong>${clinicName}</strong>?`,
-        icon: 'question',
-        showCancelButton: true,
-        confirmButtonText: '<i class="bi bi-send me-1"></i> Send',
-        confirmButtonColor: '#0d9488'
-    }).then(result => {
-        if (result.isConfirmed) {
-            Swal.fire({
-                title: 'Sending referral...',
-                allowOutsideClick: false,
-                didOpen: () => Swal.showLoading()
-            });
-            
-            fetch('api/doctor_dashboard.php?action=send_surgery_referral', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    clinic_id: clinicId,
-                    clinic_name: clinicName,
-                    clinic_email: clinicEmail,
-                    patient_id: patient.id,
-                    patient_name: patient.name,
-                    diagnosis: patient.diagnosis,
-                    referring_doctor: 'Clinic Admin'
-                })
-            })
-            .then(res => res.json())
-            .then(data => {
-                Swal.close();
-                if (data.success) {
-                    Swal.fire({
-                        icon: 'success',
-                        title: 'Referral Sent!',
-                        text: `${clinicName} has been notified.`,
-                        timer: 2000,
-                        showConfirmButton: false
-                    });
-                } else {
-                    Swal.fire({
-                        icon: 'error',
-                        title: 'Error',
-                        text: data.message || 'Failed to send referral'
-                    });
-                }
-            })
-            .catch(error => {
-                Swal.close();
-                Swal.fire({
-                    icon: 'error',
-                    title: 'Error',
-                    text: 'Connection error. Please try again.'
-                });
-            });
-        }
-    });
-}
 </script>
 
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

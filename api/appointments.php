@@ -99,6 +99,210 @@ try {
             exit();
         }
 
+if (isset($_GET['action']) && $_GET['action'] === 'get_appointment_details') {
+    if (!canViewAppointments()) {
+        echo json_encode(['success' => false, 'message' => 'Permission denied']);
+        exit;
+    }
+    
+    $apptId = (int)($_GET['id'] ?? 0);
+    
+    if (!$apptId) {
+        echo json_encode(['success' => false, 'message' => 'Missing appointment ID']);
+        exit;
+    }
+    
+    // ✅ FIXED: Subquery for payments (no duplicate) + clinical_notes JOIN
+    $stmt = $pdo->prepare("
+        SELECT a.*,
+               a.id as appointment_id,
+               a.items AS appointment_items,
+               COALESCE(
+                   CONCAT(u.first_name, ' ', u.last_name),
+                   CONCAT(p.first_name, ' ', p.last_name),
+                   a.service_type,
+                   'Walk-in Patient'
+               ) AS patient_name,
+               u.email AS user_email,
+               u.contact AS user_contact,
+               COALESCE(pr.name, srv.name, a.service_type, '—') AS item_display_name,
+               pr.name AS product_name,
+               pr.price AS product_price,
+               srv.name AS service_name,
+               srv.price AS service_price,
+               d.name AS doctor_name,
+               d.specialty AS doctor_specialty,
+               -- ✅ SUBQUERY: Latest payment only
+               (SELECT payment_status FROM payments WHERE appointment_id = a.id ORDER BY created_at DESC LIMIT 1) AS pay_status,
+               (SELECT payment_method FROM payments WHERE appointment_id = a.id ORDER BY created_at DESC LIMIT 1) AS payment_method,
+               (SELECT reference_number FROM payments WHERE appointment_id = a.id ORDER BY created_at DESC LIMIT 1) AS reference_number,
+               (SELECT payment_date FROM payments WHERE appointment_id = a.id ORDER BY created_at DESC LIMIT 1) AS payment_date,
+               -- ✅ ADD: Doctor's recommendation from clinical_notes
+               cn.rec_lens_design,
+               cn.rec_lens_index,
+               cn.rec_lens_features,
+               cn.rec_lens_notes,
+               cn.diagnosis,
+               cn.chief_complaint,
+               cn.findings,
+               cn.treatment_plan
+        FROM appointments a
+        LEFT JOIN users u ON a.user_id = u.id
+        LEFT JOIN patients p ON a.patient_id = p.id
+        LEFT JOIN products pr ON a.product_id = pr.id
+        LEFT JOIN services srv ON a.item_id = srv.id AND a.item_type = 'service'
+        LEFT JOIN doctors d ON a.doctor_id = d.id
+        LEFT JOIN clinical_notes cn ON a.id = cn.appointment_id
+        WHERE a.id = ? AND a.clinic_id = ?
+        LIMIT 1
+    ");
+    $stmt->execute([$apptId, $clinicId]);
+    $appt = $stmt->fetch(PDO::FETCH_ASSOC);
+    
+    if (!$appt) {
+        echo json_encode(['success' => false, 'message' => 'Appointment not found']);
+        exit;
+    }
+
+    // ✅ KUNIN ANG LAHAT NG SERVICES MULA SA appointment_services
+$servicesStmt = $pdo->prepare("
+    SELECT 
+        s.id,
+        s.name,
+        s.category,
+        s.duration_minutes,
+        aps.price
+    FROM appointment_services aps
+    JOIN services s ON s.id = aps.service_id
+    WHERE aps.appointment_id = ?
+    ORDER BY aps.id ASC
+");
+$servicesStmt->execute([$apptId]);
+$appt['services'] = $servicesStmt->fetchAll(PDO::FETCH_ASSOC);
+    
+    // ✅ Parse items JSON at compute subtotal
+    $items = [];
+    $computed_subtotal = 0;
+    if (!empty($appt['appointment_items'])) {
+        $decoded = json_decode($appt['appointment_items'], true);
+        if (is_array($decoded)) {
+            $items = $decoded;
+            foreach ($items as $item) {
+                $price = floatval($item['price'] ?? 0);
+                $qty = intval($item['quantity'] ?? 1);
+                $computed_subtotal += $price * $qty;
+            }
+        }
+    }
+    
+    // ✅ BUILD COMPLETE BREAKDOWN — kasama ang doctor's recommendation
+    $breakdown_items = $items; // Start with existing items (frame, etc.)
+    
+    // ✅ Get lens prices from lens_options table
+    $lensPrices = [];
+    $lensStmt = $pdo->prepare("
+        SELECT option_type, option_name, price
+        FROM lens_options
+        WHERE clinic_id = ? AND is_active = 1
+    ");
+    $lensStmt->execute([$clinicId]);
+    foreach ($lensStmt->fetchAll(PDO::FETCH_ASSOC) as $opt) {
+        $lensPrices[$opt['option_type']][] = $opt;
+    }
+    
+    // ✅ Add Lens Design to breakdown
+    if (!empty($appt['rec_lens_design'])) {
+        $designPrice = 0;
+        $designName = $appt['rec_lens_design'];
+        if (!empty($lensPrices['design'])) {
+            foreach ($lensPrices['design'] as $d) {
+                if (stripos($d['option_name'], $designName) !== false 
+                    || stripos($designName, $d['option_name']) !== false) {
+                    $designPrice = floatval($d['price']);
+                    break;
+                }
+            }
+        }
+        $breakdown_items[] = [
+            'name' => $designName . ' Lens',
+            'price' => $designPrice,
+            'quantity' => 1,
+            'type' => 'service',
+            'source' => 'doctor_recommendation'
+        ];
+        $computed_subtotal += $designPrice;
+    }
+    
+    // ✅ Add Lens Index to breakdown
+    if (!empty($appt['rec_lens_index'])) {
+        $indexPrice = 0;
+        $indexName = $appt['rec_lens_index'];
+        if (!empty($lensPrices['index'])) {
+            foreach ($lensPrices['index'] as $i) {
+                if (stripos($i['option_name'], $indexName) !== false 
+                    || stripos($indexName, $i['option_name']) !== false) {
+                    $indexPrice = floatval($i['price']);
+                    break;
+                }
+            }
+        }
+        $breakdown_items[] = [
+            'name' => $indexName,
+            'price' => $indexPrice,
+            'quantity' => 1,
+            'type' => 'service',
+            'source' => 'doctor_recommendation'
+        ];
+        $computed_subtotal += $indexPrice;
+    }
+    
+    // ✅ Add Features to breakdown
+    $recFeatures = [];
+    if (!empty($appt['rec_lens_features'])) {
+        $decodedFeatures = json_decode($appt['rec_lens_features'], true);
+        if (is_array($decodedFeatures)) {
+            $recFeatures = $decodedFeatures;
+        }
+    }
+    
+    foreach ($recFeatures as $featureName) {
+        $featurePrice = 0;
+        if (!empty($lensPrices['feature'])) {
+            foreach ($lensPrices['feature'] as $f) {
+                if (stripos($f['option_name'], $featureName) !== false 
+                    || stripos($featureName, $f['option_name']) !== false) {
+                    $featurePrice = floatval($f['price']);
+                    break;
+                }
+            }
+        }
+        $breakdown_items[] = [
+            'name' => $featureName,
+            'price' => $featurePrice,
+            'quantity' => 1,
+            'type' => 'service',
+            'source' => 'doctor_recommendation'
+        ];
+        $computed_subtotal += $featurePrice;
+    }
+    
+    $appt['items'] = $items;                    // Original items (frame lang)
+    $appt['breakdown_items'] = $breakdown_items; // ✅ Complete breakdown
+    $appt['computed_subtotal'] = $computed_subtotal;
+    
+    $appt['appointment_date'] = date('M d, Y', strtotime($appt['appointment_date']));
+    $appt['appointment_time'] = date('h:i A', strtotime($appt['appointment_time']));
+    
+    foreach (['created_at', 'arrived_at', 'consultation_started_at', 'consultation_completed_at', 'payment_date'] as $field) {
+        if (!empty($appt[$field])) {
+            $appt[$field] = date('M d, Y h:i A', strtotime($appt[$field]));
+        }
+    }
+    
+    echo json_encode(['success' => true, 'data' => $appt]);
+    exit;
+}
+
         if (isset($_GET['action']) && $_GET['action'] === 'get_appointment') {
             $apptId = (int)($_GET['id'] ?? 0);
             
@@ -794,6 +998,9 @@ if ($action === 'update_status') {
         echo json_encode(['success' => false, 'message' => 'Appointment not found']);
         exit;
     }
+    
+    // ✅ Parse items JSON at compute subtotal
+    $items = [];
 
     if (!$userId && $appt['user_id']) {
         $userId = $appt['user_id'];
